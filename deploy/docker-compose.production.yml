@@ -1,0 +1,90 @@
+version: '3.8'
+
+# Production-style docker-compose.
+# Run with: docker compose -f deploy/docker-compose.production.yml up -d
+#
+# Includes:
+#   - mongodb (replica set for ACID transactions)
+#   - redis (for future order book caching, rate limit shared state)
+#   - backend (clustered via PM2 if you want, or scale replicas)
+#   - nginx (TLS terminator + reverse proxy + static client/admin)
+#
+# Before running:
+#   1. Build client and admin: cd client && npm run build && cd ../admin && npm run build
+#   2. Copy SSL certs to ./deploy/certs/ (use Let's Encrypt / Cloudflare Origin)
+#   3. Set strong secrets in .env.production (NEVER commit this file)
+
+services:
+  mongodb:
+    image: mongo:7
+    container_name: tp-mongo
+    restart: unless-stopped
+    command: ['--replSet', 'rs0', '--bind_ip_all']
+    volumes:
+      - mongo_data:/data/db
+      - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - tp-net
+    # Note: Init replica set after first start:
+    #   docker exec -it tp-mongo mongosh --eval "rs.initiate()"
+
+  redis:
+    image: redis:7-alpine
+    container_name: tp-redis
+    restart: unless-stopped
+    command: ['redis-server', '--maxmemory', '512mb', '--maxmemory-policy', 'allkeys-lru']
+    volumes:
+      - redis_data:/data
+    networks:
+      - tp-net
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: tp-backend
+    restart: unless-stopped
+    depends_on:
+      - mongodb
+      - redis
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      MONGODB_URI: mongodb://mongodb:27017/trading_platform?replicaSet=rs0
+      REDIS_URL: redis://redis:6379
+    networks:
+      - tp-net
+    expose:
+      - '5000'
+    # Resource limits for safety
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: tp-nginx
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+      - ../client/dist:/var/www/client:ro
+      - ../admin/dist:/var/www/admin:ro
+    networks:
+      - tp-net
+
+networks:
+  tp-net:
+
+volumes:
+  mongo_data:
+  redis_data:

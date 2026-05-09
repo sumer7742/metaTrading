@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:7
+    container_name: trading-mongo
+    restart: unless-stopped
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: trading_platform
+
+  redis:
+    image: redis:7-alpine
+    container_name: trading-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+
+  # Optional: build and run the backend in a container.
+  # Comment this out if you prefer running backend with `npm run dev` on the host.
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: trading-backend
+    restart: unless-stopped
+    depends_on:
+      - mongodb
+      - redis
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      MONGODB_URI: mongodb://mongodb:27017/trading_platform
+      REDIS_URL: redis://redis:6379
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-change_me_dev_secret}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-change_me_dev_refresh}
+      CLIENT_URL: http://localhost:5173
+      ADMIN_URL: http://localhost:5174
+    ports:
+      - '5000:5000'
+    profiles:
+      - full
+
+volumes:
+  mongo_data:
+  redis_data:

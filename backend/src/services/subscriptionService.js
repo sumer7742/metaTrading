@@ -1,0 +1,115 @@
+const { Plan, Subscription } = require('../models/Subscription');
+
+/**
+ * Resolve a user's effective plan.
+ * - If no subscription record: returns the FREE plan
+ * - If expired/cancelled: returns FREE
+ * - If ACTIVE/TRIAL: returns the subscribed plan
+ *
+ * Cached briefly to avoid hitting DB on every order.
+ */
+const planCache = new Map(); // userId -> { plan, expiresAt }
+const CACHE_TTL_MS = 30 * 1000;
+
+const getEffectivePlan = async (userId) => {
+  const cached = planCache.get(String(userId));
+  if (cached && cached.expiresAt > Date.now()) return cached.plan;
+
+  const sub = await Subscription.findOne({ userId }).lean();
+  let plan = null;
+
+  if (sub && (sub.status === 'ACTIVE' || sub.status === 'TRIAL')) {
+    if (!sub.expiresAt || sub.expiresAt > new Date()) {
+      plan = await Plan.findById(sub.planId).lean();
+    }
+  }
+
+  if (!plan) {
+    plan = await Plan.findOne({ code: 'FREE', isActive: true }).lean();
+  }
+
+  // Failsafe — if even FREE plan isn't seeded, return a hardcoded default
+  if (!plan) {
+    plan = {
+      code: 'FREE',
+      name: 'Free',
+      limits: { maxAccounts: 2, maxLeverageOverride: null, withdrawalDailyLimit: null },
+      features: { feeDiscountPercent: '0', apiAccess: false, prioritySupport: false, copyTradingEnabled: false, affiliateBonus: '0' },
+    };
+  }
+
+  planCache.set(String(userId), { plan, expiresAt: Date.now() + CACHE_TTL_MS });
+  return plan;
+};
+
+const invalidateCache = (userId) => planCache.delete(String(userId));
+
+/**
+ * Check if user can create another account based on their plan.
+ */
+const canCreateAccount = async (userId) => {
+  const TradingAccount = require('../models/TradingAccount');
+  const plan = await getEffectivePlan(userId);
+  const count = await TradingAccount.countDocuments({ userId, isActive: true });
+  return {
+    allowed: count < (plan.limits?.maxAccounts || 2),
+    current: count,
+    max: plan.limits?.maxAccounts || 2,
+    planCode: plan.code,
+  };
+};
+
+/**
+ * Apply fee discount based on user's plan.
+ * @returns adjusted fee amount as string-decimal
+ */
+const applyFeeDiscount = async (userId, originalFee) => {
+  const plan = await getEffectivePlan(userId);
+  const discount = Number(plan.features?.feeDiscountPercent || 0);
+  if (discount <= 0) return originalFee;
+  const adjusted = Number(originalFee) * (1 - discount);
+  return adjusted.toFixed(8);
+};
+
+/**
+ * Subscribe a user to a plan. In a real flow, this would be called after
+ * payment provider confirms; here we accept a paymentRef field for that link.
+ */
+const subscribe = async ({ userId, planCode, billingCycle = 'MONTHLY', paymentRef }) => {
+  const plan = await Plan.findOne({ code: planCode.toUpperCase(), isActive: true });
+  if (!plan) throw new Error(`Plan ${planCode} not found`);
+
+  let expiresAt = null;
+  if (billingCycle === 'MONTHLY') expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+  else if (billingCycle === 'YEARLY') expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+
+  const update = {
+    planId: plan._id,
+    planCode: plan.code,
+    status: 'ACTIVE',
+    billingCycle,
+    startedAt: new Date(),
+    expiresAt,
+    cancelledAt: null,
+    autoRenew: true,
+    ...(paymentRef && { lastPayment: paymentRef }),
+  };
+
+  const sub = await Subscription.findOneAndUpdate({ userId }, update, { upsert: true, new: true });
+  invalidateCache(userId);
+  return sub;
+};
+
+const cancel = async ({ userId, reason }) => {
+  const sub = await Subscription.findOne({ userId });
+  if (!sub) throw new Error('No active subscription');
+  sub.status = 'CANCELLED';
+  sub.cancelledAt = new Date();
+  sub.cancelReason = reason || 'User cancelled';
+  sub.autoRenew = false;
+  await sub.save();
+  invalidateCache(userId);
+  return sub;
+};
+
+module.exports = { getEffectivePlan, canCreateAccount, applyFeeDiscount, subscribe, cancel, invalidateCache };

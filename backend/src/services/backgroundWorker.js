@@ -1,0 +1,766 @@
+/**
+ * Background worker that runs every few seconds to:
+ *   1. Trigger STOP orders when their stopPrice is crossed
+ *   2. Update unrealized PnL on open positions (for snapshots)
+ *   3. Detect margin-call and stop-out conditions
+ *   4. Auto-liquidate positions on stop-out (largest losing first)
+ *   5. Auto-close positions when SL or TP is hit
+ *
+ * Single-process MVP. For production, run this as a separate worker process
+ * with leader election if you scale the API horizontally.
+ */
+const Order = require('../models/Order');
+const Position = require('../models/Position');
+const Instrument = require('../models/Instrument');
+const TradingAccount = require('../models/TradingAccount');
+const Trade = require('../models/Trade');
+const MarginCall = require('../models/MarginCall');
+const { Notification } = require('../models/index');
+const matchingEngine = require('../matching-engine/MatchingEngine');
+const riskService = require('./riskService');
+const { add, sub, mul, gt, lt, gte, lte, eq, D } = require('../utils/decimal');
+const { ORDER_STATUS, ORDER_TYPE, POSITION_STATUS } = require('../config/constants');
+
+let broadcaster = null;
+let running = false;
+
+const setBroadcaster = (b) => {
+  broadcaster = b;
+};
+
+const notifyUser = (userId, channel, data) => {
+  if (broadcaster) broadcaster.notifyUser(userId, channel, data);
+};
+
+/**
+ * Check pending STOP orders. If the stopPrice has been crossed by lastPrice,
+ * convert the order to MARKET and send it to the matching engine.
+ */
+const triggerStopOrders = async () => {
+  // Only consider stops that haven't fired yet. triggeredAt=null is the gate.
+  const stopOrders = await Order.find({
+    type: ORDER_TYPE.STOP,
+    status: ORDER_STATUS.PENDING,
+    triggeredAt: null,
+  }).limit(200);
+
+  for (const order of stopOrders) {
+    const inst = await Instrument.findById(order.instrumentId).lean();
+    if (!inst || !inst.lastPrice) continue;
+    // Staleness guard: a frozen feed can otherwise fire stops at an outdated
+    // tick. 60s matches the slowest data feed cadence we run.
+    if (inst.lastPriceUpdatedAt && Date.now() - new Date(inst.lastPriceUpdatedAt).getTime() > 60_000) continue;
+    const lastPrice = inst.lastPrice;
+
+    // BUY STOP triggers when price >= stopPrice (breakout up)
+    // SELL STOP triggers when price <= stopPrice (breakdown)
+    const triggered =
+      (order.side === 'BUY' && gte(lastPrice, order.stopPrice)) ||
+      (order.side === 'SELL' && lte(lastPrice, order.stopPrice));
+
+    if (triggered) {
+      // Mark as fired BEFORE submitting so a concurrent tick can't double-submit.
+      // Keep type=STOP for the audit trail; matching engine reads price/stopPrice
+      // to decide STOP-MARKET vs STOP-LIMIT execution.
+      order.triggeredAt = new Date();
+      order.triggeredPrice = String(lastPrice);
+      await order.save();
+      try {
+        await matchingEngine.submit(order);
+        notifyUser(String(order.userId), 'orders', {
+          event: 'STOP_TRIGGERED',
+          orderId: String(order._id),
+          symbol: order.symbol,
+          stopPrice: order.stopPrice,
+          triggerPrice: lastPrice,
+        });
+      } catch (e) {
+        // If the engine throws, clear triggeredAt so the next tick can retry —
+        // pre-fix the stamped triggeredAt would permanently disqualify the
+        // order from re-evaluation, leaving it stuck PENDING forever.
+        try {
+          await Order.updateOne(
+            { _id: order._id, status: ORDER_STATUS.PENDING },
+            { $set: { triggeredAt: null, triggeredPrice: null } }
+          );
+        } catch (_) { /* best-effort */ }
+        console.error('[Worker] STOP trigger failed:', e.message);
+      }
+    }
+  }
+};
+
+/**
+ * Check open positions for SL/TP hits using current lastPrice.
+ * Closes the position via opposite-side market order.
+ */
+const checkSlTp = async () => {
+  const positions = await Position.find({
+    status: POSITION_STATUS.OPEN,
+    $or: [{ stopLoss: { $ne: null } }, { takeProfit: { $ne: null } }],
+  });
+
+  for (const pos of positions) {
+    const inst = await Instrument.findById(pos.instrumentId).lean();
+    if (!inst || !inst.lastPrice) continue;
+    const price = inst.lastPrice;
+
+    let shouldClose = false;
+    let reason = null;
+
+    if (pos.side === 'BUY') {
+      if (pos.stopLoss && lte(price, pos.stopLoss)) (shouldClose = true), (reason = 'STOP_LOSS');
+      else if (pos.takeProfit && gte(price, pos.takeProfit)) (shouldClose = true), (reason = 'TAKE_PROFIT');
+    } else {
+      if (pos.stopLoss && gte(price, pos.stopLoss)) (shouldClose = true), (reason = 'STOP_LOSS');
+      else if (pos.takeProfit && lte(price, pos.takeProfit)) (shouldClose = true), (reason = 'TAKE_PROFIT');
+    }
+
+    if (shouldClose) {
+      // Atomic OPEN → CLOSING claim — same idempotency guard the manual
+      // close controller uses. If two consecutive ticks evaluate the same
+      // SL/TP at the same time, only one wins this update and proceeds.
+      // Also stamps closeReason so the trade-history view shows the right
+      // remark ("PROFIT TAKEN" vs "STOP LOSS HIT").
+      const claimed = await Position.findOneAndUpdate(
+        { _id: pos._id, status: POSITION_STATUS.OPEN, settled: { $ne: true } },
+        { $set: { status: POSITION_STATUS.CLOSING, closeReason: reason } },
+        { new: true }
+      );
+      if (!claimed) continue; // Another tick / manual close beat us — skip.
+
+      const routingService = require('./routingService');
+      const oppositeSide = pos.side === 'BUY' ? 'SELL' : 'BUY';
+      const routing = await routingService.decideRouting({
+        userId: pos.userId,
+        instrument: inst,
+        order: { quantity: pos.quantity, side: oppositeSide },
+      });
+      const closingOrder = await Order.create({
+        userId: pos.userId,
+        accountId: pos.accountId,
+        instrumentId: pos.instrumentId,
+        symbol: pos.symbol,
+        side: oppositeSide,
+        type: 'MARKET',
+        quantity: pos.quantity,
+        leverage: pos.leverage,
+        status: 'PENDING',
+        routing,
+        closeOnly: true,
+      });
+      try {
+        await matchingEngine.submit(closingOrder);
+        notifyUser(String(pos.userId), 'positions', {
+          event: reason,
+          positionId: String(pos._id),
+          symbol: pos.symbol,
+          price,
+        });
+      } catch (e) {
+        // Engine failed — release the CLOSING claim so the next tick can retry.
+        await Position.updateOne(
+          { _id: pos._id, status: POSITION_STATUS.CLOSING, settled: { $ne: true } },
+          { $set: { status: POSITION_STATUS.OPEN } }
+        );
+        console.error('[Worker] SL/TP close failed:', e.message);
+      }
+    }
+  }
+};
+
+/**
+ * Check every account with open positions for margin call (80%) and stop-out (50%).
+ * On stop-out: liquidate largest losing position first until margin level recovers.
+ */
+const checkMarginAndStopOut = async () => {
+  const callLevel = Number(process.env.DEFAULT_MARGIN_CALL_LEVEL || 80);
+  const stopLevel = Number(process.env.DEFAULT_STOP_OUT_LEVEL || 50);
+
+  // Get all accounts that currently have open positions
+  const accountIds = await Position.distinct('accountId', { status: POSITION_STATUS.OPEN });
+
+  for (const accId of accountIds) {
+    const account = await TradingAccount.findById(accId);
+    if (!account) continue;
+
+    const metrics = await riskService.calculateAccountMetrics(account.userId, accId, account.baseCurrency);
+    const lvl = Number(metrics.marginLevel);
+
+    // Use lvl >= 0 (not > 0) so accounts whose equity has collapsed to 0%
+    // also get evaluated for stop-out — pre-fix they would silently slip
+    // through the gate and never get liquidated.
+    if (gt(metrics.usedMargin, '0') && lvl >= 0) {
+      // MARGIN CALL
+      if (lvl <= callLevel && lvl > stopLevel) {
+        // Avoid duplicate calls within 5 minutes
+        const recent = await MarginCall.findOne({
+          accountId: accId,
+          type: 'MARGIN_CALL',
+          triggeredAt: { $gt: new Date(Date.now() - 5 * 60 * 1000) },
+        });
+        if (!recent) {
+          await MarginCall.create({
+            userId: account.userId,
+            accountId: accId,
+            type: 'MARGIN_CALL',
+            marginLevel: metrics.marginLevel,
+            equity: metrics.equity,
+            usedMargin: metrics.usedMargin,
+            actionTaken: 'NOTIFICATION_SENT',
+          });
+          await Notification.create({
+            userId: account.userId,
+            type: 'MARGIN_CALL',
+            title: 'Margin Call',
+            message: `Account ${account.accountNumber}: margin level at ${Number(metrics.marginLevel).toFixed(1)}%. Add funds or close positions.`,
+            channels: ['IN_APP', 'EMAIL'],
+          });
+          notifyUser(String(account.userId), 'notifications', {
+            type: 'MARGIN_CALL',
+            accountId: String(accId),
+            marginLevel: metrics.marginLevel,
+          });
+          // Email
+          try {
+            const User = require('../models/User');
+            const userDoc = await User.findById(account.userId).select('email').lean();
+            if (userDoc) {
+              const emailSvc = require('./emailService');
+              await emailSvc.sendMarginCallAlert({
+                to: userDoc.email,
+                accountNumber: account.accountNumber,
+                marginLevel: metrics.marginLevel,
+              });
+            }
+          } catch (e) { /* non-fatal */ }
+        }
+      }
+
+      // STOP OUT
+      // Loop: keep liquidating largest losers until margin level recovers
+      // above stopLevel (or we run out of positions). Pre-fix only one
+      // position closed per tick, so accounts with multiple losers needed
+      // many ticks to recover, during which more drawdown could occur.
+      if (lvl <= stopLevel) {
+        const closedPositionIds = [];
+        const MAX_LIQUIDATIONS_PER_TICK = 10; // bound the loop
+        let curLvl = lvl;
+        let curMetrics = metrics;
+        let iteration = 0;
+
+        while (curLvl <= stopLevel && iteration < MAX_LIQUIDATIONS_PER_TICK) {
+          iteration++;
+          const positions = await Position.find({ accountId: accId, status: POSITION_STATUS.OPEN });
+          if (!positions.length) break;
+
+          let worst = null;
+          let worstPnl = null;
+          for (const p of positions) {
+            const inst = await Instrument.findById(p.instrumentId).lean();
+            const mark = inst?.lastPrice || p.entryPrice;
+            const pnl =
+              p.side === 'BUY'
+                ? mul(sub(mark, p.entryPrice), p.quantity)
+                : mul(sub(p.entryPrice, mark), p.quantity);
+            if (worst === null || lt(pnl, worstPnl)) {
+              worst = p;
+              worstPnl = pnl;
+            }
+          }
+          if (!worst) break;
+
+          // Atomic OPEN → CLOSING claim. If we lose the race (manual close
+          // or SL/TP got there first), skip and re-evaluate.
+          const claimed = await Position.findOneAndUpdate(
+            { _id: worst._id, status: POSITION_STATUS.OPEN, settled: { $ne: true } },
+            { $set: { status: POSITION_STATUS.CLOSING, closeReason: 'MARGIN_STOPOUT' } },
+            { new: true }
+          );
+          if (!claimed) {
+            // Recompute and continue — another path may have already closed.
+            curMetrics = await riskService.calculateAccountMetrics(account.userId, accId, account.baseCurrency);
+            curLvl = Number(curMetrics.marginLevel);
+            continue;
+          }
+
+          const routingService = require('./routingService');
+          const oppositeSide = worst.side === 'BUY' ? 'SELL' : 'BUY';
+          const inst = await Instrument.findById(worst.instrumentId);
+          const routing = await routingService.decideRouting({
+            userId: worst.userId,
+            instrument: inst,
+            order: { quantity: worst.quantity, side: oppositeSide },
+          });
+          const closingOrder = await Order.create({
+            userId: worst.userId,
+            accountId: worst.accountId,
+            instrumentId: worst.instrumentId,
+            symbol: worst.symbol,
+            side: oppositeSide,
+            type: 'MARKET',
+            quantity: worst.quantity,
+            leverage: worst.leverage,
+            status: 'PENDING',
+            routing,
+            closeOnly: true,
+          });
+          try {
+            await matchingEngine.submit(closingOrder);
+            closedPositionIds.push(worst._id);
+          } catch (e) {
+            await Position.updateOne(
+              { _id: worst._id, status: POSITION_STATUS.CLOSING, settled: { $ne: true } },
+              { $set: { status: POSITION_STATUS.OPEN } }
+            );
+            console.error('[Worker] Stop-out close failed:', e.message);
+            break; // engine breakage — defer to next tick rather than spin
+          }
+
+          // Re-evaluate margin level after the liquidation.
+          curMetrics = await riskService.calculateAccountMetrics(account.userId, accId, account.baseCurrency);
+          curLvl = Number(curMetrics.marginLevel);
+          // If usedMargin is now 0 we're done regardless of margin level math.
+          if (!gt(curMetrics.usedMargin, '0')) break;
+        }
+
+        if (closedPositionIds.length) {
+          await MarginCall.create({
+            userId: account.userId,
+            accountId: accId,
+            type: 'STOP_OUT',
+            marginLevel: curMetrics.marginLevel,
+            equity: curMetrics.equity,
+            usedMargin: curMetrics.usedMargin,
+            actionTaken: 'POSITION_LIQUIDATED',
+            closedPositionIds,
+          });
+          notifyUser(String(account.userId), 'notifications', {
+            type: 'STOP_OUT',
+            accountId: String(accId),
+            liquidatedCount: closedPositionIds.length,
+            marginLevel: curMetrics.marginLevel,
+          });
+        }
+      }
+    }
+  }
+};
+
+/**
+ * Negative balance protection (doc §7.10).
+ * When equity (balance + unrealized PnL) <= 0:
+ *   1. Close all open positions on the account at last price
+ *   2. Floor the wallet balance at 0 (broker absorbs the loss)
+ *   3. Log event as MarginCall with type=NEGATIVE_BALANCE
+ * Only runs for accounts where TradingAccount.negativeBalanceProtection === true.
+ */
+const checkNegativeBalanceProtection = async () => {
+  const accountIds = await Position.distinct('accountId', { status: POSITION_STATUS.OPEN });
+  for (const accId of accountIds) {
+    const account = await TradingAccount.findById(accId);
+    if (!account || !account.negativeBalanceProtection) continue;
+
+    const metrics = await riskService.calculateAccountMetrics(account.userId, accId, account.baseCurrency);
+    if (lte(metrics.equity, '0')) {
+      // Close all open positions
+      const positions = await Position.find({ accountId: accId, status: POSITION_STATUS.OPEN });
+      const closedIds = [];
+      const routingService = require('./routingService');
+      for (const p of positions) {
+        // Atomic claim. If another path already settled this position,
+        // skip — negative-balance protection is just a safety net.
+        const claimed = await Position.findOneAndUpdate(
+          { _id: p._id, status: POSITION_STATUS.OPEN, settled: { $ne: true } },
+          { $set: { status: POSITION_STATUS.CLOSING, closeReason: 'NEGATIVE_BALANCE' } },
+          { new: true }
+        );
+        if (!claimed) continue;
+
+        const oppositeSide = p.side === 'BUY' ? 'SELL' : 'BUY';
+        const pInst = await Instrument.findById(p.instrumentId);
+        const routing = await routingService.decideRouting({
+          userId: p.userId,
+          instrument: pInst,
+          order: { quantity: p.quantity, side: oppositeSide },
+        });
+        const closingOrder = await Order.create({
+          userId: p.userId,
+          accountId: p.accountId,
+          instrumentId: p.instrumentId,
+          symbol: p.symbol,
+          side: oppositeSide,
+          type: 'MARKET',
+          quantity: p.quantity,
+          leverage: p.leverage,
+          status: 'PENDING',
+          routing,
+          closeOnly: true,
+        });
+        try {
+          await matchingEngine.submit(closingOrder);
+          closedIds.push(p._id);
+        } catch (e) {
+          await Position.updateOne(
+            { _id: p._id, status: POSITION_STATUS.CLOSING, settled: { $ne: true } },
+            { $set: { status: POSITION_STATUS.OPEN } }
+          );
+          console.error('[Worker] negative balance close failed:', e.message);
+        }
+      }
+
+      // Floor the wallet balance at 0 atomically. Pre-fix the read-then-save
+      // pattern would race with a settle running on the other side and the
+      // broker would absorb more than the actual deficit.
+      const { Wallet, WalletLedger } = require('../models/Wallet');
+      const floored = await Wallet.findOneAndUpdate(
+        {
+          userId: account.userId,
+          accountId: accId,
+          currency: account.baseCurrency,
+          // Precondition: only act if balance is genuinely negative right now.
+          $expr: { $lt: [{ $toDouble: '$balance' }, 0] },
+        },
+        [{ $set: { balance: '0' } }],
+        { new: false } // return doc PRE-update so we can log the absorbed amount
+      );
+      if (floored) {
+        const absorbed = Math.abs(Number(floored.balance)).toFixed(2);
+        // Audit ledger row so reports show the broker-absorbed loss.
+        try {
+          await WalletLedger.create({
+            walletId: floored._id,
+            userId: account.userId,
+            accountId: accId,
+            type: 'ADJUSTMENT',
+            currency: account.baseCurrency,
+            amount: '+' + absorbed,
+            balanceAfter: '0',
+            referenceType: 'NEGATIVE_BALANCE_PROTECTION',
+            note: `Broker absorbed ${absorbed} ${account.baseCurrency} (negative balance protection)`,
+          });
+        } catch (lErr) {
+          console.warn('[Worker] negative-balance ledger insert failed:', lErr.message);
+        }
+        console.log(
+          `[Worker] Negative balance protection: zeroed account ${account.accountNumber}, broker absorbed ${absorbed}`
+        );
+      }
+
+      await MarginCall.create({
+        userId: account.userId,
+        accountId: accId,
+        type: 'NEGATIVE_BALANCE',
+        marginLevel: metrics.marginLevel,
+        equity: metrics.equity,
+        usedMargin: metrics.usedMargin,
+        actionTaken: 'BALANCE_RESET',
+        closedPositionIds: closedIds,
+      });
+      notifyUser(String(account.userId), 'notifications', {
+        type: 'NEGATIVE_BALANCE_PROTECTION',
+        accountId: String(accId),
+        message: 'All positions closed; account balance reset to zero.',
+      });
+    }
+  }
+};
+
+/**
+ * Auto mode-switching for instruments (doc §4.4).
+ * Per-instrument autoSwitchRules:
+ *   - internalWhenMarketClosed: switch to INTERNAL when outside tradingHours
+ *   - internalVolumeThreshold: switch to INTERNAL when 24h internal volume crosses threshold
+ *   - externalVolatilityThresholdPct: switch to EXTERNAL when 5min price change exceeds %
+ *
+ * Decisions are mutually exclusive (volatility wins over volume wins over hours).
+ * Only flips the mode if it would actually change to avoid noisy DB writes.
+ */
+const checkAutoModeSwitch = async () => {
+  const instruments = await Instrument.find({
+    isActive: true,
+    'autoSwitchRules.enabled': true,
+  });
+  if (!instruments.length) return;
+
+  const now = new Date();
+  for (const inst of instruments) {
+    let targetMode = inst.mode;
+    let reason = null;
+
+    // Rule 1 (highest priority): volatility-based switch to EXTERNAL
+    if (inst.autoSwitchRules.externalVolatilityThresholdPct != null) {
+      const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000);
+      const recent = await Trade.find({ symbol: inst.symbol, executedAt: { $gte: fiveMinAgo } })
+        .sort({ executedAt: 1 })
+        .lean();
+      if (recent.length >= 2) {
+        const first = Number(recent[0].price);
+        const last = Number(recent[recent.length - 1].price);
+        if (first > 0) {
+          const pctChange = Math.abs(((last - first) / first) * 100);
+          if (pctChange >= inst.autoSwitchRules.externalVolatilityThresholdPct) {
+            targetMode = 'EXTERNAL';
+            reason = `volatility ${pctChange.toFixed(2)}% >= threshold`;
+          }
+        }
+      }
+    }
+
+    // Rule 2: liquidity-based graduation Hybrid -> Internal
+    if (!reason && inst.autoSwitchRules.internalVolumeThreshold) {
+      const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      const trades = await Trade.find({ symbol: inst.symbol, routing: 'INTERNAL', executedAt: { $gte: dayAgo } }).lean();
+      let totalVolume = 0;
+      for (const t of trades) totalVolume += Number(t.quantity);
+      if (totalVolume >= Number(inst.autoSwitchRules.internalVolumeThreshold)) {
+        targetMode = 'INTERNAL';
+        reason = `24h internal volume ${totalVolume.toFixed(2)} >= threshold`;
+      }
+    }
+
+    // Rule 3: market-hours fallback (lowest priority)
+    if (!reason && inst.autoSwitchRules.internalWhenMarketClosed && inst.tradingHours) {
+      const day = now.getUTCDay();
+      const utcHm = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}`;
+      const inDay = !inst.tradingHours.days || inst.tradingHours.days.includes(day);
+      const start = inst.tradingHours.start;
+      const end = inst.tradingHours.end;
+      // Handle windows that wrap midnight (e.g. start='22:00', end='06:00')
+      const inWindow = start <= end
+        ? utcHm >= start && utcHm <= end
+        : utcHm >= start || utcHm <= end;
+      const marketOpen = inDay && inWindow;
+      if (!marketOpen) {
+        targetMode = 'INTERNAL';
+        reason = 'external market closed';
+      }
+    }
+
+    // Apply if changed
+    if (targetMode !== inst.mode) {
+      console.log(`[Worker] Auto mode-switch ${inst.symbol}: ${inst.mode} -> ${targetMode} (${reason})`);
+      inst.mode = targetMode;
+      // Safety: if switching to INTERNAL, force-disable B-book
+      if (targetMode === 'INTERNAL' && inst.bBookEnabled) {
+        inst.bBookEnabled = false;
+      }
+      await inst.save();
+    }
+  }
+};
+
+/**
+ * OCO sibling cancellation (doc Phase 8).
+ * For every order group: if any leg is FILLED, cancel all sibling legs that are still PENDING.
+ * If any leg is CANCELLED by user/admin, also cancel siblings (so the group always exits cleanly).
+ */
+const processOcoGroups = async () => {
+  const PriceAlert = require('../models/PriceAlert'); // (loaded once for this tick block)
+  // Find recently completed orders that have an ocoGroupId
+  const completedSinceLast = await Order.find({
+    ocoGroupId: { $ne: null },
+    status: { $in: [ORDER_STATUS.FILLED, ORDER_STATUS.CANCELLED, ORDER_STATUS.REJECTED] },
+    updatedAt: { $gte: new Date(Date.now() - 30 * 1000) }, // last 30s
+  }).select('ocoGroupId _id').lean();
+
+  const groups = new Set(completedSinceLast.map((o) => `${o.ocoGroupId}|${o._id}`));
+  const seenGroups = new Set();
+
+  for (const key of groups) {
+    const [ocoGroupId, completedId] = key.split('|');
+    if (seenGroups.has(ocoGroupId)) continue;
+    seenGroups.add(ocoGroupId);
+
+    const siblings = await Order.find({
+      ocoGroupId,
+      _id: { $ne: completedId },
+      status: ORDER_STATUS.PENDING,
+    });
+    for (const sib of siblings) {
+      try {
+        await matchingEngine.cancel(sib);
+        notifyUser(String(sib.userId), 'orders', {
+          event: 'OCO_CANCELLED',
+          orderId: String(sib._id),
+          symbol: sib.symbol,
+        });
+      } catch (e) {
+        console.error('[Worker] OCO sibling cancel failed:', e.message);
+      }
+    }
+  }
+};
+
+/**
+ * Trailing stop loss update.
+ * For each open position with trailingDistance:
+ *   1. Update high-watermark when price moves favorably
+ *   2. Compute effective SL = watermark ± distance
+ *   3. If price has retraced past effective SL, close position
+ */
+const updateTrailingStops = async () => {
+  const positions = await Position.find({
+    status: POSITION_STATUS.OPEN,
+    trailingDistance: { $ne: null },
+  });
+  for (const pos of positions) {
+    const inst = await Instrument.findById(pos.instrumentId).lean();
+    if (!inst || !inst.lastPrice) continue;
+    const price = inst.lastPrice;
+
+    // Update watermark and check exit
+    let watermark = pos.trailingHighWatermark || pos.entryPrice;
+    let effectiveSl;
+    let triggered = false;
+    if (pos.side === 'BUY') {
+      // For longs: watermark is highest seen price; SL trails behind
+      if (gt(price, watermark)) watermark = price;
+      effectiveSl = sub(watermark, pos.trailingDistance);
+      if (lte(price, effectiveSl)) triggered = true;
+    } else {
+      if (lt(price, watermark)) watermark = price;
+      effectiveSl = add(watermark, pos.trailingDistance);
+      if (gte(price, effectiveSl)) triggered = true;
+    }
+
+    // Only persist the watermark when it actually moved — pre-fix every
+    // tick wrote N positions to the DB regardless of whether anything
+    // changed (5s × N positions = a lot of useless write traffic).
+    const prevWatermark = pos.trailingHighWatermark;
+    if (String(prevWatermark) !== String(watermark)) {
+      pos.trailingHighWatermark = watermark;
+      await pos.save();
+    }
+
+    if (triggered) {
+      // Atomic claim — same idempotency contract as manual close + SL/TP.
+      const claimed = await Position.findOneAndUpdate(
+        { _id: pos._id, status: POSITION_STATUS.OPEN, settled: { $ne: true } },
+        { $set: { status: POSITION_STATUS.CLOSING, closeReason: 'TRAILING_STOP' } },
+        { new: true }
+      );
+      if (!claimed) continue;
+
+      const routingService = require('./routingService');
+      const oppositeSide = pos.side === 'BUY' ? 'SELL' : 'BUY';
+      const routing = await routingService.decideRouting({
+        userId: pos.userId,
+        instrument: inst,
+        order: { quantity: pos.quantity, side: oppositeSide },
+      });
+      const closingOrder = await Order.create({
+        userId: pos.userId,
+        accountId: pos.accountId,
+        instrumentId: pos.instrumentId,
+        symbol: pos.symbol,
+        side: oppositeSide,
+        type: 'MARKET',
+        quantity: pos.quantity,
+        leverage: pos.leverage,
+        status: 'PENDING',
+        routing,
+        closeOnly: true,
+      });
+      try {
+        await matchingEngine.submit(closingOrder);
+        notifyUser(String(pos.userId), 'positions', {
+          event: 'TRAILING_STOP_HIT',
+          positionId: String(pos._id),
+          symbol: pos.symbol,
+          price,
+        });
+      } catch (e) {
+        // Release claim so next tick can retry.
+        await Position.updateOne(
+          { _id: pos._id, status: POSITION_STATUS.CLOSING, settled: { $ne: true } },
+          { $set: { status: POSITION_STATUS.OPEN } }
+        );
+        console.error('[Worker] Trailing stop close failed:', e.message);
+      }
+    }
+  }
+};
+
+/**
+ * Price alert check (doc §7.14).
+ * For each active alert, compare instrument's lastPrice against target.
+ * If triggered: notify user, send email, mark inactive (or re-arm if repeatable).
+ */
+const checkPriceAlerts = async () => {
+  const PriceAlert = require('../models/PriceAlert');
+  const alerts = await PriceAlert.find({ isActive: true }).limit(500);
+  if (!alerts.length) return;
+
+  // Cache last prices per symbol for the tick
+  const priceCache = new Map();
+  for (const alert of alerts) {
+    let price = priceCache.get(alert.symbol);
+    if (price == null) {
+      const inst = await Instrument.findOne({ symbol: alert.symbol }).select('lastPrice').lean();
+      price = inst?.lastPrice;
+      priceCache.set(alert.symbol, price);
+    }
+    if (!price) continue;
+
+    const triggered =
+      (alert.direction === 'ABOVE' && gte(price, alert.targetPrice)) ||
+      (alert.direction === 'BELOW' && lte(price, alert.targetPrice));
+
+    if (triggered) {
+      alert.triggeredAt = new Date();
+      alert.triggeredPrice = String(price);
+      if (!alert.repeatable) alert.isActive = false;
+      await alert.save();
+
+      notifyUser(String(alert.userId), 'notifications', {
+        type: 'PRICE_ALERT',
+        symbol: alert.symbol,
+        direction: alert.direction,
+        targetPrice: alert.targetPrice,
+        currentPrice: String(price),
+      });
+
+      try {
+        const User = require('../models/User');
+        const userDoc = await User.findById(alert.userId).select('email').lean();
+        if (userDoc) {
+          const emailSvc = require('./emailService');
+          await emailSvc.sendPriceAlert({
+            to: userDoc.email,
+            symbol: alert.symbol,
+            direction: alert.direction,
+            targetPrice: alert.targetPrice,
+            currentPrice: String(price),
+          });
+        }
+      } catch (e) { /* non-fatal */ }
+    }
+  }
+};
+
+const tick = async () => {
+  if (running) return;
+  running = true;
+  try {
+    await triggerStopOrders();
+    await checkSlTp();
+    await updateTrailingStops();
+    await processOcoGroups();
+    await checkMarginAndStopOut();
+    await checkNegativeBalanceProtection();
+    await checkPriceAlerts();
+    await checkAutoModeSwitch();
+  } catch (e) {
+    console.error('[Worker] tick error:', e.message);
+  } finally {
+    running = false;
+  }
+};
+
+const start = (intervalMs = 5000) => {
+  console.log('[Worker] Background worker started (STOP, SL/TP, trailing, OCO, margin, neg-balance, alerts, auto-switch every 5s)');
+  setInterval(tick, intervalMs);
+};
+
+module.exports = { start, setBroadcaster };
