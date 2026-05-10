@@ -124,87 +124,127 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6 max-w-[1600px]">
-      {/* Top header row: welcome + pending review + live balance */}
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-3xl sm:text-4xl font-bold text-white">
-            Welcome back, <span className="text-white">{fullName}</span>
-          </h1>
-          <p className="text-sm text-gray-400 mt-2">Here is your portfolio overview for today.</p>
-        </div>
+      {/* ─── Hero card ─────────────────────────────────────────────────
+          Single prominent card at the top: welcome on the left, big live
+          equity figure on the right, with a subtle radial yellow glow
+          spilling from the top-right corner so the brand color carries
+          through without dominating the page. KYC chip sits inline as a
+          status indicator instead of taking a separate card slot. */}
+      {(() => {
+        const eq = fmtMoneyDual(equity, primaryCur, fxRate);
+        const ur = fmtMoneyDual(unrealized, primaryCur, fxRate, true);
+        const bal = fmtMoneyDual(liveBalance, primaryCur, fxRate);
+        const today = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short' });
+        return (
+          <div className="relative overflow-hidden rounded-2xl border border-border-dark bg-bg-card p-6 sm:p-8">
+            {/* Decorative glow + grid pattern — pure CSS, no images */}
+            <div
+              className="absolute inset-0 pointer-events-none opacity-50"
+              style={{ background: 'radial-gradient(circle at 100% 0%, rgba(252, 213, 53, 0.12), transparent 55%)' }}
+            />
+            <div
+              className="absolute inset-0 pointer-events-none opacity-[0.03]"
+              style={{
+                backgroundImage:
+                  'linear-gradient(rgba(255,255,255,0.4) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.4) 1px, transparent 1px)',
+                backgroundSize: '32px 32px',
+              }}
+            />
 
-        <div className="flex items-center gap-3">
-          {data.user.kycStatus === 'PENDING' && (
-            <div className="flex items-center gap-2 px-4 py-3 rounded-lg border border-warn/40 bg-warn/5">
-              <ShieldIcon />
-              <span className="text-warn font-medium text-sm">Pending Review</span>
-            </div>
-          )}
-          {data.user.kycStatus === 'APPROVED' && (
-            <div className="flex items-center gap-2 px-4 py-3 rounded-lg border border-bull/40 bg-bull/5">
-              <CheckIcon />
-              <span className="text-bull font-medium text-sm">Verified</span>
-            </div>
-          )}
-
-          {/* Header card now leads with EQUITY (balance + unrealized PnL of
-              open positions) — this is the number traders watch move tick-by-
-              tick. Wallet balance alone only changes on deposit/withdraw or
-              when a position closes (realized PnL), which made the headline
-              feel "stuck" while a position was open. Balance is shown below
-              as a secondary line so the user can still see settled funds. */}
-          {(() => {
-            const eq = fmtMoneyDual(equity, primaryCur, fxRate);
-            const ur = fmtMoneyDual(unrealized, primaryCur, fxRate, true);
-            const bal = fmtMoneyDual(liveBalance, primaryCur, fxRate);
-            return (
-              <div className="flex items-center gap-3 px-4 py-3 rounded-lg border border-border-dark bg-bg-card min-w-[240px]">
-                <div className="w-10 h-10 rounded-md bg-bg-hover flex items-center justify-center text-teal-accent">
-                  <WalletIcon />
+            <div className="relative flex items-start justify-between gap-6 flex-wrap">
+              {/* Left — welcome */}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.25em] font-bold text-primary-500 mb-3">
+                  <span className="w-1.5 h-1.5 rounded-full bg-bull animate-pulse" />
+                  Live · {today}
                 </div>
-                <div className="text-right flex-1">
-                  <div className="text-[11px] uppercase tracking-wider text-gray-500">Equity (Live)</div>
-                  <div className="text-2xl font-bold text-white">{eq.primary}</div>
-                  {eq.secondary && (
-                    <div className="text-[11px] font-mono text-gray-500">{eq.secondary}</div>
+                <h1 className="text-3xl sm:text-4xl font-bold text-white">
+                  Welcome back, <span className="text-primary-500">{fullName}</span>
+                </h1>
+                <p className="text-sm text-text-secondary mt-2 max-w-xl">
+                  Here's your portfolio at a glance — equity, P&L, and recent activity all in one view.
+                </p>
+
+                {/* KYC inline chip */}
+                <div className="mt-4 flex items-center gap-2">
+                  {data.user.kycStatus === 'APPROVED' && (
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-bull/15 text-bull border border-bull/30">
+                      <CheckIcon /> KYC Verified
+                    </span>
                   )}
-                  {Math.abs(unrealized) > 0.005 && (
-                    <div className={`text-[11px] font-mono mt-0.5 ${unrealized >= 0 ? 'text-bull' : 'text-bear'}`}>
-                      {ur.primary} open
-                    </div>
+                  {data.user.kycStatus === 'PENDING' && (
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-warn/15 text-warn border border-warn/30">
+                      <ShieldIcon /> KYC Under Review
+                    </span>
                   )}
-                  <div className="text-[10px] text-gray-500 mt-0.5">
-                    Bal {bal.primary}
-                    {bal.secondary && <span className="ml-1">({bal.secondary})</span>}
-                    {Object.keys(liveByCur).length > 1 && (
-                      <> · {Object.entries(liveByCur)
-                        .filter(([c]) => c !== primaryCur)
-                        .map(([c, t]) => `${currencySymbol(c)}${Math.round(t.balance).toLocaleString()}`)
-                        .join(' · ')}</>
-                    )}
-                  </div>
+                  {data.user.kycStatus !== 'APPROVED' && data.user.kycStatus !== 'PENDING' && (
+                    <Link
+                      to="/profile"
+                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-bear/10 text-bear border border-bear/30 hover:bg-bear/20 transition-colors"
+                    >
+                      <ShieldIcon /> Verify Identity
+                    </Link>
+                  )}
+                  <Link
+                    to="/trade"
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-primary-500/10 text-primary-500 border border-primary-500/30 hover:bg-primary-500/20 transition-colors"
+                  >
+                    <ChartIcon /> Open Chart
+                  </Link>
                 </div>
               </div>
-            );
-          })()}
-        </div>
-      </div>
 
-      {/* KYC banner */}
-      {kycPending && (
-        <div className="rounded-xl bg-teal-accent text-bg-dark px-6 py-5 flex items-center justify-between flex-wrap gap-4">
-          <div className="flex items-center gap-5">
-            <ProgressRing step={kycStep} total={2} />
+              {/* Right — big equity readout */}
+              <div className="text-right shrink-0">
+                <div className="text-[10px] uppercase tracking-[0.25em] text-text-muted font-bold mb-2">
+                  Equity (Live)
+                </div>
+                <div className="text-4xl sm:text-5xl font-bold text-white font-mono leading-none">
+                  {eq.primary}
+                </div>
+                {eq.secondary && (
+                  <div className="text-sm font-mono text-text-muted mt-1.5">{eq.secondary}</div>
+                )}
+                {Math.abs(unrealized) > 0.005 && (
+                  <div className={`inline-flex items-center gap-1 mt-2 text-sm font-mono ${unrealized >= 0 ? 'text-bull' : 'text-bear'}`}>
+                    <span>{unrealized >= 0 ? '↑' : '↓'}</span>
+                    <span>{ur.primary}</span>
+                    <span className="text-text-muted text-xs">unrealized</span>
+                  </div>
+                )}
+                <div className="text-[11px] font-mono text-text-muted mt-2 border-t border-border-subtle pt-2">
+                  Balance <span className="text-text-secondary">{bal.primary}</span>
+                  {Object.keys(liveByCur).length > 1 && (
+                    <span> · {Object.entries(liveByCur)
+                      .filter(([c]) => c !== primaryCur)
+                      .map(([c, t]) => `${currencySymbol(c)}${Math.round(t.balance).toLocaleString()}`)
+                      .join(' · ')}</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* KYC banner — refined, only when truly not started */}
+      {kycPending && data.user.kycStatus !== 'PENDING' && (
+        <div className="relative overflow-hidden rounded-xl border border-primary-500/40 bg-gradient-to-r from-primary-500/10 to-transparent p-5 flex items-center justify-between flex-wrap gap-4">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-lg bg-primary-500 flex items-center justify-center text-bg-dark">
+              <ShieldIcon />
+            </div>
             <div>
-              <div className="text-xl font-bold">Complete Your Identity Verification</div>
-              <div className="text-sm opacity-80 mt-1 max-w-2xl">
-                Unlock higher transaction limits, gain access to new payment methods, and enable additional trading accounts
+              <div className="text-base font-bold text-white">Complete Identity Verification</div>
+              <div className="text-xs text-text-secondary mt-0.5 max-w-2xl">
+                Unlock higher transaction limits, new payment methods, and additional trading accounts.
               </div>
             </div>
           </div>
           <Link
             to="/profile"
-            className="inline-flex items-center gap-2 bg-white text-bg-dark px-5 py-2.5 rounded-md font-semibold hover:bg-gray-100"
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg font-semibold text-sm text-bg-dark transition-transform hover:scale-105"
+            style={{ background: 'linear-gradient(135deg, #FFE74D 0%, #FCD535 100%)' }}
           >
             <CheckCircleIcon />
             Verify Now
@@ -212,30 +252,24 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Hero stats — the four numbers a trader actually checks first.
-          Each money card shows INR primary + USD secondary (small gray). */}
+      {/* Hero stats — four key metrics. Equity already lives in the hero
+          card above, so this row covers complementary numbers: P&L today,
+          P&L lifetime, win rate, and total live trades. Each tile gets an
+          icon pill keyed to its tone. */}
       {(() => {
-        const heroEq = fmtMoneyDual(equity, primaryCur, fxRate);
-        const heroUr = fmtMoneyDual(unrealized, primaryCur, fxRate, true);
         const heroToday = fmtMoneyDual(todayPnl, primaryCur, fxRate, true);
         const heroLife = fmtMoneyDual(lifetimePnl, primaryCur, fxRate, true);
         return (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <HeroStat
-              label="Equity"
-              value={heroEq.primary}
-              secondary={heroEq.secondary}
-              subline={`Unrealized ${heroUr.primary}`}
-              sublineColor={unrealized >= 0 ? 'text-bull' : 'text-bear'}
-              tone="primary"
-            />
-            <HeroStat
+              icon={<TrendingUpIcon />}
               label="P&L Today"
               value={heroToday.primary}
               secondary={heroToday.secondary}
               tone={todayPnl > 0 ? 'bull' : todayPnl < 0 ? 'bear' : 'neutral'}
             />
             <HeroStat
+              icon={<PieChartIcon />}
               label="Win Rate"
               value={winRate == null ? '—' : `${winRate.toFixed(1)}%`}
               subline={
@@ -246,6 +280,14 @@ export default function Dashboard() {
               tone={winRate == null ? 'neutral' : winRate >= 50 ? 'bull' : 'bear'}
             />
             <HeroStat
+              icon={<ActivityIcon />}
+              label="Trades (Live)"
+              value={data.trades.totalLive}
+              subline={`${data.trades.totalLiveToday} today · ${data.trades.openLive} open`}
+              tone="primary"
+            />
+            <HeroStat
+              icon={<TrendingUpIcon />}
               label="P&L (Lifetime)"
               value={heroLife.primary}
               secondary={heroLife.secondary}
@@ -255,10 +297,17 @@ export default function Dashboard() {
         );
       })()}
 
-      {/* Performance Overview */}
-      <div>
-        <h2 className="text-2xl font-bold text-white">Performance Overview</h2>
-        <p className="text-sm text-gray-400 mt-1">Real-time metrics, account analytics, and trading activity breakdown.</p>
+      {/* Performance Overview — small heading with a horizontal accent rule
+          so the section break is visible without taking a full row of space. */}
+      <div className="flex items-end justify-between gap-4 pt-2">
+        <div>
+          <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.25em] text-primary-500 font-bold mb-1">
+            <span className="w-6 h-px bg-primary-500" />
+            Analytics
+          </div>
+          <h2 className="text-2xl font-bold text-white">Performance Overview</h2>
+          <p className="text-sm text-text-secondary mt-1">Real-time metrics, account analytics, and trading activity breakdown.</p>
+        </div>
       </div>
 
       {/* Metric cards grid */}
@@ -323,31 +372,48 @@ export default function Dashboard() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Recent activity feed — last 10 fills */}
         <div className="lg:col-span-2 card overflow-hidden">
-          <div className="px-5 py-3 border-b border-border-dark flex items-center justify-between">
-            <h3 className="text-white font-semibold">Recent Activity</h3>
-            <Link to="/orders" className="text-xs text-teal-accent hover:underline">View all →</Link>
+          <div className="px-5 py-3.5 border-b border-border-dark flex items-center justify-between bg-gradient-to-r from-bg-card to-bg-card/50">
+            <div className="flex items-center gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-bull animate-pulse" />
+              <h3 className="text-white font-semibold">Recent Activity</h3>
+            </div>
+            <Link to="/orders" className="text-xs text-primary-500 hover:underline">View all →</Link>
           </div>
           {recentActivity.length === 0 ? (
-            <div className="p-8 text-center text-sm text-gray-500">
-              No trades yet. Place your first order from the Trade page.
+            <div className="p-10 text-center">
+              <div className="w-12 h-12 mx-auto rounded-full bg-bg-hover flex items-center justify-center text-text-muted mb-3">
+                <ChartIcon />
+              </div>
+              <div className="text-sm text-text-secondary">No trades yet</div>
+              <div className="text-xs text-text-muted mt-1">Your trade history will appear here.</div>
+              <Link to="/trade" className="inline-flex mt-4 btn-primary text-xs px-4 py-2">
+                Start Trading
+              </Link>
             </div>
           ) : (
             <div className="divide-y divide-border-subtle">
               {recentActivity.map((t) => (
-                <div key={t.id} className="px-5 py-3 flex items-center justify-between hover:bg-bg-hover transition-colors">
+                <div key={t.id} className="px-5 py-3.5 flex items-center justify-between hover:bg-bg-hover transition-colors group">
                   <div className="flex items-center gap-3 min-w-0">
-                    <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${
-                      t.side === 'BUY' ? 'bg-bull/15 text-bull' : 'bg-bear/15 text-bear'
+                    <span className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold border transition-transform group-hover:scale-110 ${
+                      t.side === 'BUY'
+                        ? 'bg-bull/15 text-bull border-bull/30'
+                        : 'bg-bear/15 text-bear border-bear/30'
                     }`}>
-                      {t.side}
+                      {t.side === 'BUY' ? '↑' : '↓'}
                     </span>
-                    <span className="text-white font-medium">{t.symbol}</span>
-                    <span className="text-xs text-gray-500 font-mono">
-                      {Number(t.quantity).toFixed(4)} @ {Number(t.price).toFixed(2)}
-                    </span>
+                    <div className="min-w-0">
+                      <div className="text-sm text-white font-semibold">{t.symbol}</div>
+                      <div className="text-[11px] text-text-muted font-mono">
+                        {Number(t.quantity).toFixed(4)} @ {Number(t.price).toFixed(2)}
+                      </div>
+                    </div>
                   </div>
-                  <div className="text-xs text-gray-500 ml-3 whitespace-nowrap">
-                    {timeAgo(t.executedAt)}
+                  <div className="text-right">
+                    <div className={`text-[10px] uppercase font-bold tracking-wider ${t.side === 'BUY' ? 'text-bull' : 'text-bear'}`}>
+                      {t.side}
+                    </div>
+                    <div className="text-[11px] text-text-muted">{timeAgo(t.executedAt)}</div>
                   </div>
                 </div>
               ))}
@@ -355,29 +421,11 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* Quick actions — stacked on the right column */}
+        {/* Quick actions — premium hover with yellow glow + arrow slide */}
         <div className="space-y-3">
-          <Link to="/trade" className="card p-4 hover:border-teal-accent transition-colors flex items-center gap-3">
-            <div className="text-teal-accent"><ChartIcon /></div>
-            <div className="flex-1">
-              <div className="text-white font-semibold text-sm">Start Trading</div>
-              <div className="text-[11px] text-gray-400">Open new positions</div>
-            </div>
-          </Link>
-          <Link to="/wallet" className="card p-4 hover:border-teal-accent transition-colors flex items-center gap-3">
-            <div className="text-teal-accent"><WalletIcon /></div>
-            <div className="flex-1">
-              <div className="text-white font-semibold text-sm">Manage Funds</div>
-              <div className="text-[11px] text-gray-400">Deposit / Withdraw</div>
-            </div>
-          </Link>
-          <Link to="/accounts" className="card p-4 hover:border-teal-accent transition-colors flex items-center gap-3">
-            <div className="text-teal-accent"><BriefcaseIcon /></div>
-            <div className="flex-1">
-              <div className="text-white font-semibold text-sm">Trading Accounts</div>
-              <div className="text-[11px] text-gray-400">Leverage, mode, history</div>
-            </div>
-          </Link>
+          <QuickAction to="/trade" icon={<ChartIcon />} title="Start Trading" desc="Open new positions" tone="primary" />
+          <QuickAction to="/funds" icon={<WalletIcon />} title="Manage Funds" desc="Deposit, withdraw, transfer" tone="bull" />
+          <QuickAction to="/accounts" icon={<BriefcaseIcon />} title="Trading Accounts" desc="Leverage, mode, history" tone="info" />
         </div>
       </div>
     </div>
@@ -399,25 +447,39 @@ function timeAgo(iso) {
   return `${d}d ago`;
 }
 
-function HeroStat({ label, value, secondary, subline, sublineColor = 'text-gray-500', tone = 'neutral' }) {
-  // Tone drives the accent color of the value + the left border. Keeps the
-  // grid coherent visually while still letting bull/bear stand out.
-  const valueClass =
-    tone === 'bull' ? 'text-bull' :
-    tone === 'bear' ? 'text-bear' :
-    tone === 'primary' ? 'text-white' :
-    'text-white';
-  const accent =
-    tone === 'bull' ? 'border-l-bull' :
-    tone === 'bear' ? 'border-l-bear' :
-    tone === 'primary' ? 'border-l-teal-accent' :
-    'border-l-border-dark';
+function HeroStat({ icon, label, value, secondary, subline, sublineColor = 'text-text-muted', tone = 'neutral' }) {
+  // Each tone gets a coordinated accent palette: gradient pill behind the
+  // icon, value color, and a subtle glow ring on hover.
+  const palette =
+    tone === 'bull' ? {
+      iconBg: 'bg-bull/10 text-bull border-bull/30',
+      valueClass: 'text-bull',
+      accent: 'before:bg-bull/40',
+    } :
+    tone === 'bear' ? {
+      iconBg: 'bg-bear/10 text-bear border-bear/30',
+      valueClass: 'text-bear',
+      accent: 'before:bg-bear/40',
+    } :
+    tone === 'primary' ? {
+      iconBg: 'bg-primary-500/10 text-primary-500 border-primary-500/30',
+      valueClass: 'text-white',
+      accent: 'before:bg-primary-500/40',
+    } : {
+      iconBg: 'bg-bg-hover text-text-secondary border-border-dark',
+      valueClass: 'text-white',
+      accent: 'before:bg-border-dark',
+    };
   return (
-    <div className={`card p-5 border-l-4 ${accent}`}>
-      <div className="text-[10px] uppercase tracking-wider text-gray-500">{label}</div>
-      <div className={`text-2xl font-bold mt-2 font-mono ${valueClass}`}>{value}</div>
-      {secondary && <div className="text-[11px] mt-0.5 font-mono text-gray-500">{secondary}</div>}
-      {subline && <div className={`text-[11px] mt-1 ${sublineColor}`}>{subline}</div>}
+    <div className={`relative card p-5 overflow-hidden transition-all hover:border-border-accent/50 group
+                     before:absolute before:left-0 before:top-0 before:h-full before:w-1 ${palette.accent}`}>
+      <div className={`w-10 h-10 rounded-lg flex items-center justify-center border ${palette.iconBg} mb-3 transition-transform group-hover:scale-110`}>
+        {icon}
+      </div>
+      <div className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold">{label}</div>
+      <div className={`text-2xl font-bold mt-1 font-mono ${palette.valueClass}`}>{value}</div>
+      {secondary && <div className="text-[11px] mt-0.5 font-mono text-text-muted">{secondary}</div>}
+      {subline && <div className={`text-[11px] mt-1.5 ${sublineColor}`}>{subline}</div>}
     </div>
   );
 }
@@ -426,20 +488,54 @@ function HeroStat({ label, value, secondary, subline, sublineColor = 'text-gray-
 
 function MetricCard({ icon, iconBg, value, today, label }) {
   return (
-    <div className="card p-5 relative overflow-hidden">
-      <div className="flex items-start justify-between mb-6">
-        <div className={`w-11 h-11 rounded-lg flex items-center justify-center ${iconBg}`}>
-          {icon}
+    <div className="card p-5 relative overflow-hidden transition-all hover:border-border-accent/40 hover:-translate-y-0.5 group">
+      {/* Subtle radial glow on hover, anchored top-right so multiple
+          adjacent cards don't compete visually. */}
+      <div
+        className="absolute inset-0 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity"
+        style={{ background: 'radial-gradient(circle at 100% 0%, rgba(252, 213, 53, 0.08), transparent 60%)' }}
+      />
+      <div className="relative">
+        <div className="flex items-start justify-between mb-5">
+          <div className={`w-11 h-11 rounded-lg flex items-center justify-center transition-transform group-hover:scale-110 ${iconBg}`}>
+            {icon}
+          </div>
+          {today != null && (
+            <span className="text-[11px] text-text-secondary bg-bg-hover px-2.5 py-1 rounded-full border border-border-subtle font-mono">
+              +{today} today
+            </span>
+          )}
         </div>
-        {today != null && (
-          <span className="text-[11px] text-gray-400 bg-bg-hover px-2.5 py-1 rounded-full border border-border-subtle">
-            {today} Today
-          </span>
-        )}
+        <div className="text-3xl sm:text-4xl font-bold text-white mb-1 font-mono">{value}</div>
+        <div className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold">{label}</div>
       </div>
-      <div className="text-4xl font-bold text-white mb-1">{value}</div>
-      <div className="text-xs uppercase tracking-wider text-gray-500">{label}</div>
     </div>
+  );
+}
+
+/** Quick-action card on the right rail. Tone drives the icon pill color
+ *  + the arrow that slides in on hover so each tile has visual identity. */
+function QuickAction({ to, icon, title, desc, tone = 'primary' }) {
+  const toneCls =
+    tone === 'bull' ? 'bg-bull/10 text-bull border-bull/30 group-hover:bg-bull/20' :
+    tone === 'info' ? 'bg-info/10 text-info border-info/30 group-hover:bg-info/20' :
+    'bg-primary-500/10 text-primary-500 border-primary-500/30 group-hover:bg-primary-500/20';
+  return (
+    <Link
+      to={to}
+      className="card p-4 hover:border-border-accent/60 transition-all flex items-center gap-3 group hover:-translate-y-0.5"
+    >
+      <div className={`w-11 h-11 rounded-lg flex items-center justify-center border transition-colors ${toneCls}`}>
+        {icon}
+      </div>
+      <div className="flex-1 min-w-0">
+        <div className="text-white font-semibold text-sm">{title}</div>
+        <div className="text-[11px] text-text-muted">{desc}</div>
+      </div>
+      <span className="text-text-muted text-xl opacity-0 group-hover:opacity-100 group-hover:text-primary-500 transition-all -translate-x-2 group-hover:translate-x-0">
+        →
+      </span>
+    </Link>
   );
 }
 

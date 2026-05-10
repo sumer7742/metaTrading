@@ -3,6 +3,36 @@ import { createChart } from 'lightweight-charts';
 import { api } from '../services/api';
 import { wsClient } from '../services/ws';
 import { ema, rsi, macd } from '../utils/indicators';
+import { useThemeStore } from '../store/theme';
+
+// Resolve a CSS-variable RGB triplet (e.g. "26 26 31") into an `rgb(...)`
+// string the chart library understands. Reads live, so each call returns the
+// CURRENT theme's value — important for re-applying on theme toggle.
+//
+// Comma-separated rgb(R, G, B) form is used because lightweight-charts'
+// color parser predates CSS Color Level 4 space-separated syntax — a value
+// like `rgb(15 15 18)` parses as black/transparent in some builds and
+// crashes the chart constructor with a vague error.
+const cssVar = (name, fallback) => {
+  if (typeof document === 'undefined') return fallback;
+  let v = '';
+  try {
+    v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  } catch (_) { /* document not ready, fall back */ }
+  if (!v) return fallback;
+  // If value is a triplet ("R G B"), convert to legacy comma form.
+  if (/^\d+\s+\d+\s+\d+$/.test(v)) {
+    return `rgb(${v.replace(/\s+/g, ', ')})`;
+  }
+  return v;
+};
+
+const chartPalette = () => ({
+  background: cssVar('--color-bg-card', '#1a2129'),
+  text: cssVar('--color-text-secondary', '#9ca3af'),
+  grid: cssVar('--color-border-subtle', '#232b35'),
+  border: cssVar('--color-border-dark', '#2a323d'),
+});
 
 const TF_OPTIONS = ['1m', '5m', '15m', '1h', '4h', '1d'];
 
@@ -43,26 +73,28 @@ export default function PriceChart({
 
   const [indicators, setIndicators] = useState(INDICATOR_DEFAULTS);
   const [candles, setCandles] = useState([]);
+  const theme = useThemeStore((s) => s.theme);
 
   // Initialize main chart once
   useEffect(() => {
     if (!containerRef.current) return;
+    const pal = chartPalette();
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
       height: 400,
-      layout: { background: { type: 'solid', color: '#1a2129' }, textColor: '#9ca3af' },
-      grid: { vertLines: { color: '#232b35' }, horzLines: { color: '#232b35' } },
+      layout: { background: { type: 'solid', color: pal.background }, textColor: pal.text },
+      grid: { vertLines: { color: pal.grid }, horzLines: { color: pal.grid } },
       // Wider bars + a small right-side margin so live candles don't hug the
       // edge. Default barSpacing is 6px which makes 500 candles look squished
       // on a normal-width chart; 10px gives a TradingView-like density.
       timeScale: {
         timeVisible: true,
         secondsVisible: false,
-        borderColor: '#2a323d',
+        borderColor: pal.border,
         barSpacing: 10,
         rightOffset: 8,
       },
-      rightPriceScale: { borderColor: '#2a323d' },
+      rightPriceScale: { borderColor: pal.border },
       crosshair: { mode: 1 },
     });
     const series = chart.addCandlestickSeries({
@@ -139,6 +171,32 @@ export default function PriceChart({
       priceLinesRef.current.clear();
     };
   }, []);
+
+  // Re-apply chart palette when the theme toggles. Without this, switching
+  // dark→light leaves the chart with a dark background while the rest of
+  // the app turns light. We also re-skin any sub-panel charts in flight
+  // (RSI/MACD) the same way.
+  useEffect(() => {
+    const pal = chartPalette();
+    try {
+      chartRef.current?.applyOptions({
+        layout: { background: { type: 'solid', color: pal.background }, textColor: pal.text },
+        grid: { vertLines: { color: pal.grid }, horzLines: { color: pal.grid } },
+        timeScale: { borderColor: pal.border },
+        rightPriceScale: { borderColor: pal.border },
+      });
+    } catch (_) { /* main chart not ready */ }
+    for (const sc of Object.values(subPanelChartsRef.current)) {
+      try {
+        sc.chart?.applyOptions({
+          layout: { background: { type: 'solid', color: pal.background }, textColor: pal.text },
+          grid: { vertLines: { color: pal.grid }, horzLines: { color: pal.grid } },
+          timeScale: { borderColor: pal.border },
+          rightPriceScale: { borderColor: pal.border },
+        });
+      } catch (_) { /* sub-panel disposed */ }
+    }
+  }, [theme]);
 
   // Match price-axis precision to the instrument so EURUSD shows 1.17852
   // instead of being rounded to 1.18, and BTC stays at 2 decimals.
@@ -326,13 +384,14 @@ export default function PriceChart({
     }
 
     if (!subPanelChartsRef.current.rsi) {
+      const pal = chartPalette();
       const chart = createChart(container, {
         width: container.clientWidth,
         height: 120,
-        layout: { background: { type: 'solid', color: '#1a2129' }, textColor: '#9ca3af' },
-        grid: { vertLines: { color: '#232b35' }, horzLines: { color: '#232b35' } },
-        timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#2a323d' },
-        rightPriceScale: { borderColor: '#2a323d' },
+        layout: { background: { type: 'solid', color: pal.background }, textColor: pal.text },
+        grid: { vertLines: { color: pal.grid }, horzLines: { color: pal.grid } },
+        timeScale: { timeVisible: true, secondsVisible: false, borderColor: pal.border },
+        rightPriceScale: { borderColor: pal.border },
       });
       const series = chart.addLineSeries({ color: '#8b5cf6', lineWidth: 1.5, title: 'RSI 14' });
       // Reference lines at 30 and 70
@@ -503,13 +562,14 @@ export default function PriceChart({
     }
 
     if (!subPanelChartsRef.current.macd) {
+      const pal = chartPalette();
       const chart = createChart(container, {
         width: container.clientWidth,
         height: 140,
-        layout: { background: { type: 'solid', color: '#1a2129' }, textColor: '#9ca3af' },
-        grid: { vertLines: { color: '#232b35' }, horzLines: { color: '#232b35' } },
-        timeScale: { timeVisible: true, secondsVisible: false, borderColor: '#2a323d' },
-        rightPriceScale: { borderColor: '#2a323d' },
+        layout: { background: { type: 'solid', color: pal.background }, textColor: pal.text },
+        grid: { vertLines: { color: pal.grid }, horzLines: { color: pal.grid } },
+        timeScale: { timeVisible: true, secondsVisible: false, borderColor: pal.border },
+        rightPriceScale: { borderColor: pal.border },
       });
       const histogram = chart.addHistogramSeries({ color: '#6b7280', title: 'Hist' });
       const macdLine = chart.addLineSeries({ color: '#2dd4bf', lineWidth: 1.5, title: 'MACD' });
@@ -533,10 +593,18 @@ export default function PriceChart({
 
   return (
     <div className="card overflow-hidden">
-      {/* Header — symbol, timeframes, indicator toggles */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border-dark flex-wrap gap-2">
-        <div className="text-sm text-gray-300 font-medium">{symbol}</div>
-        <div className="flex items-center gap-2 flex-wrap">
+      {/* Premium chart header — symbol pill on the left, indicator pills +
+          timeframe segmented control on the right. Gradient inset on the
+          bottom border so the header reads as "lifted" off the chart. */}
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-border-dark flex-wrap gap-2 bg-gradient-to-r from-bg-card to-bg-card/50">
+        <div className="flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-bull animate-pulse" />
+          <span className="text-sm font-bold text-white">{symbol}</span>
+          <span className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold ml-1">
+            {timeframe}
+          </span>
+        </div>
+        <div className="flex items-center gap-3 flex-wrap">
           {/* Indicator pills */}
           <div className="flex gap-1">
             <IndButton active={indicators.ema12} onClick={() => toggle('ema12')} color="#fbbf24">EMA 12</IndButton>
@@ -546,15 +614,23 @@ export default function PriceChart({
             <IndButton active={indicators.rsi} onClick={() => toggle('rsi')} color="#8b5cf6">RSI</IndButton>
             <IndButton active={indicators.macd} onClick={() => toggle('macd')} color="#2dd4bf">MACD</IndButton>
           </div>
-          {/* Timeframe selector */}
-          <div className="flex space-x-1 ml-2">
+          {/* Timeframe segmented control — single border-wrapped group with
+              an active pill that pops in yellow */}
+          <div className="flex items-center p-0.5 rounded-md border border-border-dark bg-bg-panel">
             {TF_OPTIONS.map((tf) => (
               <button
                 key={tf}
                 onClick={() => onTimeframeChange(tf)}
-                className={`text-xs px-2 py-1 rounded ${
-                  tf === timeframe ? 'bg-teal-accent text-bg-dark font-semibold' : 'text-gray-400 hover:bg-bg-hover'
+                className={`text-[11px] px-2.5 py-1 rounded transition-all ${
+                  tf === timeframe
+                    ? 'text-bg-dark font-bold shadow-md'
+                    : 'text-text-muted hover:text-text-primary'
                 }`}
+                style={
+                  tf === timeframe
+                    ? { background: 'linear-gradient(135deg, #FFE74D 0%, #FCD535 100%)' }
+                    : undefined
+                }
               >
                 {tf}
               </button>
@@ -569,7 +645,9 @@ export default function PriceChart({
       {/* RSI sub-panel */}
       {indicators.rsi && (
         <div className="border-t border-border-dark">
-          <div className="text-xs text-gray-500 px-3 py-1 bg-bg-dark">RSI (14)</div>
+          <div className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold px-4 py-1.5 bg-bg-panel/50 border-b border-border-subtle">
+            RSI <span className="text-text-secondary">(14)</span>
+          </div>
           <div ref={rsiContainerRef} className="w-full" />
         </div>
       )}
@@ -577,7 +655,9 @@ export default function PriceChart({
       {/* MACD sub-panel */}
       {indicators.macd && (
         <div className="border-t border-border-dark">
-          <div className="text-xs text-gray-500 px-3 py-1 bg-bg-dark">MACD (12, 26, 9)</div>
+          <div className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold px-4 py-1.5 bg-bg-panel/50 border-b border-border-subtle">
+            MACD <span className="text-text-secondary">(12, 26, 9)</span>
+          </div>
           <div ref={macdContainerRef} className="w-full" />
         </div>
       )}
@@ -589,12 +669,16 @@ function IndButton({ active, onClick, color, children }) {
   return (
     <button
       onClick={onClick}
-      className={`text-[10px] px-2 py-1 rounded border transition-colors ${
+      className={`text-[10px] px-2.5 py-1 rounded-md border transition-all ${
         active
-          ? 'border-transparent text-bg-dark font-semibold'
-          : 'border-border-dark text-gray-400 hover:text-white hover:bg-bg-hover'
+          ? 'border-transparent font-bold shadow-sm'
+          : 'border-border-dark text-text-muted hover:text-text-primary hover:bg-bg-hover'
       }`}
-      style={active ? { backgroundColor: color } : undefined}
+      style={
+        active
+          ? { backgroundColor: color, color: '#0F0F12' }
+          : undefined
+      }
     >
       {children}
     </button>

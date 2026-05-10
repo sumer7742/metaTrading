@@ -1,50 +1,54 @@
 /** @type {import('tailwindcss').Config} */
+// Colors below use the `rgb(var(--color-X) / <alpha-value>)` form so a single
+// stylesheet (index.css) can flip the entire palette between dark and light
+// themes without rewriting any component class. The `<alpha-value>` token is
+// substituted by Tailwind at compile time, which keeps utilities like
+// `bg-bg-card/50` working in both themes.
 export default {
   content: ['./index.html', './src/**/*.{js,jsx}'],
   theme: {
     extend: {
       colors: {
-        // Exness-style yellow as primary brand color
+        // Brand yellow stays the same in both themes.
         primary: {
           50: '#FFFCE5',
           100: '#FFF7B2',
           200: '#FFEF80',
           300: '#FFE74D',
           400: '#FFDE26',
-          500: '#FCD535',  // primary brand yellow (Exness signature)
+          500: '#FCD535',
           600: '#E6BF1F',
           700: '#B89815',
           800: '#8A720F',
           900: '#5C4C0A',
         },
-        // Backwards compatibility - teal-accent now points to yellow
         teal: {
           accent: '#FCD535',
           dark: '#8A720F',
         },
-        // Bull/bear (slightly punchier than before)
+        // Bull / bear / warn / info — same in both themes (colorblind-friendly,
+        // and they need to read consistently on charts regardless of mode).
         bull: '#00C853',
         bear: '#FF3D71',
         warn: '#FFA000',
         info: '#2196F3',
-        // Backgrounds (Exness uses very dark with subtle warmth)
+        // Theme-driven surfaces. Each resolves through a CSS variable.
         bg: {
-          dark: '#0F0F12',     // deep dark
-          card: '#1A1A1F',     // slightly lighter
-          panel: '#1F1F25',    // panel/elevated surface
-          hover: '#2A2A30',    // hover state
-          sidebar: '#0A0A0D',  // sidebar even darker
+          dark: 'rgb(var(--color-bg-dark) / <alpha-value>)',
+          card: 'rgb(var(--color-bg-card) / <alpha-value>)',
+          panel: 'rgb(var(--color-bg-panel) / <alpha-value>)',
+          hover: 'rgb(var(--color-bg-hover) / <alpha-value>)',
+          sidebar: 'rgb(var(--color-bg-sidebar) / <alpha-value>)',
         },
         border: {
-          dark: '#2D2D34',
-          subtle: '#1F1F25',
+          dark: 'rgb(var(--color-border-dark) / <alpha-value>)',
+          subtle: 'rgb(var(--color-border-subtle) / <alpha-value>)',
           accent: '#FCD535',
         },
-        // Text shades
         text: {
-          primary: '#FFFFFF',
-          secondary: '#B0B0B8',
-          muted: '#6E6E78',
+          primary: 'rgb(var(--color-text-primary) / <alpha-value>)',
+          secondary: 'rgb(var(--color-text-secondary) / <alpha-value>)',
+          muted: 'rgb(var(--color-text-muted) / <alpha-value>)',
         },
       },
       fontFamily: {
@@ -52,7 +56,6 @@ export default {
         mono: ['JetBrains Mono', 'Menlo', 'monospace'],
       },
       borderRadius: {
-        // Exness uses sharp/medium corners (4-8px mostly)
         DEFAULT: '6px',
         sm: '4px',
         md: '6px',
@@ -60,7 +63,6 @@ export default {
         xl: '12px',
       },
       boxShadow: {
-        // Subtle Exness-style shadows
         card: '0 1px 3px rgba(0, 0, 0, 0.3)',
         elevated: '0 4px 12px rgba(0, 0, 0, 0.4)',
         glow: '0 0 0 1px rgba(252, 213, 53, 0.3)',

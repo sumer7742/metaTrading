@@ -4,6 +4,11 @@ import { BrowserRouter } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import App from './App.jsx';
 import './index.css';
+import { applyInitialTheme } from './store/theme';
+
+// Stamp the saved/system theme on <html> BEFORE React renders. Doing it later
+// causes a brief flash of the wrong palette ("FOUC") on every page load.
+applyInitialTheme();
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

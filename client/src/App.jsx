@@ -20,6 +20,8 @@ import Reports from './pages/Reports';
 import Affiliate from './pages/Affiliate';
 import PriceAlerts from './pages/PriceAlerts';
 import Plans from './pages/Plans';
+import Funds from './pages/Funds';
+import Feedback from './pages/Feedback';
 
 const Page = ({ children }) => (
   <ProtectedRoute>
@@ -55,17 +57,9 @@ export default function App() {
       <Route path="/profile" element={<Page><Profile /></Page>} />
 
       {/* Phase 2/3 modules from spec - placeholders */}
-      <Route
-        path="/funds"
-        element={
-          <Page>
-            <ComingSoon
-              title="Funds Management"
-              description="Detailed deposit/withdrawal flows with crypto and bank integrations land in Phase 2. Use the Wallet page for now."
-            />
-          </Page>
-        }
-      />
+      <Route path="/funds" element={<Page><Funds /></Page>} />
+      {/* Hidden until Phase 3 — also removed from sidebar in Layout.jsx.
+          Re-enable by uncommenting both this block and the matching nav rows.
       <Route
         path="/copy-trading"
         element={
@@ -102,6 +96,7 @@ export default function App() {
           </Page>
         }
       />
+      */}
       <Route
         path="/ib-room"
         element={
@@ -130,18 +125,7 @@ export default function App() {
           </Page>
         }
       />
-      <Route
-        path="/feedback"
-        element={
-          <Page>
-            <ComingSoon
-              title="Leave Feedback"
-              description="Help us improve TradePro. Send feedback directly to the product team."
-              phase="Phase 2"
-            />
-          </Page>
-        }
-      />
+      <Route path="/feedback" element={<Page><Feedback /></Page>} />
       <Route
         path="/download"
         element={

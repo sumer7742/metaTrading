@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { wsClient } from '../services/ws';
@@ -26,6 +27,25 @@ export default function Wallet() {
   // to show demo balances via the toggle below the summary cards.
   const [showDemo, setShowDemo] = useState(false);
   const fxRate = useFxRate();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Auto-open the deposit/withdraw modal when arriving from /funds or any
+  // other deep link with ?action=deposit|withdraw. Strip the query after
+  // consuming so a refresh doesn't re-open the modal.
+  useEffect(() => {
+    const action = searchParams.get('action');
+    if (action === 'deposit') {
+      setShowDeposit(true);
+      const next = new URLSearchParams(searchParams);
+      next.delete('action');
+      setSearchParams(next, { replace: true });
+    } else if (action === 'withdraw') {
+      setShowWithdraw(true);
+      const next = new URLSearchParams(searchParams);
+      next.delete('action');
+      setSearchParams(next, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   const load = async () => {
     // Settled-with-fallback so a single slow/failing endpoint doesn't blank

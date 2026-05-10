@@ -1,9 +1,46 @@
-/* Exness-inspired theme — yellow accent, dark background, clean modern look */
+/* Exness-inspired theme — yellow accent, dark/light modes via CSS variables */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ───────────────────────── Theme tokens ─────────────────────────
+   `:root` (or [data-theme="dark"]) holds the dark palette — that's the
+   default the app has always shipped with. [data-theme="light"] flips the
+   surface and text tokens to a clean light palette. Brand yellow and
+   bull/bear stay identical so charts and CTAs read the same way in both.
+   The whole site re-skins by toggling the data attribute on <html>. */
+:root,
+[data-theme='dark'] {
+  --color-bg-dark: 15 15 18;        /* #0F0F12 */
+  --color-bg-card: 26 26 31;        /* #1A1A1F */
+  --color-bg-panel: 31 31 37;       /* #1F1F25 */
+  --color-bg-hover: 42 42 48;       /* #2A2A30 */
+  --color-bg-sidebar: 10 10 13;     /* #0A0A0D */
+  --color-border-dark: 45 45 52;    /* #2D2D34 */
+  --color-border-subtle: 31 31 37;  /* #1F1F25 */
+  --color-text-primary: 255 255 255;
+  --color-text-secondary: 176 176 184;
+  --color-text-muted: 110 110 120;
+  --color-scrollbar-track: 15 15 18;
+  --color-scrollbar-thumb: 45 45 52;
+}
+
+[data-theme='light'] {
+  --color-bg-dark: 248 249 251;      /* page background, subtle off-white */
+  --color-bg-card: 255 255 255;      /* card surface, pure white */
+  --color-bg-panel: 244 245 247;     /* panel/elevated, slightly warm gray */
+  --color-bg-hover: 235 237 240;     /* hover state */
+  --color-bg-sidebar: 252 252 253;   /* sidebar, just shy of white */
+  --color-border-dark: 220 224 230;
+  --color-border-subtle: 235 237 240;
+  --color-text-primary: 17 24 39;    /* near-black for primary text */
+  --color-text-secondary: 75 85 99;
+  --color-text-muted: 150 156 168;
+  --color-scrollbar-track: 244 245 247;
+  --color-scrollbar-thumb: 200 205 212;
+}
 
 @layer base {
   body {
@@ -15,12 +52,40 @@
   * {
     box-sizing: border-box;
   }
-  /* Exness-style number formatting — monospaced for alignment */
   .num, code, .font-mono {
     font-family: 'JetBrains Mono', 'Menlo', monospace;
     font-feature-settings: 'tnum';
   }
 }
+
+/* Light-theme overrides for HARDCODED Tailwind utility classes scattered
+   through components (text-white, text-gray-300, bg-black/50, etc.). Without
+   these overrides, light mode would still leave white text on white cards
+   in dozens of places. Listing them here is hacky but lets us migrate the
+   app to true light/dark without rewriting every component. */
+[data-theme='light'] .text-white,
+[data-theme='light'] .hover\:text-white:hover {
+  color: rgb(17 24 39);
+}
+[data-theme='light'] .text-gray-200 { color: rgb(31 41 55); }
+[data-theme='light'] .text-gray-300 { color: rgb(55 65 81); }
+[data-theme='light'] .text-gray-400 { color: rgb(75 85 99); }
+[data-theme='light'] .text-gray-500 { color: rgb(107 114 128); }
+[data-theme='light'] .text-gray-600 { color: rgb(150 156 168); }
+[data-theme='light'] .text-gray-700 { color: rgb(75 85 99); }
+[data-theme='light'] .placeholder-gray-500::placeholder { color: rgb(150 156 168); }
+[data-theme='light'] .bg-bg-dark.text-white,
+[data-theme='light'] .text-bg-dark { color: rgb(255 255 255); }   /* keep yellow CTAs readable */
+
+/* Same-element exception: when text-white sits on a bull/bear/primary
+   background, the global flip would make it dark on a colored gradient
+   (unreadable). Force white back in light mode for these specific cases —
+   covers BUY/SELL buttons, submit CTAs, and all tinted action chips. */
+[data-theme='light'] .bg-bull.text-white,
+[data-theme='light'] .bg-bear.text-white,
+[data-theme='light'] .bg-primary-500.text-white { color: #ffffff !important; }
+[data-theme='light'] .bg-bull:hover.text-white,
+[data-theme='light'] .bg-bear:hover.text-white { color: #ffffff !important; }
 
 @layer components {
   /* Cards — slightly more elevated feel like Exness */
@@ -35,10 +100,10 @@
   .btn {
     @apply inline-flex items-center justify-center px-4 py-2 rounded-md font-semibold text-sm transition-all duration-150;
   }
-  /* Primary = bright yellow with black text — the Exness signature look */
   .btn-primary {
     @apply btn text-bg-dark;
     background: linear-gradient(180deg, #FFE74D 0%, #FCD535 100%);
+    color: #111827; /* hard-coded so light mode keeps yellow CTAs readable */
   }
   .btn-primary:hover {
     background: linear-gradient(180deg, #FFDE26 0%, #E6BF1F 100%);
@@ -65,6 +130,11 @@
   .btn-bear:hover {
     background: linear-gradient(180deg, #FF3D71 0%, #E62E5C 100%);
   }
+  /* Buy/Sell labels on green/red gradients should always be white regardless
+     of theme — the override above turns text-white black in light mode, which
+     would be invisible on the bull/bear backgrounds. */
+  [data-theme='light'] .btn-bull,
+  [data-theme='light'] .btn-bear { color: #ffffff; }
   .btn-ghost {
     @apply btn bg-transparent border border-border-dark hover:border-primary-500 hover:bg-bg-hover text-text-secondary hover:text-text-primary;
   }
@@ -82,7 +152,7 @@
     @apply border-b border-border-subtle hover:bg-bg-hover transition-colors;
   }
 
-  /* Sidebar nav items */
+  /* Sidebar nav items (legacy — kept so any references elsewhere still work) */
   .nav-item {
     @apply flex items-center gap-3 px-4 py-2.5 text-sm rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-all;
   }
@@ -93,6 +163,62 @@
     border-left: 3px solid #FCD535;
     border-radius: 0 6px 6px 0;
     padding-left: calc(1rem - 3px);
+  }
+
+  /* ─── Premium sidebar ──────────────────────────────────────
+     `.sidebar-elevated` — vertical gradient backdrop + a hairline yellow
+     accent at the top edge so the brand area pops without a heavy header.
+     Falls back to bg-bg-sidebar token in light mode (CSS vars handle it). */
+  .sidebar-elevated {
+    background: linear-gradient(180deg, rgb(var(--color-bg-sidebar)) 0%, rgb(var(--color-bg-dark)) 100%);
+    box-shadow: inset 0 1px 0 rgba(252, 213, 53, 0.25);
+  }
+
+  /* Pill-shaped nav link. Hover state slides a faint yellow tint and
+     brightens the icon — gives each row a small but tangible affordance
+     without going over the top. */
+  .sidebar-link {
+    @apply relative flex items-center gap-3 px-3 py-2.5 text-sm rounded-lg text-text-secondary transition-colors duration-150;
+  }
+  .sidebar-link:hover {
+    @apply text-text-primary bg-bg-hover;
+  }
+  .sidebar-link-icon {
+    @apply text-text-muted transition-colors duration-150;
+  }
+  .sidebar-link:hover .sidebar-link-icon {
+    color: #FCD535;
+  }
+
+  /* Active item: full yellow gradient pill with a soft glow. We also fade
+     the inset top border that the parent shows so the active item reads as
+     "lifted" out of the gradient. */
+  .sidebar-link-active {
+    color: #111827 !important; /* readable on the yellow regardless of theme */
+    background: linear-gradient(135deg, #FFE74D 0%, #FCD535 100%);
+    box-shadow:
+      0 0 0 1px rgba(252, 213, 53, 0.3),
+      0 4px 14px rgba(252, 213, 53, 0.25);
+    font-weight: 600;
+  }
+  .sidebar-link-active .sidebar-link-icon {
+    color: #111827 !important;
+  }
+  .sidebar-link-active:hover {
+    background: linear-gradient(135deg, #FFDE26 0%, #E6BF1F 100%);
+  }
+  /* Vertical "you are here" tab on the left edge of the active pill —
+     small but the kind of detail that reads as "a designer touched this". */
+  .sidebar-link-active::before {
+    content: '';
+    position: absolute;
+    left: -12px;
+    top: 25%;
+    bottom: 25%;
+    width: 3px;
+    background: #FCD535;
+    border-radius: 0 3px 3px 0;
+    box-shadow: 0 0 8px rgba(252, 213, 53, 0.7);
   }
 
   /* Price ticker style */
@@ -120,10 +246,10 @@
   }
 }
 
-/* Custom scrollbar */
+/* Custom scrollbar — track + thumb pull from theme variables */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: #0F0F12; }
-::-webkit-scrollbar-thumb { background: #2D2D34; border-radius: 4px; }
+::-webkit-scrollbar-track { background: rgb(var(--color-scrollbar-track)); }
+::-webkit-scrollbar-thumb { background: rgb(var(--color-scrollbar-thumb)); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: #FCD535; }
 
 /* Live pulse animation */

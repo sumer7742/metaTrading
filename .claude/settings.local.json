@@ -7,7 +7,8 @@
       "PowerShell(Resolve-DnsName -Name \"_mongodb._tcp.cluster0.w2gfvxk.mongodb.net\" -Type SRV -Server 8.8.8.8 -ErrorAction SilentlyContinue)",
       "PowerShell(Resolve-DnsName -Name \"_mongodb._tcp.cluster0.w2gfvxk.mongodb.net\" -Type SRV -Server 192.168.1.1 -ErrorAction SilentlyContinue)",
       "PowerShell(node -e \"const dns = require\\('dns'\\); dns.resolveSrv\\('_mongodb._tcp.cluster0.w2gfvxk.mongodb.net', \\(err, res\\) => { if \\(err\\) { console.log\\('ERR:', err.code, err.message\\); } else { console.log\\('OK:', JSON.stringify\\(res\\)\\); } }\\);\")",
-      "Bash(curl -s -4 ifconfig.me)"
+      "Bash(curl -s -4 ifconfig.me)",
+      "Bash(curl -s \"http://localhost:5173/src/index.css\")"
     ]
   }
 }

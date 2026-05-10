@@ -92,4 +92,63 @@ const createAccount = asyncHandler(async (req, res) => {
   sendSuccess(res, account, 201);
 });
 
-module.exports = { updateProfile, submitKYC, getKycStatus, listAccounts, createAccount };
+// ───────── Feedback ─────────
+const Feedback = require('../models/Feedback');
+
+const VALID_CATEGORIES = ['BUG', 'FEATURE', 'UX', 'SUPPORT', 'OTHER'];
+
+const submitFeedback = asyncHandler(async (req, res) => {
+  const { category, subject, message, rating, context } = req.body;
+  if (!subject || typeof subject !== 'string' || subject.trim().length < 3) {
+    throw new AppError('Subject is required (min 3 chars)', 400);
+  }
+  if (!message || typeof message !== 'string' || message.trim().length < 10) {
+    throw new AppError('Message is required (min 10 chars)', 400);
+  }
+  const cat = (category || 'OTHER').toUpperCase();
+  if (!VALID_CATEGORIES.includes(cat)) {
+    throw new AppError(`Invalid category. Allowed: ${VALID_CATEGORIES.join(', ')}`, 400);
+  }
+  let parsedRating = null;
+  if (rating != null && rating !== '') {
+    const n = Number(rating);
+    if (!Number.isInteger(n) || n < 1 || n > 5) throw new AppError('Rating must be 1-5', 400);
+    parsedRating = n;
+  }
+
+  const fb = await Feedback.create({
+    userId: req.userId,
+    category: cat,
+    subject: subject.trim().slice(0, 200),
+    message: message.trim().slice(0, 4000),
+    rating: parsedRating,
+    context: {
+      page: context?.page ? String(context.page).slice(0, 500) : undefined,
+      userAgent: req.headers['user-agent']?.slice(0, 500),
+      appVersion: context?.appVersion ? String(context.appVersion).slice(0, 50) : undefined,
+    },
+  });
+
+  // Best-effort email to ops — never blocks the response.
+  try {
+    const emailSvc = require('../services/emailService');
+    if (typeof emailSvc.sendOpsAlert === 'function') {
+      emailSvc.sendOpsAlert({
+        subject: `[Feedback] ${cat} — ${fb.subject}`,
+        body: `From userId=${req.userId}\nRating: ${parsedRating ?? 'n/a'}\n\n${fb.message}`,
+      }).catch(() => {});
+    }
+  } catch (_) { /* email service optional */ }
+
+  sendSuccess(res, { id: fb._id, status: fb.status }, 201);
+});
+
+const listMyFeedback = asyncHandler(async (req, res) => {
+  const items = await Feedback.find({ userId: req.userId })
+    .sort({ createdAt: -1 })
+    .limit(50)
+    .lean();
+  sendSuccess(res, items);
+});
+
+module.exports = { updateProfile, submitKYC, getKycStatus, listAccounts, createAccount, submitFeedback, listMyFeedback };

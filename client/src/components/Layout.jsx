@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
+import { useThemeStore } from '../store/theme';
 
 // SVG icon components — kept inline to avoid an extra deps install
 const Icon = ({ d, ...p }) => (
@@ -31,27 +32,48 @@ const I = {
   close: <Icon d={['M18 6L6 18', 'M6 6l12 12']} />,
 };
 
-const NAV = [
-  { to: '/dashboard', icon: I.dashboard, label: 'Dashboard' },
-  { to: '/trade', icon: I.chart, label: 'Chart' },
-  { to: '/reports', icon: I.reports, label: 'Reports', hasArrow: true },
-  { to: '/wallet', icon: I.wallet, label: 'Wallets' },
-  { to: '/accounts', icon: I.account, label: 'Trading Account' },
-  { to: '/funds', icon: I.funds, label: 'Funds', hasArrow: true },
-  { to: '/copy-trading', icon: I.copy, label: 'Copy Trading', hasArrow: true },
-  { to: '/pamm', icon: I.pamm, label: 'PAMM', hasArrow: true },
-  { to: '/mam', icon: I.mam, label: 'MAM', hasArrow: true },
-  { to: '/ib-room', icon: I.ib, label: 'IB Room' },
-  { to: '/bonuses', icon: I.bonus, label: 'Plans & Pricing' },
-  { to: '/helpdesk', icon: I.help, label: 'Helpdesk' },
-  { to: '/feedback', icon: I.feedback, label: 'Leave feedback' },
-  { to: '/download', icon: I.download, label: 'Download App' },
+// Nav grouped into sections so the long flat list reads better and so we can
+// give each section a tiny header label. Order is intentional — TRADE first,
+// money things second, growth/affiliate third, help last.
+const NAV_SECTIONS = [
+  {
+    title: 'Trade',
+    items: [
+      { to: '/dashboard', icon: I.dashboard, label: 'Dashboard' },
+      { to: '/trade', icon: I.chart, label: 'Chart' },
+      { to: '/reports', icon: I.reports, label: 'Reports' },
+    ],
+  },
+  {
+    title: 'Portfolio',
+    items: [
+      { to: '/wallet', icon: I.wallet, label: 'Wallets' },
+      { to: '/accounts', icon: I.account, label: 'Trading Account' },
+      { to: '/funds', icon: I.funds, label: 'Funds' },
+    ],
+  },
+  {
+    title: 'Grow',
+    items: [
+      { to: '/ib-room', icon: I.ib, label: 'IB Room' },
+      { to: '/bonuses', icon: I.bonus, label: 'Plans & Pricing' },
+    ],
+  },
+  {
+    title: 'Support',
+    items: [
+      { to: '/helpdesk', icon: I.help, label: 'Helpdesk' },
+      { to: '/feedback', icon: I.feedback, label: 'Leave feedback' },
+      { to: '/download', icon: I.download, label: 'Download App' },
+    ],
+  },
 ];
 
 export default function Layout({ children }) {
   const { user, logout } = useAuthStore();
   const navigate = useNavigate();
-  const [theme, setTheme] = useState('dark');
+  const theme = useThemeStore((s) => s.theme);
+  const toggleTheme = useThemeStore((s) => s.toggle);
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const handleLogout = async () => {
@@ -59,69 +81,119 @@ export default function Layout({ children }) {
     navigate('/login');
   };
 
-  const navClass = ({ isActive }) => (isActive ? 'nav-item-active' : 'nav-item');
-
   const fullName = [user?.firstName, user?.lastName].filter(Boolean).join(' ') || 'Trader';
+  const initials = (fullName || 'T').split(' ').map((s) => s[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
 
   return (
-    <div className="min-h-screen flex bg-bg-dark">
-      {/* Sidebar */}
+    // h-screen + overflow-hidden locks the outer container to the viewport
+    // so the sidebar stays pinned while only the main column scrolls. With
+    // min-h-screen (the previous setup) long pages caused the whole layout
+    // — including the sidebar — to scroll out of view.
+    <div className="h-screen flex bg-bg-dark overflow-hidden">
+      {/* Sidebar — premium look:
+          • subtle vertical gradient backdrop
+          • hairline yellow accent at the top edge
+          • sectioned nav with small section headers
+          • pill-shaped active item with yellow gradient + glow
+          • profile pill at the top of the footer with avatar + initials */}
       <aside
-        className={`fixed lg:static z-40 inset-y-0 left-0 w-64 bg-bg-sidebar border-r border-border-dark flex flex-col transform transition-transform ${
+        className={`fixed lg:static z-40 inset-y-0 left-0 w-64 h-screen lg:h-auto flex flex-col transform transition-transform border-r border-border-dark sidebar-elevated ${
           mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
         }`}
       >
-        {/* Logo */}
-        <div className="h-16 flex items-center justify-between px-5 border-b border-border-dark">
-          <Link to="/dashboard" className="flex items-center gap-2.5 text-lg font-extrabold text-white tracking-tight">
+        {/* Brand */}
+        <div className="relative h-16 flex items-center justify-between px-5 border-b border-border-dark">
+          <Link to="/dashboard" className="flex items-center gap-2.5 text-lg font-extrabold text-white tracking-tight group">
             <span
-              className="w-9 h-9 rounded-md flex items-center justify-center font-extrabold text-bg-dark text-base"
+              className="w-9 h-9 rounded-lg flex items-center justify-center font-extrabold text-bg-dark text-base shadow-md transition-transform group-hover:scale-105"
               style={{ background: 'linear-gradient(135deg, #FFE74D 0%, #FCD535 100%)' }}
             >
               T
             </span>
-            <span>TradePro</span>
+            <span className="flex flex-col leading-none">
+              <span className="font-extrabold">TradePro</span>
+              <span className="text-[9px] uppercase tracking-[0.2em] text-primary-500 mt-0.5 font-bold">PRO</span>
+            </span>
           </Link>
-          <button onClick={() => setMobileOpen(false)} className="lg:hidden text-gray-400">
+          <button onClick={() => setMobileOpen(false)} className="lg:hidden text-text-secondary">
             {I.close}
           </button>
         </div>
 
-        {/* Nav */}
-        <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-0.5">
-          {NAV.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === '/dashboard'}
-              className={navClass}
-              onClick={() => setMobileOpen(false)}
-            >
-              <span className="text-gray-500">{item.icon}</span>
-              <span className="flex-1">{item.label}</span>
-              {item.hasArrow && <span className="text-gray-600 text-xs">›</span>}
-            </NavLink>
+        {/* Nav — sectioned. Each item is a `sidebar-link`; active ones get
+            `sidebar-link-active` from index.css with a yellow glow. */}
+        <nav className="flex-1 overflow-y-auto py-3 px-3 space-y-4">
+          {NAV_SECTIONS.map((section) => (
+            <div key={section.title}>
+              <div className="px-3 pb-1.5 text-[10px] uppercase tracking-[0.2em] font-bold text-text-muted">
+                {section.title}
+              </div>
+              <div className="space-y-0.5">
+                {section.items.map((item) => (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    end={item.to === '/dashboard'}
+                    className={({ isActive }) =>
+                      `sidebar-link ${isActive ? 'sidebar-link-active' : ''}`
+                    }
+                    onClick={() => setMobileOpen(false)}
+                  >
+                    <span className="sidebar-link-icon">{item.icon}</span>
+                    <span className="flex-1">{item.label}</span>
+                  </NavLink>
+                ))}
+              </div>
+            </div>
           ))}
         </nav>
 
-        {/* Footer */}
-        <div className="border-t border-border-dark p-2 space-y-0.5">
-          <NavLink to="/profile" className={navClass} onClick={() => setMobileOpen(false)}>
-            <span className="text-gray-500">{I.user}</span>
-            <span className="flex-1 truncate">{fullName}</span>
-          </NavLink>
-          <button
-            type="button"
-            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-            className="nav-item w-full"
+        {/* Footer — profile pill + theme toggle + logout */}
+        <div className="border-t border-border-dark p-3 space-y-2">
+          <NavLink
+            to="/profile"
+            onClick={() => setMobileOpen(false)}
+            className={({ isActive }) =>
+              `flex items-center gap-3 p-2 rounded-lg border transition-colors ${
+                isActive
+                  ? 'border-primary-500/50 bg-primary-500/5'
+                  : 'border-border-dark hover:border-border-accent hover:bg-bg-hover'
+              }`
+            }
           >
-            <span className="text-gray-500">{theme === 'dark' ? I.sun : I.moon}</span>
-            <span className="flex-1 text-left">{theme === 'dark' ? 'Light Mode' : 'Dark Mode'}</span>
-          </button>
-          <button type="button" onClick={handleLogout} className="nav-item w-full text-bear hover:text-bear">
-            <span>{I.logout}</span>
-            <span className="flex-1 text-left">Log Out</span>
-          </button>
+            <span
+              className="w-9 h-9 rounded-lg flex items-center justify-center text-sm font-bold text-bg-dark shrink-0"
+              style={{ background: 'linear-gradient(135deg, #FFE74D 0%, #FCD535 100%)' }}
+            >
+              {initials}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-sm text-white font-semibold truncate">{fullName}</div>
+              <div className="text-[10px] uppercase tracking-wider text-text-muted">
+                View profile
+              </div>
+            </div>
+          </NavLink>
+
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className="flex items-center justify-center gap-1.5 py-2 rounded-lg border border-border-dark text-text-secondary hover:text-text-primary hover:border-border-accent hover:bg-bg-hover transition-colors text-xs"
+              title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+            >
+              {theme === 'dark' ? I.sun : I.moon}
+              <span>{theme === 'dark' ? 'Light' : 'Dark'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="flex items-center justify-center gap-1.5 py-2 rounded-lg border border-bear/30 text-bear hover:bg-bear/10 transition-colors text-xs"
+            >
+              {I.logout}
+              <span>Log Out</span>
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -134,14 +206,17 @@ export default function Layout({ children }) {
       )}
 
       {/* Main */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 h-screen">
         {/* Mobile top bar */}
-        <div className="lg:hidden h-14 flex items-center justify-between px-4 bg-bg-sidebar border-b border-border-dark">
+        <div className="lg:hidden h-14 flex items-center justify-between px-4 bg-bg-sidebar border-b border-border-dark flex-shrink-0">
           <button onClick={() => setMobileOpen(true)} className="text-gray-300">{I.menu}</button>
           <Link to="/dashboard" className="text-white font-semibold">TradePro</Link>
           <div className="w-6" />
         </div>
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">{children}</main>
+        {/* min-h-0 lets the flex child actually shrink so its overflow-y-auto
+            engages — without it long content pushes past the viewport and
+            takes the (otherwise pinned) sidebar with it on edge cases. */}
+        <main className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 lg:p-8">{children}</main>
       </div>
     </div>
   );

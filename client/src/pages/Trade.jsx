@@ -85,18 +85,24 @@ export default function Trade() {
     };
   }, [symbol]);
 
-  // Subscribe to ALL symbols where user has open positions
-  // This ensures PnL updates in real-time for every position, not just the visible chart
+  // Subscribe to ALL symbols where the user has open positions so PnL ticks
+  // for every row, not just the chart's symbol. Depend on the stable
+  // joined-symbol key (not the `positions` array) so a refresh that returns
+  // an identical symbol set doesn't tear down + rebuild every WS subscription.
+  const positionSymbolsKey = useMemo(
+    () => [...new Set(positions.map((p) => p.symbol))].sort().join('|'),
+    [positions]
+  );
   useEffect(() => {
-    if (!positions.length) return;
-    const symbols = [...new Set(positions.map((p) => p.symbol))];
+    if (!positionSymbolsKey) return;
+    const symbols = positionSymbolsKey.split('|');
     const unsubs = symbols.map((sym) =>
       wsClient.subscribe(`ticker:${sym}`, (data) => {
         setPriceMap((prev) => ({ ...prev, [sym]: data.lastPrice }));
       })
     );
     return () => unsubs.forEach((u) => u && u());
-  }, [positions]);
+  }, [positionSymbolsKey]);
 
   // Subscribe to private 'positions', 'orders' and 'wallet' channels so the
   // table + chart refresh on FILLED/STOP_TRIGGERED/OCO_CANCELLED etc. Without
@@ -113,21 +119,23 @@ export default function Trade() {
     };
   }, []);
 
-  // Compute live PnL for each position using latest price from priceMap
-  const positionsWithLivePnl = positions.map((p) => {
-    const livePrice = priceMap[p.symbol] || p.markPrice || p.entryPrice;
-    const entry = Number(p.entryPrice);
-    const qty = Number(p.quantity);
-    const mark = Number(livePrice);
-    const livePnl = p.side === 'BUY'
-      ? (mark - entry) * qty
-      : (entry - mark) * qty;
-    return {
-      ...p,
-      markPrice: livePrice,
-      unrealizedPnl: String(livePnl),
-    };
-  });
+  // Compute live PnL for each position using latest price from priceMap.
+  // `markPx` (not `livePrice`) is named explicitly to avoid shadowing the
+  // chart's livePrice state — the two represent different things.
+  const positionsWithLivePnl = useMemo(() =>
+    positions.map((p) => {
+      const markPx = priceMap[p.symbol] || p.markPrice || p.entryPrice;
+      const entry = Number(p.entryPrice);
+      const qty = Number(p.quantity);
+      const mark = Number(markPx);
+      if (!Number.isFinite(entry) || !Number.isFinite(qty) || !Number.isFinite(mark)) {
+        return { ...p, markPrice: markPx, unrealizedPnl: '0' };
+      }
+      const livePnl = p.side === 'BUY' ? (mark - entry) * qty : (entry - mark) * qty;
+      return { ...p, markPrice: markPx, unrealizedPnl: String(livePnl) };
+    }),
+    [positions, priceMap]
+  );
 
   const cancelOrder = async (id) => {
     try {
@@ -168,95 +176,135 @@ export default function Trade() {
 
   return (
     <div className="space-y-4">
-      {/* Header */}
-      <div className="card p-3 flex items-center justify-between flex-wrap gap-2">
-        <div className="flex items-center space-x-3">
-          {/* Market-watch trigger — replaces the old <select>. Click to open
-              a popover with bid/ask/H/L per instrument; selecting a row swaps
-              the active chart symbol via the URL param (same contract). */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setWatchOpen((o) => !o)}
-              className="input w-56 font-medium flex items-center justify-between"
-            >
-              <span className="truncate">
-                {symbol}
-                {instrument?.name ? ` - ${instrument.name}` : ''}
-              </span>
-              <span className="text-gray-500 text-xs ml-2">▾</span>
-            </button>
-            {watchOpen && (
-              <>
-                {/* Click-outside catcher */}
-                <div
-                  className="fixed inset-0 z-20"
-                  onClick={() => setWatchOpen(false)}
-                />
-                <div className="absolute left-0 top-full mt-1 w-[26rem] z-30 card shadow-xl border border-border-dark">
-                  <div className="p-2 border-b border-border-dark">
-                    <input
-                      type="text"
-                      autoFocus
-                      value={watchSearch}
-                      onChange={(e) => setWatchSearch(e.target.value)}
-                      placeholder="Search symbol or name…"
-                      className="input w-full text-xs"
+      {/* Trade header — premium row.
+          IMPORTANT: outer card is NOT overflow-hidden so the symbol-picker
+          dropdown can extend below the card and overlay the chart. The
+          gradient backdrop lives inside its own clipped layer instead. */}
+      <div className="relative rounded-xl border border-border-dark bg-bg-card p-4 z-30">
+        {/* Decorative gradient — clipped to the card's rounded corners by
+            its own overflow-hidden wrapper, isolated from the content layer. */}
+        <div className="absolute inset-0 rounded-xl overflow-hidden pointer-events-none">
+          <div
+            className="absolute inset-0 opacity-50"
+            style={{ background: 'radial-gradient(circle at 0% 0%, rgba(252, 213, 53, 0.08), transparent 50%)' }}
+          />
+        </div>
+        <div className="relative flex items-center justify-between flex-wrap gap-3">
+          {/* Left cluster — symbol picker + price + meta */}
+          <div className="flex items-center gap-5 flex-wrap">
+            {/* Symbol selector pill */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setWatchOpen((o) => !o)}
+                className="flex items-center gap-3 px-3 py-2 rounded-lg border border-border-dark bg-bg-panel hover:border-border-accent hover:bg-bg-hover transition-colors group"
+                title="Change symbol"
+              >
+                <span
+                  className="w-9 h-9 rounded-md flex items-center justify-center text-xs font-extrabold text-bg-dark shrink-0"
+                  style={{ background: 'linear-gradient(135deg, #FFE74D 0%, #FCD535 100%)' }}
+                >
+                  {symbol?.slice(0, 3) || '—'}
+                </span>
+                <div className="text-left">
+                  <div className="text-sm font-bold text-white leading-none">{symbol || '—'}</div>
+                  <div className="text-[10px] text-text-muted mt-1 leading-none truncate max-w-[160px]">
+                    {instrument?.name || 'Pick instrument'}
+                  </div>
+                </div>
+                <span className="text-text-muted text-xs ml-1 group-hover:text-primary-500 transition-colors">▾</span>
+              </button>
+              {watchOpen && (
+                <>
+                  {/* Click-outside catcher sits BELOW the dropdown but ABOVE
+                      everything else on the page so a click anywhere outside
+                      closes the popover. */}
+                  <div className="fixed inset-0 z-40" onClick={() => setWatchOpen(false)} />
+                  {/* Dropdown — z-50 wins against the chart card and any
+                      sibling overflow contexts. */}
+                  <div className="absolute left-0 top-full mt-2 w-[28rem] z-50 card shadow-2xl border-border-accent/20">
+                    <div className="p-2 border-b border-border-dark">
+                      <input
+                        type="text"
+                        autoFocus
+                        value={watchSearch}
+                        onChange={(e) => setWatchSearch(e.target.value)}
+                        placeholder="Search symbol or name…"
+                        className="input w-full text-xs"
+                      />
+                    </div>
+                    <MarketWatch
+                      activeSymbol={symbol}
+                      search={watchSearch}
+                      onSelect={(s) => {
+                        setParams({ symbol: s });
+                        setWatchOpen(false);
+                        setWatchSearch('');
+                      }}
                     />
                   </div>
-                  <MarketWatch
-                    activeSymbol={symbol}
-                    search={watchSearch}
-                    onSelect={(s) => {
-                      setParams({ symbol: s });
-                      setWatchOpen(false);
-                      setWatchSearch('');
-                    }}
-                  />
+                </>
+              )}
+            </div>
+
+            {/* Live price */}
+            {instrument && (() => {
+              const lastPx = fmtPriceDual(
+                livePrice || instrument.lastPrice,
+                instrument.quoteCurrency || 'USD',
+                fxRate,
+                instrument.pricePrecision
+              );
+              return (
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-bull animate-pulse shrink-0" />
+                  <div>
+                    <div className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold leading-none">
+                      Last Price
+                    </div>
+                    <div className="text-2xl font-bold text-white font-mono leading-none mt-1">
+                      {lastPx.primary}
+                    </div>
+                    {lastPx.secondary && (
+                      <div className="text-[11px] font-mono text-text-muted mt-1 leading-none">
+                        {lastPx.secondary}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </>
+              );
+            })()}
+
+            {/* Mode + leverage badges */}
+            {instrument && (
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-1 rounded-md text-[10px] uppercase font-bold bg-bg-hover border border-border-dark text-text-secondary tracking-wider">
+                  {instrument.mode}
+                </span>
+                <span className="px-2.5 py-1 rounded-md text-[10px] uppercase font-bold bg-primary-500/10 border border-primary-500/30 text-primary-500 tracking-wider">
+                  1:{instrument.maxLeverage}
+                </span>
+              </div>
             )}
           </div>
-          {instrument && (() => {
-            const lastPx = fmtPriceDual(
-              livePrice || instrument.lastPrice,
-              instrument.quoteCurrency || 'USD',
-              fxRate,
-              instrument.pricePrecision
-            );
-            return (
-              <div className="flex items-center space-x-4">
-                <div>
-                  <div className="text-xs text-gray-500">Last Price</div>
-                  <div className="text-lg font-mono text-white">{lastPx.primary}</div>
-                  {lastPx.secondary && (
-                    <div className="text-[11px] font-mono text-gray-500">{lastPx.secondary}</div>
-                  )}
-                </div>
-                <div>
-                  <div className="text-xs text-gray-500">Mode</div>
-                  <div className="text-sm text-gray-300">{instrument.mode}</div>
-                </div>
-                <div>
-                  <div className="text-xs text-gray-500">Max Leverage</div>
-                  <div className="text-sm text-gray-300">1:{instrument.maxLeverage}</div>
-                </div>
-              </div>
-            );
-          })()}
-        </div>
-        <div className="flex items-center space-x-2">
-          <select
-            value={selectedAccountId || ''}
-            onChange={(e) => setSelectedAccountId(e.target.value)}
-            className="input w-56 text-xs"
-          >
-            {accounts.map((a) => (
-              <option key={a._id} value={a._id}>
-                {a.nickname || a.accountNumber} ({a.accountType})
-              </option>
-            ))}
-          </select>
+
+          {/* Right — account selector pill */}
+          <div className="flex items-center gap-2">
+            <span className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold">
+              Account
+            </span>
+            <select
+              value={selectedAccountId || ''}
+              onChange={(e) => setSelectedAccountId(e.target.value)}
+              className="input w-56 text-xs font-medium"
+            >
+              {accounts.map((a) => (
+                <option key={a._id} value={a._id}>
+                  {a.nickname || a.accountNumber} · {a.accountType}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
       </div>
 
@@ -276,21 +324,35 @@ export default function Trade() {
             />
           )}
 
-          {/* Positions / Orders tabs */}
+          {/* Positions / Orders tabs — with count pills + premium tab styling */}
           <div className="card">
-            <div className="flex border-b border-border-dark">
+            <div className="flex items-center border-b border-border-dark px-2">
               {[
-                { k: 'positions', label: `Positions (${positions.length})` },
-                { k: 'orders', label: `Open Orders (${openOrders.length})` },
+                { k: 'positions', label: 'Positions', count: positions.length },
+                { k: 'orders', label: 'Open Orders', count: openOrders.length },
               ].map((t) => (
                 <button
                   key={t.k}
                   onClick={() => setTab(t.k)}
-                  className={`px-4 py-2 text-sm ${
-                    tab === t.k ? 'text-white border-b-2 border-primary-500' : 'text-gray-500'
+                  className={`relative px-4 py-3 text-sm font-medium flex items-center gap-2 transition-colors ${
+                    tab === t.k
+                      ? 'text-white'
+                      : 'text-text-muted hover:text-text-secondary'
                   }`}
                 >
                   {t.label}
+                  <span
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                      tab === t.k
+                        ? 'bg-primary-500/20 text-primary-500'
+                        : 'bg-bg-hover text-text-muted'
+                    }`}
+                  >
+                    {t.count}
+                  </span>
+                  {tab === t.k && (
+                    <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-primary-500 rounded-t-full" />
+                  )}
                 </button>
               ))}
             </div>
@@ -335,7 +397,20 @@ export default function Trade() {
 }
 
 function PositionsTable({ positions, onClose, onModify, fxRate, instrumentsBySymbol }) {
-  if (!positions.length) return <div className="text-gray-500 text-sm py-4 text-center">No open positions</div>;
+  if (!positions.length) {
+    return (
+      <div className="py-10 text-center">
+        <div className="w-12 h-12 mx-auto rounded-full bg-bg-hover flex items-center justify-center text-text-muted mb-3 border border-border-dark">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M3 3v18h18" />
+            <path d="M7 14l4-4 4 4 5-7" />
+          </svg>
+        </div>
+        <div className="text-sm text-text-secondary">No open positions</div>
+        <div className="text-xs text-text-muted mt-1">Place a market or limit order to open one.</div>
+      </div>
+    );
+  }
   return (
     <table className="w-full text-sm">
       <thead className="text-xs text-gray-500 uppercase">
@@ -398,7 +473,20 @@ function PositionsTable({ positions, onClose, onModify, fxRate, instrumentsBySym
 }
 
 function OrdersTable({ orders, onCancel, fxRate, instrumentsBySymbol }) {
-  if (!orders.length) return <div className="text-gray-500 text-sm py-4 text-center">No open orders</div>;
+  if (!orders.length) {
+    return (
+      <div className="py-10 text-center">
+        <div className="w-12 h-12 mx-auto rounded-full bg-bg-hover flex items-center justify-center text-text-muted mb-3 border border-border-dark">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" />
+          </svg>
+        </div>
+        <div className="text-sm text-text-secondary">No open orders</div>
+        <div className="text-xs text-text-muted mt-1">Pending limit/stop orders will appear here.</div>
+      </div>
+    );
+  }
   return (
     <table className="w-full text-sm">
       <thead className="text-xs text-gray-500 uppercase">

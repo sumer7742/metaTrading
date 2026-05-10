@@ -85,15 +85,21 @@ export default function OrderForm({ instrument, account, onPlaced, onPendingPric
 
   return (
     <div className="card p-4">
-      <div className="text-sm font-medium text-gray-300 mb-3">Place Order</div>
+      <div className="flex items-center gap-2 mb-3">
+        <span className="w-1 h-4 bg-primary-500 rounded-full" />
+        <div className="text-sm font-bold text-text-primary uppercase tracking-wider">Place Order</div>
+      </div>
 
-      {/* Side */}
-      <div className="grid grid-cols-2 gap-2 mb-3">
+      {/* Side — premium pill split with shadow on active. text-white kept on
+          bull/bear bg; CSS override keeps it white in light mode too. */}
+      <div className="grid grid-cols-2 gap-2 mb-4">
         <button
           type="button"
           onClick={() => setSide('BUY')}
-          className={`py-2 rounded font-semibold text-sm ${
-            side === 'BUY' ? 'bg-bull text-white' : 'bg-bg-dark text-gray-400 hover:bg-bg-hover'
+          className={`py-2.5 rounded-lg font-bold text-sm transition-all ${
+            side === 'BUY'
+              ? 'bg-bull text-white shadow-md shadow-bull/30 scale-[1.02]'
+              : 'bg-bg-hover text-text-secondary hover:bg-bg-panel hover:text-text-primary border border-border-dark'
           }`}
         >
           BUY / LONG
@@ -101,8 +107,10 @@ export default function OrderForm({ instrument, account, onPlaced, onPendingPric
         <button
           type="button"
           onClick={() => setSide('SELL')}
-          className={`py-2 rounded font-semibold text-sm ${
-            side === 'SELL' ? 'bg-bear text-white' : 'bg-bg-dark text-gray-400 hover:bg-bg-hover'
+          className={`py-2.5 rounded-lg font-bold text-sm transition-all ${
+            side === 'SELL'
+              ? 'bg-bear text-white shadow-md shadow-bear/30 scale-[1.02]'
+              : 'bg-bg-hover text-text-secondary hover:bg-bg-panel hover:text-text-primary border border-border-dark'
           }`}
         >
           SELL / SHORT
@@ -110,7 +118,7 @@ export default function OrderForm({ instrument, account, onPlaced, onPendingPric
       </div>
 
       {/* Type tabs */}
-      <div className="flex space-x-1 mb-3 border-b border-border-dark">
+      <div className="flex gap-0.5 mb-4 border-b border-border-dark">
         {['MARKET', 'LIMIT', 'STOP'].map((t) => (
           <button
             key={t}
@@ -121,11 +129,16 @@ export default function OrderForm({ instrument, account, onPlaced, onPendingPric
               if (t === 'STOP' && !stopPrice && instrument?.lastPrice) setStopPrice(instrument.lastPrice);
               if (t === 'LIMIT' && !price && instrument?.lastPrice) setPrice(instrument.lastPrice);
             }}
-            className={`text-xs px-3 py-2 ${
-              type === t ? 'text-white border-b-2 border-primary-500' : 'text-gray-500 hover:text-gray-300'
+            className={`relative text-xs font-semibold px-3 py-2 transition-colors ${
+              type === t
+                ? 'text-text-primary'
+                : 'text-text-muted hover:text-text-secondary'
             }`}
           >
             {t}
+            {type === t && (
+              <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-primary-500 rounded-t-full" />
+            )}
           </button>
         ))}
       </div>
@@ -217,15 +230,15 @@ export default function OrderForm({ instrument, account, onPlaced, onPendingPric
             onChange={(e) => setLeverage(Number(e.target.value))}
             className="w-full accent-primary-500"
           />
-          <div className="flex justify-between text-xs text-gray-500 mt-1">
+          <div className="flex justify-between text-xs text-text-muted mt-1 font-mono">
             <span>1x</span>
             <span>{instrument?.maxLeverage || 100}x</span>
           </div>
         </div>
-        <div className="text-xs text-gray-400 bg-bg-dark p-2 rounded">
-          <div className="flex justify-between">
-            <span>Required Margin:</span>
-            <span className="font-mono text-gray-200">
+        <div className="text-xs bg-bg-panel border border-border-dark p-3 rounded-lg">
+          <div className="flex justify-between items-center">
+            <span className="text-text-muted uppercase tracking-wider text-[10px] font-bold">Required Margin</span>
+            <span className="font-mono text-text-primary font-bold text-sm">
               {account?.baseCurrency === 'INR' ? '₹' : (account?.baseCurrency === 'USD' ? '$' : (account?.baseCurrency + ' '))}
               {Number(estimatedCost).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </span>
@@ -234,9 +247,11 @@ export default function OrderForm({ instrument, account, onPlaced, onPendingPric
         <button
           type="submit"
           disabled={loading}
-          className={`w-full py-2.5 rounded font-semibold text-sm ${
-            side === 'BUY' ? 'bg-bull hover:bg-emerald-600' : 'bg-bear hover:bg-red-600'
-          } text-white disabled:opacity-50`}
+          className={`w-full py-3 rounded-lg font-bold text-sm transition-all ${
+            side === 'BUY'
+              ? 'bg-bull hover:bg-emerald-600 shadow-md shadow-bull/30'
+              : 'bg-bear hover:bg-red-600 shadow-md shadow-bear/30'
+          } text-white disabled:opacity-50 disabled:shadow-none hover:scale-[1.01]`}
         >
           {loading ? 'Placing...' : `${side} ${instrument?.symbol || ''}`}
         </button>

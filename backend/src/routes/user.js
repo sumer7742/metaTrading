@@ -14,6 +14,10 @@ router.get('/kyc/status', c.getKycStatus);
 router.get('/accounts', c.listAccounts);
 router.post('/accounts', c.createAccount);
 
+// Feedback
+router.post('/feedback', c.submitFeedback);
+router.get('/feedback', c.listMyFeedback);
+
 // Push notification tokens
 const pushService = require('../services/pushService');
 router.post('/push-tokens', async (req, res, next) => {
