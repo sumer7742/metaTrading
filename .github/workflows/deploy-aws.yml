@@ -1,0 +1,241 @@
+name: Deploy to AWS
+
+# Triggers:
+#   - push to main → builds + deploys backend (App Runner) + frontends (S3)
+#   - manual workflow_dispatch → also runs production seed against Atlas
+#
+# Required GitHub repo secrets:
+#   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY     (IAM user with deploy perms)
+#   AWS_REGION                                    (e.g. ap-south-1)
+#   ECR_REPOSITORY                                (e.g. trading-backend)
+#   ECS_CLUSTER                                   (e.g. trading-platform-prod)
+#   ECS_SERVICE                                   (e.g. trading-backend-svc)
+#   ECS_TASK_DEFINITION_FAMILY                    (e.g. trading-backend-task)
+#   ECS_SUBNETS                                   (comma-separated: subnet-xxx,subnet-yyy)
+#   ECS_SECURITY_GROUP                            (e.g. sg-xxxxxxxx — backend SG)
+#   S3_CLIENT_BUCKET, S3_ADMIN_BUCKET             (e.g. yourdomain-client)
+#   CF_CLIENT_DIST_ID, CF_ADMIN_DIST_ID           (CloudFront distribution IDs)
+#   VITE_API_BASE                                 (e.g. https://api.yourdomain.com)
+#   MONGODB_URI                                   (Atlas prod URI — for seed job only)
+#   FINNHUB_API_KEY                               (optional, used by seedProd)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_seed:
+        description: 'Run production seed (idempotent, safe to re-run)'
+        type: boolean
+        default: false
+
+jobs:
+  # ─── Sanity: tests must pass before anything ships ────────────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+      - name: Install backend deps
+        working-directory: backend
+        run: npm ci
+      - name: Module load smoke
+        working-directory: backend
+        run: node -e "['./src/services/orderRouter.service','./src/controllers/orderController','./src/routes/admin'].forEach(m=>require(m));console.log('OK')"
+      - name: Routing logic tests
+        working-directory: backend
+        run: node src/utils/testRouting.js
+      - name: Risk engine tests
+        working-directory: backend
+        run: node src/utils/testRiskEngine.js
+
+  # ─── Backend: build Docker image → push to ECR → trigger App Runner ─
+  backend:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, push image to ECR
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          REPO: ${{ secrets.ECR_REPOSITORY }}
+          SHA: ${{ github.sha }}
+        working-directory: backend
+        run: |
+          docker build -t $REGISTRY/$REPO:$SHA -t $REGISTRY/$REPO:latest .
+          docker push $REGISTRY/$REPO:$SHA
+          docker push $REGISTRY/$REPO:latest
+
+      # Force ECS to pull the new `:latest` image and roll the service.
+      # ECS does a rolling deploy: new task starts, healthchecks, old task
+      # drains gracefully (our SIGTERM handler covers this). Zero downtime.
+      - name: Force ECS service redeploy
+        run: |
+          aws ecs update-service \
+            --cluster ${{ secrets.ECS_CLUSTER }} \
+            --service ${{ secrets.ECS_SERVICE }} \
+            --force-new-deployment
+
+      # Block until the service stabilises so we know the deploy actually
+      # succeeded (and the workflow shows red if it didn't).
+      - name: Wait for service to stabilise
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ secrets.ECS_CLUSTER }} \
+            --services ${{ secrets.ECS_SERVICE }}
+
+  # ─── Client SPA: build with prod VITE_API_BASE → upload → invalidate CF ─
+  client:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: client/package-lock.json
+      - name: Install + build
+        working-directory: client
+        env:
+          VITE_API_BASE: ${{ secrets.VITE_API_BASE }}
+        run: |
+          npm ci
+          npm run build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Sync to S3 (cached assets first, index.html last + no-cache)
+        working-directory: client
+        run: |
+          aws s3 sync dist/ s3://${{ secrets.S3_CLIENT_BUCKET }}/ \
+            --cache-control "public, max-age=31536000, immutable" \
+            --exclude "index.html" --delete
+          aws s3 cp dist/index.html s3://${{ secrets.S3_CLIENT_BUCKET }}/index.html \
+            --cache-control "no-cache, no-store, must-revalidate"
+
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.CF_CLIENT_DIST_ID }} \
+            --paths "/index.html" "/*"
+
+  # ─── Admin SPA: same shape as client ──────────────────────────────
+  admin:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: admin/package-lock.json
+      - name: Install + build
+        working-directory: admin
+        env:
+          VITE_API_BASE: ${{ secrets.VITE_API_BASE }}
+        run: |
+          npm ci
+          npm run build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Sync to S3
+        working-directory: admin
+        run: |
+          aws s3 sync dist/ s3://${{ secrets.S3_ADMIN_BUCKET }}/ \
+            --cache-control "public, max-age=31536000, immutable" \
+            --exclude "index.html" --delete
+          aws s3 cp dist/index.html s3://${{ secrets.S3_ADMIN_BUCKET }}/index.html \
+            --cache-control "no-cache, no-store, must-revalidate"
+
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.CF_ADMIN_DIST_ID }} \
+            --paths "/index.html" "/*"
+
+  # ─── Seed production DB — ONLY on manual trigger with run_seed=true.
+  # Idempotent (re-running adds no duplicates). Use when:
+  #   - first deploy (populate instruments + plans + routing setting)
+  #   - you add new instruments to seedProd.js
+  #
+  # Strategy: run as an ECS one-shot task using the same task definition
+  # as the running service, but with command overridden to seedProd.js.
+  # This way the seed gets the SAME network (VPC subnets / SG) + the SAME
+  # secrets (Secrets Manager bindings) as the running backend — no
+  # separate Atlas whitelist needed for the GitHub runner IP.
+  seed:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_seed == true
+    needs: backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Run seed as one-shot ECS task
+        id: runtask
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster ${{ secrets.ECS_CLUSTER }} \
+            --task-definition ${{ secrets.ECS_TASK_DEFINITION_FAMILY }} \
+            --launch-type FARGATE \
+            --count 1 \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ secrets.ECS_SUBNETS }}],securityGroups=[${{ secrets.ECS_SECURITY_GROUP }}],assignPublicIp=ENABLED}" \
+            --overrides '{"containerOverrides":[{"name":"backend","command":["node","src/utils/seedProd.js"]}]}' \
+            --query 'tasks[0].taskArn' --output text)
+          echo "Started seed task: $TASK_ARN"
+          echo "task_arn=$TASK_ARN" >> $GITHUB_OUTPUT
+
+      - name: Wait for seed task to finish
+        run: |
+          aws ecs wait tasks-stopped \
+            --cluster ${{ secrets.ECS_CLUSTER }} \
+            --tasks ${{ steps.runtask.outputs.task_arn }}
+
+      - name: Verify seed exit code
+        run: |
+          EXIT=$(aws ecs describe-tasks \
+            --cluster ${{ secrets.ECS_CLUSTER }} \
+            --tasks ${{ steps.runtask.outputs.task_arn }} \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          echo "Seed task exit code: $EXIT"
+          if [ "$EXIT" != "0" ]; then
+            echo "Seed failed — check CloudWatch logs for the task"
+            exit 1
+          fi
