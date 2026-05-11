@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, errorMessage } from '../services/api';
 import toast from 'react-hot-toast';
+import PageHero from '../components/PageHero';
 
 export default function Accounts() {
   const [accounts, setAccounts] = useState([]);
@@ -29,25 +30,26 @@ export default function Accounts() {
 
   return (
     <div className="space-y-6 max-w-[1400px]">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-3xl font-bold text-white">Trading Accounts</h1>
-          <p className="text-sm text-gray-400 mt-1">Manage your live, demo, and virtual accounts.</p>
-        </div>
-        <div className="flex gap-2">
-          <button onClick={() => setShowTransfer(true)} className="btn-secondary">Transfer Funds</button>
-          <button onClick={() => setShowCreate(true)} className="btn-primary">+ New Account</button>
-        </div>
-      </div>
+      <PageHero
+        eyebrow="Portfolio"
+        title="Trading Accounts"
+        subtitle="Manage your live, demo, and virtual accounts. Configure leverage, mode, and nickname per account."
+        actions={
+          <>
+            <button onClick={() => setShowTransfer(true)} className="btn-secondary text-sm">Transfer Funds</button>
+            <button onClick={() => setShowCreate(true)} className="btn-primary text-sm">+ New Account</button>
+          </>
+        }
+      />
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {accounts.map((acc) => (
-          <div key={acc._id} className="card p-5 hover:border-teal-accent transition-colors">
+          <div key={acc._id} className="card p-5 hover:border-border-accent/50 hover:-translate-y-0.5 transition-all group">
             <div className="flex items-start justify-between">
               <div>
-                <div className="text-xs uppercase tracking-wider text-gray-500">{acc.accountType}</div>
-                <div className="text-lg font-semibold text-white mt-1">{acc.nickname || acc.accountNumber}</div>
-                <div className="text-xs text-gray-400 mt-0.5">{acc.accountNumber}</div>
+                <div className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold">{acc.accountType}</div>
+                <div className="text-lg font-semibold text-text-primary mt-1">{acc.nickname || acc.accountNumber}</div>
+                <div className="text-xs text-text-muted mt-0.5 font-mono">{acc.accountNumber}</div>
               </div>
               <span
                 className={`text-[10px] px-2 py-1 rounded uppercase font-semibold ${

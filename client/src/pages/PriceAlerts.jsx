@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
+import PageHero from '../components/PageHero';
 
 export default function PriceAlerts() {
   const [alerts, setAlerts] = useState([]);
@@ -29,13 +30,14 @@ export default function PriceAlerts() {
 
   return (
     <div className="space-y-6 max-w-[1200px]">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-3xl font-bold text-white">Price Alerts</h1>
-          <p className="text-sm text-gray-400 mt-1">Get notified when an instrument crosses your target price.</p>
-        </div>
-        <button onClick={() => setShowCreate(true)} className="btn-primary">+ New Alert</button>
-      </div>
+      <PageHero
+        eyebrow="Notifications"
+        title="Price Alerts"
+        subtitle="Get notified the moment an instrument crosses your target price — via in-app, email, and push."
+        actions={
+          <button onClick={() => setShowCreate(true)} className="btn-primary text-sm">+ New Alert</button>
+        }
+      />
 
       <div className="card overflow-hidden">
         <div className="overflow-x-auto">

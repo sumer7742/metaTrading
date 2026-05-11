@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
-import { fmtNum, fmtMoneyDual, fmtDate } from '../utils/format';
+import { fmtNum, fmtMoneyDual, fmtMoneyBoth, fmtDate } from '../utils/format';
 import { useFxRate } from '../hooks/useFxRate';
 
 /**
@@ -154,18 +154,18 @@ export default function Funds() {
         </p>
       </div>
 
-      {/* Summary cards — INR primary + USD secondary */}
+      {/* Summary cards — USD primary + INR secondary on these final totals. */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <SummaryCard
           tone="primary"
           label="Total Real Balance"
-          value={fmtMoneyDual(realBalance, primaryCurrency, fxRate)}
+          value={fmtMoneyBoth(realBalance, primaryCurrency, fxRate)}
           accentClass="border-l-primary-500"
         />
         <SummaryCard
           tone="muted"
           label="Total Demo Balance"
-          value={fmtMoneyDual(demoBalance, primaryCurrency, fxRate)}
+          value={fmtMoneyBoth(demoBalance, primaryCurrency, fxRate)}
           accentClass="border-l-border-dark"
           chip="DEMO"
         />

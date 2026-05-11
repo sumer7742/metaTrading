@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
+import PageHero from '../components/PageHero';
 
 export default function Plans() {
   const [plans, setPlans] = useState([]);
@@ -69,10 +70,11 @@ export default function Plans() {
 
   return (
     <div className="space-y-6 max-w-[1400px]">
-      <div>
-        <h1 className="text-3xl font-bold text-white">Plans & Pricing</h1>
-        <p className="text-sm text-gray-400 mt-1">Upgrade for lower fees, more accounts, and premium features.</p>
-      </div>
+      <PageHero
+        eyebrow="Membership"
+        title="Plans & Pricing"
+        subtitle="Upgrade for lower trading fees, more accounts, premium support, and exclusive perks."
+      />
 
       {/* Current plan banner */}
       {effective && (
@@ -129,7 +131,7 @@ export default function Plans() {
               <p className="text-sm text-gray-400 mt-1 min-h-[40px]">{plan.description}</p>
 
               <div className="my-5">
-                <span className="text-4xl font-bold text-white">₹{(Number(price) * 83).toLocaleString('en-IN', { maximumFractionDigits: 0 })}</span>
+                <span className="text-4xl font-bold text-white">${Number(price).toLocaleString('en-IN', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}</span>
                 <span className="text-sm text-gray-500 ml-2">/ {billing === 'YEARLY' ? 'year' : 'month'}</span>
               </div>
 

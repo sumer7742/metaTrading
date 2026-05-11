@@ -2,15 +2,17 @@ import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { fmtNum } from '../utils/format';
+import PageHero from '../components/PageHero';
 
+// Instrument shape — routing fields (mode, bBookEnabled) are intentionally
+// excluded. Routing is now a platform-wide setting; instruments only carry
+// symbol/feed/pricing config.
 const EMPTY = {
   symbol: '',
   name: '',
   baseCurrency: '',
   quoteCurrency: '',
   category: 'CRYPTO',
-  mode: 'INTERNAL',
-  bBookEnabled: false,
   pricePrecision: 2,
   quantityPrecision: 4,
   minOrderSize: '0.001',
@@ -61,11 +63,15 @@ export default function Instruments() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-white">Instruments</h1>
-        <button onClick={() => setEditing({ ...EMPTY })} className="btn-primary">+ Add Instrument</button>
-      </div>
+    <div className="space-y-4 max-w-[1600px]">
+      <PageHero
+        eyebrow="Operations"
+        title="Instruments"
+        subtitle="Add or edit tradable symbols, configure routing, leverage, spread, and B-book settings per instrument."
+        actions={
+          <button onClick={() => setEditing({ ...EMPTY })} className="btn-primary text-sm">+ Add Instrument</button>
+        }
+      />
 
       <div className="card overflow-x-auto">
         <table className="w-full text-sm">
@@ -74,8 +80,6 @@ export default function Instruments() {
               <th className="text-left p-3">Symbol</th>
               <th className="text-left p-3">Name</th>
               <th className="text-left p-3">Category</th>
-              <th className="text-left p-3">Mode</th>
-              <th className="text-left p-3">B-Book</th>
               <th className="text-right p-3">Last Price</th>
               <th className="text-right p-3">Max Lev</th>
               <th className="text-right p-3"></th>
@@ -87,8 +91,6 @@ export default function Instruments() {
                 <td className="p-3 font-medium">{it.symbol}</td>
                 <td className="p-3 text-gray-400">{it.name}</td>
                 <td className="p-3 text-xs">{it.category}</td>
-                <td className="p-3 text-xs">{it.mode}</td>
-                <td className="p-3 text-xs">{it.bBookEnabled ? <span className="text-yellow-400">ON</span> : <span className="text-gray-500">OFF</span>}</td>
                 <td className="p-3 text-right font-mono">{fmtNum(it.lastPrice, it.pricePrecision)}</td>
                 <td className="p-3 text-right">1:{it.maxLeverage}</td>
                 <td className="p-3 text-right space-x-1">
@@ -146,14 +148,6 @@ function InstrumentEditor({ data, onSave, onClose }) {
             </select>
           </div>
           <div>
-            <label className="label">Trading Mode</label>
-            <select className="input" value={form.mode} onChange={update('mode')}>
-              <option>INTERNAL</option>
-              <option>EXTERNAL</option>
-              <option>HYBRID</option>
-            </select>
-          </div>
-          <div>
             <label className="label">Price Precision</label>
             <input type="number" className="input" value={form.pricePrecision} onChange={update('pricePrecision')} />
           </div>
@@ -196,18 +190,14 @@ function InstrumentEditor({ data, onSave, onClose }) {
             <label className="label">External Feed Symbol</label>
             <input className="input" value={form.externalFeedSymbol || ''} onChange={update('externalFeedSymbol')} placeholder="e.g. BTCUSDT" />
           </div>
+          {/* B-Book / Mode toggles removed — routing is now a platform-wide
+              setting (Admin → Settings → Routing Mode). Instruments are
+              just symbol/feed config. */}
           <div className="col-span-2 flex items-center gap-4 mt-2">
-            <label className="flex items-center text-sm text-gray-300">
-              <input type="checkbox" className="mr-2" checked={!!form.bBookEnabled} onChange={checkbox('bBookEnabled')} />
-              B-Book Enabled
-            </label>
             <label className="flex items-center text-sm text-gray-300">
               <input type="checkbox" className="mr-2" checked={!!form.isActive} onChange={checkbox('isActive')} />
               Active
             </label>
-            {form.mode === 'INTERNAL' && form.bBookEnabled && (
-              <span className="text-xs text-bear">⚠ B-Book in INTERNAL mode is unsafe per spec</span>
-            )}
           </div>
           <div className="col-span-2 flex justify-end space-x-2 pt-3 border-t border-border-dark">
             <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>

@@ -40,10 +40,19 @@ const userSchema = new mongoose.Schema(
     // Risk / Group
     userGroup: { type: String, default: 'DEFAULT' }, // VIP, NEW, PROFITABLE, SUSPICIOUS, DEFAULT
     riskOverride: {
-      forceABook: { type: Boolean, default: false },
+      // Per-user routing override. When set, the orderRouter uses this
+      // value instead of the global SystemSetting.routingMode.
+      // null/empty = INHERIT (use the global mode).
+      routingMode: { type: String, enum: ['A_BOOK', 'B_BOOK', 'HYBRID', null], default: null },
+      forceABook: { type: Boolean, default: false }, // @deprecated — use routingMode='A_BOOK' instead
       maxLeverage: { type: Number, default: null },
       maxPositionSize: { type: Number, default: null },
     },
+    // Symbol-level block list (doc §9, per-user permissions). When non-empty,
+    // orders on these symbols are rejected at the router with
+    // INSTRUMENT_BLOCKED. Used to keep specific users out of high-risk
+    // instruments without blocking them globally.
+    blockedInstruments: { type: [String], default: [] },
 
     // Referrals
     referralCode: { type: String, unique: true, sparse: true },

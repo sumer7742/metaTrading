@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
+import PageHero from '../components/PageHero';
 
 export default function Affiliate() {
   const [summary, setSummary] = useState(null);
@@ -34,10 +35,11 @@ export default function Affiliate() {
 
   return (
     <div className="space-y-6 max-w-[1400px]">
-      <div>
-        <h1 className="text-3xl font-bold text-white">Affiliate Program</h1>
-        <p className="text-sm text-gray-400 mt-1">Earn commissions on your referrals' trading activity (3 levels).</p>
-      </div>
+      <PageHero
+        eyebrow="Earnings"
+        title="Affiliate Program"
+        subtitle="Earn lifetime commissions on your referrals' trading activity across three levels deep."
+      />
 
       {/* Referral link card */}
       <div className="card p-6">
@@ -55,15 +57,15 @@ export default function Affiliate() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div className="card p-5">
           <div className="text-xs uppercase text-gray-500">Total Earnings</div>
-          <div className="text-2xl font-bold text-white mt-1">₹{summary.total.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+          <div className="text-2xl font-bold text-white mt-1">${Number(summary.total).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
         </div>
         <div className="card p-5">
           <div className="text-xs uppercase text-gray-500">Pending</div>
-          <div className="text-2xl font-bold text-warn mt-1">₹{summary.pending.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+          <div className="text-2xl font-bold text-warn mt-1">${Number(summary.pending).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
         </div>
         <div className="card p-5">
           <div className="text-xs uppercase text-gray-500">Paid Out</div>
-          <div className="text-2xl font-bold text-bull mt-1">₹{summary.paid.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+          <div className="text-2xl font-bold text-bull mt-1">${Number(summary.paid).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
         </div>
         <div className="card p-5">
           <div className="text-xs uppercase text-gray-500">Referees</div>
@@ -76,7 +78,7 @@ export default function Affiliate() {
         {[1, 2, 3].map((lvl) => (
           <div key={lvl} className="card p-5">
             <div className="text-xs uppercase text-gray-500">Level {lvl} earnings</div>
-            <div className="text-xl font-bold text-white mt-1">₹{(summary.byLevel?.[lvl] || 0).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+            <div className="text-xl font-bold text-white mt-1">${(Number(summary.byLevel?.[lvl] || 0)).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
             <div className="text-xs text-gray-500 mt-1">
               {lvl === 1 ? '20% of fees from direct referrals' : lvl === 2 ? '5% from L2' : '1% from L3'}
             </div>

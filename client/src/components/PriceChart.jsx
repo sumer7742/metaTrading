@@ -5,25 +5,19 @@ import { wsClient } from '../services/ws';
 import { ema, rsi, macd } from '../utils/indicators';
 import { useThemeStore } from '../store/theme';
 
-// Resolve a CSS-variable RGB triplet (e.g. "26 26 31") into an `rgb(...)`
-// string the chart library understands. Reads live, so each call returns the
-// CURRENT theme's value — important for re-applying on theme toggle.
-//
-// Comma-separated rgb(R, G, B) form is used because lightweight-charts'
-// color parser predates CSS Color Level 4 space-separated syntax — a value
-// like `rgb(15 15 18)` parses as black/transparent in some builds and
-// crashes the chart constructor with a vague error.
+// ─── Theme palette helpers ───────────────────────────────────────────
+// Resolve a CSS-variable RGB triplet into an `rgb(R, G, B)` string the
+// chart library understands. Comma-separated form is used because some
+// builds of lightweight-charts predate CSS Color Level 4 space-separated
+// syntax — `rgb(15 15 18)` parses as transparent in those versions.
 const cssVar = (name, fallback) => {
   if (typeof document === 'undefined') return fallback;
   let v = '';
   try {
     v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  } catch (_) { /* document not ready, fall back */ }
+  } catch (_) { /* document not ready */ }
   if (!v) return fallback;
-  // If value is a triplet ("R G B"), convert to legacy comma form.
-  if (/^\d+\s+\d+\s+\d+$/.test(v)) {
-    return `rgb(${v.replace(/\s+/g, ', ')})`;
-  }
+  if (/^\d+\s+\d+\s+\d+$/.test(v)) return `rgb(${v.replace(/\s+/g, ', ')})`;
   return v;
 };
 
@@ -34,9 +28,388 @@ const chartPalette = () => ({
   border: cssVar('--color-border-dark', '#2a323d'),
 });
 
+// TradingView-reference color palette — used across every chart type
+// for visual consistency. Centralised so a single tweak rolls everywhere.
+const TV_COLORS = {
+  background: '#131722',
+  grid: 'rgba(255, 255, 255, 0.04)',
+  border: 'rgba(255, 255, 255, 0.1)',
+  text: '#787b86',
+  crosshair: 'rgba(255, 255, 255, 0.3)',
+  up: '#26a69a',
+  down: '#ef5350',
+  volumeUp: 'rgba(38, 166, 154, 0.5)',
+  volumeDown: 'rgba(239, 83, 80, 0.5)',
+};
+
+// ─── Chart-type catalog ──────────────────────────────────────────────
+// Each entry maps to a creator + an updater. The dropdown renders this
+// list as-is so adding a new type only requires updating these helpers.
+const CHART_TYPES = [
+  { id: 'candles',       label: 'Candles',           glyph: <CandleGlyph /> },
+  { id: 'bars',          label: 'Bars',              glyph: <BarsGlyph /> },
+  { id: 'hollowCandles', label: 'Hollow Candles',    glyph: <HollowGlyph /> },
+  { id: 'line',          label: 'Line',              glyph: <LineGlyph /> },
+  { id: 'lineMarkers',   label: 'Line with Markers', glyph: <LineMarkersGlyph /> },
+  { id: 'stepLine',      label: 'Step Line',         glyph: <StepLineGlyph /> },
+  { id: 'area',          label: 'Area',              glyph: <AreaGlyph /> },
+  { id: 'baseline',      label: 'Baseline',          glyph: <BaselineGlyph /> },
+  { id: 'histogram',     label: 'Columns / Histogram', glyph: <HistogramGlyph /> },
+  { id: 'heikinAshi',    label: 'Heikin Ashi',       glyph: <HeikinAshiGlyph /> },
+];
+
+// ─── Data converters ─────────────────────────────────────────────────
+
+/** Map OHLC candles → line-series points using the close price. */
+export function convertToLineData(candles) {
+  return candles.map((c) => ({ time: c.time, value: Number(c.close) }));
+}
+
+/** Map OHLC candles → volume histogram points, color-coded bull/bear. */
+export function convertToVolumeData(candles) {
+  return candles.map((c) => ({
+    time: c.time,
+    value: Number(c.volume) || 0,
+    color: c.close >= c.open ? TV_COLORS.volumeUp : TV_COLORS.volumeDown,
+  }));
+}
+
+/**
+ * Convert raw OHLC candles to Heikin Ashi candles.
+ *   HA close = (O + H + L + C) / 4
+ *   HA open  = (prevHA.open + prevHA.close) / 2     (or (O+C)/2 for the first)
+ *   HA high  = max(H, HA open, HA close)
+ *   HA low   = min(L, HA open, HA close)
+ * The smoothing lets users see trend continuation more cleanly.
+ */
+export function convertToHeikinAshi(candles) {
+  const out = [];
+  for (let i = 0; i < candles.length; i++) {
+    const c = candles[i];
+    const O = Number(c.open), H = Number(c.high), L = Number(c.low), C = Number(c.close);
+    const haClose = (O + H + L + C) / 4;
+    const prev = out[i - 1];
+    const haOpen = prev ? (prev.open + prev.close) / 2 : (O + C) / 2;
+    const haHigh = Math.max(H, haOpen, haClose);
+    const haLow = Math.min(L, haOpen, haClose);
+    out.push({ time: c.time, open: haOpen, high: haHigh, low: haLow, close: haClose });
+  }
+  return out;
+}
+
+/** Autoscale provider for OHLC-shaped series. Locks the y-axis onto the
+ * very recent window (last ~40 candles) using raw min/max + a tiny
+ * symmetric pad. The tight range is what gives the price axis its dense,
+ * forex-style label spacing (e.g. 0.72260 / 0.72270 / 0.72279 / 0.72290 …)
+ * — wider ranges force the library to coarsen the step.
+ *
+ * Extras (open LIMIT/STOP/SL/TP price lines) extend the range only
+ * marginally so they remain visible without blowing the scale wide. */
+const makeAutoscaleProvider = (candlesRef, extraPricesRef) => () => {
+  const data = candlesRef.current;
+  if (!data || data.length < 5) return null;
+  // Short recent window — tracks live action and produces a small price
+  // span, which is what the label-step heuristic latches onto.
+  const recent = data.slice(-40);
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const c of recent) {
+    if (Number.isFinite(c.low) && c.low < lo) lo = c.low;
+    if (Number.isFinite(c.high) && c.high > hi) hi = c.high;
+  }
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+  const last = data[data.length - 1];
+  if (Number.isFinite(last?.close)) {
+    lo = Math.min(lo, last.close);
+    hi = Math.max(hi, last.close);
+  }
+  // Tiny symmetric pad so wicks don't kiss the top/bottom edge.
+  const span = Math.max(hi - lo, Math.abs(hi) * 1e-6, 1e-9);
+  const pad = span * 0.05;
+  lo -= pad;
+  hi += pad;
+  // Pull in user-placed price lines, but cap the stretch so a distant
+  // LIMIT can't ruin the tight scale that drives label density.
+  const extras = extraPricesRef?.current;
+  if (Array.isArray(extras) && extras.length) {
+    const maxStretch = span * 0.10;
+    for (const p of extras) {
+      if (!Number.isFinite(p) || p <= 0) continue;
+      if (p < lo) lo = Math.max(p, lo - maxStretch);
+      if (p > hi) hi = Math.min(p, hi + maxStretch);
+    }
+  }
+  return {
+    priceRange: { minValue: lo, maxValue: hi },
+    margins: { above: 0, below: 0 },
+  };
+};
+
+/**
+ * Create the appropriate lightweight-charts series for a given chart type.
+ * Returns the series instance — the caller is responsible for storing the
+ * reference and feeding it data (via updateSeriesData / updateSeriesPoint).
+ *
+ * IMPORTANT: callers MUST remove any previous main series before calling
+ * this — otherwise the chart accumulates series and they fight for the
+ * price scale.
+ */
+export function createSeriesByChartType(chart, chartType, candlesRef, extraPricesRef) {
+  const autoscale = makeAutoscaleProvider(candlesRef, extraPricesRef);
+  switch (chartType) {
+    case 'bars':
+      return chart.addBarSeries({
+        upColor: TV_COLORS.up,
+        downColor: TV_COLORS.down,
+        thinBars: false,
+        autoscaleInfoProvider: autoscale,
+      });
+
+    case 'hollowCandles':
+      // Bullish bars: transparent body + green border (the "hollow" look).
+      // Bearish bars: solid red body. Wicks always colored by direction.
+      return chart.addCandlestickSeries({
+        upColor: 'rgba(0,0,0,0)',
+        downColor: TV_COLORS.down,
+        borderUpColor: TV_COLORS.up,
+        borderDownColor: TV_COLORS.down,
+        wickUpColor: TV_COLORS.up,
+        wickDownColor: TV_COLORS.down,
+        autoscaleInfoProvider: autoscale,
+      });
+
+    case 'line':
+      return chart.addLineSeries({
+        color: '#FCD535',
+        lineWidth: 2,
+        lineType: 0, // simple
+        priceLineVisible: true,
+        crosshairMarkerVisible: true,
+      });
+
+    case 'lineMarkers':
+      // Same as line; markers are placed via setMarkers in updateSeriesData.
+      return chart.addLineSeries({
+        color: '#FCD535',
+        lineWidth: 2,
+        lineType: 0,
+        priceLineVisible: true,
+        crosshairMarkerVisible: true,
+      });
+
+    case 'stepLine':
+      // lineType=1 is WithSteps — values are connected by horizontal+vertical
+      // segments rather than a smooth diagonal.
+      return chart.addLineSeries({
+        color: '#FCD535',
+        lineWidth: 2,
+        lineType: 1,
+        priceLineVisible: true,
+      });
+
+    case 'area':
+      return chart.addAreaSeries({
+        topColor: 'rgba(252, 213, 53, 0.30)',
+        bottomColor: 'rgba(252, 213, 53, 0.00)',
+        lineColor: '#FCD535',
+        lineWidth: 2,
+      });
+
+    case 'baseline':
+      // baseValue is patched in updateSeriesData using the median close so the
+      // top/bottom halves are visually balanced from the moment the chart loads.
+      return chart.addBaselineSeries({
+        baseValue: { type: 'price', price: 0 },
+        topLineColor: TV_COLORS.up,
+        topFillColor1: 'rgba(38, 166, 154, 0.30)',
+        topFillColor2: 'rgba(38, 166, 154, 0.00)',
+        bottomLineColor: TV_COLORS.down,
+        bottomFillColor1: 'rgba(239, 83, 80, 0.00)',
+        bottomFillColor2: 'rgba(239, 83, 80, 0.30)',
+        lineWidth: 2,
+      });
+
+    case 'histogram':
+      // Volume histogram on the main pane. Default formatter uses `volume`
+      // which renders cleanly without currency symbols.
+      return chart.addHistogramSeries({
+        priceFormat: { type: 'volume' },
+      });
+
+    case 'heikinAshi':
+      // HA renders as candlesticks but on transformed OHLC data.
+      return chart.addCandlestickSeries({
+        upColor: TV_COLORS.up,
+        downColor: TV_COLORS.down,
+        borderUpColor: TV_COLORS.up,
+        borderDownColor: TV_COLORS.down,
+        wickUpColor: TV_COLORS.up,
+        wickDownColor: TV_COLORS.down,
+        autoscaleInfoProvider: autoscale,
+      });
+
+    case 'candles':
+    default:
+      return chart.addCandlestickSeries({
+        upColor: TV_COLORS.up,
+        downColor: TV_COLORS.down,
+        borderUpColor: TV_COLORS.up,
+        borderDownColor: TV_COLORS.down,
+        wickUpColor: TV_COLORS.up,
+        wickDownColor: TV_COLORS.down,
+        autoscaleInfoProvider: autoscale,
+      });
+  }
+}
+
+/** Bulk-set the data for a series in the right shape for its chart type. */
+export function updateSeriesData(series, chartType, candles) {
+  if (!series) return;
+  if (!candles || !candles.length) {
+    try { series.setData([]); } catch (_) {}
+    return;
+  }
+  try {
+    switch (chartType) {
+      case 'line':
+      case 'stepLine':
+      case 'area': {
+        series.setData(convertToLineData(candles));
+        break;
+      }
+      case 'lineMarkers': {
+        series.setData(convertToLineData(candles));
+        // Markers — placed at every candle. Small + subtle so they don't
+        // overpower the line; brand-yellow keeps them on-theme.
+        try {
+          series.setMarkers(candles.map((c) => ({
+            time: c.time,
+            position: 'inBar',
+            shape: 'circle',
+            color: '#FCD535',
+            size: 0.5,
+          })));
+        } catch (_) {}
+        break;
+      }
+      case 'baseline': {
+        series.setData(convertToLineData(candles));
+        // Use median close as the baseline so the up/down fills feel balanced.
+        const closes = candles.map((c) => c.close).filter(Number.isFinite).sort((a, b) => a - b);
+        const median = closes[Math.floor(closes.length / 2)] ?? 0;
+        try {
+          series.applyOptions({ baseValue: { type: 'price', price: median } });
+        } catch (_) {}
+        break;
+      }
+      case 'histogram': {
+        series.setData(convertToVolumeData(candles));
+        break;
+      }
+      case 'heikinAshi': {
+        series.setData(convertToHeikinAshi(candles));
+        break;
+      }
+      case 'bars':
+      case 'candles':
+      case 'hollowCandles':
+      default:
+        series.setData(candles);
+        break;
+    }
+  } catch (err) {
+    console.warn('[PriceChart] setData failed:', err.message);
+  }
+}
+
+/** Bulk-set the volume histogram from candle data, color-coded by direction. */
+function _setVolumeData(volSeries, candles) {
+  if (!volSeries || !candles?.length) return;
+  try {
+    volSeries.setData(
+      candles.map((c) => ({
+        time: c.time,
+        value: Number(c.volume) || 0,
+        color: c.close >= c.open ? TV_COLORS.volumeUp : TV_COLORS.volumeDown,
+      }))
+    );
+  } catch (_) {}
+}
+
+/** Push a single volume point on a tick. */
+function _updateVolumePoint(volSeries, candle) {
+  if (!volSeries || !candle) return;
+  try {
+    volSeries.update({
+      time: candle.time,
+      value: Number(candle.volume) || 0,
+      color: candle.close >= candle.open ? TV_COLORS.volumeUp : TV_COLORS.volumeDown,
+    });
+  } catch (_) {}
+}
+
+/** Recolor the series' built-in last-price line to match the current candle's direction. */
+function _updateLastPriceLineColor(series, candles) {
+  if (!series || !candles?.length) return;
+  const last = candles[candles.length - 1];
+  if (!last) return;
+  const color = last.close >= last.open ? TV_COLORS.up : TV_COLORS.down;
+  try { series.applyOptions({ priceLineColor: color }); } catch (_) {}
+}
+
+/** Incremental tick update for a single new/updated candle bucket. */
+function updateSeriesPoint(series, chartType, point, allCandles) {
+  if (!series) return;
+  try {
+    switch (chartType) {
+      case 'line':
+      case 'stepLine':
+      case 'area':
+      case 'baseline':
+        series.update({ time: point.time, value: Number(point.close) });
+        break;
+      case 'lineMarkers':
+        series.update({ time: point.time, value: Number(point.close) });
+        // Refresh the marker set so the new candle gets one too.
+        try {
+          series.setMarkers(allCandles.map((c) => ({
+            time: c.time,
+            position: 'inBar',
+            shape: 'circle',
+            color: '#FCD535',
+            size: 0.5,
+          })));
+        } catch (_) {}
+        break;
+      case 'histogram':
+        series.update({
+          time: point.time,
+          value: Number(point.volume) || 0,
+          color: point.close >= point.open ? TV_COLORS.volumeUp : TV_COLORS.volumeDown,
+        });
+        break;
+      case 'heikinAshi': {
+        // HA needs the previous HA candle, so recompute the full HA series and
+        // update the latest point. O(N) but fine for ~500 candles per tick.
+        const ha = convertToHeikinAshi(allCandles);
+        const last = ha[ha.length - 1];
+        if (last) series.update(last);
+        break;
+      }
+      case 'bars':
+      case 'candles':
+      case 'hollowCandles':
+      default:
+        series.update(point);
+        break;
+    }
+  } catch (err) {
+    console.warn('[PriceChart] update() rejected:', err.message);
+  }
+}
+
 const TF_OPTIONS = ['1m', '5m', '15m', '1h', '4h', '1d'];
 
-// Indicator presets — user can toggle on/off. Each adds one or more line series.
 const INDICATOR_DEFAULTS = {
   ema12: false,
   ema26: false,
@@ -55,83 +428,78 @@ export default function PriceChart({
   positions = [],
   pendingPreview = null,
   pricePrecision = 2,
+  // Optional account/instrument summary rendered as a top-right overlay
+  // on the chart (matches the TradingView-reference layout).
+  infoStrip = null,
 }) {
   const containerRef = useRef(null);
   const rsiContainerRef = useRef(null);
   const macdContainerRef = useRef(null);
   const chartRef = useRef(null);
-  const candleSeriesRef = useRef(null);
-  const overlayRef = useRef({}); // { ema12: series, ... }
-  const subPanelChartsRef = useRef({}); // { rsi, macd }
-  // Map of priceLine ID → priceLine instance, so we can diff/remove cleanly.
-  // Key format: "<kind>:<id>:<role>" e.g. "order:abc123:trigger", "pos:xyz:sl".
+  const candleSeriesRef = useRef(null);  // main series — type swaps but ref name stays
+  const overlayRef = useRef({});
+  const subPanelChartsRef = useRef({});
   const priceLinesRef = useRef(new Map());
-  // Latest candles snapshot — read by the series' autoscaleInfoProvider closure.
-  // Lives in a ref because the provider is created once at chart-init time
-  // but needs the most recent data on every paint.
   const candlesRef = useRef([]);
+  // Volume histogram series — lives on its own overlay price scale (bottom
+  // 25% of the chart). Recreated together with the main series on chart-
+  // type change so it doesn't survive into a chart type where it shouldn't.
+  const volumeSeriesRef = useRef(null);
+  // Holds the price levels of every active order / SL / TP / preview / live
+  // line so the autoscale provider can include them in the y-axis range —
+  // ensures user-placed price lines are always visible on the chart.
+  const extraPricesRef = useRef([]);
 
   const [indicators, setIndicators] = useState(INDICATOR_DEFAULTS);
   const [candles, setCandles] = useState([]);
+  const [chartType, setChartType] = useState('candles');
+  const [chartTypeOpen, setChartTypeOpen] = useState(false);
   const theme = useThemeStore((s) => s.theme);
 
-  // Initialize main chart once
+  // ─── 1. Initialize chart (no main series yet — handled by chartType effect) ─
   useEffect(() => {
     if (!containerRef.current) return;
-    const pal = chartPalette();
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
-      height: 400,
-      layout: { background: { type: 'solid', color: pal.background }, textColor: pal.text },
-      grid: { vertLines: { color: pal.grid }, horzLines: { color: pal.grid } },
-      // Wider bars + a small right-side margin so live candles don't hug the
-      // edge. Default barSpacing is 6px which makes 500 candles look squished
-      // on a normal-width chart; 10px gives a TradingView-like density.
+      height: 460,
+      layout: {
+        // TradingView-default dark bg — keeps chart aesthetic consistent
+        // regardless of app theme so candles read at full contrast.
+        background: { type: 'solid', color: TV_COLORS.background },
+        textColor: TV_COLORS.text,
+      },
+      grid: {
+        vertLines: { color: TV_COLORS.grid },
+        horzLines: { color: TV_COLORS.grid },
+      },
       timeScale: {
         timeVisible: true,
         secondsVisible: false,
-        borderColor: pal.border,
-        barSpacing: 10,
-        rightOffset: 8,
+        borderColor: TV_COLORS.border,
+        // Tighter spacing matches TradingView reference — more candles
+        // visible at a glance, less empty space.
+        barSpacing: 8,
+        minBarSpacing: 4,
+        rightOffset: 12,
       },
-      rightPriceScale: { borderColor: pal.border },
-      crosshair: { mode: 1 },
-    });
-    const series = chart.addCandlestickSeries({
-      upColor: '#10b981', downColor: '#ef4444',
-      borderUpColor: '#10b981', borderDownColor: '#ef4444',
-      wickUpColor: '#10b981', wickDownColor: '#ef4444',
-      // Default auto-scale fits everything including price-lines and one-off
-      // bad-tick wicks, which can squash candles into a sliver. Clip to the
-      // 1st–99th percentile of recent candle highs/lows so a single outlier
-      // doesn't blow up the y-axis.
-      autoscaleInfoProvider: (original) => {
-        const data = candlesRef.current;
-        if (!data || data.length < 5) return original();
-        const lows = data.map((c) => c.low).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
-        const highs = data.map((c) => c.high).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
-        if (!lows.length || !highs.length) return original();
-        const lo = lows[Math.floor(lows.length * 0.01)];
-        const hi = highs[Math.min(highs.length - 1, Math.ceil(highs.length * 0.99))];
-        // Always include the most recent close so the live tick stays in view.
-        const last = data[data.length - 1];
-        return {
-          priceRange: {
-            minValue: Math.min(lo, last.close),
-            maxValue: Math.max(hi, last.close),
-          },
-          margins: { above: 20, below: 20 },
-        };
+      rightPriceScale: {
+        borderColor: TV_COLORS.border,
+        // Tight top margin (8%) + volume row reserved at the bottom 25%
+        // gives candles ~67% of the height — matches the reference.
+        autoScale: true,
+        scaleMargins: { top: 0.08, bottom: 0.25 },
+      },
+      crosshair: {
+        mode: 1, // Magnet — snaps to OHLC values
+        vertLine: { width: 1, color: TV_COLORS.crosshair, style: 2, labelBackgroundColor: TV_COLORS.background },
+        horzLine: { width: 1, color: TV_COLORS.crosshair, style: 2, labelBackgroundColor: TV_COLORS.background },
       },
     });
     chartRef.current = chart;
-    candleSeriesRef.current = series;
 
     const resize = () => {
       if (chart && containerRef.current) {
         const w = containerRef.current.clientWidth;
-        // Only apply when width is meaningful — a hidden parent (display:none
-        // or a stacked tab) has clientWidth=0, which collapses the chart.
         if (w > 0) chart.applyOptions({ width: w });
       }
       Object.values(subPanelChartsRef.current).forEach((sc) => {
@@ -143,10 +511,6 @@ export default function PriceChart({
     };
     window.addEventListener('resize', resize);
 
-    // ResizeObserver catches container size changes from layout reflows
-    // (sidebar collapse, responsive grid swap, modal open) that don't fire
-    // a window resize event — without it the chart stays at its initial
-    // width forever in those cases.
     let ro = null;
     if (typeof ResizeObserver !== 'undefined' && containerRef.current) {
       ro = new ResizeObserver(resize);
@@ -156,15 +520,11 @@ export default function PriceChart({
     return () => {
       window.removeEventListener('resize', resize);
       if (ro) ro.disconnect();
-      // Dispose any sub-panel (RSI/MACD) charts that were created. Pre-fix
-      // these only got cleaned up when the user toggled the indicator off;
-      // navigating away with an indicator active leaked the chart object
-      // and its DOM listeners every time.
       for (const sc of Object.values(subPanelChartsRef.current)) {
-        try { sc.chart?.remove(); } catch (_) { /* already disposed */ }
+        try { sc.chart?.remove(); } catch (_) {}
       }
       subPanelChartsRef.current = {};
-      chart.remove();
+      try { chart.remove(); } catch (_) {}
       chartRef.current = null;
       candleSeriesRef.current = null;
       overlayRef.current = {};
@@ -172,20 +532,12 @@ export default function PriceChart({
     };
   }, []);
 
-  // Re-apply chart palette when the theme toggles. Without this, switching
-  // dark→light leaves the chart with a dark background while the rest of
-  // the app turns light. We also re-skin any sub-panel charts in flight
-  // (RSI/MACD) the same way.
+  // ─── 2. Theme re-skin ────────────────────────────────────────────────
+  // Main chart keeps the fixed TV-default canvas (#131722) regardless of
+  // theme — chart aesthetic is intentionally constant. Sub-panels still
+  // follow the app theme.
   useEffect(() => {
     const pal = chartPalette();
-    try {
-      chartRef.current?.applyOptions({
-        layout: { background: { type: 'solid', color: pal.background }, textColor: pal.text },
-        grid: { vertLines: { color: pal.grid }, horzLines: { color: pal.grid } },
-        timeScale: { borderColor: pal.border },
-        rightPriceScale: { borderColor: pal.border },
-      });
-    } catch (_) { /* main chart not ready */ }
     for (const sc of Object.values(subPanelChartsRef.current)) {
       try {
         sc.chart?.applyOptions({
@@ -194,38 +546,99 @@ export default function PriceChart({
           timeScale: { borderColor: pal.border },
           rightPriceScale: { borderColor: pal.border },
         });
-      } catch (_) { /* sub-panel disposed */ }
+      } catch (_) {}
     }
   }, [theme]);
 
-  // Match price-axis precision to the instrument so EURUSD shows 1.17852
-  // instead of being rounded to 1.18, and BTC stays at 2 decimals.
-  // minMove of 10^-precision is what lightweight-charts uses to round
-  // y-axis labels and crosshair readouts.
+  // ─── 3. Main series swap on chart-type change ────────────────────────
+  // Removes the old series (memory leak guard), wipes price lines (which
+  // were attached to the old series and have to be recreated on the new
+  // one — the price-lines effect below has chartType in its deps for that),
+  // creates the new series, applies precision + existing data.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    // Tear down old main + volume series and price lines.
+    if (candleSeriesRef.current) {
+      try { chart.removeSeries(candleSeriesRef.current); } catch (_) {}
+      candleSeriesRef.current = null;
+    }
+    if (volumeSeriesRef.current) {
+      try { chart.removeSeries(volumeSeriesRef.current); } catch (_) {}
+      volumeSeriesRef.current = null;
+    }
+    priceLinesRef.current.clear();
+
+    const series = createSeriesByChartType(chart, chartType, candlesRef, extraPricesRef);
+    candleSeriesRef.current = series;
+
+    // Apply price precision matching the instrument, plus a dashed
+    // last-price line in candle-direction color (updated dynamically per
+    // tick below in the WS handler).
+    const p = Math.max(0, Math.min(8, Number(pricePrecision) || 2));
+    const minMove = Number(`1e-${p}`) || 0.01;
+    try {
+      if (chartType !== 'histogram') {
+        series.applyOptions({
+          priceFormat: { type: 'price', precision: p, minMove },
+          priceLineVisible: true,
+          priceLineStyle: 2, // dashed
+          priceLineWidth: 1,
+          priceLineColor: TV_COLORS.up,
+        });
+      }
+    } catch (_) {}
+
+    // Volume histogram lives in the bottom 22% of the chart on its own
+    // overlay price scale. Skip for the 'histogram' chart-type (where the
+    // main series IS already volume).
+    if (chartType !== 'histogram') {
+      try {
+        const volSeries = chart.addHistogramSeries({
+          priceFormat: { type: 'volume' },
+          priceScaleId: 'volume',
+          color: TV_COLORS.volumeUp,
+        });
+        chart.priceScale('volume').applyOptions({
+          scaleMargins: { top: 0.78, bottom: 0 },
+        });
+        volumeSeriesRef.current = volSeries;
+      } catch (_) { /* fail-safe */ }
+    }
+
+    // Re-paint with the data we already have so the chart isn't blank
+    // until the next WS tick.
+    if (candlesRef.current.length) {
+      updateSeriesData(series, chartType, candlesRef.current);
+      _setVolumeData(volumeSeriesRef.current, candlesRef.current);
+      _updateLastPriceLineColor(series, candlesRef.current);
+    }
+  }, [chartType]);
+
+  // Apply price precision when it changes (without recreating the series).
   useEffect(() => {
     if (!candleSeriesRef.current) return;
+    if (chartType === 'histogram') return; // volume formatter
     const p = Math.max(0, Math.min(8, Number(pricePrecision) || 2));
     const minMove = Number(`1e-${p}`) || 0.01;
     try {
       candleSeriesRef.current.applyOptions({
         priceFormat: { type: 'price', precision: p, minMove },
       });
-    } catch (_) { /* series not ready */ }
-  }, [pricePrecision]);
+    } catch (_) {}
+  }, [pricePrecision, chartType]);
 
-  // Load candles + subscribe to live updates
+  // ─── 4. Load candles + subscribe to live updates ─────────────────────
   useEffect(() => {
     if (!candleSeriesRef.current) return;
     let cancelled = false;
     let unsub = null;
 
-    // Clear old data immediately on symbol/timeframe switch so the chart
-    // doesn't show stale candles from the previous symbol while the new
-    // historical fetch is in flight.
+    // Clear stale data immediately on symbol/timeframe switch.
     try {
       candleSeriesRef.current.setData([]);
       candlesRef.current = [];
-    } catch (_) { /* chart not ready yet */ }
+    } catch (_) {}
     setCandles([]);
 
     const load = async () => {
@@ -235,10 +648,6 @@ export default function PriceChart({
         });
         if (cancelled) return;
         const raw = Array.isArray(data?.data) ? data.data : [];
-        // Map → numeric form, drop bad rows, and guarantee strictly-ascending
-        // time order. lightweight-charts throws if `setData` receives a
-        // non-monotonic series, and dedupe protects against the candle service
-        // rarely emitting two rows for the same bucket.
         const formatted = raw
           .map((c) => ({
             time: Math.floor(new Date(c.openTime).getTime() / 1000),
@@ -246,6 +655,7 @@ export default function PriceChart({
             high: Number(c.high),
             low: Number(c.low),
             close: Number(c.close),
+            volume: Number(c.volume) || 0,
           }))
           .filter((c) => Number.isFinite(c.time) && Number.isFinite(c.open))
           .sort((a, b) => a.time - b.time);
@@ -256,20 +666,18 @@ export default function PriceChart({
           if (last && last.time === c.time) deduped[deduped.length - 1] = c;
           else deduped.push(c);
         }
-        candleSeriesRef.current.setData(deduped);
         candlesRef.current = deduped;
         setCandles(deduped);
-        // Force the price scale to reapply autoscaleInfoProvider against the
-        // freshly-loaded data; otherwise the chart can hold the previous
-        // symbol's range until the next tick.
+        // Push to series in the chart-type-correct shape.
+        updateSeriesData(candleSeriesRef.current, chartType, deduped);
+        _setVolumeData(volumeSeriesRef.current, deduped);
+        _updateLastPriceLineColor(candleSeriesRef.current, deduped);
         try { candleSeriesRef.current.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
-        // Default viewport: show the last ~90 candles (TradingView-style
-        // density). Without this, the chart fits all 500 candles into view
-        // and each bar collapses to 1-2px wide. The rightOffset:8 in the
-        // time-scale options gives the live candle a few empty bars of
-        // breathing room on the right.
         try {
-          const visibleCount = 90;
+          // 120 candles × 8px barSpacing ≈ 960px of candle area —
+          // matches the autoscale window (recent 100) with a small
+          // lead-in so price-scale fit feels stable as new bars arrive.
+          const visibleCount = 120;
           if (deduped.length > visibleCount && chartRef.current) {
             chartRef.current.timeScale().setVisibleLogicalRange({
               from: deduped.length - visibleCount,
@@ -278,10 +686,8 @@ export default function PriceChart({
           } else if (chartRef.current) {
             chartRef.current.timeScale().fitContent();
           }
-        } catch (_) { /* time-scale not ready yet */ }
-      } catch (e) {
-        // ignore
-      }
+        } catch (_) {}
+      } catch (e) { /* ignore */ }
     };
     load();
 
@@ -293,45 +699,49 @@ export default function PriceChart({
         high: Number(candle.high),
         low: Number(candle.low),
         close: Number(candle.close),
+        volume: Number(candle.volume) || 0,
       };
-      // Guard against bad inputs and out-of-order ticks. lightweight-charts
-      // throws "Value is null" or "Cannot update oldest data" when fed a
-      // point whose time predates the latest in the series — happens when
-      // a stale tick lands after a faster newer one (e.g. across a feed
-      // failover).
       if (!Number.isFinite(point.time) || !Number.isFinite(point.close)) return;
       const lastInRef = candlesRef.current[candlesRef.current.length - 1];
       if (lastInRef && point.time < lastInRef.time) return;
 
-      try {
-        candleSeriesRef.current.update(point);
-      } catch (err) {
-        // Defensive: if lightweight-charts still rejects (e.g. internal
-        // state diverged from candlesRef), don't crash the whole chart —
-        // log once and keep the previous good frame.
-        console.warn('[PriceChart] update() rejected:', err.message);
-        return;
+      // Update the working set first so updateSeriesPoint (and HA conversion)
+      // sees the latest bucket.
+      let nextRef;
+      if (lastInRef && lastInRef.time === point.time) {
+        nextRef = candlesRef.current.slice(0, -1).concat(point);
+      } else {
+        nextRef = candlesRef.current.concat(point);
       }
-      setCandles((prev) => {
-        const last = prev[prev.length - 1];
-        const next = last && last.time === point.time
-          ? [...prev.slice(0, -1), point]
-          : [...prev, point];
-        candlesRef.current = next;
-        return next;
-      });
+      candlesRef.current = nextRef;
+
+      updateSeriesPoint(candleSeriesRef.current, chartType, point, nextRef);
+      _updateVolumePoint(volumeSeriesRef.current, point);
+      _updateLastPriceLineColor(candleSeriesRef.current, nextRef);
+      setCandles(nextRef);
+
+      // Auto-scroll: if the latest bar is currently visible (user hasn't
+      // panned away), keep it in view. Otherwise leave the user's chosen
+      // scroll position untouched so live updates don't yank them back.
+      try {
+        const ts = chartRef.current?.timeScale();
+        const range = ts?.getVisibleLogicalRange();
+        if (range && range.to >= nextRef.length - 2) {
+          ts.scrollToRealTime();
+        }
+      } catch (_) { /* timeScale may not be ready */ }
     });
 
     return () => {
       cancelled = true;
       if (unsub) unsub();
     };
-  }, [symbol, timeframe]);
+  }, [symbol, timeframe, chartType]);
 
   // Compute closes once per candles update
   const closes = useMemo(() => candles.map((c) => c.close), [candles]);
 
-  // Manage EMA overlay series
+  // ─── 5. EMA overlays ─────────────────────────────────────────────────
   useEffect(() => {
     if (!chartRef.current || !candles.length) return;
 
@@ -348,14 +758,17 @@ export default function PriceChart({
       if (enabled && !exists) {
         const series = chartRef.current.addLineSeries({
           color: cfg.color,
-          lineWidth: 1.5,
+          // 2px is the sweet spot — 1.5px disappeared against candles,
+          // 3px over-emphasizes a derived line vs the actual price.
+          lineWidth: 2,
           priceLineVisible: false,
           lastValueVisible: true,
+          crosshairMarkerVisible: true,
           title: `EMA ${cfg.period}`,
         });
         overlayRef.current[cfg.key] = series;
       } else if (!enabled && exists) {
-        chartRef.current.removeSeries(exists);
+        try { chartRef.current.removeSeries(exists); } catch (_) {}
         delete overlayRef.current[cfg.key];
       }
       if (enabled && overlayRef.current[cfg.key]) {
@@ -368,7 +781,7 @@ export default function PriceChart({
     }
   }, [indicators.ema12, indicators.ema26, indicators.ema50, indicators.ema200, candles, closes]);
 
-  // RSI sub-panel
+  // ─── 6. RSI sub-panel ────────────────────────────────────────────────
   useEffect(() => {
     const enabled = indicators.rsi;
     const container = rsiContainerRef.current;
@@ -377,7 +790,7 @@ export default function PriceChart({
     if (!enabled) {
       const existing = subPanelChartsRef.current.rsi;
       if (existing) {
-        existing.chart.remove();
+        try { existing.chart.remove(); } catch (_) {}
         delete subPanelChartsRef.current.rsi;
       }
       return;
@@ -394,7 +807,6 @@ export default function PriceChart({
         rightPriceScale: { borderColor: pal.border },
       });
       const series = chart.addLineSeries({ color: '#8b5cf6', lineWidth: 1.5, title: 'RSI 14' });
-      // Reference lines at 30 and 70
       const overbought = chart.addLineSeries({ color: '#ef4444', lineWidth: 1, lineStyle: 2 });
       const oversold = chart.addLineSeries({ color: '#10b981', lineWidth: 1, lineStyle: 2 });
       subPanelChartsRef.current.rsi = { chart, series, overbought, oversold, container };
@@ -408,7 +820,7 @@ export default function PriceChart({
     oversold.setData(rsiData.map((d) => ({ time: d.time, value: 30 })));
   }, [indicators.rsi, candles, closes]);
 
-  // Filter inputs to the symbol shown on this chart (parent passes everything).
+  // ─── 7. Symbol-scoped order/position filters ─────────────────────────
   const symbolOrders = useMemo(
     () => (openOrders || []).filter((o) => o.symbol === symbol),
     [openOrders, symbol]
@@ -418,20 +830,25 @@ export default function PriceChart({
     [positions, symbol]
   );
 
-  // Reconcile price lines on the candle series whenever the inputs change.
-  // We compute the desired set, diff against the live set, and add/remove only
-  // the changed ones — TradingView Lightweight charts has no "setAll" API.
+  // ─── 8. Price lines (orders / positions / live / preview) ────────────
+  // chartType is in deps so the line set is re-applied on the new series
+  // after a chart-type swap (priceLinesRef.current was cleared in #3).
   useEffect(() => {
     const series = candleSeriesRef.current;
     if (!series) return;
+    // Histograms render volume on a different scale, so price lines drawn at
+    // price levels would land off-axis and look broken — skip them.
+    if (chartType === 'histogram') return;
 
-    const desired = new Map(); // key → { price, options }
+    const desired = new Map();
     const fmt = (v) => Number(v).toFixed(Math.min(pricePrecision, 8));
 
-    // 1) Pending LIMIT orders → solid line at limit price
-    // 2) Pending STOP orders → dashed line at stopPrice; optional dotted at limit
+    // Compact label format: 2-3 chars of action prefix only. The price
+    // itself shows on the right axis via axisLabelVisible:true, so we
+    // don't repeat it inside the chart area where it would overlap candles.
     for (const o of symbolOrders) {
       const sideColor = o.side === 'BUY' ? '#10b981' : '#ef4444';
+      const sidePrefix = o.side === 'BUY' ? 'BUY' : 'SELL';
       if (o.type === 'LIMIT' && o.price) {
         desired.set(`order:${o._id}:limit`, {
           price: Number(o.price),
@@ -439,7 +856,7 @@ export default function PriceChart({
           lineWidth: 1,
           lineStyle: 0,
           axisLabelVisible: true,
-          title: `${o.side} LIMIT ${fmt(o.price)}`,
+          title: `${sidePrefix} LIM`,
         });
       } else if (o.type === 'STOP') {
         if (o.stopPrice) {
@@ -447,9 +864,9 @@ export default function PriceChart({
             price: Number(o.stopPrice),
             color: sideColor,
             lineWidth: 1,
-            lineStyle: 2, // dashed
+            lineStyle: 2,
             axisLabelVisible: true,
-            title: `${o.side} STOP ${fmt(o.stopPrice)}`,
+            title: `${sidePrefix} STP`,
           });
         }
         if (o.price) {
@@ -457,17 +874,14 @@ export default function PriceChart({
             price: Number(o.price),
             color: sideColor,
             lineWidth: 1,
-            lineStyle: 1, // dotted
+            lineStyle: 1,
             axisLabelVisible: false,
-            title: `STOP-LIM ${fmt(o.price)}`,
+            title: 'STP-LIM',
           });
         }
       }
     }
 
-    // 3) Open positions → SL (red), TP (green). Entry line intentionally
-    //    omitted to keep the chart uncluttered; entry price stays visible
-    //    in the positions table.
     for (const p of symbolPositions) {
       if (p.stopLoss) {
         desired.set(`pos:${p._id}:sl`, {
@@ -476,7 +890,7 @@ export default function PriceChart({
           lineWidth: 1,
           lineStyle: 2,
           axisLabelVisible: true,
-          title: `SL ${fmt(p.stopLoss)}`,
+          title: 'SL',
         });
       }
       if (p.takeProfit) {
@@ -486,12 +900,11 @@ export default function PriceChart({
           lineWidth: 1,
           lineStyle: 2,
           axisLabelVisible: true,
-          title: `TP ${fmt(p.takeProfit)}`,
+          title: 'TP',
         });
       }
     }
 
-    // 4) Live last price — subtle teal dotted line on the right axis
     if (livePrice && Number(livePrice) > 0) {
       desired.set('live:last', {
         price: Number(livePrice),
@@ -503,19 +916,17 @@ export default function PriceChart({
       });
     }
 
-    // 5) Pending order preview from OrderForm — only when user is typing
     if (pendingPreview && pendingPreview.price && Number(pendingPreview.price) > 0) {
       desired.set('preview:form', {
         price: Number(pendingPreview.price),
         color: pendingPreview.side === 'BUY' ? '#10b981' : '#ef4444',
-        lineWidth: 2,
-        lineStyle: 1, // dotted to distinguish from a placed order
+        lineWidth: 1,
+        lineStyle: 1, // dotted
         axisLabelVisible: true,
-        title: `↺ ${pendingPreview.side} ${pendingPreview.type}`,
+        title: pendingPreview.side === 'BUY' ? '↺ BUY' : '↺ SELL',
       });
     }
 
-    // Diff: remove keys no longer desired, add new ones, update price-shifted ones
     const live = priceLinesRef.current;
     for (const [key, line] of live.entries()) {
       const want = desired.get(key);
@@ -527,7 +938,6 @@ export default function PriceChart({
     for (const [key, opts] of desired.entries()) {
       const existing = live.get(key);
       if (existing) {
-        // applyOptions accepts the same shape; cheap update path.
         try { existing.applyOptions(opts); } catch (_) {}
       } else {
         try {
@@ -536,17 +946,19 @@ export default function PriceChart({
         } catch (_) {}
       }
     }
-  }, [symbolOrders, symbolPositions, livePrice, pendingPreview, pricePrecision]);
+    // Refresh the prices the autoscale provider will include so user-placed
+    // lines (LIMIT/STOP/SL/TP) are always inside the visible range, even
+    // when far from the current market.
+    extraPricesRef.current = [...desired.values()].map((o) => o.price);
+    // Force the price scale to recompute now that the extras have changed.
+    try { series.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
+  }, [symbolOrders, symbolPositions, livePrice, pendingPreview, pricePrecision, chartType]);
 
-  // Cleanup all price lines when the component unmounts (chart.remove already
-  // disposes them, but if we ever swap series we want a clean ref).
   useEffect(() => {
-    return () => {
-      priceLinesRef.current.clear();
-    };
+    return () => { priceLinesRef.current.clear(); };
   }, []);
 
-  // MACD sub-panel
+  // ─── 9. MACD sub-panel ───────────────────────────────────────────────
   useEffect(() => {
     const enabled = indicators.macd;
     const container = macdContainerRef.current;
@@ -555,7 +967,7 @@ export default function PriceChart({
     if (!enabled) {
       const existing = subPanelChartsRef.current.macd;
       if (existing) {
-        existing.chart.remove();
+        try { existing.chart.remove(); } catch (_) {}
         delete subPanelChartsRef.current.macd;
       }
       return;
@@ -590,20 +1002,72 @@ export default function PriceChart({
   }, [indicators.macd, candles, closes]);
 
   const toggle = (key) => setIndicators((prev) => ({ ...prev, [key]: !prev[key] }));
+  const currentType = CHART_TYPES.find((t) => t.id === chartType) || CHART_TYPES[0];
 
   return (
-    <div className="card overflow-hidden">
-      {/* Premium chart header — symbol pill on the left, indicator pills +
-          timeframe segmented control on the right. Gradient inset on the
-          bottom border so the header reads as "lifted" off the chart. */}
+    <div className="card overflow-visible">
+      {/* Premium header — chart type dropdown + indicator pills + timeframe */}
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-border-dark flex-wrap gap-2 bg-gradient-to-r from-bg-card to-bg-card/50">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="w-1.5 h-1.5 rounded-full bg-bull animate-pulse" />
           <span className="text-sm font-bold text-white">{symbol}</span>
           <span className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold ml-1">
             {timeframe}
           </span>
+
+          {/* Chart-type dropdown */}
+          <div className="relative ml-2">
+            <button
+              type="button"
+              onClick={() => setChartTypeOpen((o) => !o)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border-dark bg-bg-panel hover:border-border-accent hover:bg-bg-hover text-xs font-semibold text-text-secondary hover:text-text-primary transition-colors"
+              title="Chart type"
+            >
+              <span className="text-text-muted">{currentType.glyph}</span>
+              <span>{currentType.label}</span>
+              <span className={`text-text-muted text-[10px] transition-transform ${chartTypeOpen ? 'rotate-180' : ''}`}>▾</span>
+            </button>
+            {chartTypeOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setChartTypeOpen(false)} />
+                <div className="absolute left-0 top-full mt-1.5 w-56 z-50 rounded-lg border border-border-dark bg-bg-card shadow-2xl overflow-hidden">
+                  <div className="px-3 py-2 border-b border-border-dark text-[10px] uppercase tracking-[0.15em] font-bold text-text-muted">
+                    Chart Type
+                  </div>
+                  <div className="max-h-[420px] overflow-y-auto py-1">
+                    {CHART_TYPES.map((t) => {
+                      const active = t.id === chartType;
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          onClick={() => {
+                            setChartType(t.id);
+                            setChartTypeOpen(false);
+                          }}
+                          className={`w-full flex items-center gap-3 px-3 py-2 text-xs font-medium transition-colors ${
+                            active
+                              ? 'bg-primary-500/10 text-primary-500'
+                              : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+                          }`}
+                        >
+                          <span className={active ? 'text-primary-500' : 'text-text-muted'}>{t.glyph}</span>
+                          <span className="flex-1 text-left">{t.label}</span>
+                          {active && (
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="20 6 9 17 4 12" />
+                            </svg>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </div>
+
         <div className="flex items-center gap-3 flex-wrap">
           {/* Indicator pills */}
           <div className="flex gap-1">
@@ -614,8 +1078,7 @@ export default function PriceChart({
             <IndButton active={indicators.rsi} onClick={() => toggle('rsi')} color="#8b5cf6">RSI</IndButton>
             <IndButton active={indicators.macd} onClick={() => toggle('macd')} color="#2dd4bf">MACD</IndButton>
           </div>
-          {/* Timeframe segmented control — single border-wrapped group with
-              an active pill that pops in yellow */}
+          {/* Timeframe segmented control */}
           <div className="flex items-center p-0.5 rounded-md border border-border-dark bg-bg-panel">
             {TF_OPTIONS.map((tf) => (
               <button
@@ -639,8 +1102,29 @@ export default function PriceChart({
         </div>
       </div>
 
-      {/* Main candlestick chart */}
-      <div ref={containerRef} className="w-full" />
+      {/* Main chart canvas + top-right info-strip overlay */}
+      <div className="relative w-full" style={{ background: TV_COLORS.background }}>
+        <div ref={containerRef} className="w-full" />
+        {infoStrip && (
+          <div className="pointer-events-none absolute top-2 left-2 z-10 flex items-center gap-3 px-3 py-1.5 rounded-md bg-black/30 backdrop-blur-sm border border-white/5 text-[11px] font-medium tracking-wide">
+            {infoStrip.margin != null && (
+              <span className="text-text-muted">
+                Margin <span className="text-bull font-semibold">{infoStrip.margin}</span>
+              </span>
+            )}
+            {infoStrip.leverage != null && (
+              <span className="text-text-muted">
+                Leverage <span className="text-indigo-400 font-semibold">{infoStrip.leverage}</span>
+              </span>
+            )}
+            {infoStrip.brokerage != null && (
+              <span className="text-text-muted">
+                Brokerage <span className="text-pink-400 font-semibold">{infoStrip.brokerage}</span>
+              </span>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* RSI sub-panel */}
       {indicators.rsi && (
@@ -682,5 +1166,98 @@ function IndButton({ active, onClick, color, children }) {
     >
       {children}
     </button>
+  );
+}
+
+// ─── Inline glyphs for the chart-type dropdown ─────────────────────────
+// Tiny SVG indicators (12×12) so the dropdown reads at a glance without
+// pulling in an icon library. Fill `currentColor` so they tint with the
+// surrounding text class (active=yellow, inactive=muted).
+const G = (props) => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props} />
+);
+
+function CandleGlyph() {
+  return (
+    <G>
+      <line x1="6" y1="3" x2="6" y2="21" />
+      <rect x="4" y="7" width="4" height="10" fill="currentColor" />
+      <line x1="18" y1="2" x2="18" y2="22" />
+      <rect x="16" y="10" width="4" height="8" fill="currentColor" opacity="0.3" />
+    </G>
+  );
+}
+function BarsGlyph() {
+  return (
+    <G>
+      <line x1="6" y1="3" x2="6" y2="21" />
+      <line x1="3" y1="8" x2="6" y2="8" />
+      <line x1="6" y1="14" x2="9" y2="14" />
+      <line x1="18" y1="3" x2="18" y2="21" />
+      <line x1="15" y1="10" x2="18" y2="10" />
+      <line x1="18" y1="18" x2="21" y2="18" />
+    </G>
+  );
+}
+function HollowGlyph() {
+  return (
+    <G>
+      <line x1="6" y1="3" x2="6" y2="21" />
+      <rect x="4" y="7" width="4" height="10" />
+      <line x1="18" y1="2" x2="18" y2="22" />
+      <rect x="16" y="10" width="4" height="8" fill="currentColor" opacity="0.3" />
+    </G>
+  );
+}
+function LineGlyph() {
+  return <G><polyline points="3 17 9 11 14 14 21 6" /></G>;
+}
+function LineMarkersGlyph() {
+  return (
+    <G>
+      <polyline points="3 17 9 11 14 14 21 6" />
+      <circle cx="9" cy="11" r="1.4" fill="currentColor" />
+      <circle cx="14" cy="14" r="1.4" fill="currentColor" />
+      <circle cx="21" cy="6" r="1.4" fill="currentColor" />
+    </G>
+  );
+}
+function StepLineGlyph() {
+  return <G><polyline points="3 18 8 18 8 12 14 12 14 7 21 7" /></G>;
+}
+function AreaGlyph() {
+  return (
+    <G>
+      <polyline points="3 17 9 11 14 14 21 6" />
+      <path d="M3 17 L9 11 L14 14 L21 6 L21 21 L3 21 Z" fill="currentColor" opacity="0.25" stroke="none" />
+    </G>
+  );
+}
+function BaselineGlyph() {
+  return (
+    <G>
+      <line x1="3" y1="12" x2="21" y2="12" strokeDasharray="2,2" />
+      <polyline points="3 16 9 9 14 13 21 5" />
+    </G>
+  );
+}
+function HistogramGlyph() {
+  return (
+    <G>
+      <rect x="4" y="14" width="3" height="6" fill="currentColor" />
+      <rect x="9" y="9" width="3" height="11" fill="currentColor" />
+      <rect x="14" y="12" width="3" height="8" fill="currentColor" />
+      <rect x="19" y="6" width="3" height="14" fill="currentColor" />
+    </G>
+  );
+}
+function HeikinAshiGlyph() {
+  return (
+    <G>
+      <line x1="6" y1="4" x2="6" y2="20" />
+      <rect x="4" y="7" width="4" height="9" fill="currentColor" />
+      <line x1="14" y1="6" x2="14" y2="22" />
+      <rect x="12" y="10" width="4" height="8" fill="currentColor" opacity="0.4" />
+    </G>
   );
 }

@@ -4,6 +4,22 @@
 @tailwind components;
 @tailwind utilities;
 
+/* CSS variables drive all surface + text colors. Single root block here
+   defines the dark palette (the admin's only theme for now). Mirrors the
+   client app so styles stay consistent across surfaces. */
+:root {
+  --color-bg-dark: 15 15 18;
+  --color-bg-card: 26 26 31;
+  --color-bg-panel: 31 31 37;
+  --color-bg-hover: 42 42 48;
+  --color-bg-sidebar: 10 10 13;
+  --color-border-dark: 45 45 52;
+  --color-border-subtle: 31 31 37;
+  --color-text-primary: 255 255 255;
+  --color-text-secondary: 176 176 184;
+  --color-text-muted: 110 110 120;
+}
+
 @layer base {
   body {
     @apply bg-bg-dark text-text-primary antialiased;
@@ -15,45 +31,92 @@
 }
 
 @layer components {
-  .card { @apply bg-bg-card border border-border-dark rounded-lg shadow-md; }
-
-  .btn {
-    @apply inline-flex items-center justify-center px-4 py-2 rounded-md font-semibold text-sm transition-all;
+  .card {
+    @apply bg-bg-card border border-border-dark rounded-lg;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
   }
+  .panel { @apply bg-bg-panel border border-border-dark rounded-xl; }
+
+  .btn { @apply inline-flex items-center justify-center px-4 py-2 rounded-md font-semibold text-sm transition-all duration-150; }
   .btn-primary {
-    @apply btn text-bg-dark;
+    @apply btn;
+    color: #111827;
     background: linear-gradient(180deg, #FFE74D 0%, #FCD535 100%);
   }
   .btn-primary:hover {
     background: linear-gradient(180deg, #FFDE26 0%, #E6BF1F 100%);
     transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(252, 213, 53, 0.25);
   }
-  .btn-secondary {
-    @apply btn bg-bg-hover hover:bg-bg-panel text-text-primary border border-border-dark;
-  }
-  .btn-bull {
-    @apply btn text-white;
-    background: linear-gradient(180deg, #00E676 0%, #00C853 100%);
-  }
-  .btn-bear {
-    @apply btn text-white;
-    background: linear-gradient(180deg, #FF5C8A 0%, #FF3D71 100%);
-  }
-  .btn-ghost {
-    @apply btn bg-transparent border border-border-dark hover:bg-bg-hover text-text-secondary hover:text-text-primary;
-  }
+  .btn-secondary { @apply btn bg-bg-hover hover:bg-bg-panel text-text-primary border border-border-dark; }
+  .btn-bull { @apply btn text-white; background: linear-gradient(180deg, #00E676 0%, #00C853 100%); }
+  .btn-bear { @apply btn text-white; background: linear-gradient(180deg, #FF5C8A 0%, #FF3D71 100%); }
+  .btn-ghost { @apply btn bg-transparent border border-border-dark hover:border-primary-500 hover:bg-bg-hover text-text-secondary hover:text-text-primary; }
+
   .input {
-    @apply w-full px-3 py-2.5 bg-bg-dark border border-border-dark rounded-md text-sm text-text-primary focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500/30 transition-all;
+    @apply w-full px-3 py-2.5 bg-bg-dark border border-border-dark rounded-md text-sm text-text-primary placeholder-text-muted focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500/30 transition-all;
   }
-  .label {
-    @apply block text-xs text-text-secondary mb-1.5 uppercase tracking-wider font-medium;
+  .label { @apply block text-xs text-text-secondary mb-1.5 uppercase tracking-wider font-medium; }
+
+  .table-row { @apply border-b border-border-dark hover:bg-bg-hover transition-colors; }
+
+  /* Sidebar nav — matching the client's premium look:
+     sectioned, pill-shaped active state, glowing left tab. */
+  .sidebar-elevated {
+    background: linear-gradient(180deg, rgb(var(--color-bg-sidebar)) 0%, rgb(var(--color-bg-dark)) 100%);
+    box-shadow: inset 0 1px 0 rgba(252, 213, 53, 0.25);
   }
-  .table-row {
-    @apply border-b border-border-dark hover:bg-bg-hover transition-colors;
+  .sidebar-link {
+    @apply relative flex items-center gap-3 px-3 py-2.5 text-sm rounded-lg text-text-secondary transition-colors duration-150;
   }
+  .sidebar-link:hover { @apply text-text-primary bg-bg-hover; }
+  .sidebar-link-icon { @apply text-text-muted transition-colors duration-150; }
+  .sidebar-link:hover .sidebar-link-icon { color: #FCD535; }
+
+  .sidebar-link-active {
+    color: #111827 !important;
+    background: linear-gradient(135deg, #FFE74D 0%, #FCD535 100%);
+    box-shadow:
+      0 0 0 1px rgba(252, 213, 53, 0.3),
+      0 4px 14px rgba(252, 213, 53, 0.25);
+    font-weight: 600;
+  }
+  .sidebar-link-active .sidebar-link-icon { color: #111827 !important; }
+  .sidebar-link-active:hover {
+    background: linear-gradient(135deg, #FFDE26 0%, #E6BF1F 100%);
+  }
+  .sidebar-link-active::before {
+    content: '';
+    position: absolute;
+    left: -12px;
+    top: 25%;
+    bottom: 25%;
+    width: 3px;
+    background: #FCD535;
+    border-radius: 0 3px 3px 0;
+    box-shadow: 0 0 8px rgba(252, 213, 53, 0.7);
+  }
+
+  /* Chips */
+  .chip {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] uppercase font-bold border tracking-wider;
+  }
+  .chip-bull { @apply chip bg-bull/15 text-bull border-bull/30; }
+  .chip-bear { @apply chip bg-bear/15 text-bear border-bear/30; }
+  .chip-warn { @apply chip bg-warn/15 text-warn border-warn/30; }
+  .chip-info { @apply chip bg-info/15 text-info border-info/30; }
+  .chip-primary { @apply chip bg-primary-500/15 text-primary-500 border-primary-500/30; }
+  .chip-muted { @apply chip bg-bg-hover text-text-muted border-border-dark; }
 }
 
+/* Scrollbar */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: #0F0F12; }
-::-webkit-scrollbar-thumb { background: #2D2D34; border-radius: 4px; }
+::-webkit-scrollbar-track { background: rgb(var(--color-bg-dark)); }
+::-webkit-scrollbar-thumb { background: rgb(var(--color-border-dark)); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: #FCD535; }
+
+@keyframes pulse-slow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.pulse-live { animation: pulse-slow 2s ease-in-out infinite; }

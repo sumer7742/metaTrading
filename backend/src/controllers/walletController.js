@@ -50,6 +50,20 @@ const createDeposit = asyncHandler(async (req, res) => {
   const account = await TradingAccount.findOne({ _id: accountId, userId: req.userId });
   if (!account) throw new AppError('Account not found', 404);
 
+  // KYC gate — real-money deposits are blocked until KYC APPROVED.
+  // Demo / virtual accounts are exempt (no real funds at risk).
+  // Disable with KYC_REQUIRED=false in env for staging / sandbox.
+  const kycRequired = (process.env.KYC_REQUIRED || 'true').toLowerCase() !== 'false';
+  if (kycRequired && account.accountType === 'REAL') {
+    if (req.user?.kycStatus !== 'APPROVED') {
+      throw new AppError(
+        'KYC verification must be approved before depositing on a real account.',
+        403,
+        'KYC_REQUIRED'
+      );
+    }
+  }
+
   // For REAL accounts, screenshot is MANDATORY (proof of payment)
   if (account.accountType === 'REAL') {
     if (!screenshot) {
@@ -177,6 +191,17 @@ const requestWithdrawal = asyncHandler(async (req, res) => {
   // Block withdrawals from DEMO accounts
   if (account.accountType === 'DEMO') {
     throw new AppError('Withdrawals not allowed from demo accounts', 400);
+  }
+
+  // KYC gate — every real withdrawal needs KYC APPROVED (AML requirement).
+  // Disable for sandbox via KYC_REQUIRED=false.
+  const kycRequired = (process.env.KYC_REQUIRED || 'true').toLowerCase() !== 'false';
+  if (kycRequired && req.user?.kycStatus !== 'APPROVED') {
+    throw new AppError(
+      'KYC verification must be approved before withdrawing funds.',
+      403,
+      'KYC_REQUIRED'
+    );
   }
 
   // Method ↔ currency compatibility. UPI / BANK rails settle in INR only
@@ -420,6 +445,158 @@ const internalTransfer = asyncHandler(async (req, res) => {
   sendSuccess(res, { ok: true, from: fromAccountId, to: toAccountId, amount: amtStr, currency });
 });
 
+/**
+ * Razorpay deposit flow (alongside the existing screenshot upload method).
+ *
+ *   1. Client POSTs /wallet/razorpay/order with { accountId, amount, currency }
+ *      → server creates a Razorpay order, returns { orderId, keyId, amount }.
+ *   2. Client opens Razorpay Checkout SDK with that orderId.
+ *   3. After payment, Razorpay redirects with { paymentId, signature }.
+ *   4. Client POSTs /wallet/razorpay/verify with those three values.
+ *      → server verifies HMAC signature, marks Deposit COMPLETED, credits wallet.
+ *
+ * The existing manual screenshot flow at POST /wallet/deposit is untouched —
+ * users can still do bank/UPI transfers + admin approval if they prefer.
+ *
+ * Webhook endpoint at POST /wallet/razorpay/webhook also accepts events
+ * directly from Razorpay (in case the client never returns to /verify).
+ * Both verify and webhook are idempotent via paymentId dedupe.
+ */
+const paymentService = require('../services/paymentService');
+const { WALLET_TX_TYPE } = require('../config/constants');
+
+const createRazorpayOrder = asyncHandler(async (req, res) => {
+  const { accountId, currency = 'INR', amount } = req.body;
+  const amtNum = Number(amount);
+  if (!Number.isFinite(amtNum) || amtNum <= 0) {
+    throw new AppError('Amount must be a positive number', 400);
+  }
+  const account = await TradingAccount.findOne({ _id: accountId, userId: req.userId });
+  if (!account) throw new AppError('Account not found', 404);
+  if (account.accountType !== 'REAL') {
+    throw new AppError('Razorpay deposits only allowed on real accounts', 400);
+  }
+  // KYC gate — same as the manual flow.
+  const kycRequired = (process.env.KYC_REQUIRED || 'true').toLowerCase() !== 'false';
+  if (kycRequired && req.user?.kycStatus !== 'APPROVED') {
+    throw new AppError('KYC must be approved before depositing.', 403, 'KYC_REQUIRED');
+  }
+
+  // Create the Razorpay order. If RAZORPAY env vars aren't set, the
+  // service silently falls back to mock mode (auto-confirms) so dev works.
+  const order = await paymentService.createOrder({
+    amount: amtNum,
+    currency,
+    metadata: {
+      userId: String(req.userId),
+      accountId: String(account._id),
+    },
+  });
+
+  // Persist a PENDING Deposit row keyed by the Razorpay order id so the
+  // verify/webhook can find it idempotently.
+  const dep = await Deposit.create({
+    userId: req.userId,
+    accountId: account._id,
+    currency,
+    amount: String(amtNum),
+    method: 'RAZORPAY',
+    txReference: order.orderId,
+    status: 'PENDING',
+  });
+
+  sendSuccess(res, {
+    depositId: dep._id,
+    orderId: order.orderId,
+    amount: amtNum,
+    currency,
+    keyId: order.providerData?.keyId || process.env.RAZORPAY_KEY_ID,
+  });
+});
+
+const verifyRazorpayPayment = asyncHandler(async (req, res) => {
+  const { orderId, paymentId, signature } = req.body;
+  if (!orderId || !paymentId || !signature) {
+    throw new AppError('orderId, paymentId, signature all required', 400);
+  }
+  const dep = await Deposit.findOne({ txReference: orderId, userId: req.userId });
+  if (!dep) throw new AppError('Deposit not found', 404);
+  if (dep.status === 'COMPLETED' || dep.status === 'CONFIRMED') {
+    // Idempotent — already credited. Just acknowledge.
+    return sendSuccess(res, { depositId: dep._id, status: dep.status, alreadyCredited: true });
+  }
+
+  const verified = await paymentService.verifyPayment({ orderId, paymentId, signature });
+  if (!verified.ok) {
+    dep.status = 'REJECTED';
+    dep.rejectionReason = verified.reason;
+    await dep.save();
+    throw new AppError(`Payment verification failed: ${verified.reason}`, 400, 'PAYMENT_VERIFY_FAILED');
+  }
+
+  // Credit the wallet. Use the Razorpay paymentId as a dedupeKey on the
+  // wallet ledger so a replay (verify hits + webhook hits) only credits once.
+  await walletService.credit({
+    userId: dep.userId,
+    accountId: dep.accountId,
+    currency: dep.currency,
+    amount: dep.amount,
+    type: WALLET_TX_TYPE.DEPOSIT,
+    referenceType: 'deposit',
+    referenceId: dep._id,
+    dedupeKey: `RAZORPAY:${paymentId}`,
+    note: `Razorpay deposit ${paymentId}`,
+  });
+  dep.status = 'COMPLETED';
+  dep.completedAt = new Date();
+  dep.providerPaymentId = paymentId;
+  await dep.save();
+
+  sendSuccess(res, { depositId: dep._id, status: 'COMPLETED' });
+});
+
+// Webhook fired directly by Razorpay (configure URL in Razorpay dashboard).
+// Body comes as raw bytes for signature verification; need express.raw()
+// middleware on this route specifically. For simplicity, we require the
+// `x-razorpay-signature` header matched against the JSON body.
+const razorpayWebhook = asyncHandler(async (req, res) => {
+  const signature = req.headers['x-razorpay-signature'];
+  const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+  if (!secret) {
+    return res.status(503).json({ ok: false, reason: 'webhook not configured' });
+  }
+  const rawBody = JSON.stringify(req.body);
+  const crypto = require('crypto');
+  const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+  if (expected !== signature) {
+    return res.status(401).json({ ok: false, reason: 'invalid signature' });
+  }
+
+  const event = req.body.event;
+  const payment = req.body.payload?.payment?.entity;
+  if (event === 'payment.captured' && payment) {
+    const dep = await Deposit.findOne({ txReference: payment.order_id });
+    if (dep && dep.status !== 'COMPLETED' && dep.status !== 'CONFIRMED') {
+      await walletService.credit({
+        userId: dep.userId,
+        accountId: dep.accountId,
+        currency: dep.currency,
+        amount: dep.amount,
+        type: WALLET_TX_TYPE.DEPOSIT,
+        referenceType: 'deposit',
+        referenceId: dep._id,
+        dedupeKey: `RAZORPAY:${payment.id}`,
+        note: `Razorpay webhook ${payment.id}`,
+      });
+      dep.status = 'COMPLETED';
+      dep.completedAt = new Date();
+      dep.providerPaymentId = payment.id;
+      await dep.save();
+    }
+  }
+  res.json({ ok: true });
+});
+
 module.exports = {
   getBalances,
   getLedger,
@@ -428,4 +605,7 @@ module.exports = {
   requestWithdrawal,
   listWithdrawals,
   internalTransfer,
+  createRazorpayOrder,
+  verifyRazorpayPayment,
+  razorpayWebhook,
 };

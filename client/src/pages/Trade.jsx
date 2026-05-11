@@ -7,7 +7,7 @@ import PriceChart from '../components/PriceChart';
 import OrderBook from '../components/OrderBook';
 import OrderForm from '../components/OrderForm';
 import MarketWatch from '../components/MarketWatch';
-import { fmtNum, fmtPnlSimple, fmtMoney, fmtPriceDual } from '../utils/format';
+import { fmtNum, fmtPnlSimple, fmtMoney, fmtPriceDual, fmtMoneyDual } from '../utils/format';
 import { useFxRate } from '../hooks/useFxRate';
 
 export default function Trade() {
@@ -44,6 +44,40 @@ export default function Trade() {
     selectedAccountId,
   ]);
   const fxRate = useFxRate();
+
+  // Free wallet balance for the active account — shown in the chart's
+  // top-right info strip as "Margin". Refetched on account switch and on
+  // any 'wallet' WS event below.
+  const [walletFree, setWalletFree] = useState('0');
+  useEffect(() => {
+    if (!account?._id) return;
+    let cancelled = false;
+    const fetchFree = async () => {
+      try {
+        const { data } = await api.get('/wallet/balances', { params: { accountId: account._id } });
+        if (cancelled) return;
+        const w = (data.data || []).find((b) => b.currency === account.baseCurrency);
+        setWalletFree(w?.free || '0');
+      } catch (_) { /* keep prior */ }
+    };
+    fetchFree();
+    const unsub = wsClient.subscribe('wallet', fetchFree);
+    return () => { cancelled = true; unsub && unsub(); };
+  }, [account?._id, account?.baseCurrency]);
+
+  // Compose the info strip shown in the chart's top-right corner.
+  // Margin is the free wallet balance (what the user can deploy on a new
+  // trade); leverage and brokerage reflect the selected instrument.
+  const chartInfoStrip = useMemo(() => {
+    if (!instrument || !account) return null;
+    const free = fmtMoneyDual(walletFree, account.baseCurrency, fxRate);
+    const commission = Number(instrument.commissionPercent || 0);
+    return {
+      margin: free.primary,
+      leverage: `1:${instrument.maxLeverage}`,
+      brokerage: commission > 0 ? `${commission}%` : '$0.00',
+    };
+  }, [instrument, account, walletFree, fxRate]);
 
   // Initial load
   useEffect(() => {
@@ -321,40 +355,69 @@ export default function Trade() {
               positions={positionsWithLivePnl}
               pendingPreview={pendingPreview}
               pricePrecision={instrument.pricePrecision}
+              infoStrip={chartInfoStrip}
             />
           )}
 
           {/* Positions / Orders tabs — with count pills + premium tab styling */}
           <div className="card">
-            <div className="flex items-center border-b border-border-dark px-2">
-              {[
-                { k: 'positions', label: 'Positions', count: positions.length },
-                { k: 'orders', label: 'Open Orders', count: openOrders.length },
-              ].map((t) => (
-                <button
-                  key={t.k}
-                  onClick={() => setTab(t.k)}
-                  className={`relative px-4 py-3 text-sm font-medium flex items-center gap-2 transition-colors ${
-                    tab === t.k
-                      ? 'text-white'
-                      : 'text-text-muted hover:text-text-secondary'
-                  }`}
-                >
-                  {t.label}
-                  <span
-                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+            <div className="flex items-center justify-between border-b border-border-dark px-2">
+              <div className="flex items-center">
+                {[
+                  { k: 'positions', label: 'Positions', count: positions.length },
+                  { k: 'orders', label: 'Open Orders', count: openOrders.length },
+                ].map((t) => (
+                  <button
+                    key={t.k}
+                    onClick={() => setTab(t.k)}
+                    className={`relative px-4 py-3 text-sm font-medium flex items-center gap-2 transition-colors ${
                       tab === t.k
-                        ? 'bg-primary-500/20 text-primary-500'
-                        : 'bg-bg-hover text-text-muted'
+                        ? 'text-white'
+                        : 'text-text-muted hover:text-text-secondary'
                     }`}
                   >
-                    {t.count}
-                  </span>
-                  {tab === t.k && (
-                    <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-primary-500 rounded-t-full" />
-                  )}
+                    {t.label}
+                    <span
+                      className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                        tab === t.k
+                          ? 'bg-primary-500/20 text-primary-500'
+                          : 'bg-bg-hover text-text-muted'
+                      }`}
+                    >
+                      {t.count}
+                    </span>
+                    {tab === t.k && (
+                      <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-primary-500 rounded-t-full" />
+                    )}
+                  </button>
+                ))}
+              </div>
+              {/* Panic close — closes every open position for the current
+                  account. Confirm dialog because this is irreversible. */}
+              {tab === 'positions' && positions.length > 0 && (
+                <button
+                  onClick={async () => {
+                    if (!window.confirm(`Close all ${positions.length} open position(s)?`)) return;
+                    try {
+                      const { data } = await api.post('/trading/positions/close-all', {
+                        accountId: account?._id,
+                      });
+                      const r = data.data;
+                      if (r.failed?.length) {
+                        toast.error(`Closed ${r.closed}/${r.total}. ${r.failed.length} failed.`);
+                      } else {
+                        toast.success(`Closed ${r.closed} position(s)`);
+                      }
+                      refresh();
+                    } catch (e) {
+                      toast.error(errorMessage(e));
+                    }
+                  }}
+                  className="mr-2 text-[11px] font-bold px-3 py-1.5 rounded-md bg-bear/15 text-bear border border-bear/30 hover:bg-bear/25 transition-colors"
+                >
+                  Close All
                 </button>
-              ))}
+              )}
             </div>
             <div className="p-3 overflow-x-auto">
               {tab === 'positions' && (
@@ -433,9 +496,10 @@ function PositionsTable({ positions, onClose, onModify, fxRate, instrumentsBySym
           const prec = inst?.pricePrecision || 4;
           const entry = fmtPriceDual(p.entryPrice, quote, fxRate, prec);
           const mark = fmtPriceDual(p.markPrice || p.entryPrice, quote, fxRate, prec);
-          // PnL is in the position's quote currency on the wire — convert to
-          // INR for display so the headline number stays consistent.
-          const pnlInr = quote === 'USD' ? pnl * Number(fxRate || 0) : pnl;
+          // PnL on the wire is already in the position's quote currency.
+          // We display USD throughout, so for INR-quoted positions convert
+          // to USD; otherwise show the native number as-is.
+          const pnlUsd = quote === 'INR' ? pnl / Math.max(Number(fxRate || 0), 1) : pnl;
           return (
             <tr key={p._id} className="table-row">
               <td className="p-2 font-medium">{p.symbol}</td>
@@ -452,10 +516,7 @@ function PositionsTable({ positions, onClose, onModify, fxRate, instrumentsBySym
                 {mark.secondary && <div className="text-[10px] text-gray-500">{mark.secondary}</div>}
               </td>
               <td className={`p-2 text-right font-mono ${pnl >= 0 ? 'text-bull' : 'text-bear'}`}>
-                <div>{fmtPnlSimple(pnlInr, 'INR')}</div>
-                {quote === 'USD' && (
-                  <div className="text-[10px] text-gray-500">{fmtPnlSimple(pnl, 'USD')}</div>
-                )}
+                <div>{fmtPnlSimple(pnlUsd, 'USD')}</div>
               </td>
               <td className="p-2 text-right">1:{p.leverage}</td>
               <td className="p-2 text-right">

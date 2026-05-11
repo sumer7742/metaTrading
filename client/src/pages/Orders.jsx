@@ -111,13 +111,13 @@ export default function Orders() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4 max-w-[1600px]">
       {/* Header bar — title + account chip + filters + download */}
       <div className="card p-4 flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-2">
-          <span className="text-2xl">⏱</span>
-          <h1 className="text-xl font-bold text-white tracking-wide">
-            TRADE HISTORY <span className="text-gray-400 font-normal">({pagination.total})</span>
+          <span className="w-1 h-6 bg-primary-500 rounded-full" />
+          <h1 className="text-xl font-bold text-text-primary tracking-wide">
+            TRADE HISTORY <span className="text-text-muted font-normal">({pagination.total})</span>
           </h1>
         </div>
 

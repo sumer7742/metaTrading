@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node src/utils/checkInstruments.js)",
+      "Bash(npx vite *)",
+      "Bash(node src/utils/testRouting.js)"
+    ]
+  }
+}

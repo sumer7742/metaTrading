@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
+import PageHero from '../components/PageHero';
 
 const downloadCsv = async (path, filename) => {
   try {
@@ -51,46 +52,47 @@ export default function Reports() {
 
   return (
     <div className="space-y-6 max-w-[1400px]">
-      <div>
-        <h1 className="text-3xl font-bold text-white">Reports</h1>
-        <p className="text-sm text-gray-400 mt-1">Trading activity, P&L, and historical performance.</p>
-      </div>
+      <PageHero
+        eyebrow="Analytics"
+        title="Reports"
+        subtitle="Trading activity, P&L, and historical performance across all your accounts."
+      />
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="card p-5">
-          <div className="text-xs uppercase text-gray-500">Realized P&L</div>
-          <div className={`text-2xl font-bold mt-1 ${totalPnl >= 0 ? 'text-bull' : 'text-bear'}`}>
-            {totalPnl >= 0 ? '+' : ''}₹{Number(totalPnl).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        <div className="card p-5 hover:border-border-accent/40 transition-colors">
+          <div className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold">Realized P&L</div>
+          <div className={`text-2xl font-bold mt-2 font-mono ${totalPnl >= 0 ? 'text-bull' : 'text-bear'}`}>
+            {totalPnl >= 0 ? '+' : ''}${Number(totalPnl).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
         </div>
-        <div className="card p-5">
-          <div className="text-xs uppercase text-gray-500">Win Rate</div>
-          <div className="text-2xl font-bold mt-1 text-white">{winRate}%</div>
+        <div className="card p-5 hover:border-border-accent/40 transition-colors">
+          <div className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold">Win Rate</div>
+          <div className="text-2xl font-bold mt-2 font-mono text-text-primary">{winRate}%</div>
         </div>
-        <div className="card p-5">
-          <div className="text-xs uppercase text-gray-500">Winners</div>
-          <div className="text-2xl font-bold mt-1 text-bull">{winners}</div>
+        <div className="card p-5 hover:border-border-accent/40 transition-colors">
+          <div className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold">Winners</div>
+          <div className="text-2xl font-bold mt-2 font-mono text-bull">{winners}</div>
         </div>
-        <div className="card p-5">
-          <div className="text-xs uppercase text-gray-500">Losers</div>
-          <div className="text-2xl font-bold mt-1 text-bear">{losers}</div>
+        <div className="card p-5 hover:border-border-accent/40 transition-colors">
+          <div className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold">Losers</div>
+          <div className="text-2xl font-bold mt-2 font-mono text-bear">{losers}</div>
         </div>
       </div>
 
       {/* Quick links */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <Link to="/orders" className="card p-5 hover:border-teal-accent">
-          <div className="text-white font-semibold">Order History</div>
-          <div className="text-xs text-gray-400 mt-1">All filled, cancelled, rejected orders</div>
+        <Link to="/orders" className="card p-5 hover:border-border-accent/50 hover:-translate-y-0.5 transition-all group">
+          <div className="text-text-primary font-semibold group-hover:text-primary-500 transition-colors">Order History →</div>
+          <div className="text-xs text-text-muted mt-1">All filled, cancelled, rejected orders</div>
         </Link>
-        <Link to="/wallet" className="card p-5 hover:border-teal-accent">
-          <div className="text-white font-semibold">Wallet Ledger</div>
-          <div className="text-xs text-gray-400 mt-1">Deposits, withdrawals, fees, P&L</div>
+        <Link to="/wallet" className="card p-5 hover:border-border-accent/50 hover:-translate-y-0.5 transition-all group">
+          <div className="text-text-primary font-semibold group-hover:text-primary-500 transition-colors">Wallet Ledger →</div>
+          <div className="text-xs text-text-muted mt-1">Deposits, withdrawals, fees, P&L</div>
         </Link>
-        <Link to="/alerts" className="card p-5 hover:border-teal-accent">
-          <div className="text-white font-semibold">Price Alerts</div>
-          <div className="text-xs text-gray-400 mt-1">Create custom price notifications</div>
+        <Link to="/alerts" className="card p-5 hover:border-border-accent/50 hover:-translate-y-0.5 transition-all group">
+          <div className="text-text-primary font-semibold group-hover:text-primary-500 transition-colors">Price Alerts →</div>
+          <div className="text-xs text-text-muted mt-1">Create custom price notifications</div>
         </Link>
       </div>
 

@@ -9,6 +9,8 @@ const rateLimit = require('express-rate-limit');
 const { connectDB } = require('./config/db');
 const { assertSecrets } = require('./utils/jwt');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
+const requestId = require('./middleware/requestId');
+const logger = require('./utils/logger');
 
 // Fail-fast on misconfigured JWT secrets so a bad deployment crashes at
 // boot instead of returning 500s once the first user tries to log in.
@@ -44,14 +46,52 @@ const app = express();
 // Sentry must be initialized BEFORE any other middleware
 observability.initSentry(app);
 
-// Security & general middleware
-app.use(helmet());
-app.use(
-  cors({
-    origin: [
+// Security & general middleware. Helmet adds the standard secure-default
+// response headers; we also enable a strict CSP that only allows our own
+// origin + the inline scripts/styles emitted by Vite. Tighten further once
+// every script source is enumerable.
+app.use(helmet({
+  contentSecurityPolicy: process.env.NODE_ENV === 'production'
+    ? {
+        useDefaults: true,
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          imgSrc: ["'self'", 'data:', 'https:'],
+          connectSrc: ["'self'", 'wss:', 'https:'],
+          frameAncestors: ["'none'"],
+        },
+      }
+    : false, // dev: allow Vite HMR + inline scripts without manual nonce wiring
+  crossOriginEmbedderPolicy: false,
+}));
+
+// Request ID + a thin morgan replacement that emits one JSON line per
+// request via our logger. The reqId is echoed into every log entry so a
+// frontend bug report ("request id abc123 returned 500") maps directly
+// to the matching server log line.
+app.use(requestId);
+
+// CORS — env-driven allowlist. Comma-separated list in CORS_ORIGINS, falls
+// back to CLIENT_URL + ADMIN_URL + their localhost defaults. Production
+// MUST set CORS_ORIGINS explicitly.
+const _corsOrigins = (process.env.CORS_ORIGINS
+  ? process.env.CORS_ORIGINS.split(',').map((s) => s.trim()).filter(Boolean)
+  : [
       process.env.CLIENT_URL || 'http://localhost:5173',
       process.env.ADMIN_URL || 'http://localhost:5174',
-    ],
+    ]
+);
+app.use(
+  cors({
+    origin: (origin, cb) => {
+      // Allow same-origin / curl (no Origin header).
+      if (!origin) return cb(null, true);
+      if (_corsOrigins.includes(origin)) return cb(null, true);
+      logger.warn('CORS blocked', { origin, allowed: _corsOrigins });
+      return cb(new Error('Not allowed by CORS'));
+    },
     credentials: true,
   })
 );
@@ -72,12 +112,36 @@ const orderLimiter = rateLimit({ windowMs: 60 * 1000, max: 60 });
 app.use('/api/auth', authLimiter);
 app.use('/api/trading/orders', orderLimiter);
 
-// Health
+// Liveness — cheap process-alive probe (k8s `livenessProbe`). Returns OK
+// as long as Node is responsive; doesn't validate DB / dependencies.
 app.get('/api/health', (req, res) =>
   res.json({ status: 'ok', uptime: process.uptime(), ts: new Date().toISOString() })
 );
 
+// Readiness — used by k8s/load-balancers to decide whether to send traffic.
+// Pings DB; if it fails we return 503 so the LB drains us until recovery.
+// Cheap and frequent — keep it under ~100ms.
+const mongoose = require('mongoose');
+app.get('/api/ready', async (req, res) => {
+  try {
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({ status: 'not-ready', reason: 'db-disconnected' });
+    }
+    await mongoose.connection.db.admin().ping();
+    res.json({ status: 'ready', uptime: process.uptime() });
+  } catch (e) {
+    logger.warn('Readiness check failed', { err: e });
+    res.status(503).json({ status: 'not-ready', reason: e.message });
+  }
+});
+
 // Routes
+// Razorpay webhook is unauthenticated (HMAC-signed) and lives OUTSIDE
+// the wallet router so it doesn't run the JWT middleware.
+if (walletRoutes.razorpayWebhookHandler) {
+  app.post('/api/webhooks/razorpay', walletRoutes.razorpayWebhookHandler);
+}
+
 app.use('/api/auth', authRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/wallet', walletRoutes);
@@ -101,6 +165,12 @@ const start = async () => {
   smsService.init();
   pushService.init();
   paymentService.init();
+
+  // Warm the system-settings cache so the first order doesn't pay the
+  // cache-miss cost on `routingMode` lookup.
+  const systemSettings = require('./services/systemSettings.service');
+  await systemSettings.warmCache();
+  logger.info('System settings cache warmed', { settings: await systemSettings.getAllSettings() });
 
   const server = http.createServer(app);
   // Attach WebSocket and wire the engine's broadcaster BEFORE hydrating from
@@ -126,12 +196,33 @@ const start = async () => {
   feedOrchestrator.start();
 
   server.listen(PORT, () => {
-    console.log(`[Server] HTTP+WS running on http://localhost:${PORT}`);
-    console.log(`[Server] WebSocket on ws://localhost:${PORT}/ws`);
+    logger.info('Server listening', { port: PORT, ws: `ws://localhost:${PORT}/ws` });
   });
+
+  // Graceful shutdown — production orchestrators (k8s, Render, Railway)
+  // send SIGTERM before SIGKILL. We have ~10s to:
+  //   1. Stop accepting new HTTP connections
+  //   2. Stop the background worker (no new orders created)
+  //   3. Drain WS clients
+  //   4. Close the DB pool
+  // Beyond ~25s the orchestrator force-kills us, so we exit early if
+  // shutdown completes faster.
+  const _shutdown = async (signal) => {
+    logger.info('Shutdown signal received', { signal });
+    let exitCode = 0;
+    server.close((err) => {
+      if (err) { logger.error('HTTP close error', { err }); exitCode = 1; }
+    });
+    try { backgroundWorker.stop && backgroundWorker.stop(); } catch (e) { logger.warn('Worker stop failed', { err: e }); }
+    try { wsBroadcaster.close && wsBroadcaster.close(); } catch (e) { logger.warn('WS close failed', { err: e }); }
+    try { await require('mongoose').disconnect(); } catch (e) { logger.warn('DB disconnect failed', { err: e }); }
+    setTimeout(() => process.exit(exitCode), 500).unref();
+  };
+  process.on('SIGTERM', () => _shutdown('SIGTERM'));
+  process.on('SIGINT',  () => _shutdown('SIGINT'));
 };
 
 start().catch((e) => {
-  console.error('[FATAL] Server failed to start:', e);
+  logger.error('Server failed to start', { err: e });
   process.exit(1);
 });

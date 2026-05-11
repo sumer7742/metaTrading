@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../services/api';
 import { fmtNum, fmtDate } from '../utils/format';
+import PageHero from '../components/PageHero';
 
 export default function Reports() {
   const [trades, setTrades] = useState([]);
@@ -41,8 +42,12 @@ export default function Reports() {
   const totalVolume = trades.reduce((sum, t) => sum + Number(t.price) * Number(t.quantity), 0);
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-2xl font-bold text-white">Reports</h1>
+    <div className="space-y-4 max-w-[1600px]">
+      <PageHero
+        eyebrow="Insights"
+        title="Trade Reports"
+        subtitle="Filter trades by symbol or date range. Export CSV for compliance and audit trails."
+      />
 
       <div className="card p-4 flex flex-wrap gap-3 items-end">
         <div>

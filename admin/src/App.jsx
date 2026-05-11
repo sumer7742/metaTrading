@@ -12,6 +12,7 @@ import Deposits from './pages/Deposits';
 import AuditLog from './pages/AuditLog';
 import Reports from './pages/Reports';
 import DataFeeds from './pages/DataFeeds';
+import Settings from './pages/Settings';
 
 const wrap = (el) => (
   <ProtectedRoute>
@@ -35,6 +36,7 @@ export default function App() {
       <Route path="/audit" element={wrap(<AuditLog />)} />
       <Route path="/reports" element={wrap(<Reports />)} />
       <Route path="/data-feeds" element={wrap(<DataFeeds />)} />
+      <Route path="/settings" element={wrap(<Settings />)} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   );

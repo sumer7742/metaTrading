@@ -204,15 +204,12 @@ const update = asyncHandler(async (req, res) => {
     }
 
     if (mode === 'CLOSE_ALL') {
-      // Force-close all affected positions at last price
-      const routingService = require('../services/routingService');
+      // Force-close all affected positions at last price. Each close is
+      // routed through orderRouter so an A-book account's close still
+      // flows to the LP rather than executing internally.
+      const orderRouter = require('../services/orderRouter.service');
       for (const pos of affected) {
         const oppositeSide = pos.side === 'BUY' ? 'SELL' : 'BUY';
-        const routing = await routingService.decideRouting({
-          userId: pos.userId,
-          instrument: inst,
-          order: { quantity: pos.quantity, side: oppositeSide },
-        });
         const closingOrder = await Order.create({
           userId: pos.userId,
           accountId: pos.accountId,
@@ -223,10 +220,10 @@ const update = asyncHandler(async (req, res) => {
           quantity: pos.quantity,
           leverage: pos.leverage,
           status: 'PENDING',
-          routing,
+          closeOnly: true,
         });
         try {
-          await matchingEngine.submit(closingOrder);
+          await orderRouter.routeOrder({ order: closingOrder, userId: pos.userId });
         } catch (e) {
           console.error('[BBookDisable] close failed:', e.message);
         }

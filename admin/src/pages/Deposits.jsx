@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { fmtNum, fmtDate } from '../utils/format';
+import PageHero from '../components/PageHero';
 
 export default function Deposits() {
   const [items, setItems] = useState([]);
@@ -44,9 +45,12 @@ export default function Deposits() {
   const symbol = (cur) => ({ INR: '₹', USD: '$', EUR: '€', GBP: '£' }[cur] || (cur + ' '));
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-2xl font-bold text-white">Deposit Verification</h1>
-      <p className="text-sm text-gray-400">Review user payment screenshots and approve/reject deposits.</p>
+    <div className="space-y-4 max-w-[1600px]">
+      <PageHero
+        eyebrow="Money"
+        title="Deposit Verification"
+        subtitle="Review user payment screenshots and approve or reject incoming deposits."
+      />
 
       <div className="flex space-x-2">
         {['PENDING', 'CONFIRMED', 'REJECTED', ''].map((s) => (

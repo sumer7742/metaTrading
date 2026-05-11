@@ -4,12 +4,12 @@ const TradingAccount = require('../models/TradingAccount');
 const Position = require('../models/Position');
 const matchingEngine = require('../matching-engine/MatchingEngine');
 const { updateCandlesForTrade } = require('../services/candleService');
-const routingService = require('../services/routingService');
+const orderRouter = require('../services/orderRouter.service');
 const walletService = require('../services/walletService');
 const Trade = require('../models/Trade');
 const { sendSuccess, asyncHandler, AppError } = require('../utils/errors');
 const { ORDER_TYPE, ORDER_SIDE, ORDER_STATUS, POSITION_STATUS } = require('../config/constants');
-const { gt, lt, mul, div, sub, eq } = require('../utils/decimal');
+const { gt, lt, mul, div, sub, eq, add } = require('../utils/decimal');
 
 /**
  * Compute the margin that *this* order would lock, accounting for an existing
@@ -59,20 +59,73 @@ const _computeMarginToLock = async ({ instrument, side, type, qty, price, stopPr
   return { marginAmount, refPrice, openQty };
 };
 
+/**
+ * Compute the current effective bid/ask for an instrument from its
+ * lastPrice + spread config. Mirrors the client-side derivation in
+ * MarketWatch so server and UI agree on the "current market".
+ */
+const _currentBidAsk = (instrument) => {
+  const last = Number(instrument?.lastPrice || 0);
+  if (!last || !Number.isFinite(last)) return { bid: 0, ask: 0 };
+  const spread = Number(instrument.spreadValue || 0);
+  const half = spread / 2;
+  if (instrument.spreadType === 'PERCENTAGE') {
+    return { bid: last * (1 - half), ask: last * (1 + half) };
+  }
+  return { bid: last - half, ask: last + half };
+};
+
+/**
+ * Resolve a unified "LIMIT-tab" order into the underlying engine type.
+ * The frontend's order panel presents only MARKET and LIMIT to the user;
+ * internally a "LIMIT" with a price ABOVE the ask (for BUY) is actually
+ * a breakout STOP order. This helper centralises the disambiguation so
+ * the same rules apply across all entry points (REST, OCO, etc).
+ *
+ *   BUY:
+ *     limit < ask  → 'LIMIT'   (buy on a dip)
+ *     limit > ask  → 'STOP'    (buy on a breakout)
+ *     limit = ask  → 'INVALID' (would fill at market — use MARKET instead)
+ *
+ *   SELL:
+ *     limit > bid  → 'LIMIT'   (sell into strength)
+ *     limit < bid  → 'STOP'    (sell on a breakdown)
+ *     limit = bid  → 'INVALID'
+ */
+function resolveLimitTabOrderType({ side, limitPrice, currentBid, currentAsk }) {
+  const price = Number(limitPrice);
+  if (!Number.isFinite(price) || price <= 0) return 'INVALID';
+  if (side === 'BUY') {
+    if (!Number.isFinite(currentAsk) || currentAsk <= 0) return 'INVALID';
+    if (price < currentAsk) return 'LIMIT';
+    if (price > currentAsk) return 'STOP';
+    return 'INVALID';
+  }
+  if (side === 'SELL') {
+    if (!Number.isFinite(currentBid) || currentBid <= 0) return 'INVALID';
+    if (price > currentBid) return 'LIMIT';
+    if (price < currentBid) return 'STOP';
+    return 'INVALID';
+  }
+  return 'INVALID';
+}
+
 const placeOrder = asyncHandler(async (req, res) => {
   const {
     accountId,
     symbol,
     side,
-    type,
     quantity,
-    price,
-    stopPrice,
     stopLoss,
     takeProfit,
     leverage,
     idempotencyKey,
   } = req.body;
+  // The frontend now sends `orderMode` ('MARKET' | 'LIMIT'); legacy callers
+  // can still send `type` directly. When `orderMode === 'LIMIT'` we
+  // auto-resolve the engine-level type (LIMIT vs STOP) from the price
+  // direction relative to the current market — see resolveLimitTabOrderType.
+  let { orderMode, type, price, stopPrice } = req.body;
 
   // Idempotency check
   if (idempotencyKey) {
@@ -80,24 +133,88 @@ const placeOrder = asyncHandler(async (req, res) => {
     if (existing) return sendSuccess(res, existing);
   }
 
-  // Required-field validation BEFORE any string method calls so a missing
-  // symbol/side/type doesn't throw a generic TypeError.
   if (!symbol || typeof symbol !== 'string') throw new AppError('symbol required', 400);
   if (!accountId) throw new AppError('accountId required', 400);
   if (!Object.values(ORDER_SIDE).includes(side)) throw new AppError('Invalid side', 400);
-  if (!Object.values(ORDER_TYPE).includes(type)) throw new AppError('Invalid type', 400);
   if (quantity === undefined || quantity === null || quantity === '') {
     throw new AppError('Quantity required', 400);
   }
   if (!gt(quantity, '0')) throw new AppError('Quantity must be > 0', 400);
-  if (type !== 'MARKET' && !price) throw new AppError('Price required for non-market orders', 400);
-  if (type === 'STOP' && !stopPrice) throw new AppError('Stop price required for stop orders', 400);
 
   const account = await TradingAccount.findOne({ _id: accountId, userId: req.userId, isActive: true });
   if (!account) throw new AppError('Account not found', 404);
 
   const instrument = await Instrument.findOne({ symbol: symbol.toUpperCase(), isActive: true });
   if (!instrument) throw new AppError('Instrument not active', 404);
+
+  // ─── orderMode → engine type resolution ────────────────────────────
+  // New unified path: frontend sends orderMode='MARKET' | 'LIMIT' (no STOP
+  // tab in the UI). For LIMIT we look at the user's price relative to the
+  // current ask (BUY) or bid (SELL) and decide whether the engine should
+  // treat this as a LIMIT (better price) or STOP (breakout). Backward-
+  // compat: if `type` is sent directly, we honor it — any internal API
+  // user/admin tool that already uses LIMIT/STOP/MARKET keeps working.
+  if (orderMode === 'LIMIT') {
+    const { bid: curBid, ask: curAsk } = _currentBidAsk(instrument);
+    const resolved = resolveLimitTabOrderType({
+      side,
+      limitPrice: price,
+      currentBid: curBid,
+      currentAsk: curAsk,
+    });
+    if (resolved === 'INVALID') {
+      throw new AppError(
+        'Limit price cannot be equal to current market price. Use Market order instead.',
+        400,
+        'LIMIT_INVALID'
+      );
+    }
+    type = resolved; // 'LIMIT' or 'STOP'
+    if (resolved === 'STOP') {
+      // For STOP-tab equivalent: the user-entered price is the trigger.
+      // Move it into stopPrice and clear price (engine treats this as
+      // STOP-MARKET — fills at market on trigger).
+      stopPrice = String(price);
+      price = undefined;
+    }
+  } else if (orderMode === 'MARKET') {
+    type = 'MARKET';
+    price = undefined;
+    stopPrice = undefined;
+  }
+  // else: caller sent `type` directly — keep it and validate below.
+
+  if (!Object.values(ORDER_TYPE).includes(type)) throw new AppError('Invalid type', 400);
+  if (type !== 'MARKET' && type !== 'STOP' && !price) {
+    throw new AppError('Price required for non-market orders', 400);
+  }
+  if (type === 'STOP' && !stopPrice) {
+    throw new AppError('Stop price required for stop orders', 400);
+  }
+
+  // Direction validation — same rules apply regardless of how we got here
+  // (orderMode resolution OR direct `type` from a legacy caller). Skipped
+  // when the resolution above already produced a STOP, because a "BUY at
+  // a price above ask" is the LEGITIMATE BUY STOP case (breakout).
+  if (type === ORDER_TYPE.LIMIT) {
+    const { bid: curBid, ask: curAsk } = _currentBidAsk(instrument);
+    const limitPx = Number(price);
+    if (!Number.isFinite(limitPx) || limitPx <= 0) {
+      throw new AppError('Invalid limit price', 400);
+    }
+    if (curAsk > 0 && side === 'BUY' && limitPx >= curAsk) {
+      throw new AppError(
+        `Buy limit price must be below current market price (current ask ${curAsk}).`,
+        400, 'LIMIT_INVALID'
+      );
+    }
+    if (curBid > 0 && side === 'SELL' && limitPx <= curBid) {
+      throw new AppError(
+        `Sell limit price must be above current market price (current bid ${curBid}).`,
+        400, 'LIMIT_INVALID'
+      );
+    }
+  }
 
   // Validate min/max order size
   if (instrument.minOrderSize && lt(quantity, instrument.minOrderSize)) {
@@ -111,6 +228,32 @@ const placeOrder = asyncHandler(async (req, res) => {
       `Quantity ${quantity} exceeds max order size ${instrument.maxOrderSize} for ${instrument.symbol}`,
       400
     );
+  }
+
+  // Per-account total open-notional cap. Doc §4: admin can constrain how
+  // much exposure a single account carries. Cheap sum over OPEN positions;
+  // we project the new order's notional on top before comparing.
+  if (account.maxPositionSize && gt(account.maxPositionSize, '0')) {
+    const openPositions = await Position.find({
+      accountId: account._id,
+      status: POSITION_STATUS.OPEN,
+    }).select('quantity entryPrice').lean();
+    let openNotional = '0';
+    for (const p of openPositions) {
+      openNotional = add(openNotional, mul(p.quantity || '0', p.entryPrice || '0'));
+    }
+    const projected = mul(
+      String(quantity),
+      String(price || instrument.lastPrice || '0')
+    );
+    const totalAfter = add(openNotional, projected);
+    if (gt(totalAfter, account.maxPositionSize)) {
+      throw new AppError(
+        `Total open notional ${totalAfter} would exceed account cap ${account.maxPositionSize}`,
+        400,
+        'MAX_POSITION_SIZE_EXCEEDED'
+      );
+    }
   }
 
   // Resolve leverage:
@@ -131,13 +274,6 @@ const placeOrder = asyncHandler(async (req, res) => {
   }
   if (orderLeverage < 1) orderLeverage = 1;
 
-  // Routing decision (A-book / B-book / external)
-  const routing = await routingService.decideRouting({
-    userId: req.userId,
-    instrument,
-    order: { quantity, price, side },
-  });
-
   // Margin lock: compute how much new exposure this order opens (closing-leg
   // is netted out against existing position), and lock that from free balance.
   // STOP orders also lock at placement so the user can't double-spend the
@@ -154,6 +290,10 @@ const placeOrder = asyncHandler(async (req, res) => {
     symbol: instrument.symbol,
   });
 
+  // Routing is decided AFTER the order doc exists (in orderRouter.routeOrder)
+  // because the router needs an Order doc to stamp executionSource onto.
+  // Order is created with default routing/executionSource which the router
+  // overwrites before submitting to the engine/LP.
   const order = await Order.create({
     userId: req.userId,
     accountId,
@@ -167,7 +307,6 @@ const placeOrder = asyncHandler(async (req, res) => {
     stopLoss: stopLoss ? String(stopLoss) : undefined,
     takeProfit: takeProfit ? String(takeProfit) : undefined,
     leverage: orderLeverage,
-    routing,
     status: ORDER_STATUS.PENDING,
     idempotencyKey,
     // Persisted on order so cancel/reject can release the exact amount
@@ -194,13 +333,24 @@ const placeOrder = asyncHandler(async (req, res) => {
     }
   }
 
-  // STOP orders are not submitted to the engine until triggered.
-  // Here we submit MARKET and LIMIT directly. STOP triggering is left as a TODO (price monitor).
-  if (type === ORDER_TYPE.STOP) {
+  // STOP and LIMIT orders rest as PENDING until the price-monitor worker
+  // triggers them. Pre-fix LIMITs went straight to the engine, which has
+  // a B-book / external fallback that fills at market price regardless of
+  // the limit constraint — that's how a BUY LIMIT placed below market was
+  // ending up filled immediately. Now LIMITs only execute when the worker
+  // sees the market cross the limit price (ask <= BUY limit, bid >= SELL
+  // limit) and submits the order to the engine.
+  if (type === ORDER_TYPE.STOP || type === ORDER_TYPE.LIMIT) {
     return sendSuccess(res, order, 201);
   }
 
-  const result = await matchingEngine.submit(order);
+  // Route via the new per-account router. It picks INTERNAL vs LP based
+  // on account.bookType (+ riskEngine for HYBRID), stamps executionSource
+  // on the order, and dispatches to the appropriate execution service.
+  const { settledOrder, executionSource } = await orderRouter.routeOrder({
+    order,
+    userId: req.userId,
+  });
 
   // Update candles for any trades that just executed
   // (in MVP we look up trades created after order creation)
@@ -217,7 +367,9 @@ const placeOrder = asyncHandler(async (req, res) => {
     });
   }
 
-  sendSuccess(res, result, 201);
+  // executionSource on the response so the UI can show "Filled via LP"
+  // / "Filled internally" if it wants. The order doc itself also carries it.
+  sendSuccess(res, { ...settledOrder.toObject?.() || settledOrder, executionSource }, 201);
 });
 
 const cancelOrder = asyncHandler(async (req, res) => {
@@ -226,7 +378,9 @@ const cancelOrder = asyncHandler(async (req, res) => {
   if (![ORDER_STATUS.PENDING, ORDER_STATUS.PARTIALLY_FILLED].includes(order.status)) {
     throw new AppError('Order cannot be cancelled', 400);
   }
-  await matchingEngine.cancel(order);
+  // Route the cancel — for A-book orders this also cancels on the LP so
+  // the upstream venue doesn't fill an order the user thinks is dead.
+  await orderRouter.routeCancel({ order });
 
   // Release the unfilled portion's margin. Filled portion's margin stays
   // locked because it's now backing the resulting position (released on
@@ -396,16 +550,10 @@ const closePosition = asyncHandler(async (req, res) => {
     throw new AppError('Position not found', 404);
   }
 
-  // Place opposite-side market order. Route through routingService so a B-book
-  // instrument's closing fill goes through the broker counterparty path —
-  // INTERNAL-only routing would reject when there's no resting liquidity.
+  // Place opposite-side market order. Route via orderRouter so the close
+  // fills through whichever execution path (B/A/LP) the account is
+  // configured for. closeOnly caps qty at remaining position size.
   const oppositeSide = position.side === 'BUY' ? 'SELL' : 'BUY';
-  const instrument = await Instrument.findById(position.instrumentId);
-  const routing = await routingService.decideRouting({
-    userId: req.userId,
-    instrument,
-    order: { quantity: position.quantity, side: oppositeSide },
-  });
   const order = await Order.create({
     userId: req.userId,
     accountId: position.accountId,
@@ -416,20 +564,15 @@ const closePosition = asyncHandler(async (req, res) => {
     quantity: position.quantity,
     leverage: position.leverage,
     status: ORDER_STATUS.PENDING,
-    routing,
-    // closeOnly tells the engine to never let this order open a flip leg
-    // — if the position has already been reduced by a concurrent settle,
-    // we cap the close qty at the remaining position size.
     closeOnly: true,
   });
 
-  // If the engine throws (broken state, route misconfig, etc.) we MUST
-  // roll the CLOSING status back to OPEN — otherwise the position is
-  // stuck and the user can't retry. The engine's settle path is already
-  // idempotent (dedupeKey), so re-submitting is safe.
+  // Router throws → roll CLOSING back to OPEN so the user can retry.
+  // Engine settle path is idempotent (dedupeKey) so re-submit is safe.
   let result;
   try {
-    result = await matchingEngine.submit(order);
+    const routed = await orderRouter.routeOrder({ order, userId: req.userId });
+    result = routed.settledOrder;
   } catch (engineErr) {
     await Position.updateOne(
       { _id: position._id, status: POSITION_STATUS.CLOSING, settled: { $ne: true } },
@@ -609,8 +752,10 @@ const modifyOrder = asyncHandler(async (req, res) => {
   await order.save();
 
   if (order.type === 'LIMIT') {
-    // Re-submit through engine so it can match against the book at the new price
-    await matchingEngine.submit(order);
+    // Re-submit through the router so the modified LIMIT respects the
+    // account's bookType — an A-book account's modified LIMIT must still
+    // flow to the LP, not just the internal engine book.
+    await orderRouter.routeOrder({ order, userId: req.userId });
   }
   sendSuccess(res, order);
 });
@@ -674,12 +819,6 @@ const partialClose = asyncHandler(async (req, res) => {
 
   try {
     const oppositeSide = position.side === 'BUY' ? 'SELL' : 'BUY';
-    const instrument = await Instrument.findById(position.instrumentId);
-    const routing = await routingService.decideRouting({
-      userId: req.userId,
-      instrument,
-      order: { quantity: String(quantity), side: oppositeSide },
-    });
     const order = await Order.create({
       userId: req.userId,
       accountId: position.accountId,
@@ -690,11 +829,13 @@ const partialClose = asyncHandler(async (req, res) => {
       quantity: String(quantity),
       leverage: position.leverage,
       status: ORDER_STATUS.PENDING,
-      routing,
       closeOnly: true,
     });
-    const result = await matchingEngine.submit(order);
-    return sendSuccess(res, result);
+    const { settledOrder, executionSource } = await orderRouter.routeOrder({
+      order,
+      userId: req.userId,
+    });
+    return sendSuccess(res, { ...settledOrder.toObject?.() || settledOrder, executionSource });
   } finally {
     // Always clear the flag — finally guarantees we don't strand the
     // position with partialClosing=true on a thrown engine error.
@@ -824,9 +965,9 @@ const placeOcoOrder = asyncHandler(async (req, res) => {
     }
   }
 
-  // Submit limit order to the matching engine immediately;
-  // stop order waits for price trigger via background worker.
-  await matchingEngine.submit(limitOrder);
+  // Submit limit leg via the router — so an A-book OCO actually places the
+  // LIMIT on the LP. STOP leg stays PENDING; worker triggers + routes it.
+  await orderRouter.routeOrder({ order: limitOrder, userId: req.userId });
 
   sendSuccess(res, { ocoGroupId, limitOrder, stopOrder }, 201);
 });
@@ -859,6 +1000,59 @@ const setTrailingStop = asyncHandler(async (req, res) => {
   sendSuccess(res, position);
 });
 
+/**
+ * Close every OPEN position for the authenticated user — "panic close"
+ * button on the trader UI. Optional `accountId` body field scopes the
+ * close to a single account.
+ *
+ * Each position is claimed atomically (OPEN → CLOSING) so we don't
+ * race the worker's SL/TP path; on router failure we revert that
+ * position to OPEN and continue with the rest.
+ *
+ * Returns { closed, failed } counts so the UI can show partial outcomes.
+ */
+const closeAllPositions = asyncHandler(async (req, res) => {
+  const { accountId } = req.body || {};
+  const filter = { userId: req.userId, status: POSITION_STATUS.OPEN };
+  if (accountId) filter.accountId = accountId;
+  const positions = await Position.find(filter);
+
+  let closed = 0;
+  const failed = [];
+  for (const pos of positions) {
+    const claimed = await Position.findOneAndUpdate(
+      { _id: pos._id, status: POSITION_STATUS.OPEN, settled: { $ne: true } },
+      { $set: { status: POSITION_STATUS.CLOSING, closeReason: 'MANUAL' } },
+      { new: true }
+    );
+    if (!claimed) continue; // already being closed
+    const oppositeSide = pos.side === 'BUY' ? 'SELL' : 'BUY';
+    const closingOrder = await Order.create({
+      userId: req.userId,
+      accountId: pos.accountId,
+      instrumentId: pos.instrumentId,
+      symbol: pos.symbol,
+      side: oppositeSide,
+      type: ORDER_TYPE.MARKET,
+      quantity: pos.quantity,
+      leverage: pos.leverage,
+      status: ORDER_STATUS.PENDING,
+      closeOnly: true,
+    });
+    try {
+      await orderRouter.routeOrder({ order: closingOrder, userId: req.userId });
+      closed++;
+    } catch (err) {
+      await Position.updateOne(
+        { _id: pos._id, status: POSITION_STATUS.CLOSING, settled: { $ne: true } },
+        { $set: { status: POSITION_STATUS.OPEN } }
+      );
+      failed.push({ positionId: String(pos._id), symbol: pos.symbol, reason: err.message });
+    }
+  }
+  sendSuccess(res, { closed, failed, total: positions.length });
+});
+
 module.exports = {
   placeOrder,
   cancelOrder,
@@ -867,6 +1061,7 @@ module.exports = {
   listPositions,
   positionHistory,
   closePosition,
+  closeAllPositions,
   modifyOrder,
   modifyPosition,
   partialClose,

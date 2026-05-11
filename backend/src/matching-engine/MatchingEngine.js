@@ -741,6 +741,16 @@ class MatchingEngine {
     let fee = mul(mul(closeQty, price), feeRate);
     try { fee = await subscriptionService.applyFeeDiscount(userId, fee); } catch (_) { /* keep raw fee */ }
 
+    // Profit-share fee (doc §5): only charged when this close leg is in
+    // profit. Folded into the same `fee` line so the wallet ledger shows
+    // one consolidated trading fee. profitSharePercent stored as a
+    // percent (e.g. "2" = 2% of profit), default 0 = disabled.
+    const profitShareRate = instrument?.profitSharePercent || '0';
+    if (gt(profitShareRate, '0') && gt(closePnl, '0')) {
+      const shareFee = mul(closePnl, div(profitShareRate, '100'));
+      fee = add(fee, shareFee);
+    }
+
     // dedupeKey scopes the settle to (this fill, this user) — both sides of
     // an internal match share a tradeId but are credited to different
     // wallets, so we include userId to avoid the maker's settle colliding

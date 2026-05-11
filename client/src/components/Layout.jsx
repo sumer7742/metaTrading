@@ -85,47 +85,43 @@ export default function Layout({ children }) {
   const initials = (fullName || 'T').split(' ').map((s) => s[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
 
   return (
-    // h-screen + overflow-hidden locks the outer container to the viewport
-    // so the sidebar stays pinned while only the main column scrolls. With
-    // min-h-screen (the previous setup) long pages caused the whole layout
-    // — including the sidebar — to scroll out of view.
     <div className="h-screen flex bg-bg-dark overflow-hidden">
-      {/* Sidebar — premium look:
-          • subtle vertical gradient backdrop
-          • hairline yellow accent at the top edge
-          • sectioned nav with small section headers
-          • pill-shaped active item with yellow gradient + glow
-          • profile pill at the top of the footer with avatar + initials */}
+      {/* Sidebar:
+          • Mobile (<lg): `fixed` overlay slide-in (translate-x), full 256px
+          • Desktop (lg+): in-flow flex item, 64px collapsed, 256px on hover —
+            so the main content SHIFTS instead of being overlayed.
+          The static positioning on desktop is what causes the push effect. */}
       <aside
-        className={`fixed lg:static z-40 inset-y-0 left-0 w-64 h-screen lg:h-auto flex flex-col transform transition-transform border-r border-border-dark sidebar-elevated ${
-          mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
-        }`}
+        className={`group/sidebar h-screen flex flex-col border-r border-border-dark sidebar-elevated overflow-hidden transition-all duration-200 ease-out
+          fixed inset-y-0 left-0 z-40 lg:static lg:z-auto
+          w-64 ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}
+          lg:translate-x-0 lg:w-16 lg:hover:w-64 lg:shrink-0`}
       >
-        {/* Brand */}
-        <div className="relative h-16 flex items-center justify-between px-5 border-b border-border-dark">
-          <Link to="/dashboard" className="flex items-center gap-2.5 text-lg font-extrabold text-white tracking-tight group">
+        {/* Brand — only logo when collapsed; full text appears on hover */}
+        <div className="relative h-16 flex items-center justify-between px-3 lg:px-3 border-b border-border-dark shrink-0">
+          <Link to="/dashboard" className="flex items-center gap-3 text-lg font-extrabold text-white tracking-tight group/brand min-w-0">
             <span
-              className="w-9 h-9 rounded-lg flex items-center justify-center font-extrabold text-bg-dark text-base shadow-md transition-transform group-hover:scale-105"
+              className="w-10 h-10 rounded-lg flex items-center justify-center font-extrabold text-bg-dark text-base shadow-md transition-transform group-hover/brand:scale-105 shrink-0"
               style={{ background: 'linear-gradient(135deg, #FFE74D 0%, #FCD535 100%)' }}
             >
               T
             </span>
-            <span className="flex flex-col leading-none">
+            <span className="flex flex-col leading-none whitespace-nowrap opacity-100 lg:opacity-0 lg:group-hover/sidebar:opacity-100 transition-opacity duration-150">
               <span className="font-extrabold">TradePro</span>
               <span className="text-[9px] uppercase tracking-[0.2em] text-primary-500 mt-0.5 font-bold">PRO</span>
             </span>
           </Link>
-          <button onClick={() => setMobileOpen(false)} className="lg:hidden text-text-secondary">
+          <button onClick={() => setMobileOpen(false)} className="lg:hidden text-text-secondary shrink-0">
             {I.close}
           </button>
         </div>
 
-        {/* Nav — sectioned. Each item is a `sidebar-link`; active ones get
-            `sidebar-link-active` from index.css with a yellow glow. */}
-        <nav className="flex-1 overflow-y-auto py-3 px-3 space-y-4">
+        {/* Nav — section headers fade out when collapsed; only icons show.
+            On hover the section headers fade back in along with labels. */}
+        <nav className="flex-1 overflow-y-auto overflow-x-hidden py-3 px-3 space-y-4">
           {NAV_SECTIONS.map((section) => (
             <div key={section.title}>
-              <div className="px-3 pb-1.5 text-[10px] uppercase tracking-[0.2em] font-bold text-text-muted">
+              <div className="px-3 pb-1.5 text-[10px] uppercase tracking-[0.2em] font-bold text-text-muted whitespace-nowrap opacity-100 lg:opacity-0 lg:group-hover/sidebar:opacity-100 transition-opacity duration-150 h-3">
                 {section.title}
               </div>
               <div className="space-y-0.5">
@@ -134,13 +130,16 @@ export default function Layout({ children }) {
                     key={item.to}
                     to={item.to}
                     end={item.to === '/dashboard'}
+                    title={item.label}
                     className={({ isActive }) =>
                       `sidebar-link ${isActive ? 'sidebar-link-active' : ''}`
                     }
                     onClick={() => setMobileOpen(false)}
                   >
-                    <span className="sidebar-link-icon">{item.icon}</span>
-                    <span className="flex-1">{item.label}</span>
+                    <span className="sidebar-link-icon shrink-0">{item.icon}</span>
+                    <span className="flex-1 whitespace-nowrap opacity-100 lg:opacity-0 lg:group-hover/sidebar:opacity-100 transition-opacity duration-150">
+                      {item.label}
+                    </span>
                   </NavLink>
                 ))}
               </div>
@@ -148,11 +147,12 @@ export default function Layout({ children }) {
           ))}
         </nav>
 
-        {/* Footer — profile pill + theme toggle + logout */}
-        <div className="border-t border-border-dark p-3 space-y-2">
+        {/* Footer — profile pill + theme/logout. Labels fade with same pattern. */}
+        <div className="border-t border-border-dark p-3 space-y-2 shrink-0">
           <NavLink
             to="/profile"
             onClick={() => setMobileOpen(false)}
+            title="View profile"
             className={({ isActive }) =>
               `flex items-center gap-3 p-2 rounded-lg border transition-colors ${
                 isActive
@@ -167,7 +167,7 @@ export default function Layout({ children }) {
             >
               {initials}
             </span>
-            <div className="min-w-0 flex-1">
+            <div className="min-w-0 flex-1 whitespace-nowrap opacity-100 lg:opacity-0 lg:group-hover/sidebar:opacity-100 transition-opacity duration-150">
               <div className="text-sm text-white font-semibold truncate">{fullName}</div>
               <div className="text-[10px] uppercase tracking-wider text-text-muted">
                 View profile
@@ -175,25 +175,30 @@ export default function Layout({ children }) {
             </div>
           </NavLink>
 
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={toggleTheme}
-              className="flex items-center justify-center gap-1.5 py-2 rounded-lg border border-border-dark text-text-secondary hover:text-text-primary hover:border-border-accent hover:bg-bg-hover transition-colors text-xs"
-              title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
-            >
-              {theme === 'dark' ? I.sun : I.moon}
-              <span>{theme === 'dark' ? 'Light' : 'Dark'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="flex items-center justify-center gap-1.5 py-2 rounded-lg border border-bear/30 text-bear hover:bg-bear/10 transition-colors text-xs"
-            >
-              {I.logout}
-              <span>Log Out</span>
-            </button>
-          </div>
+          {/* Theme toggle — icon-only when collapsed; pill with label on hover */}
+          <button
+            type="button"
+            onClick={toggleTheme}
+            title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-border-dark text-text-secondary hover:text-text-primary hover:border-border-accent hover:bg-bg-hover transition-colors text-sm"
+          >
+            <span className="text-text-muted shrink-0">{theme === 'dark' ? I.sun : I.moon}</span>
+            <span className="flex-1 text-left whitespace-nowrap opacity-100 lg:opacity-0 lg:group-hover/sidebar:opacity-100 transition-opacity duration-150">
+              {theme === 'dark' ? 'Dark' : 'Light'}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleLogout}
+            title="Log Out"
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg border border-bear/30 text-bear hover:bg-bear/10 transition-colors text-sm"
+          >
+            <span className="shrink-0">{I.logout}</span>
+            <span className="flex-1 text-left whitespace-nowrap opacity-100 lg:opacity-0 lg:group-hover/sidebar:opacity-100 transition-opacity duration-150">
+              Log Out
+            </span>
+          </button>
         </div>
       </aside>
 

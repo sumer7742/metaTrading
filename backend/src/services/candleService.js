@@ -15,15 +15,71 @@ const TF_MS = {
 const bucket = (ts, tfMs) => Math.floor(ts / tfMs) * tfMs;
 
 /**
+ * If the last existing candle for (symbol, tf) is more than one bucket
+ * behind the incoming `currentBucket`, fill the gap with flat candles
+ * (carry-forward last close). Prevents visible gaps between historical
+ * seed data and the first live tick after the feed reconnects.
+ *
+ * Caps at MAX_BACKFILL buckets per call so a long downtime doesn't
+ * generate thousands of fake candles in one tick.
+ */
+// 1500 buckets per call covers 25h on 1m, 5 days on 5m, ~3 months on 1h.
+// First tick after a long downtime pays the cost of one big bulkWrite —
+// trade-off for keeping the chart visually continuous.
+const MAX_BACKFILL = 1500;
+
+const _backfillGaps = async (symbol, tf, tfMs, currentBucketTs, fallbackClose) => {
+  const last = await Candle.findOne({ symbol, timeframe: tf })
+    .sort({ openTime: -1 })
+    .limit(1)
+    .lean();
+  if (!last) return;
+  const lastBucketTs = new Date(last.openTime).getTime();
+  const gapBuckets = Math.floor((currentBucketTs - lastBucketTs) / tfMs) - 1;
+  if (gapBuckets <= 0) return;
+  const fillCount = Math.min(gapBuckets, MAX_BACKFILL);
+  const flatPrice = String(last.close ?? fallbackClose);
+  const flatPriceNum = Number(flatPrice);
+
+  const ops = [];
+  for (let i = 1; i <= fillCount; i++) {
+    const openTime = new Date(lastBucketTs + i * tfMs);
+    const closeTime = new Date(openTime.getTime() + tfMs);
+    ops.push({
+      updateOne: {
+        filter: { symbol, timeframe: tf, openTime },
+        update: {
+          $setOnInsert: {
+            symbol,
+            timeframe: tf,
+            openTime,
+            closeTime,
+            open: flatPrice,
+            high: flatPrice,
+            low: flatPrice,
+            close: flatPrice,
+            volume: '0',
+          },
+        },
+        upsert: true,
+      },
+    });
+    // Cheap guard against absurdly large flat blocks if data is corrupt.
+    if (!Number.isFinite(flatPriceNum)) break;
+  }
+  if (ops.length) {
+    try { await Candle.bulkWrite(ops, { ordered: false }); }
+    catch (e) { /* duplicates expected on race — ignore */ }
+  }
+};
+
+/**
  * Update candles for all timeframes for a single trade.
  *
  * Uses an atomic upsert (aggregation pipeline) so two concurrent ticks on
  * the same bucket can't both insert and produce an E11000 duplicate-key
- * error. The pipeline:
- *   - sets `open` only if the doc is new (preserves the bucket's first price)
- *   - always overwrites `close` (latest price wins)
- *   - $max/$min on `high`/`low` against the prior value
- *   - $add on `volume` against the prior value
+ * error. Before the upsert we run a fast gap-backfill so the live candle
+ * sits flush against the historical series with no visual hole.
  */
 const updateCandlesForTrade = async ({ symbol, price, quantity, ts }) => {
   const t = ts || Date.now();
@@ -32,8 +88,13 @@ const updateCandlesForTrade = async ({ symbol, price, quantity, ts }) => {
   const priceStr = String(price);
 
   for (const [tf, ms] of Object.entries(TF_MS)) {
-    const openTime = new Date(bucket(t, ms));
-    const closeTime = new Date(openTime.getTime() + ms);
+    const bucketTs = bucket(t, ms);
+    const openTime = new Date(bucketTs);
+    const closeTime = new Date(bucketTs + ms);
+
+    // Backfill any missing buckets between the last existing candle and
+    // the current one — keeps the chart visually continuous.
+    await _backfillGaps(symbol, tf, ms, bucketTs, priceStr);
 
     const candle = await Candle.findOneAndUpdate(
       { symbol, timeframe: tf, openTime },

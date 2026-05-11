@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../services/api';
 import { wsClient } from '../services/ws';
-import { fmtMoney, fmtMoneyDual, currencySymbol } from '../utils/format';
+import { fmtMoney, fmtMoneyDual, fmtMoneyBoth, currencySymbol } from '../utils/format';
 import { useFxRate } from '../hooks/useFxRate';
 
 export default function Dashboard() {
@@ -131,9 +131,11 @@ export default function Dashboard() {
           through without dominating the page. KYC chip sits inline as a
           status indicator instead of taking a separate card slot. */}
       {(() => {
-        const eq = fmtMoneyDual(equity, primaryCur, fxRate);
+        // Hero equity + balance = headline totals — show BOTH USD and INR.
+        // Unrealized PnL is a sub-figure, USD-only.
+        const eq = fmtMoneyBoth(equity, primaryCur, fxRate);
+        const bal = fmtMoneyBoth(liveBalance, primaryCur, fxRate);
         const ur = fmtMoneyDual(unrealized, primaryCur, fxRate, true);
-        const bal = fmtMoneyDual(liveBalance, primaryCur, fxRate);
         const today = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short' });
         return (
           <div className="relative overflow-hidden rounded-2xl border border-border-dark bg-bg-card p-6 sm:p-8">
@@ -214,6 +216,7 @@ export default function Dashboard() {
                 )}
                 <div className="text-[11px] font-mono text-text-muted mt-2 border-t border-border-subtle pt-2">
                   Balance <span className="text-text-secondary">{bal.primary}</span>
+                  {bal.secondary && <span className="text-text-muted/70 ml-1">({bal.secondary})</span>}
                   {Object.keys(liveByCur).length > 1 && (
                     <span> · {Object.entries(liveByCur)
                       .filter(([c]) => c !== primaryCur)

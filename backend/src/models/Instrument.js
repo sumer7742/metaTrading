@@ -11,25 +11,19 @@ const instrumentSchema = new mongoose.Schema(
 
     // Trading config
     isActive: { type: Boolean, default: true },
+    // ─── @deprecated routing fields ──────────────────────────────────
+    // Book-type / external routing is now a PER-ACCOUNT decision (see
+    // TradingAccount.bookType + lpProvider). The instrument-level fields
+    // below are preserved only so legacy data / admin instruments page
+    // keep working. orderRouter.service.js does NOT branch on these.
+    // Safe to delete once nothing in the codebase reads them.
     mode: { type: String, enum: Object.values(TRADING_MODE), default: TRADING_MODE.INTERNAL },
     bBookEnabled: { type: Boolean, default: false },
-
-    // What to do with existing B-book positions when bBookEnabled is turned OFF (doc §9.4)
-    //   CLOSE_ALL     - immediately close all open B-book positions at last price
-    //   LET_RUN       - existing positions remain until user closes them naturally
-    //   HEDGE_EXTERNAL - open offsetting positions on external market (requires external broker)
     bBookDisableMode: { type: String, enum: ['CLOSE_ALL', 'LET_RUN', 'HEDGE_EXTERNAL'], default: 'LET_RUN' },
-
-    // Auto mode-switching rules (doc §4.4)
     autoSwitchRules: {
       enabled: { type: Boolean, default: false },
-      // Switch to INTERNAL when external market is closed (e.g. NSE off-hours)
-      // tradingHours.start/end already define market window; this just enables the behavior
       internalWhenMarketClosed: { type: Boolean, default: false },
-      // Switch to INTERNAL when 24h internal volume exceeds threshold (graduate from Hybrid)
-      // value as string-decimal to match other money/qty fields
       internalVolumeThreshold: { type: String, default: null },
-      // Switch to EXTERNAL when 5-min price change exceeds % threshold (volatility safety)
       externalVolatilityThresholdPct: { type: Number, default: null },
     },
 
@@ -45,6 +39,10 @@ const instrumentSchema = new mongoose.Schema(
     spreadValue: { type: String, default: '0' }, // e.g. "0.5" pips or "0.001" %
     commissionPerTrade: { type: String, default: '0' }, // flat fee
     commissionPercent: { type: String, default: '0' }, // %
+    // Profit-share fee (doc §5) — charged only when a closing trade
+    // realises positive PnL. Expressed as a percent of the realized
+    // profit (e.g. "2" = take 2% of profit). 0 disables.
+    profitSharePercent: { type: String, default: '0' },
 
     // Leverage
     maxLeverage: { type: Number, default: 100 },

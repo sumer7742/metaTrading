@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { fmtDate } from '../utils/format';
+import PageHero from '../components/PageHero';
 
 export default function Withdrawals() {
   const [items, setItems] = useState([]);
@@ -44,11 +45,12 @@ export default function Withdrawals() {
   const symbol = (cur) => ({ INR: '₹', USD: '$', EUR: '€', GBP: '£' }[cur] || (cur + ' '));
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-2xl font-bold text-white">Withdrawal Requests</h1>
-      <p className="text-sm text-gray-400">
-        Review withdrawal requests, transfer funds via UPI/bank/crypto, then mark as paid with proof.
-      </p>
+    <div className="space-y-4 max-w-[1600px]">
+      <PageHero
+        eyebrow="Money"
+        title="Withdrawal Requests"
+        subtitle="Review pending withdrawals, transfer funds via UPI/bank/crypto, then mark as paid with proof. High-value (>10 lakh) requires two admin approvals."
+      />
 
       <div className="flex space-x-2">
         {['PENDING', 'APPROVED', 'REJECTED', 'COMPLETED', ''].map((s) => (

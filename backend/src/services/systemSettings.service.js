@@ -1,0 +1,102 @@
+/**
+ * In-memory cached accessor for SystemSetting docs.
+ *
+ * Why cache: every order placement reads `routingMode`. A round-trip to
+ * Mongo on every order would add ~5-10ms to the hot path. We refresh
+ * the cache lazily (60s TTL) and immediately on any setSetting() write.
+ *
+ * Keys + their meaning are documented in models/SystemSetting.js.
+ */
+const SystemSetting = require('../models/SystemSetting');
+
+const TTL_MS = Number(process.env.SETTINGS_CACHE_TTL_MS) || 60_000;
+
+// Defaults applied when the DB row is missing — keeps the platform safe
+// on a fresh install before admin has touched the Settings page.
+const DEFAULTS = {
+  routingMode: 'B_BOOK',
+  defaultLpProvider: 'NONE',
+};
+
+const _cache = new Map(); // key -> { value, expiresAt }
+
+const _readDb = async (key) => {
+  const doc = await SystemSetting.findOne({ key }).lean();
+  return doc?.value;
+};
+
+/**
+ * Read a setting. Falls back to DEFAULTS if not set in DB.
+ * Cached for TTL_MS. Reads are non-blocking — first read may take a
+ * round-trip; subsequent reads in the window are O(1).
+ */
+const getSetting = async (key) => {
+  const cached = _cache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+  const dbValue = await _readDb(key);
+  const value = dbValue !== undefined ? dbValue : DEFAULTS[key];
+  _cache.set(key, { value, expiresAt: Date.now() + TTL_MS });
+  return value;
+};
+
+/**
+ * Synchronous accessor — returns the cached value WITHOUT a DB round-
+ * trip, or the default if not yet cached. Useful inside the hot order
+ * path where we've already warmed the cache at boot. If you need
+ * guaranteed-fresh, use getSetting() (async).
+ */
+const getSettingSync = (key) => {
+  const cached = _cache.get(key);
+  if (cached) return cached.value;
+  return DEFAULTS[key];
+};
+
+/**
+ * Upsert a setting + bust cache. Returns the persisted value.
+ */
+const setSetting = async (key, value, updatedBy = null) => {
+  await SystemSetting.findOneAndUpdate(
+    { key },
+    { $set: { value, updatedBy } },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+  _cache.set(key, { value, expiresAt: Date.now() + TTL_MS });
+  return value;
+};
+
+/**
+ * Bulk read — returns { routingMode, defaultLpProvider, ... } for the
+ * admin settings UI to render. Includes defaults for unset keys.
+ */
+const getAllSettings = async () => {
+  const docs = await SystemSetting.find().lean();
+  const map = { ...DEFAULTS };
+  for (const d of docs) map[d.key] = d.value;
+  // Refresh cache while we're here.
+  for (const [k, v] of Object.entries(map)) {
+    _cache.set(k, { value: v, expiresAt: Date.now() + TTL_MS });
+  }
+  return map;
+};
+
+/**
+ * Warm the cache at startup — called from server.js so the very first
+ * order doesn't pay the cache-miss cost.
+ */
+const warmCache = async () => {
+  try {
+    await getAllSettings();
+  } catch (e) {
+    // Non-fatal: hot path will lazy-load on first read.
+    console.warn('[systemSettings] warmCache failed:', e.message);
+  }
+};
+
+module.exports = {
+  getSetting,
+  getSettingSync,
+  setSetting,
+  getAllSettings,
+  warmCache,
+  DEFAULTS,
+};

@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { ACCOUNT_TYPES, TRADING_MODE } = require('../config/constants');
+const { ACCOUNT_TYPES, TRADING_MODE, BOOK_TYPE, LP_PROVIDER } = require('../config/constants');
 
 const tradingAccountSchema = new mongoose.Schema(
   {
@@ -13,9 +13,38 @@ const tradingAccountSchema = new mongoose.Schema(
     customTypeName: String, // when accountType === 'CUSTOM'
     baseCurrency: { type: String, default: 'USD' },
     leverage: { type: Number, default: 100 }, // 1:100
+    // @deprecated — left in place for backward compatibility with older
+    // reports/dashboards. New code MUST NOT branch on `mode`; routing is
+    // driven by `bookType` + `lpProvider` below.
     mode: { type: String, enum: Object.values(TRADING_MODE), default: TRADING_MODE.HYBRID },
     isActive: { type: Boolean, default: true },
     nickname: String,
+
+    // ─── Execution routing (per-account, NOT per-instrument) ─────────
+    // bookType decides where this account's flow is sent:
+    //   A_BOOK  - forward every order to the LP adapter (`lpProvider`)
+    //   B_BOOK  - internalise: broker acts as counterparty (default)
+    //   HYBRID  - risk engine decides per order (volume / exposure /
+    //             trader profile). See riskEngine.service.js.
+    // Two users trading the SAME instrument can sit on different books.
+    bookType: {
+      type: String,
+      enum: Object.values(BOOK_TYPE),
+      default: BOOK_TYPE.B_BOOK,
+      index: true,
+    },
+    // LP routing target. Required when bookType !== B_BOOK; if NONE is
+    // set on an A_BOOK account, order placement is rejected with a clear
+    // "LP provider is required for A-book execution." error.
+    lpProvider: {
+      type: String,
+      enum: Object.values(LP_PROVIDER),
+      default: LP_PROVIDER.NONE,
+    },
+    // Hard kill-switch: when false, every order is rejected at the
+    // router with TRADING_DISABLED. Lets ops freeze a single account
+    // (e.g. for fraud review) without disabling the user globally.
+    isTradingEnabled: { type: Boolean, default: true },
 
     // Risk safety (doc §7.10): when balance + unrealized PnL <= 0, auto-close all positions
     // and floor balance at 0. Required for retail accounts in most jurisdictions.

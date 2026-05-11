@@ -50,6 +50,33 @@ module.exports = {
     HYBRID: 'HYBRID',
   },
 
+  // Per-account book type — replaces the instrument-level routing decision.
+  // Same instrument can be A-book for one user and B-book for another.
+  BOOK_TYPE: {
+    A_BOOK: 'A_BOOK',   // forward to LP / external venue
+    B_BOOK: 'B_BOOK',   // internal counterparty (broker becomes the venue)
+    HYBRID: 'HYBRID',   // risk engine decides per-order
+  },
+
+  // External liquidity-provider integration. NONE = no LP wired up
+  // (A-book is then invalid for this account).
+  LP_PROVIDER: {
+    NONE: 'NONE',
+    OANDA: 'OANDA',
+    BINANCE: 'BINANCE',
+    CUSTOM_LP: 'CUSTOM_LP',
+  },
+
+  // Stamped on every Order/Trade so reporting can split flow by where it
+  // actually executed. HYBRID_* preserves the original HYBRID decision so
+  // we can audit how the risk engine routed each order.
+  EXECUTION_SOURCE: {
+    INTERNAL: 'INTERNAL',
+    LP: 'LP',
+    HYBRID_INTERNAL: 'HYBRID_INTERNAL',
+    HYBRID_LP: 'HYBRID_LP',
+  },
+
   POSITION_STATUS: {
     OPEN: 'OPEN',
     // Intermediate state set when a close has been requested (manual click or

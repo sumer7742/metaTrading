@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { ORDER_SIDE, ORDER_TYPE, ORDER_STATUS, ROUTING } = require('../config/constants');
+const { ORDER_SIDE, ORDER_TYPE, ORDER_STATUS, ROUTING, EXECUTION_SOURCE } = require('../config/constants');
 
 const orderSchema = new mongoose.Schema(
   {
@@ -24,7 +24,25 @@ const orderSchema = new mongoose.Schema(
     leverage: { type: Number, default: 1 },
 
     status: { type: String, enum: Object.values(ORDER_STATUS), default: ORDER_STATUS.PENDING, index: true },
+    // @deprecated — preserved for backward compat with existing reports.
+    // New code should read `executionSource` instead.
     routing: { type: String, enum: Object.values(ROUTING), default: ROUTING.INTERNAL },
+    // Set by orderRouter at the moment of routing. One of:
+    //   INTERNAL         (B_BOOK account)
+    //   LP               (A_BOOK account)
+    //   HYBRID_INTERNAL  (HYBRID account, risk engine chose internal)
+    //   HYBRID_LP        (HYBRID account, risk engine chose LP)
+    executionSource: {
+      type: String,
+      enum: Object.values(EXECUTION_SOURCE),
+      default: EXECUTION_SOURCE.INTERNAL,
+      index: true,
+    },
+    // LP audit trail — populated by lpExecution.service when the order
+    // was routed A-book. Lets ops correlate an internal order id with
+    // the upstream provider's order id during disputes/recon.
+    lpProvider: { type: String, default: null },
+    lpProviderOrderId: { type: String, default: null },
 
     idempotencyKey: { type: String, unique: true, sparse: true },
     rejectionReason: String,

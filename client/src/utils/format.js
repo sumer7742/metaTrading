@@ -14,16 +14,16 @@ export const currencySymbol = (currency = 'INR') => {
   return map[currency] || (currency + ' ');
 };
 
-export const fmtMoney = (v, currency = 'INR') => `${currencySymbol(currency)}${fmtNum(v, 2)}`;
+export const fmtMoney = (v, currency = 'USD') => `${currencySymbol(currency)}${fmtNum(v, 2)}`;
 
-export const fmtPnl = (v, currency = 'INR') => {
+export const fmtPnl = (v, currency = 'USD') => {
   const n = Number(v);
   const sign = n > 0 ? '+' : '';
   return `${sign}${currencySymbol(currency)}${fmtNum(Math.abs(n), 2) * (n < 0 ? -1 : 1) === 0 ? '0.00' : fmtNum(n, 2)}`;
 };
 
 // Simpler PnL formatting that handles negative correctly
-export const fmtPnlSimple = (v, currency = 'INR') => {
+export const fmtPnlSimple = (v, currency = 'USD') => {
   const n = Number(v);
   if (!isFinite(n)) return `${currencySymbol(currency)}0.00`;
   const sign = n >= 0 ? '+' : '-';
@@ -60,35 +60,33 @@ export const toInr = (price, quoteCurrency = 'USD', fxRate = 83) => {
 };
 
 /**
- * Dual-currency money formatter for balances / PnL / equity. Returns:
- *   { primary: '₹1,00,000.00', secondary: '$1,204.82' }
+ * Money formatter for balances / PnL / equity — USD-primary across the app.
+ * Returns:
+ *   { primary: '$1,204.82', secondary: '', primaryRaw, secondaryRaw }
  *
- * Input is whatever currency the *underlying* number is in. We always show
- * INR as the primary line; secondary is the original (or converted) USD.
+ * The fxRate is used to convert INR-sourced numbers (e.g. legacy INR
+ * wallets) into USD. Signature is kept identical to the previous
+ * dual-currency helper so call sites don't have to change.
  *
- * Sign-aware: negative values keep their sign on both lines, and an
- * optional `withSign=true` adds a leading '+' on positive numbers (handy
- * for PnL where the user wants to see direction at a glance).
+ * Sign-aware: negatives keep their sign; `withSign=true` adds a leading
+ * '+' on positives (useful for PnL display).
  */
-export const fmtMoneyDual = (value, sourceCurrency = 'INR', fxRate = 83, withSign = false) => {
+export const fmtMoneyDual = (value, sourceCurrency = 'USD', fxRate = 83, withSign = false) => {
   const n = Number(value);
   if (!isFinite(n)) {
-    return { primary: '₹0.00', secondary: '', primaryRaw: 0, secondaryRaw: 0 };
+    return { primary: '$0.00', secondary: '', primaryRaw: 0, secondaryRaw: 0 };
   }
   const sign = withSign && n > 0 ? '+' : (n < 0 ? '-' : '');
   const abs = Math.abs(n);
   const rate = Number(fxRate || 0);
 
-  let inrAbs;
   let usdAbs;
-  if (sourceCurrency === 'INR') {
-    inrAbs = abs;
-    usdAbs = rate > 0 ? abs / rate : 0;
-  } else if (sourceCurrency === 'USD') {
-    inrAbs = abs * rate;
+  if (sourceCurrency === 'USD') {
     usdAbs = abs;
+  } else if (sourceCurrency === 'INR') {
+    usdAbs = rate > 0 ? abs / rate : abs;
   } else {
-    // Unknown currency — show source side only, no INR conversion.
+    // Unknown source currency — display native (no FX conversion).
     return {
       primary: `${sign}${currencySymbol(sourceCurrency)}${fmtNum(abs, 2)}`,
       secondary: '',
@@ -97,51 +95,102 @@ export const fmtMoneyDual = (value, sourceCurrency = 'INR', fxRate = 83, withSig
     };
   }
 
+  const signedUsd = usdAbs * (n < 0 ? -1 : 1);
   return {
-    primary: `${sign}₹${fmtNum(inrAbs, 2)}`,
-    secondary: usdAbs > 0 ? `${sign}$${fmtNum(usdAbs, 2)}` : '',
-    primaryRaw: sourceCurrency === 'INR' ? n : inrAbs * (n < 0 ? -1 : 1),
-    secondaryRaw: sourceCurrency === 'USD' ? n : usdAbs * (n < 0 ? -1 : 1),
+    primary: `${sign}$${fmtNum(usdAbs, 2)}`,
+    secondary: '',
+    primaryRaw: signedUsd,
+    secondaryRaw: signedUsd,
   };
 };
 
 /**
- * Dual-currency price formatter. Returns:
- *   { primary: '₹50,00,000.00', secondary: '$60,000.00', primaryRaw, secondaryRaw }
+ * Both-currency money formatter — used on the headline "final total"
+ * summary cards (Wallet equity, Funds real-balance / demo-balance hero
+ * cards, Dashboard top-line balance). Returns:
+ *   { primary: '$1,204.82', secondary: '₹1,00,000.00' }
  *
- * - For INR-quoted instruments: primary=INR, secondary stays empty so the
- *   UI doesn't show a redundant "$X" line.
- * - For USD-quoted instruments: primary=INR converted, secondary=original USD.
- * - For other quotes (EUR/GBP etc): primary stays in the native currency
- *   until a cross-rate is available.
+ * Everywhere ELSE (PnL columns, chart info-strip, per-account rows) we
+ * stick with the USD-only `fmtMoneyDual`. This helper is intentionally
+ * narrow — reserved for the visually dominant total amounts.
  */
-export const fmtPriceDual = (price, quoteCurrency = 'USD', fxRate = 83, decimals = 2) => {
-  const n = Number(price);
-  if (!isFinite(n)) return { primary: '-', secondary: '', primaryRaw: 0, secondaryRaw: 0 };
-  if (quoteCurrency === 'INR') {
+export const fmtMoneyBoth = (value, sourceCurrency = 'USD', fxRate = 83, withSign = false) => {
+  const n = Number(value);
+  if (!isFinite(n)) {
+    return { primary: '$0.00', secondary: '₹0.00', primaryRaw: 0, secondaryRaw: 0 };
+  }
+  const sign = withSign && n > 0 ? '+' : (n < 0 ? '-' : '');
+  const abs = Math.abs(n);
+  const rate = Number(fxRate || 0);
+
+  let usdAbs;
+  let inrAbs;
+  if (sourceCurrency === 'USD') {
+    usdAbs = abs;
+    inrAbs = abs * rate;
+  } else if (sourceCurrency === 'INR') {
+    inrAbs = abs;
+    usdAbs = rate > 0 ? abs / rate : 0;
+  } else {
+    // Unknown source currency — display native as primary, no INR convert.
     return {
-      primary: `₹${fmtNum(n, decimals)}`,
+      primary: `${sign}${currencySymbol(sourceCurrency)}${fmtNum(abs, 2)}`,
       secondary: '',
       primaryRaw: n,
       secondaryRaw: 0,
     };
   }
+
+  const signedUsd = usdAbs * (n < 0 ? -1 : 1);
+  const signedInr = inrAbs * (n < 0 ? -1 : 1);
+  return {
+    primary: `${sign}$${fmtNum(usdAbs, 2)}`,
+    secondary: `${sign}₹${fmtNum(inrAbs, 2)}`,
+    primaryRaw: signedUsd,
+    secondaryRaw: signedInr,
+  };
+};
+
+/**
+ * Price formatter — USD-primary for every instrument. Returns:
+ *   { primary: '$60,000.00', secondary: '', primaryRaw, secondaryRaw }
+ *
+ * - USD-quoted instruments: primary = the native USD price (decimals
+ *   honored, e.g. 5 for forex).
+ * - INR-quoted instruments: converted to USD via fxRate.
+ * - Other quotes (EUR/GBP/JPY/etc): kept in native currency since we
+ *   don't have cross-rates yet — same fallback behaviour as before.
+ */
+export const fmtPriceDual = (price, quoteCurrency = 'USD', fxRate = 83, decimals = 2) => {
+  const n = Number(price);
+  if (!isFinite(n)) return { primary: '-', secondary: '', primaryRaw: 0, secondaryRaw: 0 };
   if (quoteCurrency === 'USD') {
-    const inr = n * Number(fxRate || 0);
-    // INR display rounds to 2 decimals at most — fractions of a paisa add
-    // visual noise without informational value.
-    const inrDecimals = Math.min(decimals, 2);
     return {
-      primary: `₹${fmtNum(inr, inrDecimals)}`,
-      secondary: `$${fmtNum(n, decimals)}`,
-      primaryRaw: inr,
+      primary: `$${fmtNum(n, decimals)}`,
+      secondary: '',
+      primaryRaw: n,
       secondaryRaw: n,
     };
   }
+  if (quoteCurrency === 'INR') {
+    const rate = Number(fxRate || 0);
+    const usd = rate > 0 ? n / rate : n;
+    return {
+      primary: `$${fmtNum(usd, decimals)}`,
+      secondary: '',
+      primaryRaw: usd,
+      secondaryRaw: usd,
+    };
+  }
+  // Other quote currencies (JPY/EUR/GBP/CHF/etc.). The numeric value IS
+  // the FX rate for the pair (e.g. EUR/JPY = 184.837 means 1 EUR =
+  // 184.837 JPY) — that's what the trader acts on. We don't have cross
+  // rates to convert to USD, so we keep the raw number but display with
+  // a `$` sign to stay visually consistent with the rest of the UI.
   return {
-    primary: `${currencySymbol(quoteCurrency)}${fmtNum(n, decimals)}`,
+    primary: `$${fmtNum(n, decimals)}`,
     secondary: '',
     primaryRaw: n,
-    secondaryRaw: 0,
+    secondaryRaw: n,
   };
 };

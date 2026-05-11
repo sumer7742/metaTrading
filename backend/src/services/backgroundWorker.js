@@ -17,7 +17,39 @@ const Trade = require('../models/Trade');
 const MarginCall = require('../models/MarginCall');
 const { Notification } = require('../models/index');
 const matchingEngine = require('../matching-engine/MatchingEngine');
+const orderRouter = require('./orderRouter.service');
 const riskService = require('./riskService');
+
+// Worker-triggered orders (STOP fires, LIMIT fills, SL/TP closes, stop-out
+// liquidations) should respect the per-account bookType just like manual
+// orders. _submit() routes through orderRouter.
+//
+// Fallback policy: silent fallback to direct engine submit is ONLY safe for
+// pure B-book accounts (which would have ended up there anyway). For A/HYBRID
+// accounts a routing failure means we couldn't reach the LP — falling back
+// to internal execution would mis-route the trade and stamp the wrong
+// executionSource. In that case we mark the order REJECTED, leave the caller
+// to roll back position state on the next tick, and propagate the error.
+const _submit = async (order) => {
+  try {
+    const { settledOrder } = await orderRouter.routeOrder({ order, userId: order.userId });
+    return settledOrder;
+  } catch (err) {
+    const TradingAccount = require('../models/TradingAccount');
+    const { BOOK_TYPE } = require('../config/constants');
+    const account = await TradingAccount.findById(order.accountId).lean();
+    const bookType = account?.bookType || BOOK_TYPE.B_BOOK;
+    if (bookType === BOOK_TYPE.B_BOOK) {
+      console.warn(`[worker] orderRouter failed for B-book order ${order._id}: ${err.message} — falling back to engine`);
+      return matchingEngine.submit(order);
+    }
+    console.error(`[worker] orderRouter failed for ${bookType} order ${order._id}: ${err.message} — refusing internal fallback`);
+    order.status = ORDER_STATUS.REJECTED;
+    order.rejectionReason = `Worker route failed: ${err.message}`;
+    try { await order.save(); } catch (_) {}
+    throw err;
+  }
+};
 const { add, sub, mul, gt, lt, gte, lte, eq, D } = require('../utils/decimal');
 const { ORDER_STATUS, ORDER_TYPE, POSITION_STATUS } = require('../config/constants');
 
@@ -52,11 +84,21 @@ const triggerStopOrders = async () => {
     if (inst.lastPriceUpdatedAt && Date.now() - new Date(inst.lastPriceUpdatedAt).getTime() > 60_000) continue;
     const lastPrice = inst.lastPrice;
 
-    // BUY STOP triggers when price >= stopPrice (breakout up)
-    // SELL STOP triggers when price <= stopPrice (breakdown)
+    // For trigger evaluation we use the side-appropriate quote — a BUY
+    // STOP fires when the ask reaches the trigger (that's what you'd pay),
+    // and a SELL STOP fires when the bid reaches the trigger (that's what
+    // you'd receive). lastPrice ≈ mid was an approximation that fired
+    // stops slightly early/late depending on spread direction.
+    const last = Number(lastPrice);
+    const half = Number(inst.spreadValue || 0) / 2;
+    const ask = inst.spreadType === 'PERCENTAGE' ? last * (1 + half) : last + half;
+    const bid = inst.spreadType === 'PERCENTAGE' ? last * (1 - half) : last - half;
+
+    // BUY STOP triggers when ask >= stopPrice (breakout up)
+    // SELL STOP triggers when bid <= stopPrice (breakdown)
     const triggered =
-      (order.side === 'BUY' && gte(lastPrice, order.stopPrice)) ||
-      (order.side === 'SELL' && lte(lastPrice, order.stopPrice));
+      (order.side === 'BUY' && gte(String(ask), order.stopPrice)) ||
+      (order.side === 'SELL' && lte(String(bid), order.stopPrice));
 
     if (triggered) {
       // Mark as fired BEFORE submitting so a concurrent tick can't double-submit.
@@ -66,7 +108,7 @@ const triggerStopOrders = async () => {
       order.triggeredPrice = String(lastPrice);
       await order.save();
       try {
-        await matchingEngine.submit(order);
+        await _submit(order);
         notifyUser(String(order.userId), 'orders', {
           event: 'STOP_TRIGGERED',
           orderId: String(order._id),
@@ -86,6 +128,85 @@ const triggerStopOrders = async () => {
         } catch (_) { /* best-effort */ }
         console.error('[Worker] STOP trigger failed:', e.message);
       }
+    }
+  }
+};
+
+/**
+ * Check pending LIMIT orders. If the market has crossed the limit price
+ * (ask <= BUY limit, OR bid >= SELL limit), submit the order to the engine
+ * which then fills at the favorable price.
+ *
+ * Pre-fix LIMIT orders went straight to the engine on placement, where the
+ * B-book / external fallback paths filled them at last price regardless of
+ * the limit constraint. Now placeOrder() saves LIMITs as PENDING and this
+ * worker tick is the only path that submits them — guaranteeing the limit
+ * condition is honored before a position is opened.
+ */
+const triggerLimitOrders = async () => {
+  // PENDING + no triggeredAt yet = waiting for price to cross.
+  const limitOrders = await Order.find({
+    type: ORDER_TYPE.LIMIT,
+    status: ORDER_STATUS.PENDING,
+    triggeredAt: null,
+  }).limit(200);
+
+  if (!limitOrders.length) return;
+
+  // Cache instruments per symbol so we don't fetch the same one N times.
+  const symbolCache = new Map();
+  const fetchInst = async (id) => {
+    const key = String(id);
+    if (symbolCache.has(key)) return symbolCache.get(key);
+    const inst = await Instrument.findById(id).lean();
+    symbolCache.set(key, inst || null);
+    return inst;
+  };
+
+  for (const order of limitOrders) {
+    const inst = await fetchInst(order.instrumentId);
+    if (!inst || !inst.lastPrice) continue;
+    // Staleness guard — same 60s window the STOP trigger uses.
+    if (inst.lastPriceUpdatedAt && Date.now() - new Date(inst.lastPriceUpdatedAt).getTime() > 60_000) continue;
+
+    const last = Number(inst.lastPrice);
+    const spread = Number(inst.spreadValue || 0);
+    const half = spread / 2;
+    const ask = inst.spreadType === 'PERCENTAGE' ? last * (1 + half) : last + half;
+    const bid = inst.spreadType === 'PERCENTAGE' ? last * (1 - half) : last - half;
+    const limitPx = Number(order.price);
+
+    // BUY LIMIT triggers when ask drops to or below the limit (buyer's
+    // entry condition met). SELL LIMIT triggers when bid rises to or
+    // above the limit. Equality counts so on-the-dot prints fire too.
+    const triggered =
+      (order.side === 'BUY' && Number.isFinite(ask) && ask <= limitPx) ||
+      (order.side === 'SELL' && Number.isFinite(bid) && bid >= limitPx);
+
+    if (!triggered) continue;
+
+    // Stamp triggeredAt BEFORE submitting so a concurrent tick can't
+    // double-submit. Cleared on engine failure so the next tick can retry.
+    order.triggeredAt = new Date();
+    order.triggeredPrice = String(last);
+    await order.save();
+    try {
+      await _submit(order);
+      notifyUser(String(order.userId), 'orders', {
+        event: 'LIMIT_TRIGGERED',
+        orderId: String(order._id),
+        symbol: order.symbol,
+        limitPrice: order.price,
+        triggerPrice: last,
+      });
+    } catch (e) {
+      try {
+        await Order.updateOne(
+          { _id: order._id, status: ORDER_STATUS.PENDING },
+          { $set: { triggeredAt: null, triggeredPrice: null } }
+        );
+      } catch (_) { /* best-effort */ }
+      console.error('[Worker] LIMIT trigger failed:', e.message);
     }
   }
 };
@@ -129,13 +250,8 @@ const checkSlTp = async () => {
       );
       if (!claimed) continue; // Another tick / manual close beat us — skip.
 
-      const routingService = require('./routingService');
+      // routing + executionSource stamped by orderRouter inside _submit().
       const oppositeSide = pos.side === 'BUY' ? 'SELL' : 'BUY';
-      const routing = await routingService.decideRouting({
-        userId: pos.userId,
-        instrument: inst,
-        order: { quantity: pos.quantity, side: oppositeSide },
-      });
       const closingOrder = await Order.create({
         userId: pos.userId,
         accountId: pos.accountId,
@@ -146,11 +262,10 @@ const checkSlTp = async () => {
         quantity: pos.quantity,
         leverage: pos.leverage,
         status: 'PENDING',
-        routing,
         closeOnly: true,
       });
       try {
-        await matchingEngine.submit(closingOrder);
+        await _submit(closingOrder);
         notifyUser(String(pos.userId), 'positions', {
           event: reason,
           positionId: String(pos._id),
@@ -284,14 +399,8 @@ const checkMarginAndStopOut = async () => {
             continue;
           }
 
-          const routingService = require('./routingService');
+          // routing + executionSource stamped by orderRouter inside _submit().
           const oppositeSide = worst.side === 'BUY' ? 'SELL' : 'BUY';
-          const inst = await Instrument.findById(worst.instrumentId);
-          const routing = await routingService.decideRouting({
-            userId: worst.userId,
-            instrument: inst,
-            order: { quantity: worst.quantity, side: oppositeSide },
-          });
           const closingOrder = await Order.create({
             userId: worst.userId,
             accountId: worst.accountId,
@@ -302,11 +411,10 @@ const checkMarginAndStopOut = async () => {
             quantity: worst.quantity,
             leverage: worst.leverage,
             status: 'PENDING',
-            routing,
             closeOnly: true,
           });
           try {
-            await matchingEngine.submit(closingOrder);
+            await _submit(closingOrder);
             closedPositionIds.push(worst._id);
           } catch (e) {
             await Position.updateOne(
@@ -366,7 +474,6 @@ const checkNegativeBalanceProtection = async () => {
       // Close all open positions
       const positions = await Position.find({ accountId: accId, status: POSITION_STATUS.OPEN });
       const closedIds = [];
-      const routingService = require('./routingService');
       for (const p of positions) {
         // Atomic claim. If another path already settled this position,
         // skip — negative-balance protection is just a safety net.
@@ -377,13 +484,8 @@ const checkNegativeBalanceProtection = async () => {
         );
         if (!claimed) continue;
 
+        // routing + executionSource stamped by orderRouter inside _submit().
         const oppositeSide = p.side === 'BUY' ? 'SELL' : 'BUY';
-        const pInst = await Instrument.findById(p.instrumentId);
-        const routing = await routingService.decideRouting({
-          userId: p.userId,
-          instrument: pInst,
-          order: { quantity: p.quantity, side: oppositeSide },
-        });
         const closingOrder = await Order.create({
           userId: p.userId,
           accountId: p.accountId,
@@ -394,11 +496,10 @@ const checkNegativeBalanceProtection = async () => {
           quantity: p.quantity,
           leverage: p.leverage,
           status: 'PENDING',
-          routing,
           closeOnly: true,
         });
         try {
-          await matchingEngine.submit(closingOrder);
+          await _submit(closingOrder);
           closedIds.push(p._id);
         } catch (e) {
           await Position.updateOne(
@@ -579,7 +680,8 @@ const processOcoGroups = async () => {
     });
     for (const sib of siblings) {
       try {
-        await matchingEngine.cancel(sib);
+        // Route the cancel so an A-book sibling is also cancelled on the LP.
+        await orderRouter.routeCancel({ order: sib });
         notifyUser(String(sib.userId), 'orders', {
           event: 'OCO_CANCELLED',
           orderId: String(sib._id),
@@ -642,13 +744,8 @@ const updateTrailingStops = async () => {
       );
       if (!claimed) continue;
 
-      const routingService = require('./routingService');
+      // routing + executionSource stamped by orderRouter inside _submit().
       const oppositeSide = pos.side === 'BUY' ? 'SELL' : 'BUY';
-      const routing = await routingService.decideRouting({
-        userId: pos.userId,
-        instrument: inst,
-        order: { quantity: pos.quantity, side: oppositeSide },
-      });
       const closingOrder = await Order.create({
         userId: pos.userId,
         accountId: pos.accountId,
@@ -659,11 +756,10 @@ const updateTrailingStops = async () => {
         quantity: pos.quantity,
         leverage: pos.leverage,
         status: 'PENDING',
-        routing,
         closeOnly: true,
       });
       try {
-        await matchingEngine.submit(closingOrder);
+        await _submit(closingOrder);
         notifyUser(String(pos.userId), 'positions', {
           event: 'TRAILING_STOP_HIT',
           positionId: String(pos._id),
@@ -744,6 +840,7 @@ const tick = async () => {
   running = true;
   try {
     await triggerStopOrders();
+    await triggerLimitOrders();
     await checkSlTp();
     await updateTrailingStops();
     await processOcoGroups();
@@ -758,9 +855,22 @@ const tick = async () => {
   }
 };
 
+let _tickHandle = null;
 const start = (intervalMs = 5000) => {
-  console.log('[Worker] Background worker started (STOP, SL/TP, trailing, OCO, margin, neg-balance, alerts, auto-switch every 5s)');
-  setInterval(tick, intervalMs);
+  if (_tickHandle) return; // already running — idempotent for hot-reload safety
+  console.log('[Worker] Background worker started (STOP, LIMIT, SL/TP, trailing, OCO, margin, neg-balance, alerts, auto-switch every 5s)');
+  _tickHandle = setInterval(tick, intervalMs);
 };
 
-module.exports = { start, setBroadcaster };
+// Called from server.js on graceful shutdown — stops scheduling new ticks.
+// An in-flight tick is allowed to complete (closing orders mid-flight
+// must finish so we don't strand a position in CLOSING state).
+const stop = () => {
+  if (_tickHandle) {
+    clearInterval(_tickHandle);
+    _tickHandle = null;
+    console.log('[Worker] Background worker stopped');
+  }
+};
+
+module.exports = { start, stop, setBroadcaster };

@@ -3,8 +3,9 @@ import { useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { wsClient } from '../services/ws';
-import { fmtNum, fmtMoney, fmtMoneyDual, fmtDate, currencySymbol } from '../utils/format';
+import { fmtNum, fmtMoney, fmtMoneyDual, fmtMoneyBoth, fmtDate, currencySymbol } from '../utils/format';
 import { useFxRate } from '../hooks/useFxRate';
+import PageHero from '../components/PageHero';
 
 export default function Wallet() {
   const [balances, setBalances] = useState([]);
@@ -172,14 +173,18 @@ export default function Wallet() {
   const demoBalances = useMemo(() => balances.filter((b) => !isReal(b)), [balances, accountTypeById]);
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-white">Wallet</h1>
-        <div className="flex space-x-2">
-          <button onClick={() => setShowDeposit(true)} className="btn-bull">Deposit</button>
-          <button onClick={() => setShowWithdraw(true)} className="btn-ghost">Withdraw</button>
-        </div>
-      </div>
+    <div className="space-y-4 max-w-[1600px]">
+      <PageHero
+        eyebrow="Portfolio"
+        title="Wallets"
+        subtitle="Real-time balances, deposit & withdrawal history, and full transaction ledger across all your accounts."
+        actions={
+          <>
+            <button onClick={() => setShowDeposit(true)} className="btn-bull text-sm">Deposit</button>
+            <button onClick={() => setShowWithdraw(true)} className="btn-ghost text-sm">Withdraw</button>
+          </>
+        }
+      />
 
       <div className="card">
         <div className="flex border-b border-border-dark">
@@ -213,11 +218,12 @@ export default function Wallet() {
                   {Object.entries(realTotalsByCurrency).map(([cur, t]) => {
                     const equity = t.balance + t.unrealized;
                     const hasOpenPnl = Math.abs(t.unrealized) > 0.005;
-                    // INR-primary + USD-secondary money formatting. Source
-                    // currency is whatever the wallet is denominated in.
-                    const eq = fmtMoneyDual(equity, cur, fxRate);
+                    // Headline totals (equity, balance) show BOTH USD primary
+                    // and INR secondary. Sub-figures (PnL, free, locked) stay
+                    // USD-only — keeps the card readable.
+                    const eq = fmtMoneyBoth(equity, cur, fxRate);
+                    const bal = fmtMoneyBoth(t.balance, cur, fxRate);
                     const ur = fmtMoneyDual(t.unrealized, cur, fxRate, true);
-                    const bal = fmtMoneyDual(t.balance, cur, fxRate);
                     const free = fmtMoneyDual(t.free, cur, fxRate);
                     const locked = fmtMoneyDual(t.locked, cur, fxRate);
                     return (
@@ -492,11 +498,25 @@ function LedgerTable({ items }) {
 }
 
 function Modal({ children, onClose }) {
+  // max-h-[90vh] keeps the modal inside the viewport even when the form is
+  // long (Withdraw/Bank flow has 7+ fields). flex-col splits the card into
+  // a scrollable body + a sticky footer (Cancel button stays visible).
+  // Click on backdrop closes; click inside doesn't bubble.
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-      <div className="card p-6 w-full max-w-md">
-        {children}
-        <button onClick={onClose} className="btn-ghost w-full mt-3">Cancel</button>
+    <div
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="card w-full max-w-md max-h-[90vh] flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex-1 min-h-0 overflow-y-auto p-5 sm:p-6">
+          {children}
+        </div>
+        <div className="border-t border-border-dark p-3 shrink-0 bg-bg-card rounded-b-lg">
+          <button onClick={onClose} className="btn-ghost w-full">Cancel</button>
+        </div>
       </div>
     </div>
   );
@@ -554,8 +574,72 @@ function DepositModal({ accounts, onClose, onDone }) {
     setScreenshotPreview(null);
   };
 
+  // Razorpay Checkout SDK — loaded lazily on first use. Returns a promise
+  // that resolves when window.Razorpay is available, or rejects on script
+  // load failure (offline / blocked).
+  const loadRazorpayScript = () =>
+    new Promise((resolve, reject) => {
+      if (window.Razorpay) return resolve(window.Razorpay);
+      const s = document.createElement('script');
+      s.src = 'https://checkout.razorpay.com/v1/checkout.js';
+      s.onload = () => resolve(window.Razorpay);
+      s.onerror = () => reject(new Error('Failed to load Razorpay Checkout'));
+      document.body.appendChild(s);
+    });
+
+  const submitRazorpay = async () => {
+    if (!amount || Number(amount) <= 0) {
+      toast.error('Enter a valid amount');
+      return;
+    }
+    setLoading(true);
+    try {
+      // 1. Create order on backend.
+      const { data } = await api.post('/wallet/razorpay/order', {
+        accountId, currency, amount,
+      });
+      const order = data.data;
+      // 2. Open Razorpay Checkout.
+      const Razorpay = await loadRazorpayScript();
+      const rzp = new Razorpay({
+        key: order.keyId,
+        order_id: order.orderId,
+        amount: Math.round(Number(order.amount) * 100),
+        currency: order.currency,
+        name: 'Trading Platform',
+        description: `Deposit to ${selectedAccount?.nickname || selectedAccount?.accountNumber}`,
+        handler: async (resp) => {
+          // 3. Verify on backend → credit wallet.
+          try {
+            await api.post('/wallet/razorpay/verify', {
+              orderId: resp.razorpay_order_id,
+              paymentId: resp.razorpay_payment_id,
+              signature: resp.razorpay_signature,
+            });
+            toast.success(`${fmtMoney(amount, currency)} credited`);
+            onDone();
+          } catch (e) {
+            toast.error(errorMessage(e));
+          }
+        },
+        modal: {
+          ondismiss: () => setLoading(false),
+        },
+      });
+      rzp.open();
+    } catch (err) {
+      toast.error(errorMessage(err));
+      setLoading(false);
+    }
+  };
+
   const submit = async (e) => {
     e.preventDefault();
+
+    // Razorpay path skips the screenshot flow entirely.
+    if (method === 'RAZORPAY') {
+      return submitRazorpay();
+    }
 
     if (isReal && !screenshot) {
       toast.error('Payment screenshot required for real account');
@@ -671,13 +755,24 @@ function DepositModal({ accounts, onClose, onDone }) {
             <div>
               <label className="label">Payment Method</label>
               <select className="input" value={method} onChange={(e) => setMethod(e.target.value)}>
-                <option value="UPI">UPI</option>
-                <option value="BANK">Bank Transfer (NEFT/IMPS)</option>
-                <option value="CRYPTO">Crypto (USDT)</option>
-                <option value="CARD">Card</option>
+                <option value="RAZORPAY">⚡ Razorpay (Instant — UPI / Card / NetBanking)</option>
+                <option value="UPI">UPI (manual — pay & upload screenshot)</option>
+                <option value="BANK">Bank Transfer (NEFT/IMPS — manual)</option>
+                <option value="CRYPTO">Crypto (USDT — manual)</option>
+                <option value="CARD">Card (manual)</option>
               </select>
             </div>
 
+            {/* Razorpay path: skip the manual fields entirely. The "Submit"
+                button below will open Razorpay Checkout and credit on success. */}
+            {method === 'RAZORPAY' && (
+              <div className="bg-emerald-900/15 border border-emerald-700/30 text-emerald-200 text-xs p-3 rounded">
+                ⚡ Pay instantly via UPI, Card, or NetBanking through Razorpay. Wallet credits within seconds — no screenshot needed.
+              </div>
+            )}
+
+            {method !== 'RAZORPAY' && (
+            <>
             <div>
               <label className="label">Transaction Reference / UPI Ref *</label>
               <input
@@ -763,6 +858,8 @@ function DepositModal({ accounts, onClose, onDone }) {
                 </div>
               )}
             </div>
+            </>
+            )}
           </>
         )}
 
@@ -771,12 +868,19 @@ function DepositModal({ accounts, onClose, onDone }) {
             ? 'Submitting...'
             : isDemo
               ? '🎮 Add to Demo Account'
-              : '💸 Submit Deposit Request'}
+              : method === 'RAZORPAY'
+                ? `⚡ Pay ${fmtMoney(amount || 0, currency)} via Razorpay`
+                : '💸 Submit Deposit Request'}
         </button>
 
-        {isReal && (
+        {isReal && method !== 'RAZORPAY' && (
           <div className="text-xs text-gray-500 text-center">
             Admin will verify your screenshot within 1-24 hours.
+          </div>
+        )}
+        {isReal && method === 'RAZORPAY' && (
+          <div className="text-xs text-gray-500 text-center">
+            Instant credit. Powered by Razorpay — your card details never touch our servers.
           </div>
         )}
       </form>

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { useAuthStore } from '../store/auth';
+import PageHero from '../components/PageHero';
 
 export default function Profile() {
   const { user, refreshUser } = useAuthStore();
@@ -9,10 +10,11 @@ export default function Profile() {
 
   return (
     <div className="space-y-6 max-w-[1100px]">
-      <div>
-        <h1 className="text-3xl font-bold text-white">Profile & Security</h1>
-        <p className="text-sm text-gray-400 mt-1">Manage your account, KYC verification, and security settings.</p>
-      </div>
+      <PageHero
+        eyebrow="Account"
+        title="Profile & Security"
+        subtitle="Manage your account details, KYC verification, password, 2FA, and active sessions."
+      />
 
       <div className="flex border-b border-border-dark">
         {[

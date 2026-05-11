@@ -27,6 +27,19 @@ router.post('/deposits/:id/reject', c.rejectDeposit);
 router.get('/audit-log', c.listAuditLog);
 router.get('/reports/trades', c.tradesReport);
 
+// Update per-account execution config (book type / LP / leverage / etc.)
+// Kept for backwards-compat with older admin builds; new global routing
+// supersedes per-account choices in orderRouter.service.
+router.patch('/accounts/:accountId/execution-config', c.updateAccountExecutionConfig);
+
+// Per-user risk controls (forceABook override, userGroup, blockedInstruments)
+router.patch('/users/:id/risk-controls', c.updateUserRiskControls);
+
+// Global system settings — routing mode + default LP provider.
+// These are the SINGLE knobs that decide A-Book vs B-Book platform-wide.
+router.get('/system/settings', c.getSystemSettings);
+router.put('/system/settings', c.updateSystemSettings);
+
 // Account metrics for any user
 router.get(
   '/accounts/:accountId/metrics',

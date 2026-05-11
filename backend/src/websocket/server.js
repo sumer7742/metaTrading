@@ -183,6 +183,19 @@ class WSBroadcaster {
   notifyUser(userId, channel, data) {
     this.publish(`user:${channel}:${userId}`, data);
   }
+
+  // Called by server.js during graceful shutdown — politely close every
+  // client socket so the frontend reconnect logic kicks in cleanly
+  // instead of seeing TCP resets.
+  close() {
+    if (!this.wss) return;
+    try {
+      this.wss.clients.forEach((ws) => {
+        try { ws.close(1001, 'Server shutting down'); } catch (_) {}
+      });
+      this.wss.close();
+    } catch (_) { /* nothing to do — we're going down */ }
+  }
 }
 
 module.exports = new WSBroadcaster();

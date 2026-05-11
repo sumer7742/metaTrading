@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
+import PageHero from '../components/PageHero';
 
 export default function DataFeeds() {
   const [status, setStatus] = useState(null);
@@ -41,12 +42,11 @@ export default function DataFeeds() {
 
   return (
     <div className="space-y-6 max-w-[1200px]">
-      <div>
-        <h1 className="text-3xl font-bold text-white">Data Feed Status</h1>
-        <p className="text-sm text-gray-400 mt-1">
-          Real-time price provider monitoring with automatic failover.
-        </p>
-      </div>
+      <PageHero
+        eyebrow="Infra"
+        title="Data Feed Status"
+        subtitle="Real-time price provider monitoring with automatic failover. Switch providers, force reconnect, view per-symbol coverage."
+      />
 
       {/* Current active provider */}
       <div className="card p-5">

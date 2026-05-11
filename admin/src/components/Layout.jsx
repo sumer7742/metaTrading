@@ -1,15 +1,58 @@
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
 
-const NAV = [
-  { to: '/dashboard', label: 'Dashboard', icon: '◧' },
-  { to: '/users', label: 'Users', icon: '◉' },
-  { to: '/instruments', label: 'Instruments', icon: '▦' },
-  { to: '/withdrawals', label: 'Withdrawals', icon: '↗' },
-  { to: '/deposits', label: 'Deposits', icon: '↘' },
-  { to: '/audit', label: 'Audit Log', icon: '☷' },
-  { to: '/reports', label: 'Reports', icon: '▤' },
-  { to: '/data-feeds', label: 'Data Feeds', icon: '◉' },
+// Inline SVG icons — keeps bundle slim and theme-tinted via currentColor.
+const Icon = ({ d, ...p }) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
+    {Array.isArray(d) ? d.map((path, i) => <path key={i} d={path} />) : <path d={d} />}
+  </svg>
+);
+const I = {
+  dashboard: <Icon d={['M3 3h7v9H3zM14 3h7v5h-7zM14 12h7v9h-7zM3 16h7v5H3z']} />,
+  users: <Icon d={['M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2', 'M8.5 7.5a4 4 0 1 0 0 .01z', 'M22 21v-2a4 4 0 0 0-3-3.87', 'M15 3.13a4 4 0 0 1 0 7.75']} />,
+  instruments: <Icon d={['M3 3v18h18', 'M7 14l4-4 4 4 5-7']} />,
+  deposit: <Icon d={['M12 5v14', 'M19 12l-7 7-7-7']} />,
+  withdrawal: <Icon d={['M12 19V5', 'M5 12l7-7 7 7']} />,
+  audit: <Icon d={['M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z', 'M14 2v6h6', 'M16 13H8', 'M16 17H8', 'M10 9H8']} />,
+  reports: <Icon d={['M3 3v18h18', 'M9 17V9', 'M13 17v-5', 'M17 17v-2']} />,
+  feed: <Icon d={['M2 2h2a2 2 0 0 1 2 2v6', 'M2 12a10 10 0 0 1 10 10', 'M2 6a16 16 0 0 1 16 16', 'M2 2v0', 'M22 22a20 20 0 0 0-20-20']} />,
+  settings: <Icon d={['M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z', 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z']} />,
+  logout: <Icon d={['M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4', 'M16 17l5-5-5-5', 'M21 12H9']} />,
+};
+
+// Sectioned nav — matches the client's premium sidebar pattern. TRADE
+// (operational pulse) goes first, MONEY (deposits/withdrawals) second,
+// AUDIT/REPORTS third, INFRA last.
+const NAV_SECTIONS = [
+  {
+    title: 'Operations',
+    items: [
+      { to: '/dashboard', icon: I.dashboard, label: 'Dashboard' },
+      { to: '/users', icon: I.users, label: 'Users' },
+      { to: '/instruments', icon: I.instruments, label: 'Instruments' },
+    ],
+  },
+  {
+    title: 'Money',
+    items: [
+      { to: '/deposits', icon: I.deposit, label: 'Deposits' },
+      { to: '/withdrawals', icon: I.withdrawal, label: 'Withdrawals' },
+    ],
+  },
+  {
+    title: 'Insights',
+    items: [
+      { to: '/reports', icon: I.reports, label: 'Reports' },
+      { to: '/audit', icon: I.audit, label: 'Audit Log' },
+    ],
+  },
+  {
+    title: 'Infra',
+    items: [
+      { to: '/data-feeds', icon: I.feed, label: 'Data Feeds' },
+      { to: '/settings', icon: I.settings, label: 'Settings' },
+    ],
+  },
 ];
 
 export default function Layout({ children }) {
@@ -21,42 +64,80 @@ export default function Layout({ children }) {
     navigate('/login');
   };
 
+  const initials = (user?.email || 'A').split('@')[0].slice(0, 2).toUpperCase();
+
   return (
-    <div className="min-h-screen flex bg-bg-dark">
+    <div className="h-screen flex bg-bg-dark overflow-hidden">
       {/* Sidebar */}
-      <aside className="w-60 bg-bg-sidebar border-r border-border-dark flex flex-col">
-        <div className="px-5 py-4 border-b border-border-dark">
-          <Link to="/dashboard" className="text-lg font-semibold text-white">
-            <span className="text-primary-500">▲</span> TradePro <span className="text-xs text-gray-500">Admin</span>
+      <aside className="w-64 h-screen flex flex-col border-r border-border-dark sidebar-elevated">
+        {/* Brand */}
+        <div className="relative h-16 flex items-center px-5 border-b border-border-dark">
+          <Link to="/dashboard" className="flex items-center gap-2.5 text-lg font-extrabold text-white tracking-tight group">
+            <span
+              className="w-9 h-9 rounded-lg flex items-center justify-center font-extrabold text-bg-dark text-base shadow-md transition-transform group-hover:scale-105"
+              style={{ background: 'linear-gradient(135deg, #FFE74D 0%, #FCD535 100%)' }}
+            >
+              T
+            </span>
+            <span className="flex flex-col leading-none">
+              <span className="font-extrabold">TradePro</span>
+              <span className="text-[9px] uppercase tracking-[0.2em] text-primary-500 mt-0.5 font-bold">Admin</span>
+            </span>
           </Link>
         </div>
-        <nav className="flex-1 py-3 px-2 space-y-1">
-          {NAV.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) =>
-                `flex items-center px-3 py-2 rounded text-sm ${
-                  isActive
-                    ? 'bg-primary-600/20 text-primary-500'
-                    : 'text-gray-400 hover:text-white hover:bg-bg-hover'
-                }`
-              }
-            >
-              <span className="mr-3 text-lg">{item.icon}</span>
-              <span>{item.label}</span>
-            </NavLink>
+
+        {/* Sectioned nav */}
+        <nav className="flex-1 overflow-y-auto py-3 px-3 space-y-4">
+          {NAV_SECTIONS.map((section) => (
+            <div key={section.title}>
+              <div className="px-3 pb-1.5 text-[10px] uppercase tracking-[0.2em] font-bold text-text-muted">
+                {section.title}
+              </div>
+              <div className="space-y-0.5">
+                {section.items.map((item) => (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    className={({ isActive }) => `sidebar-link ${isActive ? 'sidebar-link-active' : ''}`}
+                  >
+                    <span className="sidebar-link-icon">{item.icon}</span>
+                    <span className="flex-1">{item.label}</span>
+                  </NavLink>
+                ))}
+              </div>
+            </div>
           ))}
         </nav>
-        <div className="p-3 border-t border-border-dark">
-          <div className="text-xs text-gray-400 mb-2 truncate">{user?.email}</div>
-          <div className="text-xs text-primary-500 mb-2">{user?.role}</div>
-          <button onClick={handleLogout} className="btn-ghost w-full text-xs">Logout</button>
+
+        {/* Footer — admin profile pill + logout */}
+        <div className="border-t border-border-dark p-3 space-y-2">
+          <div className="flex items-center gap-3 p-2 rounded-lg border border-border-dark bg-bg-card">
+            <span
+              className="w-9 h-9 rounded-lg flex items-center justify-center text-sm font-bold text-bg-dark shrink-0"
+              style={{ background: 'linear-gradient(135deg, #FFE74D 0%, #FCD535 100%)' }}
+            >
+              {initials}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="text-xs text-white font-semibold truncate">{user?.email}</div>
+              <div className="text-[10px] uppercase tracking-wider text-primary-500 font-bold mt-0.5">
+                {user?.role || 'ADMIN'}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg border border-bear/30 text-bear hover:bg-bear/10 transition-colors text-xs"
+          >
+            {I.logout}
+            <span>Log Out</span>
+          </button>
         </div>
       </aside>
 
       {/* Main */}
-      <main className="flex-1 overflow-auto">
+      <main className="flex-1 min-h-0 overflow-y-auto">
         <div className="max-w-7xl mx-auto px-6 py-6">{children}</div>
       </main>
     </div>

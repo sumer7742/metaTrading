@@ -8,7 +8,7 @@ const { Wallet } = require('../models/Wallet');
 const { Deposit, Withdrawal, AuditLog } = require('../models/index');
 const walletService = require('../services/walletService');
 const { sendSuccess, asyncHandler, AppError } = require('../utils/errors');
-const { KYC_STATUS, WALLET_TX_TYPE } = require('../config/constants');
+const { KYC_STATUS, WALLET_TX_TYPE, BOOK_TYPE, LP_PROVIDER } = require('../config/constants');
 const { add, sub, mul } = require('../utils/decimal');
 
 const logAction = async (req, action, target, metadata = {}) => {
@@ -349,6 +349,206 @@ const tradesReport = asyncHandler(async (req, res) => {
   sendSuccess(res, trades);
 });
 
+/**
+ * Update a trading account's execution config.
+ *
+ * PATCH /admin/accounts/:accountId/execution-config
+ * Body (all optional, only sent fields are applied):
+ *   { bookType, lpProvider, isTradingEnabled, leverage }
+ *
+ * `accountType` is INTENTIONALLY not editable here — flipping DEMO ↔ REAL
+ * mid-life corrupts wallet semantics (a demo wallet credited as real money,
+ * or vice versa). Account type is baked in at creation.
+ *
+ * Validation:
+ *   - bookType ∈ A_BOOK | B_BOOK | HYBRID
+ *   - lpProvider ∈ NONE | OANDA | BINANCE | CUSTOM_LP
+ *   - leverage finite & in [1, 1000]
+ *   - If the resulting bookType is A_BOOK, lpProvider MUST NOT be NONE.
+ */
+const updateAccountExecutionConfig = asyncHandler(async (req, res) => {
+  const { accountId } = req.params;
+  const { bookType, lpProvider, isTradingEnabled, leverage } = req.body;
+
+  const account = await TradingAccount.findById(accountId);
+  if (!account) throw new AppError('Account not found', 404);
+
+  if (bookType !== undefined) {
+    if (!Object.values(BOOK_TYPE).includes(bookType)) {
+      throw new AppError(`bookType must be one of ${Object.values(BOOK_TYPE).join(', ')}`, 400);
+    }
+    const switchingToB = bookType === BOOK_TYPE.B_BOOK && account.bookType !== BOOK_TYPE.B_BOOK;
+    account.bookType = bookType;
+    // When admin picks B_BOOK, LP is irrelevant — clear it so the row shows
+    // a clean state (no leftover OANDA / BINANCE from a previous A_BOOK).
+    // Doesn't touch lpProvider if admin is ALSO sending it in the same patch.
+    if (switchingToB && lpProvider === undefined) {
+      account.lpProvider = LP_PROVIDER.NONE;
+    }
+  }
+  if (lpProvider !== undefined) {
+    if (!Object.values(LP_PROVIDER).includes(lpProvider)) {
+      throw new AppError(`lpProvider must be one of ${Object.values(LP_PROVIDER).join(', ')}`, 400);
+    }
+    account.lpProvider = lpProvider;
+  }
+  if (isTradingEnabled !== undefined) {
+    account.isTradingEnabled = !!isTradingEnabled;
+  }
+  if (leverage !== undefined) {
+    const lev = Number(leverage);
+    if (!Number.isFinite(lev) || lev < 1 || lev > 1000) {
+      throw new AppError('leverage must be a finite number between 1 and 1000', 400);
+    }
+    account.leverage = lev;
+  }
+
+  // Final-state safety: an A-book account NEEDS an LP. Instead of failing
+  // when admin flips B_BOOK → A_BOOK without explicitly picking one, we
+  // auto-pick the first credentialed provider (or fall back to a default
+  // if none are configured — the adapter will log a clear warning when
+  // it runs in stub mode). HYBRID accounts get the same convenience.
+  if (
+    (account.bookType === BOOK_TYPE.A_BOOK || account.bookType === BOOK_TYPE.HYBRID) &&
+    account.lpProvider === LP_PROVIDER.NONE
+  ) {
+    const { pickAvailableProvider } = require('../adapters/lp');
+    account.lpProvider = pickAvailableProvider();
+  }
+
+  await account.save();
+  await logAction(req, 'ACCOUNT_EXECUTION_CONFIG_UPDATE', {
+    type: 'TRADING_ACCOUNT',
+    id: account._id,
+  }, { bookType, lpProvider, isTradingEnabled, leverage });
+
+  sendSuccess(res, account);
+});
+
+/**
+ * Update per-user risk controls — used to override A/B-book routing on a
+ * specific user (e.g. force a profitable trader's flow to LP regardless
+ * of their account.bookType). Also exposes blockedInstruments[] for
+ * symbol-level gating and userGroup for trader-group tagging.
+ *
+ * PATCH /admin/users/:id/risk-controls
+ * Body (all optional):
+ *   { forceABook, userGroup, blockedInstruments }
+ */
+const updateUserRiskControls = asyncHandler(async (req, res) => {
+  const { forceABook, userGroup, blockedInstruments, routingMode } = req.body;
+  const user = await User.findById(req.params.id);
+  if (!user) throw new AppError('User not found', 404);
+
+  user.riskOverride = user.riskOverride || {};
+  if (forceABook !== undefined) user.riskOverride.forceABook = !!forceABook;
+  // Per-user routing override. '' / null / 'INHERIT' all clear the override
+  // so the user falls back to the global SystemSetting.routingMode.
+  if (routingMode !== undefined) {
+    if (routingMode === null || routingMode === '' || routingMode === 'INHERIT') {
+      user.riskOverride.routingMode = null;
+    } else if (Object.values(BOOK_TYPE).includes(routingMode)) {
+      user.riskOverride.routingMode = routingMode;
+    } else {
+      throw new AppError(`routingMode must be one of A_BOOK, B_BOOK, HYBRID, or INHERIT`, 400);
+    }
+  }
+  if (userGroup !== undefined) {
+    if (typeof userGroup !== 'string' || !userGroup.length) {
+      throw new AppError('userGroup must be a non-empty string', 400);
+    }
+    user.userGroup = userGroup;
+  }
+  if (blockedInstruments !== undefined) {
+    if (!Array.isArray(blockedInstruments)) {
+      throw new AppError('blockedInstruments must be an array of symbols', 400);
+    }
+    user.blockedInstruments = blockedInstruments.map((s) => String(s).toUpperCase());
+  }
+  user.markModified('riskOverride');
+  await user.save();
+  await logAction(req, 'USER_RISK_CONTROLS_UPDATE', { type: 'USER', id: user._id }, {
+    forceABook, userGroup, blockedInstruments, routingMode,
+  });
+  sendSuccess(res, user.toSafeJSON());
+});
+
+/**
+ * GET /admin/system/settings
+ * Returns every key/value in SystemSetting + the live LP provider status
+ * (which providers have credentials wired up). Drives the admin Settings
+ * page's "Routing Mode" toggle and "Default LP Provider" dropdown.
+ */
+const getSystemSettings = asyncHandler(async (req, res) => {
+  const systemSettings = require('../services/systemSettings.service');
+  const { listProviderStatus } = require('../adapters/lp');
+  const settings = await systemSettings.getAllSettings();
+  sendSuccess(res, {
+    settings,
+    lpProviders: listProviderStatus(),
+  });
+});
+
+/**
+ * PUT /admin/system/settings
+ * Body: { routingMode?: 'A_BOOK'|'B_BOOK', defaultLpProvider?: 'OANDA'|... }
+ *
+ * Validation:
+ *   - routingMode must be A_BOOK or B_BOOK (HYBRID retired at global level).
+ *   - If routingMode is A_BOOK, defaultLpProvider must not be NONE
+ *     (checked against final state, like the per-account endpoint did).
+ *   - defaultLpProvider must be in LP_PROVIDER enum.
+ */
+const updateSystemSettings = asyncHandler(async (req, res) => {
+  const systemSettings = require('../services/systemSettings.service');
+  const { routingMode, defaultLpProvider } = req.body;
+
+  // Validate intent before any writes — keeps the system in a consistent
+  // state if either field is malformed.
+  if (routingMode !== undefined) {
+    if (!Object.values(BOOK_TYPE).includes(routingMode)) {
+      throw new AppError(
+        `routingMode must be one of ${Object.values(BOOK_TYPE).join(', ')}`,
+        400
+      );
+    }
+  }
+  if (defaultLpProvider !== undefined) {
+    if (!Object.values(LP_PROVIDER).includes(defaultLpProvider)) {
+      throw new AppError(
+        `defaultLpProvider must be one of ${Object.values(LP_PROVIDER).join(', ')}`,
+        400
+      );
+    }
+  }
+
+  // Final-state safety: A_BOOK or HYBRID without an LP is a misconfiguration
+  // trap — orders will reject at runtime. Compute final state and reject
+  // the change early so admin sees the error in the Settings form, not
+  // in production.
+  const current = await systemSettings.getAllSettings();
+  const finalMode = routingMode !== undefined ? routingMode : current.routingMode;
+  const finalLp = defaultLpProvider !== undefined ? defaultLpProvider : current.defaultLpProvider;
+  const needsLp = finalMode === BOOK_TYPE.A_BOOK || finalMode === BOOK_TYPE.HYBRID;
+  if (needsLp && (!finalLp || finalLp === LP_PROVIDER.NONE)) {
+    throw new AppError(
+      'LP provider is not configured. Please configure default LP before using A-Book / Hybrid mode.',
+      400,
+      'LP_PROVIDER_NOT_CONFIGURED'
+    );
+  }
+
+  if (routingMode !== undefined) await systemSettings.setSetting('routingMode', routingMode, req.userId);
+  if (defaultLpProvider !== undefined) await systemSettings.setSetting('defaultLpProvider', defaultLpProvider, req.userId);
+
+  await logAction(req, 'SYSTEM_SETTINGS_UPDATE', { type: 'SYSTEM', id: null }, {
+    routingMode, defaultLpProvider,
+  });
+
+  const fresh = await systemSettings.getAllSettings();
+  sendSuccess(res, fresh);
+});
+
 module.exports = {
   dashboard,
   listUsers,
@@ -364,4 +564,8 @@ module.exports = {
   rejectDeposit,
   listAuditLog,
   tradesReport,
+  updateAccountExecutionConfig,
+  updateUserRiskControls,
+  getSystemSettings,
+  updateSystemSettings,
 };
