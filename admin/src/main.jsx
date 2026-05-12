@@ -5,9 +5,14 @@ import { Toaster } from 'react-hot-toast';
 import App from './App.jsx';
 import './index.css';
 
+// Match React Router's basename to Vite's build-time base so all client-
+// side links/redirects work when the SPA is mounted at /admin/* under the
+// combined container. Strip trailing slash — react-router expects bare path.
+const basename = (import.meta.env.BASE_URL || '/').replace(/\/$/, '') || '/';
+
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <BrowserRouter>
+    <BrowserRouter basename={basename}>
       <App />
       <Toaster
         position="top-right"

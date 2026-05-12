@@ -1,4 +1,15 @@
-const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:5000/ws';
+// WS URL derives from VITE_WS_URL if set, else from the HTTP API URL
+// (swap https→wss, http→ws, append /ws). Means deploy only needs to
+// set one env var — VITE_API_URL — and WebSocket follows automatically.
+const _wsExplicit = import.meta.env.VITE_WS_URL;
+const _httpBase = import.meta.env.VITE_API_URL || import.meta.env.VITE_API_BASE;
+const _deriveFromHttp = (httpUrl) =>
+  httpUrl
+    .replace(/^https:/, 'wss:')
+    .replace(/^http:/, 'ws:')
+    .replace(/\/api\/?$/, '') + '/ws';
+const WS_URL = _wsExplicit
+  || (_httpBase ? _deriveFromHttp(_httpBase) : 'ws://localhost:5000/ws');
 
 class WSClient {
   constructor() {

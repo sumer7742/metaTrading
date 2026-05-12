@@ -1,0 +1,47 @@
+# Speed up build context — don't ship local dev junk to the daemon.
+
+# Dependencies (rebuilt inside container)
+**/node_modules
+**/.pnp
+**/.pnp.js
+
+# Local build output (rebuilt inside container)
+**/dist
+**/build
+**/.cache
+**/.vite
+
+# Environment files — secrets must NEVER end up in an image layer.
+# Pass them at runtime via `docker run --env-file backend/.env`.
+**/.env
+**/.env.*
+!**/.env.example
+
+# Editor / OS noise
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+*.swp
+
+# Git
+.git
+.gitignore
+
+# Claude Code session data
+.claude
+
+# Backend uploads (KYC docs — bind-mount or volume in prod, not bake in)
+backend/uploads
+
+# Tests + docs (not needed in runtime image)
+tests
+docs
+
+# CI / deploy infra (we just removed them anyway)
+.github
+deploy
+
+# Logs
+*.log
+npm-debug.log*

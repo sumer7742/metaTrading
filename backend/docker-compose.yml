@@ -1,0 +1,38 @@
+# Single-container production-style compose.
+#
+#   cd backend
+#   docker compose up -d --build
+#
+# Build context is `..` so the Dockerfile can reach client/ and admin/.
+# Container picks env from backend/.env (already gitignored). Exposed on
+# host port 80 — change if 80 is taken locally.
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    image: trading-platform:latest
+    container_name: trading-platform
+    restart: unless-stopped
+    ports:
+      - '80:5000'
+    env_file:
+      - .env
+    # Resource ceilings — keep a runaway worker from eating the box.
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+    # Volume for KYC document uploads. Persists across container restarts;
+    # bind-mounted from host so admin reviewers can pull docs out for audit.
+    volumes:
+      - ./uploads:/app/uploads
+    # Healthcheck mirrors the Dockerfile HEALTHCHECK — surfaces /api/ready.
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://localhost:5000/api/ready >/dev/null || exit 1']
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3

@@ -152,6 +152,48 @@ app.use('/api/compliance', complianceRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
 
+// ─── Serve frontend SPAs out of backend/public ─────────────────────
+// Production flow: `vite build` in client/ + admin/ produces dist/
+// folders, which the Dockerfile copies into:
+//   backend/public/client/  ← served at /*
+//   backend/public/admin/   ← served at /admin/*
+// Express falls back to the right index.html for any non-API path so
+// SPA client-side routing works on deep links.
+//
+// We check for the actual `index.html` (not just the folder) — that way
+// an empty `public/` directory in dev mode doesn't break unrelated
+// routes with ENOENT. If frontend hasn't been built/copied yet, the
+// block is a no-op and non-API requests hit the 404 handler.
+const path = require('path');
+const fs = require('fs');
+const publicDir = path.join(__dirname, '..', 'public');
+const clientDir = path.join(publicDir, 'client');
+const adminDir = path.join(publicDir, 'admin');
+const clientIndex = path.join(clientDir, 'index.html');
+const adminIndex = path.join(adminDir, 'index.html');
+
+// Admin SPA at /admin/* — mounted FIRST so it doesn't get shadowed
+// by the root catch-all below.
+if (fs.existsSync(adminIndex)) {
+  app.use('/admin', express.static(adminDir, { maxAge: '1y', index: false }));
+  app.get('/admin/*', (req, res) => {
+    res.sendFile(adminIndex);
+  });
+  logger.info('Admin SPA mounted at /admin');
+}
+
+// Client SPA at /*
+if (fs.existsSync(clientIndex)) {
+  app.use(express.static(clientDir, { maxAge: '1y', index: false }));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/')) return next();
+    res.sendFile(clientIndex);
+  });
+  logger.info('Client SPA mounted at /');
+} else {
+  logger.info('No frontend build found in backend/public — running API-only');
+}
+
 // 404 + error handler (Sentry catches errors before our handler)
 app.use(notFound);
 app.use(observability.sentryErrorHandler());
