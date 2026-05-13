@@ -44,6 +44,18 @@ const fxRoutes = require('./routes/fx');
 
 const app = express();
 app.set('trust proxy', 1);
+
+// TEMPORARY: event loop lag monitor — logs whenever Node's event loop
+// stalls beyond 200ms. Remove after diagnosis.
+{
+  let _last = Date.now();
+  setInterval(() => {
+    const now = Date.now();
+    const lag = now - _last - 500;
+    if (lag > 200) console.log('[EVENTLOOP] lag_ms=', lag, 'at', new Date().toISOString());
+    _last = now;
+  }, 500).unref();
+}
 // Sentry must be initialized BEFORE any other middleware
 observability.initSentry(app);
 

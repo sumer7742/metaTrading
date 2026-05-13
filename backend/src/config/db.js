@@ -36,12 +36,25 @@ const connectDB = async () => {
   }
 
   const opts = {
-    maxPoolSize: 50,
-    minPoolSize: 5,
-    socketTimeoutMS: 45000,
-    serverSelectionTimeoutMS: 10000,
+    // Fail fast instead of buffering queries when connection is dead
+    bufferCommands: false,
+
+    // Pool sizing — keep modest for Atlas M0 free tier
+    maxPoolSize: 20,
+    minPoolSize: 2,
+
+    // Timeouts
+    serverSelectionTimeoutMS: 8000,   // fail fast if Atlas unreachable
+    socketTimeoutMS: 45000,            // kill hung sockets
+    connectTimeoutMS: 10000,           // initial TCP handshake
+    heartbeatFrequencyMS: 10000,       // detect dead connections faster
+    maxIdleTimeMS: 60000,              // recycle idle sockets every 60s (M0 kills idle ones)
+
     retryWrites: true,
-    heartbeatFrequencyMS: 10000,
+    retryReads: true,                  // auto-retry transient read failures
+
+    // Prefer IPv4 — avoids occasional IPv6 SRV resolution issues
+    family: 4,
   };
 
   try {
@@ -54,6 +67,9 @@ const connectDB = async () => {
 
     mongoose.connection.on('disconnected', () => {
       console.warn('[DB] MongoDB disconnected — auto-reconnect attempting');
+    });
+    mongoose.connection.on('error', (err) => {
+      console.error('[DB] Connection error event:', err.message);
     });
     mongoose.connection.on('reconnected', () => {
       console.log('[DB] MongoDB reconnected');
