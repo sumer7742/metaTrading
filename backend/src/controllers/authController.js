@@ -164,14 +164,22 @@ const login = asyncHandler(async (req, res) => {
     }
   );
 
-  if (isNewDevice) {
+ sendSuccess(res, { user: user.toSafeJSON(), accessToken, refreshToken });
+
+if (isNewDevice) {
+  setImmediate(async () => {
     try {
       const emailSvc = require('../services/emailService');
-      await emailSvc.sendLoginAlert({ to: user.email, ip: req.ip, userAgent: incomingUA });
-    } catch (e) { /* non-fatal */ }
-  }
-
-  sendSuccess(res, { user: user.toSafeJSON(), accessToken, refreshToken });
+      await emailSvc.sendLoginAlert({
+        to: user.email,
+        ip: req.ip,
+        userAgent: incomingUA,
+      });
+    } catch (e) {
+      console.warn('[LOGIN] Email alert failed:', e.message);
+    }
+  });
+}
 });
 
 const refresh = asyncHandler(async (req, res) => {
