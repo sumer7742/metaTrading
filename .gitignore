@@ -36,3 +36,8 @@ coverage/
 # Misc
 .npm
 .eslintcache
+
+# Archives
+*.tar
+*.tar.gz
+*.zip
