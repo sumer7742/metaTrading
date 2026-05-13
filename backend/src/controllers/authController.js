@@ -89,20 +89,27 @@ const register = asyncHandler(async (req, res) => {
   );
 
   // Send welcome + verification emails (non-blocking).
+  
+ sendSuccess(res, { user: user.toSafeJSON(), accessToken: realAccessToken, refreshToken: realRefreshToken }, 201);
+
+setImmediate(async () => {
   try {
     const email = require('../services/emailService');
+
     await email.sendWelcome({ to: user.email, firstName: user.firstName });
     await email.sendVerifyEmail({
       to: user.email,
       token: verifyToken,
       baseUrl: process.env.CLIENT_URL || 'http://localhost:5173',
     });
+
     if (aml.riskLevel === 'MEDIUM') {
       console.log(`[AML] Medium-risk registration ${user.email}: ${JSON.stringify(aml.hits)}`);
     }
-  } catch (e) { /* non-fatal */ }
-
-  sendSuccess(res, { user: user.toSafeJSON(), accessToken: realAccessToken, refreshToken: realRefreshToken }, 201);
+  } catch (e) {
+    console.warn('[REGISTER] Email send failed:', e.message);
+  }
+});
 });
 
 const login = asyncHandler(async (req, res) => {

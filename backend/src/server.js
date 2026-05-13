@@ -42,7 +42,7 @@ const reportsRoutes = require('./routes/reports');
 const subscriptionRoutes = require('./routes/subscription');
 
 const app = express();
-
+app.set('trust proxy', 1);
 // Sentry must be initialized BEFORE any other middleware
 observability.initSentry(app);
 
