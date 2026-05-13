@@ -128,7 +128,6 @@ const login = asyncHandler(async (req, res) => {
   console.log('[LOGIN] before find user');
 
   const user = await User.findOne({ email: email.toLowerCase().trim() })
-    .select('+passwordHash email role isActive twoFactorEnabled twoFactorSecret twoFactorBackupCodes refreshTokens')
     .maxTimeMS(10000);
 
   console.log('[LOGIN] after find user', {
