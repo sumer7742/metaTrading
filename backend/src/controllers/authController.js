@@ -14,7 +14,9 @@ const register = asyncHandler(async (req, res) => {
   if (!email || !password) throw new AppError('Email and password are required', 400);
   if (password.length < 8) throw new AppError('Password must be at least 8 characters', 400);
 
-  const existing = await User.findOne({ email: email.toLowerCase() });
+  const normalizedEmail = email.toLowerCase().trim();
+
+  const existing = await User.findOne({ email: normalizedEmail });
   if (existing) throw new AppError('Email already registered', 409, 'DUPLICATE_EMAIL');
 
   // AML screening on registration (doc §12.4)
@@ -39,7 +41,7 @@ const register = asyncHandler(async (req, res) => {
   const verifyToken = crypto.randomBytes(32).toString('hex');
 
   const user = await User.create({
-    email: email.toLowerCase(),
+    email: normalizedEmail,
     passwordHash,
     firstName,
     lastName,
@@ -125,7 +127,8 @@ const login = asyncHandler(async (req, res) => {
 
   console.log('[LOGIN] before find user');
 
-  const user = await User.findOne({ email: email.toLowerCase() })
+  const user = await User.findOne({ email: email.toLowerCase().trim() })
+    .select('+passwordHash email role isActive twoFactorEnabled twoFactorSecret twoFactorBackupCodes refreshTokens')
     .maxTimeMS(10000);
 
   console.log('[LOGIN] after find user', {
