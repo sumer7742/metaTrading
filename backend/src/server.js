@@ -50,21 +50,45 @@ observability.initSentry(app);
 // response headers; we also enable a strict CSP that only allows our own
 // origin + the inline scripts/styles emitted by Vite. Tighten further once
 // every script source is enumerable.
+// HTTPS posture is env-driven, NOT NODE_ENV-driven. A production NODE_ENV
+// box behind plain HTTP (e.g. EC2 IP without TLS yet) would break under
+// HSTS + upgrade-insecure-requests: browsers refuse to load static assets
+// on the only working scheme. Gate both behind HTTPS_ENABLED=true so the
+// app works on bare HTTP during initial rollout, then flip when you add
+// CloudFlare / ALB / nginx in front.
+const _httpsEnabled = (process.env.HTTPS_ENABLED || 'false').toLowerCase() === 'true';
 app.use(helmet({
-  contentSecurityPolicy: process.env.NODE_ENV === 'production'
+  // Disable HSTS entirely when we're not actually serving HTTPS.
+  hsts: _httpsEnabled,
+  // CSP is tricky on HTTP: `useDefaults` auto-injects upgrade-insecure-
+  // requests which forces every JS/CSS fetch to https://, then they
+  // fail because the box doesn't serve TLS. Only ship CSP when HTTPS
+  // is genuinely available. Otherwise rely on the rest of helmet's
+  // defaults (X-Content-Type-Options, X-Frame-Options, etc).
+  contentSecurityPolicy: _httpsEnabled
     ? {
         useDefaults: true,
         directives: {
           defaultSrc: ["'self'"],
           scriptSrc: ["'self'"],
-          styleSrc: ["'self'", "'unsafe-inline'"],
+          // Google Fonts CDN — stylesheet ref + actual woff2 fetches.
+          // `'unsafe-inline'` is required because the SPAs inject some
+          // CSS via JS (toast styles, chart theme); tightening this
+          // needs a nonce/hash workflow we don't have yet.
+          styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+          fontSrc: ["'self'", 'data:', 'https://fonts.gstatic.com'],
           imgSrc: ["'self'", 'data:', 'https:'],
           connectSrc: ["'self'", 'wss:', 'https:'],
           frameAncestors: ["'none'"],
         },
       }
-    : false, // dev: allow Vite HMR + inline scripts without manual nonce wiring
+    : false,
   crossOriginEmbedderPolicy: false,
+  // Origin-Agent-Cluster header also misbehaves on plain HTTP origins —
+  // browser complains and won't keep it on subsequent requests.
+  originAgentCluster: _httpsEnabled,
+  // COOP needs HTTPS; turn off until TLS is live.
+  crossOriginOpenerPolicy: _httpsEnabled,
 }));
 
 // Request ID + a thin morgan replacement that emits one JSON line per
