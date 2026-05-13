@@ -1,13 +1,14 @@
 import { useEffect, useSyncExternalStore } from 'react';
+import { api } from '../services/api';
 
 /**
- * USD→INR rate, fetched lazily and cached at module scope so every component
- * that needs it shares the same value (and a single fetch per TTL window).
+ * USD→INR rate. Fetched via our own backend (/api/fx/usdinr), which proxies
+ * Frankfurter server-side — direct browser calls to api.frankfurter.app
+ * were getting CORS-blocked on production origins.
  *
- * - Free public source: frankfurter.app (no API key, CORS-friendly).
  * - 5-minute TTL — FX moves slowly, this is plenty fresh for display.
  * - Hard-coded fallback (env VITE_USDINR_RATE or 83) so the UI keeps working
- *   even if the FX API is down or blocked.
+ *   even if the backend proxy is down.
  *
  * The hook returns the live rate as a plain number. Components can multiply
  * a USD-quoted price by it to render the INR equivalent.
@@ -31,17 +32,10 @@ const refresh = async (force = false) => {
   if (inflight) return inflight;
   inflight = (async () => {
     try {
-      // 7s ceiling so a hung FX endpoint never blocks the UI; we'll just
-      // keep using the previous value (or fallback) until the next try.
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 7000);
-      const res = await fetch('https://api.frankfurter.app/latest?from=USD&to=INR', {
-        signal: ctrl.signal,
-      });
-      clearTimeout(timer);
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      const json = await res.json();
-      const rate = Number(json?.rates?.INR);
+      // 8s ceiling so a hung backend never blocks the UI; we'll just keep
+      // using the previous value (or fallback) until the next try.
+      const { data } = await api.get('/fx/usdinr', { timeout: 8000 });
+      const rate = Number(data?.rate);
       if (Number.isFinite(rate) && rate > 0) {
         currentRate = rate;
         lastFetchAt = now;

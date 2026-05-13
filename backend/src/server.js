@@ -40,6 +40,7 @@ const adminRoutes = require('./routes/admin');
 const complianceRoutes = require('./routes/compliance');
 const reportsRoutes = require('./routes/reports');
 const subscriptionRoutes = require('./routes/subscription');
+const fxRoutes = require('./routes/fx');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -175,6 +176,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/compliance', complianceRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
+app.use('/api/fx', fxRoutes);
 
 // ─── Serve frontend SPAs out of backend/public ─────────────────────
 // Production flow: `vite build` in client/ + admin/ produces dist/
