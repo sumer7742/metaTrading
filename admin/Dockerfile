@@ -2,7 +2,8 @@
 #
 # Build context = admin/
 #   cd admin
-#   docker build --build-arg VITE_API_URL=https://api.zerovant.in/api -t tp-admin .
+#   docker build --build-arg VITE_API_URL=https://trading.metawebdevelopment.cloud/api \
+#                --build-arg VITE_BASE=/admin/ -t tp-admin .
 
 FROM node:20-alpine AS build
 WORKDIR /app
@@ -11,12 +12,12 @@ RUN npm ci || npm install --no-audit --no-fund
 
 COPY . .
 
-# Admin sits on its own subdomain (admin.zerovant.in) — base path is /.
-# We override VITE_BASE here so the env-driven vite.config produces a
-# root-relative bundle, NOT a /admin/ prefixed one.
-ARG VITE_BASE=/
+# Admin is served under /admin/ on the unified domain
+# (trading.metawebdevelopment.cloud/admin/). VITE_BASE drives the prefix
+# emitted in index.html asset URLs so they resolve correctly under /admin/.
+ARG VITE_BASE=/admin/
 ENV VITE_BASE=$VITE_BASE
-ARG VITE_API_URL=https://api.zerovant.in/api
+ARG VITE_API_URL=https://trading.metawebdevelopment.cloud/api
 ENV VITE_API_URL=$VITE_API_URL
 
 RUN npm run build

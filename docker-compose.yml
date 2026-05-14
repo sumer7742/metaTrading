@@ -56,8 +56,8 @@ services:
     build:
       context: ./client
       args:
-        VITE_API_URL: https://api.zerovant.in/api
-        VITE_WS_URL: wss://api.zerovant.in/ws
+        VITE_API_URL: https://trading.metawebdevelopment.cloud/api
+        VITE_WS_URL: wss://trading.metawebdevelopment.cloud/ws
     image: tp-client:latest
     container_name: tp-client
     restart: unless-stopped
@@ -70,8 +70,8 @@ services:
     build:
       context: ./admin
       args:
-        VITE_API_URL: https://api.zerovant.in/api
-        VITE_BASE: /
+        VITE_API_URL: https://trading.metawebdevelopment.cloud/api
+        VITE_BASE: /admin/
     image: tp-admin:latest
     container_name: tp-admin
     restart: unless-stopped

@@ -9,10 +9,10 @@
 # nginx (TLS terminator) can reach them. No port is exposed to the
 # internet directly; the EC2 security group only needs 80 + 443 + 22.
 #
-# Host nginx routes by subdomain:
-#   api.zerovant.in     → 127.0.0.1:5000  (backend)
-#   client.zerovant.in  → 127.0.0.1:8081  (client SPA)
-#   admin.zerovant.in   → 127.0.0.1:8082  (admin SPA)
+# Host nginx routes a single domain by path:
+#   trading.metawebdevelopment.cloud/api/*    → 127.0.0.1:5000  (backend)
+#   trading.metawebdevelopment.cloud/admin/*  → 127.0.0.1:8082  (admin SPA)
+#   trading.metawebdevelopment.cloud/*        → 127.0.0.1:8081  (client SPA)
 #
 # Usage:
 #   docker compose up -d --build
@@ -44,8 +44,8 @@ services:
     build:
       context: ./client
       args:
-        VITE_API_URL: https://api.zerovant.in/api
-        VITE_WS_URL: wss://api.zerovant.in/ws
+        VITE_API_URL: https://trading.metawebdevelopment.cloud/api
+        VITE_WS_URL: wss://trading.metawebdevelopment.cloud/ws
     image: tp-client:latest
     container_name: tp-client
     restart: unless-stopped
@@ -58,8 +58,8 @@ services:
     build:
       context: ./admin
       args:
-        VITE_API_URL: https://api.zerovant.in/api
-        VITE_BASE: /
+        VITE_API_URL: https://trading.metawebdevelopment.cloud/api
+        VITE_BASE: /admin/
     image: tp-admin:latest
     container_name: tp-admin
     restart: unless-stopped

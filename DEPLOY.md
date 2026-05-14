@@ -1,4 +1,4 @@
-# Manual EC2 Deployment — zerovant.in
+# Manual EC2 Deployment — trading.metawebdevelopment.cloud
 
 ## Architecture
 
@@ -8,10 +8,12 @@ Internet  →  EC2 :80/:443  →  Host nginx (TLS)  →  Docker containers
                                                     ├─ tp-client   127.0.0.1:8081
                                                     └─ tp-admin    127.0.0.1:8082
 
-Subdomains (Cloudflare/registrar A records → 35.154.225.175):
-  api.zerovant.in     → backend  (Node API + WebSocket)
-  client.zerovant.in  → client SPA
-  admin.zerovant.in   → admin SPA
+Single domain (Cloudflare/registrar A record → 35.154.225.175):
+  trading.metawebdevelopment.cloud
+    /api/*    → backend  (Node API)
+    /ws       → backend  (WebSocket)
+    /admin/*  → admin SPA
+    /*        → client SPA
 ```
 
 ---
@@ -68,8 +70,8 @@ MONGODB_URI=mongodb+srv://USER:PASS@cluster.mongodb.net/trading_platform?retryWr
 JWT_ACCESS_SECRET=...
 JWT_REFRESH_SECRET=...
 
-# CORS — exact subdomains, no trailing slash
-CORS_ORIGINS=https://client.zerovant.in,https://admin.zerovant.in
+# CORS — same-origin under path-based routing, so just the one host
+CORS_ORIGINS=https://trading.metawebdevelopment.cloud
 
 # HTTPS posture (host nginx terminates TLS, but containers see http internally — set true ONLY after certbot is done)
 HTTPS_ENABLED=true
@@ -104,15 +106,13 @@ Backend logs should show `MongoDB connected` + `Server listening { port: 5000 }`
 ## 5. Wire host nginx
 
 ```bash
-# Copy our prepared configs into nginx's sites-available
-sudo cp nginx/api.zerovant.in.conf    /etc/nginx/sites-available/api.zerovant.in
-sudo cp nginx/client.zerovant.in.conf /etc/nginx/sites-available/client.zerovant.in
-sudo cp nginx/admin.zerovant.in.conf  /etc/nginx/sites-available/admin.zerovant.in
+# Copy the single vhost into nginx's sites-available
+sudo cp nginx/trading.metawebdevelopment.cloud.conf \
+        /etc/nginx/sites-available/trading.metawebdevelopment.cloud
 
 # Enable
-sudo ln -sf /etc/nginx/sites-available/api.zerovant.in    /etc/nginx/sites-enabled/
-sudo ln -sf /etc/nginx/sites-available/client.zerovant.in /etc/nginx/sites-enabled/
-sudo ln -sf /etc/nginx/sites-available/admin.zerovant.in  /etc/nginx/sites-enabled/
+sudo ln -sf /etc/nginx/sites-available/trading.metawebdevelopment.cloud \
+            /etc/nginx/sites-enabled/
 
 # Drop the default catch-all (causes hostname-matching conflicts)
 sudo rm -f /etc/nginx/sites-enabled/default
@@ -124,35 +124,34 @@ sudo systemctl reload nginx
 
 Smoke test — HTTP (before SSL):
 ```bash
-curl -H 'Host: api.zerovant.in'    http://localhost/
-# api.zerovant.in OK
+curl -H 'Host: trading.metawebdevelopment.cloud' http://localhost/api/health
+# {"status":"ok",...}
 
-curl -I -H 'Host: client.zerovant.in' http://localhost/
-# HTTP/1.1 200 OK (nginx Alpine, your client SPA)
+curl -I -H 'Host: trading.metawebdevelopment.cloud' http://localhost/
+# HTTP/1.1 200 OK (client SPA index)
 ```
 
 If DNS is propagated, also test from your laptop:
 ```bash
-curl http://api.zerovant.in/api/health
-curl http://client.zerovant.in/
+curl http://trading.metawebdevelopment.cloud/api/health
+curl http://trading.metawebdevelopment.cloud/
+curl http://trading.metawebdevelopment.cloud/admin/
 ```
 
 ---
 
-## 6. SSL via Certbot (one shot for all three subdomains)
+## 6. SSL via Certbot
 
 ```bash
 sudo certbot --nginx \
-  -d api.zerovant.in \
-  -d client.zerovant.in \
-  -d admin.zerovant.in \
+  -d trading.metawebdevelopment.cloud \
   --redirect --agree-tos -m you@yourmail.com --no-eff-email
 ```
 
 Certbot will:
-1. Verify each domain via HTTP-01 (uses port 80 — must be reachable from internet)
-2. Get certs from Let's Encrypt
-3. **Modify your nginx configs in place** to add `listen 443 ssl` blocks + redirect HTTP → HTTPS
+1. Verify via HTTP-01 (uses port 80 — must be reachable from internet)
+2. Get cert from Let's Encrypt
+3. **Modify the nginx config in place** to add `listen 443 ssl` + redirect HTTP → HTTPS
 4. Reload nginx
 
 Auto-renewal is set up via systemd timer — verify:
@@ -178,15 +177,15 @@ docker compose restart backend
 # Production-safe seed (instruments + plans + global routing setting)
 docker compose exec backend node src/utils/seedProd.js
 
-# Sign up a real account via https://client.zerovant.in, then promote yourself
-# to SUPER_ADMIN in Atlas (via mongosh on your laptop or Atlas Data Explorer):
+# Sign up a real account via https://trading.metawebdevelopment.cloud, then promote
+# yourself to SUPER_ADMIN in Atlas (via mongosh on your laptop or Atlas Data Explorer):
 db.users.updateOne(
   { email: 'you@yourmail.com' },
   { $set: { role: 'SUPER_ADMIN', isActive: true, kycStatus: 'APPROVED', isEmailVerified: true } }
 )
 ```
 
-Visit https://admin.zerovant.in → login → Profile → **Enable 2FA immediately** (production has `ADMIN_REQUIRE_2FA=true`; otherwise next login is locked).
+Visit https://trading.metawebdevelopment.cloud/admin → login → Profile → **Enable 2FA immediately** (production has `ADMIN_REQUIRE_2FA=true`; otherwise next login is locked).
 
 ---
 
@@ -259,7 +258,7 @@ curl http://127.0.0.1:5000/api/health
 curl http://127.0.0.1:5000/api/ready
 
 # WebSocket smoke (needs wscat: npm i -g wscat)
-wscat -c wss://api.zerovant.in/ws
+wscat -c wss://trading.metawebdevelopment.cloud/ws
 ```
 
 ---
@@ -270,9 +269,10 @@ wscat -c wss://api.zerovant.in/ws
 |---|---|---|
 | `connect ECONNREFUSED 127.0.0.1:27017` in backend logs | `MONGODB_URI` still points at localhost | Edit `backend/.env` to Atlas URI; `docker compose restart backend` |
 | Browser 404 on `/trade` refresh | SPA fallback missing | Verify container nginx config has `try_files $uri /index.html;` — should already be in place |
-| CORS error in browser console | `CORS_ORIGINS` missing your subdomain | Add exact `https://client.zerovant.in` to `backend/.env`, restart |
-| Certbot fails: "No A record" | DNS not propagated yet | Wait 5-15 min, verify with `dig api.zerovant.in +short` returning 35.154.225.175 |
-| WebSocket fails after SSL | `wss://` URL wrong / nginx /ws block missing | Verify nginx api config has the WS `Upgrade` headers in the /ws location |
+| CORS error in browser console | `CORS_ORIGINS` missing your domain | Add exact `https://trading.metawebdevelopment.cloud` to `backend/.env`, restart |
+| Admin assets 404 under /admin/ | `VITE_BASE` not `/admin/` at build time | Rebuild admin image with `--build-arg VITE_BASE=/admin/` |
+| Certbot fails: "No A record" | DNS not propagated yet | Wait 5-15 min, verify with `dig trading.metawebdevelopment.cloud +short` returning 35.154.225.175 |
+| WebSocket fails after SSL | `wss://` URL wrong / nginx /ws block missing | Verify nginx config has the WS `Upgrade` headers in the /ws location |
 | Razorpay webhook fails signature | Wrong `RAZORPAY_WEBHOOK_SECRET` | Copy from Razorpay dashboard → Webhooks → reveal secret |
 | Admin login 403 with ADMIN_2FA_REQUIRED | Admin hasn't enabled 2FA | Temporarily set `ADMIN_REQUIRE_2FA=false` → login → enable 2FA → set back to true → restart |
 
@@ -293,11 +293,9 @@ trading-platform/
 │   ├── nginx.conf                       ← in-container, SPA try_files
 │   └── .env.example                     ← documented prod build args
 ├── admin/
-│   ├── Dockerfile                       ← same as client (with VITE_BASE=/)
+│   ├── Dockerfile                       ← same as client (with VITE_BASE=/admin/)
 │   ├── nginx.conf                       ← same SPA fallback
 │   └── .env.example
-└── nginx/                               ← host nginx configs
-    ├── api.zerovant.in.conf
-    ├── client.zerovant.in.conf
-    └── admin.zerovant.in.conf
+└── nginx/                               ← host nginx config (single vhost)
+    └── trading.metawebdevelopment.cloud.conf
 ```
