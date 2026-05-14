@@ -58,6 +58,53 @@ const CHART_TYPES = [
   { id: 'heikinAshi',    label: 'Heikin Ashi',       glyph: <HeikinAshiGlyph /> },
 ];
 
+// ─── Timeframe + gap-fill helpers ────────────────────────────────────
+// All chart times are Unix SECONDS (lightweight-charts requirement).
+// Gap-fill produces continuous buckets so 1m charts have one candle per
+// minute — missing buckets get a flat carry-forward candle (O=H=L=C=prev
+// close, volume=0) so the time axis never jumps.
+
+const TF_SECONDS = {
+  '1m': 60,
+  '5m': 300,
+  '15m': 900,
+  '1h': 3600,
+  '4h': 14400,
+  '1d': 86400,
+};
+export const tfToSeconds = (tf) => TF_SECONDS[tf] || 60;
+
+/** Snap a Unix-seconds timestamp down to the start of its timeframe bucket. */
+export const bucketFloor = (sec, tfSec) => Math.floor(sec / tfSec) * tfSec;
+
+/**
+ * Walk a sorted+deduped candle array and insert carry-forward candles for
+ * any missing bucket between consecutive entries. Input MUST already be
+ * sorted ascending and free of duplicate times. Returns a new array.
+ *
+ * A "carry-forward" candle has O = H = L = C = prev.close and volume = 0
+ * — visually a flat tick, which is the right semantic for "no trades this
+ * minute" without inventing price movement.
+ */
+export function fillCandleGaps(candles, tfSec) {
+  if (!Array.isArray(candles) || candles.length < 2) return candles || [];
+  const out = [candles[0]];
+  for (let i = 1; i < candles.length; i++) {
+    const prev = out[out.length - 1];
+    const next = candles[i];
+    // Defensive: if `next` isn't aligned to the bucket grid, snap it down.
+    const nextTime = bucketFloor(next.time, tfSec);
+    let t = prev.time + tfSec;
+    while (t < nextTime) {
+      const c = prev.close;
+      out.push({ time: t, open: c, high: c, low: c, close: c, volume: 0 });
+      t += tfSec;
+    }
+    out.push({ ...next, time: nextTime });
+  }
+  return out;
+}
+
 // ─── Data converters ─────────────────────────────────────────────────
 
 /** Map OHLC candles → line-series points using the close price. */
@@ -647,31 +694,45 @@ export default function PriceChart({
           params: { timeframe, limit: 500 },
         });
         if (cancelled) return;
+        const tfSec = tfToSeconds(timeframe);
         const raw = Array.isArray(data?.data) ? data.data : [];
         const formatted = raw
-          .map((c) => ({
-            time: Math.floor(new Date(c.openTime).getTime() / 1000),
-            open: Number(c.open),
-            high: Number(c.high),
-            low: Number(c.low),
-            close: Number(c.close),
-            volume: Number(c.volume) || 0,
-          }))
+          .map((c) => {
+            // Normalize to Unix SECONDS, then snap down to the bucket grid
+            // so historical and live data share the same time keys.
+            const rawSec = Math.floor(new Date(c.openTime).getTime() / 1000);
+            return {
+              time: bucketFloor(rawSec, tfSec),
+              open: Number(c.open),
+              high: Number(c.high),
+              low: Number(c.low),
+              close: Number(c.close),
+              volume: Number(c.volume) || 0,
+            };
+          })
           .filter((c) => Number.isFinite(c.time) && Number.isFinite(c.open))
           .sort((a, b) => a.time - b.time);
-        // Dedupe consecutive same-time points (latest wins).
+        // Dedupe by bucket time (latest wins).
         const deduped = [];
         for (const c of formatted) {
           const last = deduped[deduped.length - 1];
           if (last && last.time === c.time) deduped[deduped.length - 1] = c;
           else deduped.push(c);
         }
-        candlesRef.current = deduped;
-        setCandles(deduped);
+        // Carry-forward fill any missing buckets so the time axis is
+        // continuous (no large gaps, no dashed candles from skipped minutes).
+        const filled = fillCandleGaps(deduped, tfSec);
+        console.log('[Chart] historical load', {
+          symbol, timeframe, tfSec,
+          rawCount: raw.length, dedupedCount: deduped.length, filledCount: filled.length,
+          firstTime: filled[0]?.time, lastTime: filled[filled.length - 1]?.time,
+        });
+        candlesRef.current = filled;
+        setCandles(filled);
         // Push to series in the chart-type-correct shape.
-        updateSeriesData(candleSeriesRef.current, chartType, deduped);
-        _setVolumeData(volumeSeriesRef.current, deduped);
-        _updateLastPriceLineColor(candleSeriesRef.current, deduped);
+        updateSeriesData(candleSeriesRef.current, chartType, filled);
+        _setVolumeData(volumeSeriesRef.current, filled);
+        _updateLastPriceLineColor(candleSeriesRef.current, filled);
         try { candleSeriesRef.current.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
         try {
           // 120 candles × 8px barSpacing ≈ 960px of candle area —
@@ -691,10 +752,17 @@ export default function PriceChart({
     };
     load();
 
+    const tfSec = tfToSeconds(timeframe);
+
     unsub = wsClient.subscribe(`candles:${symbol}:${timeframe}`, (candle) => {
       if (!candleSeriesRef.current) return;
+      // 1. Normalize raw tick time → Unix seconds.
+      const rawSec = Math.floor(new Date(candle.openTime).getTime() / 1000);
+      // 2. Snap to the bucket grid so a tick at e.g. 10:32:47 maps to the
+      //    10:32:00 bucket on a 1m chart — never creates a stray timestamp.
+      const bucketTime = bucketFloor(rawSec, tfSec);
       const point = {
-        time: Math.floor(new Date(candle.openTime).getTime() / 1000),
+        time: bucketTime,
         open: Number(candle.open),
         high: Number(candle.high),
         low: Number(candle.low),
@@ -703,20 +771,57 @@ export default function PriceChart({
       };
       if (!Number.isFinite(point.time) || !Number.isFinite(point.close)) return;
       const lastInRef = candlesRef.current[candlesRef.current.length - 1];
-      if (lastInRef && point.time < lastInRef.time) return;
+      const lastTime = lastInRef?.time;
+      // Drop late ticks that fall before the current open bucket.
+      if (lastInRef && point.time < lastTime) {
+        console.log('[Chart] tick dropped (late)', { rawTime: candle.openTime, normalizedTime: point.time, lastTime });
+        return;
+      }
 
-      // Update the working set first so updateSeriesPoint (and HA conversion)
-      // sees the latest bucket.
+      // Decide: update current bucket, append next bucket, or gap-fill +
+      // append. Bulk-reset the series when fillers are added; single
+      // .update() otherwise (cheaper, doesn't blink).
       let nextRef;
-      if (lastInRef && lastInRef.time === point.time) {
+      let action;
+      let bulkReset = false;
+      if (lastInRef && lastTime === point.time) {
+        // Same bucket — overwrite the working candle.
         nextRef = candlesRef.current.slice(0, -1).concat(point);
+        action = 'update-current';
+      } else if (lastInRef && point.time > lastTime + tfSec) {
+        // Gap — carry-forward fill every missed bucket, then append.
+        const fillers = [];
+        const carryClose = lastInRef.close;
+        for (let t = lastTime + tfSec; t < point.time; t += tfSec) {
+          fillers.push({ time: t, open: carryClose, high: carryClose, low: carryClose, close: carryClose, volume: 0 });
+        }
+        nextRef = candlesRef.current.concat(fillers, point);
+        action = `new-with-gap-fill(${fillers.length})`;
+        bulkReset = true;
       } else {
+        // Adjacent new bucket — just append.
         nextRef = candlesRef.current.concat(point);
+        action = 'new';
       }
       candlesRef.current = nextRef;
 
-      updateSeriesPoint(candleSeriesRef.current, chartType, point, nextRef);
-      _updateVolumePoint(volumeSeriesRef.current, point);
+      console.log('[Chart] tick', {
+        rawTime: candle.openTime,
+        normalizedTime: point.time,
+        lastTime,
+        action,
+        close: point.close,
+      });
+
+      if (bulkReset) {
+        // Filler candles need to enter the series too — bulk reset is the
+        // safest path (single .update() can only push one point).
+        updateSeriesData(candleSeriesRef.current, chartType, nextRef);
+        _setVolumeData(volumeSeriesRef.current, nextRef);
+      } else {
+        updateSeriesPoint(candleSeriesRef.current, chartType, point, nextRef);
+        _updateVolumePoint(volumeSeriesRef.current, point);
+      }
       _updateLastPriceLineColor(candleSeriesRef.current, nextRef);
       setCandles(nextRef);
 
