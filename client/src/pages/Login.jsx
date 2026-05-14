@@ -8,6 +8,8 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [twoFactorCode, setTwoFactorCode] = useState('');
   const [show2FA, setShow2FA] = useState(false);
+  const [twoFactorMode, setTwoFactorMode] = useState('totp');
+  const [showRecovery, setShowRecovery] = useState(false);
   const [loading, setLoading] = useState(false);
   const { login } = useAuthStore();
   const navigate = useNavigate();
@@ -76,16 +78,65 @@ export default function Login() {
           </div>
           {show2FA && (
             <div>
-              <label className="label">2FA Code</label>
+              <label className="label">
+                {twoFactorMode === 'backup' ? 'Backup Code' : 'Authenticator Code'}
+              </label>
               <input
                 type="text"
                 className="input font-mono"
                 value={twoFactorCode}
                 onChange={(e) => setTwoFactorCode(e.target.value)}
-                placeholder="6-digit code or backup XXXX-XXXX"
+                placeholder={twoFactorMode === 'backup' ? 'XXXX-XXXX' : '6-digit code'}
+                maxLength={twoFactorMode === 'backup' ? 9 : 6}
+                autoComplete="one-time-code"
+                inputMode={twoFactorMode === 'backup' ? 'text' : 'numeric'}
                 required
               />
-              <div className="text-xs text-gray-500 mt-1">Lost your authenticator? Enter a backup code.</div>
+              <div className="text-xs text-gray-500 mt-1">
+                {twoFactorMode === 'backup'
+                  ? 'Each backup code can only be used once.'
+                  : 'Open your authenticator app to get the code.'}
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRecovery((v) => !v)}
+                className="mt-3 text-xs text-teal-accent hover:underline"
+              >
+                {showRecovery ? 'Hide options' : 'Try another way'}
+              </button>
+              {showRecovery && (
+                <div className="mt-2 rounded-md border border-border-dark bg-bg-panel/60 p-3 space-y-2 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTwoFactorMode(twoFactorMode === 'backup' ? 'totp' : 'backup');
+                      setTwoFactorCode('');
+                    }}
+                    className="block w-full text-left text-gray-300 hover:text-white"
+                  >
+                    {twoFactorMode === 'backup'
+                      ? '• Use authenticator code instead'
+                      : '• Use a backup code'}
+                  </button>
+                  <div className="text-gray-400">
+                    <div className="text-gray-300">• Lost access to authenticator?</div>
+                    <div className="mt-1 ml-3 text-gray-500">
+                      Enter one of the 8 backup codes you saved when 2FA was enabled.
+                      Switch the input above to "Use a backup code".
+                    </div>
+                  </div>
+                  <div className="text-gray-400">
+                    <div className="text-gray-300">• Account recovery</div>
+                    <div className="mt-1 ml-3 text-gray-500">
+                      If you've lost your authenticator and all backup codes,{' '}
+                      <Link to="/forgot-password" className="text-teal-accent hover:underline">
+                        reset your password
+                      </Link>{' '}
+                      — this signs you out of all sessions. For 2FA reset, contact support.
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
           <button type="submit" disabled={loading} className="btn-primary w-full">
