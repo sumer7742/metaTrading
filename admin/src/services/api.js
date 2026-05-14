@@ -8,7 +8,13 @@ const API_URL = _envBase.replace(/\/$/, '').endsWith('/api')
   ? _envBase.replace(/\/$/, '')
   : _envBase.replace(/\/$/, '') + '/api';
 
-export const api = axios.create({ baseURL: API_URL, headers: { 'Content-Type': 'application/json' } });
+export const api = axios.create({ 
+  
+  
+  baseURL: API_URL,
+  // baseURL: 'http://localhost:5000/api',
+  
+  headers: { 'Content-Type': 'application/json' } });
 
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('admin_accessToken');

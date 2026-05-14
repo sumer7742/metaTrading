@@ -13,6 +13,7 @@ import AuditLog from './pages/AuditLog';
 import Reports from './pages/Reports';
 import DataFeeds from './pages/DataFeeds';
 import Settings from './pages/Settings';
+import Security from './pages/Security';
 
 const wrap = (el) => (
   <ProtectedRoute>
@@ -37,6 +38,7 @@ export default function App() {
       <Route path="/reports" element={wrap(<Reports />)} />
       <Route path="/data-feeds" element={wrap(<DataFeeds />)} />
       <Route path="/settings" element={wrap(<Settings />)} />
+      <Route path="/security" element={wrap(<Security />)} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   );
