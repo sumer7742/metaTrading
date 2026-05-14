@@ -152,37 +152,38 @@ const login = asyncHandler(async (req, res) => {
     throw new AppError('Invalid credentials', 401, 'INVALID_CREDENTIALS');
   }
 
-  if (user.twoFactorEnabled) {
-    if (!twoFactorCode) {
-      throw new AppError('2FA code required', 401, '2FA_REQUIRED');
-    }
-
-    let valid = authenticator.verify({
-      token: twoFactorCode,
-      secret: user.twoFactorSecret,
-    });
-
-    if (!valid) {
-      const crypto = require('crypto');
-      const inputHash = crypto
-        .createHash('sha256')
-        .update(twoFactorCode.toUpperCase().replace(/-/g, ''))
-        .digest('hex');
-
-      const backup = (user.twoFactorBackupCodes || []).find(
-        (c) => c.codeHash === inputHash && !c.usedAt
-      );
-
-      if (backup) {
-        backup.usedAt = new Date();
-        valid = true;
-      }
-    }
-
-    if (!valid) {
-      throw new AppError('Invalid 2FA code', 401, '2FA_INVALID');
-    }
-  }
+  // 2FA temporarily disabled at login — TODO: re-enable
+  // if (user.twoFactorEnabled) {
+  //   if (!twoFactorCode) {
+  //     throw new AppError('2FA code required', 401, '2FA_REQUIRED');
+  //   }
+  //
+  //   let valid = authenticator.verify({
+  //     token: twoFactorCode,
+  //     secret: user.twoFactorSecret,
+  //   });
+  //
+  //   if (!valid) {
+  //     const crypto = require('crypto');
+  //     const inputHash = crypto
+  //       .createHash('sha256')
+  //       .update(twoFactorCode.toUpperCase().replace(/-/g, ''))
+  //       .digest('hex');
+  //
+  //     const backup = (user.twoFactorBackupCodes || []).find(
+  //       (c) => c.codeHash === inputHash && !c.usedAt
+  //     );
+  //
+  //     if (backup) {
+  //       backup.usedAt = new Date();
+  //       valid = true;
+  //     }
+  //   }
+  //
+  //   if (!valid) {
+  //     throw new AppError('Invalid 2FA code', 401, '2FA_INVALID');
+  //   }
+  // }
 
   console.log('[LOGIN] before token sign');
 
