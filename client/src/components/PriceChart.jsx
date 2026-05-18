@@ -744,6 +744,11 @@ export default function PriceChart({
   // provider (a closure created once at series-construction time) always
   // reads the latest value without needing to be rebuilt.
   const hysteresisRef = useRef(autoscaleHysteresis);
+  // Same pattern for `timeframe` — the chart-create effect runs once, but
+  // its tick-mark formatter needs the current timeframe to decide between
+  // a "HH:MM" tick (intraday) and a "DD Mon" tick (daily).
+  const timeframeRef = useRef(timeframe);
+  useEffect(() => { timeframeRef.current = timeframe; }, [timeframe]);
 
   const [indicators, setIndicators] = useState(INDICATOR_DEFAULTS);
   const [candles, setCandles] = useState([]);
@@ -759,6 +764,32 @@ export default function PriceChart({
     // Use the container's actual rendered height so the chart fills the
     // available space; fall back to 460 px if measurement isn't ready yet.
     const initialHeight = containerRef.current.clientHeight || 460;
+    // Local-timezone formatters — lightweight-charts treats `time` as Unix
+    // seconds in UTC by default, so axis labels read UTC and a user in IST
+    // sees yesterday's date for an "early today UTC" bar. These formatters
+    // re-render the same timestamp using the browser's local timezone so
+    // the chart axis matches what the user expects from their clock.
+    const _localTickFmt = (timeOrBusiness) => {
+      const sec = typeof timeOrBusiness === 'number'
+        ? timeOrBusiness
+        : Math.floor(Date.UTC(timeOrBusiness.year, timeOrBusiness.month - 1, timeOrBusiness.day) / 1000);
+      const d = new Date(sec * 1000);
+      const tf = timeframeRef.current;
+      const isIntradayTf = tf === '1m' || tf === '5m' || tf === '15m' || tf === '1h' || tf === '4h';
+      if (isIntradayTf) {
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+      }
+      return d.toLocaleDateString([], { day: '2-digit', month: 'short' });
+    };
+    const _localCrosshairFmt = (timeOrBusiness) => {
+      const sec = typeof timeOrBusiness === 'number'
+        ? timeOrBusiness
+        : Math.floor(Date.UTC(timeOrBusiness.year, timeOrBusiness.month - 1, timeOrBusiness.day) / 1000);
+      return new Date(sec * 1000).toLocaleString([], {
+        day: '2-digit', month: 'short', year: 'numeric',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+      });
+    };
     const chart = createChart(containerRef.current, {
       // `autoSize: true` makes lightweight-charts attach its own
       // ResizeObserver and follow the container's box. This is the
@@ -768,6 +799,10 @@ export default function PriceChart({
       autoSize: true,
       width: containerRef.current.clientWidth,
       height: initialHeight,
+      localization: {
+        locale: (typeof navigator !== 'undefined' && navigator.language) || 'en-US',
+        timeFormatter: _localCrosshairFmt,
+      },
       grid: {
         vertLines: { color: tvCanvas(theme).grid },
         horzLines: { color: tvCanvas(theme).grid },
@@ -776,6 +811,7 @@ export default function PriceChart({
         timeVisible: true,
         secondsVisible: false,
         borderColor: tvCanvas(theme).border,
+        tickMarkFormatter: _localTickFmt,
         // ── Spacing
         barSpacing: 10,
         minBarSpacing: 3,
@@ -1084,6 +1120,10 @@ export default function PriceChart({
         if (cancelled) return;
         const tfSec = tfToSeconds(timeframe);
         const raw = Array.isArray(data?.data) ? data.data : [];
+        // Drop anything stamped beyond "now" (server-clock skew, bad
+        // backfill, accidentally-future buckets) so the chart never shows
+        // tomorrow's date.
+        const nowSec = Math.floor(Date.now() / 1000);
         const formatted = raw
           .map((c) => {
             // Normalize to Unix SECONDS, then snap down to the bucket grid
@@ -1098,7 +1138,7 @@ export default function PriceChart({
               volume: Number(c.volume) || 0,
             };
           })
-          .filter((c) => Number.isFinite(c.time) && Number.isFinite(c.open))
+          .filter((c) => Number.isFinite(c.time) && Number.isFinite(c.open) && c.time <= nowSec)
           .sort((a, b) => a.time - b.time);
         // Dedupe by bucket time (latest wins).
         const deduped = [];
@@ -1137,6 +1177,9 @@ export default function PriceChart({
           } else if (chartRef.current) {
             chartRef.current.timeScale().fitContent();
           }
+          // Pin to the latest candle so the chart always opens "at now",
+          // never on a historical/yesterday bar.
+          chartRef.current?.timeScale().scrollToRealTime();
         } catch (_) {}
       } catch (e) { /* ignore */ }
     };
@@ -1160,6 +1203,14 @@ export default function PriceChart({
         volume: Number(candle.volume) || 0,
       };
       if (!Number.isFinite(point.time) || !Number.isFinite(point.close)) return;
+      // Drop bogus future ticks (server clock skew, accidentally-future
+      // openTime) — allow up to one full bucket ahead since the bucket's
+      // start time is "now" but its close is one bucket in the future.
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (point.time > nowSec + tfSec) {
+        console.log('[Chart] tick dropped (future)', { rawTime: candle.openTime, normalizedTime: point.time, nowSec });
+        return;
+      }
       const lastInRef = candlesRef.current[candlesRef.current.length - 1];
       const lastTime = lastInRef?.time;
       // Drop late ticks that fall before the current open bucket.
