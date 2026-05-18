@@ -311,9 +311,9 @@ export default function Wallet() {
         </div>
 
         {/* Secure footer card */}
-        <div className="rounded-2xl p-4 border" style={{ background: '#10B98108', borderColor: '#10B98133' }}>
+        <div className="rounded-2xl p-4 border" style={{ background: '#3B82F608', borderColor: '#3B82F633' }}>
           <div className="flex items-start gap-2.5">
-            <span className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: '#10B98118', color: '#10B981' }}>
+            <span className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: '#3B82F618', color: '#3B82F6' }}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
             </span>
             <div className="min-w-0">
@@ -1017,8 +1017,8 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
                       isActive ? 'shadow-card' : ''
                     }`}
                     style={
-                      isActive ? { background: '#10B981', color: '#FFFFFF' }
-                      : isDone   ? { background: '#10B98122', color: '#10B981' }
+                      isActive ? { background: '#3B82F6', color: '#FFFFFF' }
+                      : isDone   ? { background: '#3B82F622', color: '#3B82F6' }
                       :            { background: '#E5E7EB', color: '#9CA3AF' }
                     }
                   >
@@ -1066,7 +1066,7 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
                       onClick={() => setAccountId(a._id)}
                       className={`relative w-full p-5 rounded-2xl border-2 text-left transition-all hover:shadow-card ${sel ? 'shadow-card' : 'hover:-translate-y-0.5'}`}
                       style={sel
-                        ? { borderColor: '#10B981', background: '#10B98108' }
+                        ? { borderColor: '#3B82F6', background: '#3B82F608' }
                         : { borderColor: '#E5E7EB', background: '#FFFFFF' }
                       }
                     >
@@ -1081,7 +1081,7 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
                         <span
                           className="shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all"
                           style={sel
-                            ? { borderColor: '#10B981', background: '#10B981' }
+                            ? { borderColor: '#3B82F6', background: '#3B82F6' }
                             : { borderColor: '#E5E7EB', background: '#FFFFFF' }
                           }
                         >
@@ -1097,7 +1097,7 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
                         <span
                           className="text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded"
                           style={isR
-                            ? { background: '#10B98118', color: '#10B981' }
+                            ? { background: '#3B82F618', color: '#3B82F6' }
                             : { background: '#1D4ED815', color: '#1D4ED8' }
                           }
                         >
@@ -1164,7 +1164,7 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
                 <div className="rounded-xl border border-border-dark bg-bg-hover p-4">
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
-                      <span className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: '#10B98118', color: '#10B981' }}>
+                      <span className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: '#3B82F618', color: '#3B82F6' }}>
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="M9 12l2 2 4-4" /></svg>
                       </span>
                       <span className="text-sm font-bold text-text-primary">Pay to these details</span>
@@ -1392,7 +1392,7 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
             {step === 0 ? 'Cancel' : '← Back'}
           </button>
           <span className="hidden md:flex items-center gap-2 text-[12px] text-text-secondary">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="11" width="16" height="9" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#3B82F6" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="11" width="16" height="9" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
             Your funds are protected with bank-level security
           </span>
           {step < effectiveSteps.length - 1 ? (
@@ -1401,7 +1401,7 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
               onClick={goNext}
               disabled={!canNext}
               className="inline-flex items-center gap-1.5 px-6 py-2.5 rounded-xl font-bold text-sm shadow-card hover:shadow-elevated hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
-              style={{ background: '#10B981', color: '#FFFFFF' }}
+              style={{ background: '#3B82F6', color: '#FFFFFF' }}
             >
               <span className="keep-white" style={{ color: '#FFFFFF' }}>Continue →</span>
             </button>
@@ -1411,7 +1411,7 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
               onClick={finalSubmit}
               disabled={loading}
               className="inline-flex items-center gap-1.5 px-6 py-2.5 rounded-xl font-bold text-sm shadow-card hover:shadow-elevated hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
-              style={{ background: '#10B981', color: '#FFFFFF' }}
+              style={{ background: '#3B82F6', color: '#FFFFFF' }}
             >
               <span className="keep-white" style={{ color: '#FFFFFF' }}>
                 {loading ? 'Submitting…' : isDemo ? 'Add to Demo Account' : isRazor ? `Pay ${currencySymbol(currency)}${fmtNum(Number(amount) || 0, 2)} via Razorpay` : 'Confirm Deposit'}
@@ -1987,11 +1987,11 @@ function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCance
     { id: 'CRYPTO', label: 'Crypto Wallet', sub: 'USDT / BTC / ETH · ~5min', min: 1000, icon: <MCrypto />, inrOnly: false },
   ];
   const STEPS = [
-    { id: 'account',     label: 'Account' },
-    { id: 'method',      label: 'Method' },
-    { id: 'amount',      label: 'Amount' },
-    { id: 'destination', label: 'Destination' },
-    { id: 'confirm',     label: 'Confirmation' },
+    { id: 'account',     label: 'Account',       sub: 'Choose account' },
+    { id: 'method',      label: 'Method',        sub: 'Select method' },
+    { id: 'amount',      label: 'Amount',        sub: 'Enter amount' },
+    { id: 'destination', label: 'Destination',   sub: 'Where to send' },
+    { id: 'confirm',     label: 'Confirmation',  sub: 'Review & confirm' },
   ];
   const stepId = STEPS[step]?.id;
 
@@ -2055,36 +2055,56 @@ function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCance
 
   return (
     <>
-      {/* Title */}
-      <div>
-        <h1 className="text-2xl sm:text-3xl font-bold text-text-primary">Withdraw Funds</h1>
-        <p className="text-sm text-text-secondary mt-1">Request a withdrawal to your registered bank or wallet.</p>
-      </div>
-
       <div className="bg-white rounded-2xl border border-border-dark shadow-card overflow-hidden flex flex-col">
-        {/* Stepper */}
-        <div className="px-6 py-4 border-b border-border-subtle bg-bg-hover/40">
-          <div className="flex items-center gap-1.5 sm:gap-3">
+
+        {/* ── Header ────────────────────────────────────────────────── */}
+        <div className="flex items-start justify-between gap-3 px-6 pt-5 pb-4 border-b border-border-subtle">
+          <div className="min-w-0">
+            <h2 className="text-xl font-bold text-text-primary">Withdraw Funds</h2>
+            <p className="text-xs text-text-secondary mt-0.5">Request a withdrawal to your registered bank or wallet</p>
+          </div>
+          <div className="flex items-center gap-1 shrink-0">
+            <button type="button" title="How it works?" className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border-dark hover:border-primary-500/40 hover:bg-primary-500/5 text-text-primary text-xs font-semibold transition-colors">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><path d="M12 17h.01" /></svg>
+              How it works?
+            </button>
+            <a href="/helpdesk" title="Support" className="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+            </a>
+            <button type="button" onClick={onCancel || (() => {})} className="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
+            </button>
+          </div>
+        </div>
+
+        {/* ── Stepper ──────────────────────────────────────────────── */}
+        <div className="px-6 py-5 border-b border-border-subtle">
+          <div className="flex items-start gap-1.5 sm:gap-3">
             {STEPS.map((s, i) => {
               const isActive = i === step;
               const isDone = i < step;
               return (
-                <div key={s.id} className="flex items-center gap-2 flex-1 min-w-0">
+                <div key={s.id} className="flex items-start gap-2.5 flex-1 min-w-0">
                   <span
-                    className={`w-7 h-7 rounded-full flex items-center justify-center text-[12px] font-bold shrink-0 transition-all ${isActive ? 'scale-110' : ''}`}
+                    className={`w-9 h-9 rounded-full flex items-center justify-center text-[13px] font-bold shrink-0 transition-all ${
+                      isActive ? 'shadow-card' : ''
+                    }`}
                     style={
-                      isActive ? { background: '#1D4ED8', color: '#FFFFFF' }
-                      : isDone   ? { background: '#1D4ED822', color: '#1D4ED8' }
+                      isActive ? { background: '#3B82F6', color: '#FFFFFF' }
+                      : isDone   ? { background: '#3B82F622', color: '#3B82F6' }
                       :            { background: '#E5E7EB', color: '#9CA3AF' }
                     }
                   >
                     {isDone ? (
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7" /></svg>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7" /></svg>
                     ) : <span className={isActive ? 'keep-white' : ''} style={isActive ? { color: '#FFFFFF' } : undefined}>{i + 1}</span>}
                   </span>
-                  <span className={`hidden md:inline text-[12px] font-semibold truncate ${isActive ? 'text-text-primary' : isDone ? 'text-primary-600' : 'text-text-muted'}`}>{s.label}</span>
+                  <div className="hidden md:flex flex-col min-w-0 leading-tight pt-0.5">
+                    <span className={`text-[13px] font-bold truncate ${isActive ? 'text-text-primary' : isDone ? 'text-text-primary' : 'text-text-muted'}`}>{s.label}</span>
+                    <span className="text-[11px] text-text-muted truncate">{s.sub}</span>
+                  </div>
                   {i < STEPS.length - 1 && (
-                    <span className="flex-1 mx-1 sm:mx-2 h-px border-t border-dashed border-border-dark" />
+                    <span className="flex-1 mx-1 sm:mx-2 mt-4 h-px border-t border-dashed border-border-dark" />
                   )}
                 </div>
               );
@@ -2092,21 +2112,20 @@ function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCance
           </div>
         </div>
 
-        {/* Body */}
-        <div className="px-6 py-5">
+        {/* ── Body (scrollable) ─────────────────────────────────────── */}
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
 
           {/* Step 1 — Account */}
           {stepId === 'account' && (
-            <div className="space-y-3">
+            <div className="space-y-4">
               <div>
-                <h3 className="text-base font-bold text-text-primary">Withdraw from</h3>
+                <h3 className="text-lg font-bold text-text-primary">Withdraw from</h3>
                 <p className="text-xs text-text-muted mt-0.5">Pick a real account to withdraw funds from.</p>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 {accounts.map((a) => {
                   const sel = a._id === accountId;
                   const isR = a.accountType === 'REAL';
-                  const tint = isR ? '#1D4ED8' : '#3B82F6';
                   const inrWallet = balances.find((b) => b.accountId === a._id && b.currency === 'INR');
                   const usdWallet = balances.find((b) => b.accountId === a._id && b.currency === 'USD');
                   const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
@@ -2117,38 +2136,57 @@ function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCance
                       type="button"
                       onClick={() => setAccountId(a._id)}
                       disabled={!isR}
-                      className={`group relative w-full p-4 rounded-2xl border-2 text-left transition-all hover:shadow-elevated hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:shadow-none overflow-hidden ${sel ? 'border-primary-500 bg-primary-500/[0.04] shadow-card' : 'border-border-dark hover:border-primary-500/40 bg-white'}`}
+                      className={`relative w-full p-5 rounded-2xl border-2 text-left transition-all hover:shadow-card disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:shadow-none ${sel ? 'shadow-card' : 'hover:-translate-y-0.5'}`}
+                      style={sel
+                        ? { borderColor: '#3B82F6', background: '#3B82F608' }
+                        : { borderColor: '#E5E7EB', background: '#FFFFFF' }
+                      }
                     >
-                      {/* Soft accent glow on the top-right corner */}
-                      <span className="pointer-events-none absolute -top-8 -right-8 w-24 h-24 rounded-full opacity-50 transition-opacity group-hover:opacity-80" style={{ background: `radial-gradient(circle, ${tint}22, transparent 70%)` }} />
-
-                      {/* Top row — avatar + selection radio */}
-                      <div className="relative flex items-start justify-between gap-2">
+                      {/* Top — avatar + check */}
+                      <div className="flex items-start justify-between gap-2">
                         <span
-                          className="w-11 h-11 rounded-xl flex items-center justify-center text-sm font-extrabold shrink-0 shadow-sm"
-                          style={{ background: `linear-gradient(135deg, ${tint}22 0%, ${tint}11 100%)`, color: tint }}
+                          className="w-11 h-11 rounded-xl flex items-center justify-center text-sm font-extrabold shrink-0"
+                          style={{ background: '#1D4ED810', color: '#1D4ED8' }}
                         >
                           {(a.nickname || a.accountNumber || 'A').slice(0, 2).toUpperCase()}
                         </span>
-                        <span className={`shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${sel ? 'border-primary-500 bg-primary-500' : 'border-border-dark bg-white'}`}>
+                        <span
+                          className="shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all"
+                          style={sel
+                            ? { borderColor: '#3B82F6', background: '#3B82F6' }
+                            : { borderColor: '#E5E7EB', background: '#FFFFFF' }
+                          }
+                        >
                           {sel && (
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round" className="keep-white"><path d="M5 13l4 4L19 7" /></svg>
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round" className="keep-white"><path d="M5 13l4 4L19 7" /></svg>
                           )}
                         </span>
                       </div>
 
                       {/* Name + badge */}
-                      <div className="relative mt-3 flex items-center gap-2">
-                        <span className="text-sm font-bold text-text-primary truncate">{a.nickname || a.accountNumber}</span>
-                        <span className={`text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded ${isR ? 'bg-bull/15 text-bull' : 'bg-info/15 text-info'}`}>
+                      <div className="mt-3 flex items-center gap-2">
+                        <span className="text-base font-bold text-text-primary truncate">{a.nickname || a.accountNumber}</span>
+                        <span
+                          className="text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded"
+                          style={isR
+                            ? { background: '#3B82F618', color: '#3B82F6' }
+                            : { background: '#1D4ED815', color: '#1D4ED8' }
+                          }
+                        >
                           {isR ? 'Live · Real' : 'Demo'}
                         </span>
                       </div>
+                      <div className="text-[11px] text-text-muted font-mono mt-0.5">{a.accountNumber}</div>
 
-                      {/* Footer row — account number + Free balance */}
-                      <div className="relative mt-1.5 flex items-center justify-between gap-2">
-                        <span className="text-[11px] text-text-muted font-mono truncate">{a.accountNumber}</span>
-                        <span className="text-[11px] font-bold font-mono tabular-nums text-bull">{fmtMoney(accFree, 'INR')}</span>
+                      {/* Balance footer — Available to withdraw */}
+                      <div className="mt-4 flex items-end justify-between gap-2">
+                        <div>
+                          <div className="text-xl font-bold font-mono tabular-nums text-text-primary">
+                            {currencySymbol('INR')}{fmtNum(accFree, 2)}
+                          </div>
+                          <div className="text-[11px] text-text-muted mt-0.5">Available</div>
+                        </div>
+                        <span className="text-[10px] font-bold font-mono px-2 py-1 rounded-md bg-bg-hover text-text-secondary self-end">INR</span>
                       </div>
                     </button>
                   );
@@ -2523,22 +2561,27 @@ function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCance
           )}
         </div>
 
-        {/* Sticky action bar */}
-        <div className="border-t border-border-subtle bg-white px-6 py-4 flex items-center justify-between gap-3">
+        {/* ── Sticky bottom action bar — Cancel/Back left, security
+            strip centre, primary action right. */}
+        <div className="border-t border-border-subtle bg-bg-hover/40 px-6 py-4 flex items-center justify-between gap-3 shrink-0">
           <button
             type="button"
             onClick={step === 0 ? (onCancel || (() => {})) : goBack}
-            className="px-5 py-2.5 rounded-xl border border-border-dark text-text-primary font-semibold text-sm hover:bg-bg-hover transition-colors"
+            className="px-5 py-2.5 rounded-xl border border-border-dark bg-white text-text-primary font-semibold text-sm hover:shadow-card transition-all"
           >
             {step === 0 ? 'Cancel' : '← Back'}
           </button>
+          <span className="hidden md:flex items-center gap-2 text-[12px] text-text-secondary">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#3B82F6" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="11" width="16" height="9" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
+            Withdrawals are processed manually within 1–24 hours
+          </span>
           {step < STEPS.length - 1 ? (
             <button
               type="button"
               onClick={goNext}
               disabled={!canNext}
-              className="px-5 py-2.5 rounded-xl font-bold text-sm shadow-card hover:shadow-elevated transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-              style={{ background: '#1D4ED8', color: '#FFFFFF' }}
+              className="inline-flex items-center gap-1.5 px-6 py-2.5 rounded-xl font-bold text-sm shadow-card hover:shadow-elevated hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+              style={{ background: '#3B82F6', color: '#FFFFFF' }}
             >
               <span className="keep-white" style={{ color: '#FFFFFF' }}>Continue →</span>
             </button>
@@ -2547,8 +2590,8 @@ function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCance
               type="button"
               onClick={submit}
               disabled={loading || !canNext}
-              className="px-5 py-2.5 rounded-xl font-bold text-sm shadow-card hover:shadow-elevated transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-              style={{ background: '#1D4ED8', color: '#FFFFFF' }}
+              className="inline-flex items-center gap-1.5 px-6 py-2.5 rounded-xl font-bold text-sm shadow-card hover:shadow-elevated hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+              style={{ background: '#3B82F6', color: '#FFFFFF' }}
             >
               <span className="keep-white" style={{ color: '#FFFFFF' }}>
                 {loading ? 'Submitting…' : `Request Withdrawal of ${sym}${fmtNum(Number(amount) || 0, 2)}`}
@@ -2701,7 +2744,7 @@ function MethodsView({ onAdd }) {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {[
           { type: 'Bank Account', name: 'HDFC Bank ••• 1234', sub: 'INR · Default', tint: '#1D4ED8', icon: <NIMethods />, isDefault: true },
-          { type: 'Crypto Wallet', name: 'USDT (TRC20)', sub: 'TX••sH7p', tint: '#10B981', icon: <PMUsdt /> },
+          { type: 'Crypto Wallet', name: 'USDT (TRC20)', sub: 'TX••sH7p', tint: '#3B82F6', icon: <PMUsdt /> },
         ].map((m, i) => (
           <div key={i} className="bg-white border border-border-dark rounded-2xl p-4 flex items-center gap-3 hover:shadow-card transition-shadow">
             <span className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0" style={{ background: `${m.tint}18`, color: m.tint }}>{m.icon}</span>
@@ -2990,7 +3033,7 @@ function CreateAccountInlineModal({ onClose, onCreated }) {
 function BonusesView() {
   const promos = [
     { id: 1, title: '100% Welcome Bonus', sub: 'Up to $1,000 on your first deposit', cta: 'Claim now', tint: '#1D4ED8', tag: 'Featured', expires: 'Ends in 7 days' },
-    { id: 2, title: 'Refer & Earn $50', sub: 'For every funded friend you invite', cta: 'Invite', tint: '#10B981', tag: 'Ongoing' },
+    { id: 2, title: 'Refer & Earn $50', sub: 'For every funded friend you invite', cta: 'Invite', tint: '#3B82F6', tag: 'Ongoing' },
     { id: 3, title: '10% Cashback on Spreads', sub: 'Auto-credited monthly', cta: 'See terms', tint: '#8B5CF6', tag: 'Active' },
     { id: 4, title: 'XAUUSD Weekend Boost', sub: 'Zero commission on gold trades', cta: 'Trade gold', tint: '#F59E0B', tag: 'Limited' },
   ];

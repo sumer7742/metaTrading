@@ -26,7 +26,7 @@ export default function Register() {
     try {
       await register(form);
       toast.success('Account created! A demo account with $10,000 has been added.');
-      navigate('/dashboard');
+      navigate('/explore');
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {

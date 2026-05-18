@@ -66,7 +66,7 @@ export default function App() {
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/verify-email" element={<VerifyEmail />} />
 
-        <Route path="/" element={<Page><Navigate to="/dashboard" replace /></Page>} />
+        <Route path="/" element={<Page><Navigate to="/explore" replace /></Page>} />
         <Route path="/dashboard" element={<Page><Dashboard /></Page>} />
         <Route path="/explore" element={<Page><Explore /></Page>} />
         <Route path="/markets" element={<Page><MarketList /></Page>} />
