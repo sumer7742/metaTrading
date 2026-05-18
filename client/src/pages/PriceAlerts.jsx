@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import PageHero from '../components/PageHero';
+import AssetIcon from '../components/AssetIcon';
 
 export default function PriceAlerts() {
   const [alerts, setAlerts] = useState([]);
@@ -43,7 +44,7 @@ export default function PriceAlerts() {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-xs uppercase text-gray-500 bg-bg-dark">
+              <tr className="text-xs uppercase text-gray-500 bg-bg-card">
                 <th className="text-left py-2 px-4">Symbol</th>
                 <th className="text-left py-2 px-4">Direction</th>
                 <th className="text-right py-2 px-4">Target</th>
@@ -58,7 +59,16 @@ export default function PriceAlerts() {
               )}
               {alerts.map((a) => (
                 <tr key={a._id} className="table-row">
-                  <td className="py-2 px-4 text-white font-medium">{a.symbol}</td>
+                  <td className="py-2 px-4 text-white font-medium">
+                    <div className="flex items-center gap-2">
+                      <AssetIcon
+                        row={instruments.find((i) => i.symbol === a.symbol) || { symbol: a.symbol }}
+                        size={20}
+                        round
+                      />
+                      <span>{a.symbol}</span>
+                    </div>
+                  </td>
                   <td className="py-2 px-4">
                     <span className={a.direction === 'ABOVE' ? 'text-bull' : 'text-bear'}>
                       {a.direction === 'ABOVE' ? '↑ Above' : '↓ Below'}

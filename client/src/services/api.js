@@ -12,7 +12,6 @@ const API_URL = _envBase.replace(/\/$/, '').endsWith('/api')
 
 export const api = axios.create({
   baseURL: API_URL,
-  // baseURL: 'http://localhost:5000/api',
   headers: { 'Content-Type': 'application/json' },
   // 20s ceiling so a stuck backend doesn't leave the UI on a "Loading…"
   // screen forever. Most requests should complete in under 1s; anything

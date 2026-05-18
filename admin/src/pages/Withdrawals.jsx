@@ -8,12 +8,27 @@ export default function Withdrawals() {
   const [items, setItems] = useState([]);
   const [filter, setFilter] = useState('PENDING');
   const [viewing, setViewing] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = async () => {
-    const { data } = await api.get('/admin/withdrawals', { params: filter ? { status: filter } : {} });
-    setItems(data.data);
+    setRefreshing(true);
+    try {
+      const { data } = await api.get('/admin/withdrawals', { params: filter ? { status: filter } : {} });
+      setItems(data.data);
+    } finally {
+      setRefreshing(false);
+    }
   };
-  useEffect(() => { load(); }, [filter]);
+  // Auto-poll + focus refresh so new requests land within 8 s without
+  // an admin manually reloading the page.
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 8000);
+    const onFocus = () => load();
+    window.addEventListener('focus', onFocus);
+    return () => { clearInterval(id); window.removeEventListener('focus', onFocus); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter]);
 
   const approve = async (id, payoutData) => {
     try {
@@ -52,7 +67,7 @@ export default function Withdrawals() {
         subtitle="Review pending withdrawals, transfer funds via UPI/bank/crypto, then mark as paid with proof. High-value (>10 lakh) requires two admin approvals."
       />
 
-      <div className="flex space-x-2">
+      <div className="flex items-center space-x-2">
         {['PENDING', 'APPROVED', 'REJECTED', 'COMPLETED', ''].map((s) => (
           <button
             key={s || 'all'}
@@ -62,6 +77,14 @@ export default function Withdrawals() {
             {s || 'All'}
           </button>
         ))}
+        <span className="flex-1" />
+        <span className="text-[11px] text-gray-500 flex items-center gap-1.5">
+          <span className={`w-1.5 h-1.5 rounded-full ${refreshing ? 'bg-bull animate-pulse' : 'bg-gray-600'}`} />
+          Auto-refresh · 8s
+        </span>
+        <button onClick={load} className="text-xs px-3 py-1.5 rounded bg-bg-card text-gray-400 hover:bg-bg-hover" title="Refresh now">
+          {refreshing ? 'Refreshing…' : 'Refresh'}
+        </button>
       </div>
 
       <div className="card overflow-x-auto">

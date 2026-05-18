@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
@@ -6,8 +6,10 @@ import { wsClient } from '../services/ws';
 import { fmtNum, fmtMoney, fmtMoneyDual, fmtMoneyBoth, fmtDate, currencySymbol } from '../utils/format';
 import { useFxRate } from '../hooks/useFxRate';
 import PageHero from '../components/PageHero';
+import { useAuthStore } from '../store/auth';
 
 export default function Wallet() {
+  const { user } = useAuthStore();
   const [balances, setBalances] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [deposits, setDeposits] = useState([]);
@@ -21,7 +23,7 @@ export default function Wallet() {
   const [priceMap, setPriceMap] = useState({});
   const [tab, setTab] = useState('balances');
   const [showDeposit, setShowDeposit] = useState(false);
-  const [showWithdraw, setShowWithdraw] = useState(false);
+  // Withdraw now lives inline on the 'withdraw' view — no modal state needed.
   const [loading, setLoading] = useState(true);
   // Demo balances are visually de-emphasized by default — real money is the
   // user's actual financial position; demo is just practice. They can opt
@@ -30,23 +32,22 @@ export default function Wallet() {
   const fxRate = useFxRate();
   const [searchParams, setSearchParams] = useSearchParams();
 
-  // Auto-open the deposit/withdraw modal when arriving from /funds or any
-  // other deep link with ?action=deposit|withdraw. Strip the query after
-  // consuming so a refresh doesn't re-open the modal.
+  // Deep-link from /funds, header CTAs, etc. Both Deposit and Withdraw
+  // now live inline on the Wallet page — the deep-link handler just
+  // switches to the relevant sidebar view and strips the URL flag so a
+  // refresh doesn't re-trigger it.
   useEffect(() => {
     const action = searchParams.get('action');
-    if (action === 'deposit') {
-      setShowDeposit(true);
-      const next = new URLSearchParams(searchParams);
-      next.delete('action');
-      setSearchParams(next, { replace: true });
-    } else if (action === 'withdraw') {
-      setShowWithdraw(true);
+    if (action === 'deposit' || action === 'withdraw') {
+      // setView is declared below — defer until after this render so
+      // the assignment can find it in scope.
+      pendingDeepLinkRef.current = action === 'withdraw' ? 'withdraw' : 'grow';
       const next = new URLSearchParams(searchParams);
       next.delete('action');
       setSearchParams(next, { replace: true });
     }
   }, [searchParams, setSearchParams]);
+  const pendingDeepLinkRef = useRef(null);
 
   const load = async () => {
     // Settled-with-fallback so a single slow/failing endpoint doesn't blank
@@ -172,24 +173,284 @@ export default function Wallet() {
   const realBalances = useMemo(() => balances.filter(isReal), [balances, accountTypeById]);
   const demoBalances = useMemo(() => balances.filter((b) => !isReal(b)), [balances, accountTypeById]);
 
-  return (
-    <div className="space-y-4 max-w-[1600px]">
-      <PageHero
-        eyebrow="Portfolio"
-        title="Wallets"
-        subtitle="Real-time balances, deposit & withdrawal history, and full transaction ledger across all your accounts."
-        actions={
-          <>
-            <button onClick={() => setShowDeposit(true)} className="btn-bull text-sm">Deposit</button>
-            <button onClick={() => setShowWithdraw(true)} className="btn-ghost text-sm">Withdraw</button>
-          </>
-        }
-      />
+  // ── Aggregate top-line metrics (USD-normalised) for the hero cards ─
+  // Real money only — demo balances are surfaced separately below the
+  // primary cards so the headline figures reflect the user's actual
+  // financial position.
+  const totals = useMemo(() => {
+    let balance = 0, locked = 0, free = 0, unrealized = 0;
+    const cur = 'USD';
+    const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
+    for (const [c, t] of Object.entries(realTotalsByCurrency)) {
+      // Normalise to USD so the top cards can show one consolidated number.
+      const k = c === 'USD' ? 1 : c === 'INR' ? 1 / rate : 1;
+      balance    += (Number(t.balance)    || 0) * k;
+      locked     += (Number(t.locked)     || 0) * k;
+      free       += (Number(t.free)       || 0) * k;
+      unrealized += (Number(t.unrealized) || 0) * k;
+    }
+    const equity = balance + unrealized;
+    const marginLevel = locked > 0 ? (equity / locked) * 100 : null;
+    return { balance, locked, free, unrealized, equity, marginLevel, cur };
+  }, [realTotalsByCurrency, fxRate]);
 
-      <div className="card">
-        <div className="flex border-b border-border-dark">
+  // Recent transactions — merge deposits + withdrawals into one
+  // chronological list for the main table. Each row carries a
+  // `_kind` so we can paint icons / colours without re-checking.
+  const recentTx = useMemo(() => {
+    const d = (deposits || []).map((x) => ({ ...x, _kind: 'deposit' }));
+    const w = (withdrawals || []).map((x) => ({ ...x, _kind: 'withdraw' }));
+    return [...d, ...w]
+      .filter(Boolean)
+      .sort((a, b) => new Date(b.createdAt || b.date || 0) - new Date(a.createdAt || a.date || 0))
+      .slice(0, 12);
+  }, [deposits, withdrawals]);
+
+  // India-first money helpers. `totals.*` values are USD-normalised, so
+  // we convert into INR for the primary line and keep USD as the
+  // secondary line ("≈ $X.XX USD"). `usd(v)` returns the INR primary
+  // string so we don't have to touch every Stat/MetricCard call site;
+  // `usdSub(v)` returns the smaller USD subtitle string.
+  const inrRate = Number(fxRate) > 0 ? Number(fxRate) : 83;
+  const usd = (v) => `₹${fmtNum((Number(v) || 0) * inrRate, 2)}`;
+  const usdSub = (v) => `≈ $${fmtNum(Number(v) || 0, 2)} USD`;
+  const usdSubSigned = (v) => {
+    const n = Number(v) || 0;
+    const sign = n > 0 ? '+' : n < 0 ? '-' : '';
+    return `≈ ${sign}$${fmtNum(Math.abs(n), 2)} USD`;
+  };
+
+  // ── Wizard state for the screenshot-matched deposit flow ───────────
+  // `view` controls the left-nav active item; `method` is the
+  // currently-picked payment rail; `amount` is the dollars the user
+  // wants to deposit. Continue-to-Payment hands these to the existing
+  // DepositModal so the actual payment integration stays intact.
+  const [view, setView] = useState('grow');
+  // Pick up any deep-link the earlier effect parked in the ref.
+  useEffect(() => {
+    if (pendingDeepLinkRef.current) {
+      setView(pendingDeepLinkRef.current);
+      pendingDeepLinkRef.current = null;
+    }
+  });
+  const [method, setMethod] = useState('bank');
+  const [amount, setAmount] = useState(100);
+  const [customAmount, setCustomAmount] = useState('');
+
+  const PAYMENT_METHODS = [
+    { id: 'bank',    name: 'Bank Transfer',     sub: '1-3 Business Days', min: 50, icon: <PMBank /> },
+    { id: 'card',    name: 'Credit / Debit Card', sub: 'Instant',          min: 20, icon: <PMCard /> },
+    { id: 'skrill',  name: 'Skrill',            sub: 'Instant',          min: 10, icon: <PMSkrill /> },
+    { id: 'neteller',name: 'Neteller',          sub: 'Instant',          min: 10, icon: <PMNeteller /> },
+    { id: 'usdt',    name: 'USDT',              sub: 'TRC20 · Instant',  min: 10, icon: <PMUsdt /> },
+    { id: 'more',    name: 'More Methods',      sub: 'Various options',  min: 10, icon: <PMMore /> },
+  ];
+  const AMOUNT_PILLS = [100, 250, 500, 1000, 2000];
+  const selectedMethod = PAYMENT_METHODS.find((m) => m.id === method) || PAYMENT_METHODS[0];
+  const effectiveAmount = customAmount !== '' ? Number(customAmount) || 0 : amount;
+  const stepIdx = method ? 1 : 0;
+
+  const NAV_ITEMS = [
+    { id: 'overview', label: 'Account Overview', icon: <NIOverview /> },
+    { id: 'grow',     label: 'Deposit Funds',     icon: <NIDeposit />, active: true },
+    { id: 'withdraw', label: 'Withdraw Funds',    icon: <NIWithdraw /> },
+    { id: 'transfer', label: 'Internal Transfer', icon: <NITransfer /> },
+    { id: 'history',  label: 'Transaction History', icon: <NIHistory /> },
+    { id: 'methods',  label: 'Payment Methods',   icon: <NIMethods /> },
+    { id: 'details',  label: 'Account Details',   icon: <NIDetails /> },
+    { id: 'bonuses',  label: 'Bonuses & Offers',  icon: <NIBonus /> },
+  ];
+
+  return (
+    <div className="max-w-[1600px] grid grid-cols-12 gap-3 lg:-ml-4 xl:-ml-6">
+      {/* ── LEFT NAV — sticky so it stays visible as the main content
+          (wizard, transactions, etc.) scrolls underneath. Layout's
+          global header is sticky top-0 with h-16 nav (64 px) + the
+          InstrumentStrip (~60 px) → total sticky zone ≈ 124 px. We
+          pin the sidebar at top:8rem (128 px) so it clears that
+          header zone instead of sliding underneath it.
+          `self-start` is the magic that makes `sticky` actually work
+          inside a grid column — without it the cell stretches and
+          sticky becomes a no-op. */}
+      <aside className="col-span-12 lg:col-span-2 xl:col-span-2 flex flex-col gap-4 min-w-0 lg:sticky lg:top-40 lg:self-start lg:max-h-[calc(100vh-11rem)] lg:overflow-y-auto">
+        <nav className="bg-white border border-border-dark rounded-2xl p-2 flex flex-col gap-0.5">
+          {NAV_ITEMS.map((n) => {
+            const isActive = view === n.id;
+            return (
+              <button
+                key={n.id}
+                type="button"
+                onClick={() => setView(n.id)}
+                className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-left transition-colors ${
+                  isActive ? 'bg-primary-500/10 text-primary-600' : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+                }`}
+              >
+                <span className={`shrink-0 ${isActive ? 'text-primary-600' : 'text-text-muted'}`}>
+                  {n.icon}
+                </span>
+                <span className={`text-[13px] truncate ${isActive ? 'font-bold' : 'font-medium'}`}>{n.label}</span>
+                {n.id === 'grow' && (
+                  <span className="ml-auto text-[9px] font-bold uppercase tracking-wider text-primary-600 bg-primary-500/15 px-1.5 py-0.5 rounded">New</span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Support card */}
+        <div className="bg-white border border-border-dark rounded-2xl p-4">
+          <div className="text-sm font-bold text-text-primary">Need Help?</div>
+          <div className="text-[11px] text-text-muted mt-0.5">Our support team is available 24/7</div>
+          <a
+            href="/helpdesk"
+            className="mt-3 inline-flex items-center justify-center gap-1.5 w-full px-3 py-2 rounded-xl border border-border-dark text-text-primary text-xs font-semibold hover:shadow-card transition-all"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 14v-2a9 9 0 0 1 18 0v2" /><path d="M21 14v3a2 2 0 0 1-2 2h-1v-7h1a2 2 0 0 1 2 2z" /><path d="M3 14v3a2 2 0 0 0 2 2h1v-7H5a2 2 0 0 0-2 2z" /></svg>
+            Contact Support
+          </a>
+        </div>
+
+        {/* Secure footer card */}
+        <div className="rounded-2xl p-4 border" style={{ background: '#10B98108', borderColor: '#10B98133' }}>
+          <div className="flex items-start gap-2.5">
+            <span className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: '#10B98118', color: '#10B981' }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
+            </span>
+            <div className="min-w-0">
+              <div className="text-sm font-bold text-text-primary">100% Secure</div>
+              <div className="text-[11px] text-text-muted mt-0.5">Your funds are safe with us</div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* ── CENTER — wizard / view content ──────────────────────────── */}
+      <main className="col-span-12 lg:col-span-10 xl:col-span-10 space-y-5 min-w-0">
+        {view === 'grow' ? (
+          <InlineDepositFlow
+            accounts={accounts}
+            balances={balances}
+            fxRate={fxRate}
+            onDone={() => { load(); setView('overview'); }}
+            onCancel={() => setView('overview')}
+          />
+        ) : view === 'overview' ? (
+          <AccountOverviewView totals={totals} usd={usd} usdSub={usdSub} usdSubSigned={usdSubSigned} realBalances={realBalances} accounts={accounts} recentTx={recentTx} positions={openPositions} setView={setView} />
+        ) : view === 'withdraw' ? (
+          <WithdrawView accounts={accounts} balances={balances} withdrawals={withdrawals} fxRate={fxRate} onDone={() => { load(); setView('overview'); }} onCancel={() => setView('overview')} />
+        ) : view === 'transfer' ? (
+          <TransferView accounts={accounts} balances={balances} onDone={load} />
+        ) : view === 'history' ? (
+          <FullHistoryView deposits={deposits} withdrawals={withdrawals} ledger={ledger} loading={loading} tab={tab} setTab={setTab} />
+        ) : view === 'methods' ? (
+          <MethodsView onAdd={() => setView('grow')} />
+        ) : view === 'details' ? (
+          <AccountDetailsView user={user} accounts={accounts} balances={balances} fxRate={fxRate} onRefresh={load} setView={setView} />
+        ) : (
+          <BonusesView />
+        )}
+
+        {/* Recent Transactions — always visible at the bottom (matches screenshot footer) */}
+        <div className="bg-white border border-border-dark rounded-2xl overflow-hidden">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-border-subtle">
+            <div className="text-sm font-bold text-text-primary">Recent Transactions</div>
+            <button type="button" onClick={() => setView('history')} className="text-xs font-semibold text-primary-600 hover:text-primary-700 px-3 py-1.5 rounded-lg border border-border-dark hover:border-primary-500/40 transition-colors">
+              View All
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            {recentTx.length === 0 ? (
+              <div className="py-10 text-center text-sm text-text-muted">No transactions yet</div>
+            ) : (
+              <table className="w-full text-sm">
+                <thead className="text-[10px] text-text-muted uppercase tracking-wider font-bold bg-bg-hover">
+                  <tr>
+                    <th className="text-left px-5 py-2.5">Date</th>
+                    <th className="text-left px-5 py-2.5">Type</th>
+                    <th className="text-right px-5 py-2.5">Amount</th>
+                    <th className="text-left px-5 py-2.5">Status</th>
+                    <th className="text-left px-5 py-2.5">Payment Method</th>
+                    <th className="text-left px-5 py-2.5">Transaction ID</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border-subtle">
+                  {recentTx.map((t) => {
+                    const isDeposit = t._kind === 'deposit';
+                    const sign = isDeposit ? '+' : '-';
+                    const amt = Number(t.amount || 0);
+                    return (
+                      <tr key={t._id || t.id} className="hover:bg-bg-hover transition-colors">
+                        <td className="px-5 py-3 text-text-secondary text-xs whitespace-nowrap">{fmtDate(t.createdAt)}</td>
+                        <td className="px-5 py-3">
+                          <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded ${isDeposit ? 'bg-bull/15 text-bull' : 'bg-bear/15 text-bear'}`}>
+                            {isDeposit ? 'Deposit' : 'Withdraw'}
+                          </span>
+                        </td>
+                        <td className={`px-5 py-3 text-right font-mono tabular-nums font-bold ${isDeposit ? 'text-bull' : 'text-bear'}`}>
+                          {sign}{currencySymbol(t.currency || 'INR')}{fmtNum(amt, 2)} <span className="text-text-muted font-mono text-[10px]">{t.currency || 'INR'}</span>
+                        </td>
+                        <td className="px-5 py-3"><StatusBadge status={t.status} /></td>
+                        <td className="px-5 py-3 text-text-secondary text-xs capitalize">{t.method || t.gateway || t.paymentMethod || '—'}</td>
+                        <td className="px-5 py-3 text-text-muted font-mono text-[11px]">{(t._id || t.txId || '—').toString().slice(-12)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+
+        {/* Small inline support strip — kept as a single discreet row
+            instead of the previous full card on the right sidebar. */}
+        <div className="flex items-center justify-end gap-4 text-xs text-text-muted">
+          <span>Need help?</span>
+          <a href="/helpdesk" className="inline-flex items-center gap-1.5 font-semibold text-primary-600 hover:text-primary-700">
+            <ChatGlyph /> Live chat
+          </a>
+          <span className="text-border-dark">·</span>
+          <a href="mailto:support@tradepro.com" className="inline-flex items-center gap-1.5 font-semibold text-primary-600 hover:text-primary-700">
+            <MailGlyph /> support@tradepro.com
+          </a>
+        </div>
+      </main>
+
+      {/* Deposit + Withdraw modals removed — both flows render inline
+          via <InlineDepositFlow /> on the 'grow' view and the multi-step
+          <WithdrawView /> on the 'withdraw' view. */}
+    </div>
+  );
+}
+
+// ─── Sub-views for non-deposit nav items ──────────────────────────────
+
+function PlaceholderView({ title, subtitle, cta, onClick, toHref }) {
+  return (
+    <div className="bg-white border border-border-dark rounded-2xl p-10 text-center">
+      <h2 className="text-2xl font-bold text-text-primary">{title}</h2>
+      <p className="text-sm text-text-secondary mt-2 max-w-md mx-auto">{subtitle}</p>
+      {cta && (
+        toHref ? (
+          <a href={toHref} className="mt-5 inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold shadow-card hover:shadow-elevated transition-all" style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)', color: '#FFFFFF' }}>
+            <span className="keep-white" style={{ color: '#FFFFFF' }}>{cta} →</span>
+          </a>
+        ) : (
+          <button onClick={onClick} className="mt-5 inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold shadow-card hover:shadow-elevated transition-all" style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)', color: '#FFFFFF' }}>
+            <span className="keep-white" style={{ color: '#FFFFFF' }}>{cta} →</span>
+          </button>
+        )
+      )}
+    </div>
+  );
+}
+
+function FullHistoryView({ deposits, withdrawals, ledger, loading, tab, setTab }) {
+  return (
+    <div className="bg-white border border-border-dark rounded-2xl overflow-hidden">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-border-subtle">
+        <div className="text-sm font-bold text-text-primary">Transaction History</div>
+        <div className="flex items-center gap-1 p-0.5 bg-bg-hover rounded-lg">
           {[
-            { k: 'balances', label: 'Balances' },
             { k: 'deposits', label: `Deposits (${deposits.length})` },
             { k: 'withdrawals', label: `Withdrawals (${withdrawals.length})` },
             { k: 'ledger', label: 'Ledger' },
@@ -197,204 +458,166 @@ export default function Wallet() {
             <button
               key={t.k}
               onClick={() => setTab(t.k)}
-              className={`px-4 py-3 text-sm ${
-                tab === t.k ? 'text-white border-b-2 border-primary-500' : 'text-gray-500'
+              className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+                tab === t.k ? 'bg-white text-text-primary shadow-card' : 'text-text-secondary hover:text-text-primary'
               }`}
             >
               {t.label}
             </button>
           ))}
         </div>
-        <div className="p-4 overflow-x-auto">
-          {loading ? (
-            <div className="text-gray-500 text-sm py-8 text-center">Loading wallet…</div>
-          ) : tab === 'balances' && (
-            <>
-              {/* REAL money summary — primary focus. Demo gets a small chip
-                  toggle below; not on by default because the user's actual
-                  financial position is the real-account view. */}
-              {Object.keys(realTotalsByCurrency).length > 0 ? (
-                <div className="flex flex-wrap gap-3 mb-4">
-                  {Object.entries(realTotalsByCurrency).map(([cur, t]) => {
-                    const equity = t.balance + t.unrealized;
-                    const hasOpenPnl = Math.abs(t.unrealized) > 0.005;
-                    // Headline totals (equity, balance) show BOTH USD primary
-                    // and INR secondary. Sub-figures (PnL, free, locked) stay
-                    // USD-only — keeps the card readable.
-                    const eq = fmtMoneyBoth(equity, cur, fxRate);
-                    const bal = fmtMoneyBoth(t.balance, cur, fxRate);
-                    const ur = fmtMoneyDual(t.unrealized, cur, fxRate, true);
-                    const free = fmtMoneyDual(t.free, cur, fxRate);
-                    const locked = fmtMoneyDual(t.locked, cur, fxRate);
-                    return (
-                      <div
-                        key={cur}
-                        className="flex-1 min-w-[220px] border-2 border-primary-500/30 rounded-lg p-4 bg-gradient-to-br from-primary-500/5 to-transparent"
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="text-[10px] uppercase tracking-wider text-primary-500 font-bold">
-                            Real Equity · {cur}
-                          </div>
-                          <span className="text-[9px] uppercase font-bold bg-bull/15 text-bull px-2 py-0.5 rounded">
-                            LIVE
-                          </span>
-                        </div>
-                        {/* Equity = balance + unrealized PnL. INR primary,
-                            USD secondary so the user always sees both views. */}
-                        <div className="text-2xl font-bold text-white font-mono mt-2">{eq.primary}</div>
-                        {eq.secondary && (
-                          <div className="text-[11px] font-mono text-gray-500">{eq.secondary}</div>
-                        )}
-                        {hasOpenPnl && (
-                          <div className={`text-[11px] mt-1 font-mono ${t.unrealized >= 0 ? 'text-bull' : 'text-bear'}`}>
-                            {ur.primary} unrealized
-                            {ur.secondary && <span className="text-gray-500 ml-1">({ur.secondary})</span>}
-                          </div>
-                        )}
-                        <div className="text-[11px] text-gray-400 mt-2 flex items-center gap-3 flex-wrap">
-                          <span>
-                            Balance <span className="text-white font-mono font-semibold">{bal.primary}</span>
-                            {bal.secondary && <span className="text-gray-500 ml-1">({bal.secondary})</span>}
-                          </span>
-                          <span className="text-gray-600">|</span>
-                          <span>
-                            Free <span className="text-bull font-mono">{free.primary}</span>
-                          </span>
-                          <span className="text-gray-600">|</span>
-                          <span>
-                            Locked <span className="font-mono">{locked.primary}</span>
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="border-2 border-dashed border-border-dark rounded-lg p-6 mb-4 text-center">
-                  <div className="text-sm text-white font-semibold">No real balance yet</div>
-                  <div className="text-xs text-gray-500 mt-1">
-                    Make a deposit to start trading with real funds.
-                  </div>
-                  <button onClick={() => setShowDeposit(true)} className="btn-primary mt-3 text-sm">
-                    Deposit Now
-                  </button>
-                </div>
-              )}
-
-              {/* Real account rows — primary table */}
-              {realBalances.length > 0 && (
-                <table className="w-full text-sm">
-                  <thead className="text-xs text-gray-500 uppercase">
-                    <tr>
-                      <th className="text-left p-2">Account</th>
-                      <th className="text-left p-2">Currency</th>
-                      <th className="text-right p-2">Balance</th>
-                      <th className="text-right p-2">Locked</th>
-                      <th className="text-right p-2">Free</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {realBalances.map((b) => {
-                      const acc = accounts.find((a) => a._id === b.accountId);
-                      const cur = b.currency || 'INR';
-                      return (
-                        <tr key={b._id} className="table-row">
-                          <td className="p-2">
-                            <span className="font-medium text-white">
-                              {acc?.nickname || acc?.accountNumber || '-'}
-                            </span>{' '}
-                            <span className="text-[10px] uppercase font-bold bg-bull/15 text-bull px-1.5 py-0.5 rounded ml-1">
-                              REAL
-                            </span>
-                          </td>
-                          <td className="p-2">{cur}</td>
-                          <td className="p-2 text-right font-mono">{fmtMoney(b.balance, cur)}</td>
-                          <td className="p-2 text-right font-mono text-gray-500">{fmtMoney(b.locked, cur)}</td>
-                          <td className="p-2 text-right font-mono text-bull">{fmtMoney(b.free, cur)}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-
-              {/* Demo accounts — collapsed by default with a count badge */}
-              {demoBalances.length > 0 && (
-                <div className="mt-6 pt-4 border-t border-border-dark">
-                  <button
-                    onClick={() => setShowDemo((s) => !s)}
-                    className="flex items-center gap-2 text-xs text-gray-400 hover:text-white transition-colors"
-                  >
-                    <span>{showDemo ? '▼' : '▶'}</span>
-                    <span className="uppercase tracking-wider">Practice / Demo Balances</span>
-                    <span className="bg-bg-hover text-gray-500 text-[10px] px-2 py-0.5 rounded">
-                      {demoBalances.length}
-                    </span>
-                  </button>
-
-                  {showDemo && (
-                    <div className="mt-3 opacity-70">
-                      <div className="text-[11px] text-gray-500 italic mb-2">
-                        Practice money — not redeemable. Used for risk-free strategy testing.
-                      </div>
-                      <table className="w-full text-sm">
-                        <thead className="text-xs text-gray-500 uppercase">
-                          <tr>
-                            <th className="text-left p-2">Account</th>
-                            <th className="text-left p-2">Currency</th>
-                            <th className="text-right p-2">Balance</th>
-                            <th className="text-right p-2">Locked</th>
-                            <th className="text-right p-2">Free</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {demoBalances.map((b) => {
-                            const acc = accounts.find((a) => a._id === b.accountId);
-                            const cur = b.currency || 'INR';
-                            return (
-                              <tr key={b._id} className="table-row">
-                                <td className="p-2">
-                                  <span className="text-gray-300">
-                                    {acc?.nickname || acc?.accountNumber || '-'}
-                                  </span>{' '}
-                                  <span className="text-[10px] uppercase font-bold bg-info/15 text-info px-1.5 py-0.5 rounded ml-1">
-                                    DEMO
-                                  </span>
-                                </td>
-                                <td className="p-2 text-gray-400">{cur}</td>
-                                <td className="p-2 text-right font-mono text-gray-400">{fmtMoney(b.balance, cur)}</td>
-                                <td className="p-2 text-right font-mono text-gray-500">{fmtMoney(b.locked, cur)}</td>
-                                <td className="p-2 text-right font-mono text-gray-400">{fmtMoney(b.free, cur)}</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              )}
-            </>
-          )}
-          {!loading && tab === 'deposits' && <DepositsTable items={deposits} />}
-          {!loading && tab === 'withdrawals' && <WithdrawalsTable items={withdrawals} />}
-          {!loading && tab === 'ledger' && <LedgerTable items={ledger} />}
-        </div>
       </div>
-
-      {showDeposit && (
-        <DepositModal accounts={accounts} onClose={() => setShowDeposit(false)} onDone={() => { setShowDeposit(false); load(); }} />
-      )}
-      {showWithdraw && (
-        <WithdrawModal balances={balances} accounts={accounts} onClose={() => setShowWithdraw(false)} onDone={() => { setShowWithdraw(false); load(); }} />
-      )}
+      <div className="overflow-x-auto p-5">
+        {loading ? (
+          <div className="text-text-muted text-sm py-12 text-center">Loading…</div>
+        ) : tab === 'withdrawals' ? <WithdrawalsTable items={withdrawals} />
+          : tab === 'ledger' ? <LedgerTable items={ledger} />
+          : <DepositsTable items={deposits} />}
+      </div>
     </div>
   );
 }
 
+// ─── Payment-method brand glyphs ──────────────────────────────────────
+
+const PMBank = () => (
+  <span className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: '#1D4ED818', color: '#1D4ED8' }}>
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21h18" /><path d="M5 21V10" /><path d="M9 21V10" /><path d="M15 21V10" /><path d="M19 21V10" /><path d="M2 10l10-7 10 7" /></svg>
+  </span>
+);
+const PMCard = () => (
+  <span className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: '#0EA5E918', color: '#0EA5E9' }}>
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="2" /><path d="M2 10h20" /></svg>
+  </span>
+);
+const PMSkrill = () => (
+  <span className="w-10 h-10 rounded-xl flex items-center justify-center text-[10px] font-bold tracking-tight shrink-0" style={{ background: '#86198F18', color: '#86198F' }}>
+    Skrill
+  </span>
+);
+const PMNeteller = () => (
+  <span className="w-10 h-10 rounded-xl flex items-center justify-center text-[9px] font-bold tracking-tight shrink-0" style={{ background: '#16A34A18', color: '#16A34A' }}>
+    NETELLER
+  </span>
+);
+const PMUsdt = () => (
+  <span className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: '#26A17B18', color: '#26A17B' }}>
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" /><text x="12" y="16" textAnchor="middle" fontSize="10" fontWeight="700" fill="#FFFFFF" fontFamily="Inter">T</text></svg>
+  </span>
+);
+const PMMore = () => (
+  <span className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: '#47556918', color: '#475569' }}>
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2" /><circle cx="12" cy="12" r="2" /><circle cx="19" cy="12" r="2" /></svg>
+  </span>
+);
+
+// ─── Nav glyphs ───────────────────────────────────────────────────────
+const NS = (props) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props} />;
+const NIOverview = () => <NS><circle cx="12" cy="12" r="9" /><path d="M9 12h6" /><path d="M12 9v6" /></NS>;
+const NIDeposit  = () => <NS><circle cx="12" cy="12" r="9" /><path d="M8 12l4-4 4 4" /><path d="M12 16V8" /></NS>;
+const NIWithdraw = () => <NS><circle cx="12" cy="12" r="9" /><path d="M8 12l4 4 4-4" /><path d="M12 8v8" /></NS>;
+const NITransfer = () => <NS><path d="M7 17l-4-4 4-4" /><path d="M3 13h13" /><path d="M17 7l4 4-4 4" /><path d="M21 11H8" /></NS>;
+const NIHistory  = () => <NS><circle cx="12" cy="12" r="9" /><path d="M12 6v6l4 2" /></NS>;
+const NIMethods  = () => <NS><rect x="2" y="6" width="20" height="14" rx="2" /><path d="M2 10h20" /></NS>;
+const NIDetails  = () => <NS><circle cx="12" cy="8" r="4" /><path d="M4 21v-2a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v2" /></NS>;
+const NIBonus    = () => <NS><rect x="3" y="8" width="18" height="13" rx="2" /><path d="M3 12h18" /><path d="M12 8v13" /><path d="M12 8s-3-5-5-3 1 3 5 3z" /><path d="M12 8s3-5 5-3-1 3-5 3z" /></NS>;
+
+// ─── UI primitives for the premium wallet layout ──────────────────────
+
+function Stat({ label, value, secondary, hint, color, emphasis }) {
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted">{label}</div>
+      <div
+        className={`mt-1 font-bold font-mono tabular-nums ${emphasis ? 'text-2xl sm:text-3xl' : 'text-xl sm:text-2xl'}`}
+        style={{ color: color || undefined }}
+      >
+        {value}
+      </div>
+      {secondary && <div className="text-[11px] font-mono text-text-muted mt-0.5">{secondary}</div>}
+      {hint && <div className="text-[11px] text-text-muted mt-1">{hint}</div>}
+    </div>
+  );
+}
+
+function MetricCard({ tint, icon: Icon, label, value, secondary, sub, valueColor }) {
+  return (
+    <div className="rounded-2xl border border-border-dark bg-white p-4 hover:shadow-card transition-shadow">
+      <div className="flex items-start justify-between">
+        <span
+          className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+          style={{ background: `${tint}18`, color: tint }}
+        >
+          <Icon />
+        </span>
+      </div>
+      <div className="text-[11px] uppercase tracking-wider text-text-muted font-semibold mt-3">{label}</div>
+      <div className="text-xl font-bold font-mono tabular-nums mt-0.5" style={{ color: valueColor || undefined }}>
+        {value}
+      </div>
+      {secondary && <div className="text-[11px] font-mono text-text-muted mt-0.5">{secondary}</div>}
+      {sub && <div className="text-[11px] text-text-muted mt-1">{sub}</div>}
+    </div>
+  );
+}
+
+function ActionButton({ tint, icon: Icon, label, onClick, to }) {
+  const inner = (
+    <>
+      <span className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: `${tint}18`, color: tint }}>
+        <Icon />
+      </span>
+      <span className="text-[12px] font-semibold text-text-primary text-center leading-tight">{label}</span>
+    </>
+  );
+  const cls = "flex flex-col items-center gap-2 p-3 rounded-xl border border-border-dark hover:border-primary-500/40 hover:bg-primary-500/5 transition-colors text-left";
+  if (to) {
+    return <a href={to} className={cls}>{inner}</a>;
+  }
+  return <button type="button" onClick={onClick} className={cls}>{inner}</button>;
+}
+
+function SidebarCard({ title, icon: Icon, tint, children }) {
+  return (
+    <div className="rounded-2xl border border-border-dark bg-white p-4">
+      <div className="flex items-center gap-2 mb-3">
+        <span className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0" style={{ background: `${tint}18`, color: tint }}>
+          <Icon />
+        </span>
+        <span className="text-sm font-bold text-text-primary">{title}</span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// Inline SVG glyphs — keep them tiny and consistent.
+const S = (props) => <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props} />;
+const WalletGlyph   = () => <S><path d="M3 7h18v12H3z" /><path d="M3 11h18" /><circle cx="17" cy="15" r="1.5" /></S>;
+const ChartGlyph    = () => <S><path d="M3 17l6-6 4 4 8-8" /><path d="M14 7h7v7" /></S>;
+const CheckGlyph    = () => <S><circle cx="12" cy="12" r="10" /><path d="M9 12l2 2 4-4" /></S>;
+const LockGlyph     = () => <S><rect x="4" y="11" width="16" height="9" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></S>;
+const GiftGlyph     = () => <S><rect x="3" y="8" width="18" height="13" rx="2" /><path d="M3 12h18" /><path d="M12 8v13" /><path d="M12 8s-3-5-5-3 1 3 5 3z" /><path d="M12 8s3-5 5-3-1 3-5 3z" /></S>;
+const TrendGlyph    = () => <S><path d="M3 17l6-6 4 4 8-8" /><path d="M14 7h7v7" /></S>;
+const DepositGlyph  = () => <S><circle cx="12" cy="12" r="10" /><path d="M8 12l4 4 4-4" /><path d="M12 8v8" /></S>;
+const WithdrawGlyph = () => <S><circle cx="12" cy="12" r="10" /><path d="M8 12l4-4 4 4" /><path d="M12 16V8" /></S>;
+const SwapGlyph     = () => <S><path d="M16 3l4 4-4 4" /><path d="M4 7h16" /><path d="M8 21l-4-4 4-4" /><path d="M20 17H4" /></S>;
+const ConvertGlyph  = () => <S><circle cx="12" cy="12" r="10" /><path d="M8 10h8" /><path d="M8 14h8" /><path d="M10 8l-2 2 2 2" /><path d="M14 12l2 2-2 2" /></S>;
+const HistoryGlyph  = () => <S><circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" /></S>;
+const ShieldGlyph   = () => <S><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></S>;
+const ClockGlyph    = () => <S><circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" /></S>;
+const GlobeGlyph    = () => <S><circle cx="12" cy="12" r="10" /><path d="M2 12h20" /><path d="M12 2a15 15 0 0 1 0 20" /><path d="M12 2a15 15 0 0 0 0 20" /></S>;
+const ChatGlyph     = () => <S><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></S>;
+const MailGlyph     = () => <S><rect x="2" y="4" width="20" height="16" rx="2" /><path d="M22 6l-10 7L2 6" /></S>;
+const CheckDot = ({ color }) => (
+  <span className="inline-flex w-4 h-4 rounded-full items-center justify-center shrink-0" style={{ background: `${color}22`, color }}>
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7" /></svg>
+  </span>
+);
+
 function StatusBadge({ status }) {
   const colors = {
-    PENDING: 'bg-yellow-900 text-yellow-300',
+    PENDING: 'bg-blue-100 text-blue-700',
     APPROVED: 'bg-blue-900 text-blue-300',
     CONFIRMED: 'bg-emerald-900 text-emerald-300',
     COMPLETED: 'bg-emerald-900 text-emerald-300',
@@ -522,11 +745,16 @@ function Modal({ children, onClose }) {
   );
 }
 
-function DepositModal({ accounts, onClose, onDone }) {
+function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }) {
+  const onClose = onCancel || (() => {});
   // Prefer a REAL account by default — it's the user's actual money flow.
   // Falls back to the first account if no real one exists yet.
   const realAccount = accounts.find((a) => a.accountType === 'REAL');
   const [accountId, setAccountId] = useState(realAccount?._id || accounts[0]?._id || '');
+  // The user enters amounts in INR (Indian payment rails); on submit
+  // we convert into USD via the live `fxRate` so the backend wallet —
+  // which is the canonical USD base — stays as the single source of
+  // truth. UI display elsewhere also reads in INR (see Wallet.jsx).
   const [currency, setCurrency] = useState('INR');
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState('UPI');
@@ -652,6 +880,13 @@ function DepositModal({ accounts, onClose, onDone }) {
 
     setLoading(true);
     try {
+      // Send the deposit as the user actually entered it (INR if the
+      // user used Indian rails, USD if the user typed dollars). This
+      // matches the UPI / bank receipt the user attached, so admin
+      // verification is one-to-one with what landed in the company
+      // account. The wallet display elsewhere aggregates INR + USD
+      // wallets into INR via fxRate, so the user still sees a single
+      // INR figure on the dashboard.
       const payload = {
         accountId,
         currency,
@@ -680,213 +915,536 @@ function DepositModal({ accounts, onClose, onDone }) {
     }
   };
 
+  // ── Multi-step state + helpers (UI only; submit handlers unchanged) ──
+  const [step, setStep] = useState(0);
+  const [drag, setDrag] = useState(false);
+  const PRESETS = currency === 'INR' ? [100, 500, 1000, 5000, 10000] : [10, 50, 100, 500, 1000];
+
+  // INR-denominated deposits. Mins are INR (₹100 minimum for Indian
+  // rails, ₹500 for crypto). The backend receives the converted USD
+  // value at submit time.
+  const METHODS = [
+    { id: 'UPI',      label: 'UPI',           sub: 'Instant · Free',         min: 100,  kind: 'manual',  icon: <MUPI /> },
+    { id: 'BANK',     label: 'Bank Transfer', sub: 'NEFT / IMPS · 1-3 hrs',  min: 100,  kind: 'manual',  icon: <MBank /> },
+    { id: 'CRYPTO',   label: 'Crypto (USDT)', sub: 'TRC20 · ~5 min',         min: 500,  kind: 'manual',  icon: <MCrypto /> },
+    { id: 'SKRILL',   label: 'Skrill',        sub: 'Instant · Free',         min: 100,  kind: 'manual',  icon: <MSkrill /> },
+    { id: 'NETELLER', label: 'Neteller',      sub: 'Instant · Free',         min: 100,  kind: 'manual',  icon: <MNeteller /> },
+    { id: 'RAZORPAY', label: 'Razorpay',      sub: 'UPI / Card · Instant',   min: 100,  kind: 'instant', icon: <MRazor /> },
+  ];
+  const STEPS = [
+    { id: 'account', label: 'Account',         sub: 'Choose account' },
+    { id: 'method',  label: 'Payment Method',  sub: 'Select method' },
+    { id: 'amount',  label: 'Amount',          sub: 'Enter amount' },
+    { id: 'proof',   label: 'Upload Proof',    sub: 'Add payment proof' },
+    { id: 'confirm', label: 'Confirmation',    sub: 'Review & confirm' },
+  ];
+  const isRazor = method === 'RAZORPAY';
+  // Razorpay path doesn't need the proof step — skip it for those.
+  const skipProof = isDemo || isRazor;
+  const totalSteps = skipProof ? 4 : 5;
+  const effectiveSteps = skipProof ? STEPS.filter((s) => s.id !== 'proof') : STEPS;
+
+  const copy = (txt, label) => {
+    try { navigator.clipboard.writeText(txt); toast.success(`${label || 'Copied'}`); }
+    catch (_) { toast.error('Copy failed'); }
+  };
+
+  const onDrop = (e) => {
+    e.preventDefault();
+    setDrag(false);
+    const file = e.dataTransfer?.files?.[0];
+    if (file) {
+      const fakeEvt = { target: { files: [file] } };
+      handleFileChange(fakeEvt);
+    }
+  };
+
+  const canNext = (() => {
+    if (step === 0) return !!accountId;
+    if (step === 1) return !!method;
+    if (step === 2) return amount && Number(amount) >= (METHODS.find((m) => m.id === method)?.min || 1);
+    if (step === 3) {
+      if (skipProof) return true;
+      return !!screenshot && !!txReference.trim() && !!senderName.trim();
+    }
+    return true;
+  })();
+
+  const goNext = () => setStep((s) => Math.min(s + 1, effectiveSteps.length - 1));
+  const goBack = () => setStep((s) => Math.max(s - 1, 0));
+
+  const finalSubmit = (e) => {
+    if (e?.preventDefault) e.preventDefault();
+    submit({ preventDefault: () => {} });
+  };
+
+  const selectedMethodMeta = METHODS.find((m) => m.id === method) || METHODS[0];
+  const stepId = effectiveSteps[step]?.id;
+
   return (
-    <Modal onClose={onClose}>
-      <h2 className="text-lg font-semibold text-white mb-3">
-        {isDemo ? '🎮 Demo Top-up' : '💰 Deposit Funds'}
-      </h2>
+    <div className="bg-white rounded-2xl border border-border-dark shadow-card overflow-hidden flex flex-col">
 
-      <form onSubmit={submit} className="space-y-3">
-        <div>
-          <label className="label">Account</label>
-          <select className="input" value={accountId} onChange={(e) => setAccountId(e.target.value)}>
-            {accounts.map((a) => (
-              <option key={a._id} value={a._id}>
-                {a.nickname || a.accountNumber} ({a.accountType})
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* Demo info banner */}
-        {isDemo && (
-          <div className="bg-blue-900/20 border border-blue-700/30 text-blue-200 text-xs p-3 rounded">
-            ✨ Demo accounts are credited instantly — no payment needed. Use this to practice trading risk-free.
+        {/* ── Header ────────────────────────────────────────────────── */}
+        <div className="flex items-start justify-between gap-3 px-6 pt-5 pb-4 border-b border-border-subtle">
+          <div className="min-w-0">
+            <h2 className="text-xl font-bold text-text-primary">Add Funds</h2>
+            <p className="text-xs text-text-secondary mt-0.5">Securely add balance to your trading account</p>
           </div>
-        )}
-
-        {/* Real money — bank details to pay to */}
-        {isReal && (
-          <div className="bg-bg-dark border border-primary-500/30 p-3 rounded space-y-2 text-xs">
-            <div className="text-primary-500 font-semibold mb-1">📌 Pay to these details first:</div>
-            <div className="grid grid-cols-[100px_1fr] gap-1">
-              <span className="text-gray-500">UPI ID:</span>
-              <span className="font-mono text-white">tradepro@upi</span>
-              <span className="text-gray-500">Bank A/c:</span>
-              <span className="font-mono text-white">XXXXXXXX1234</span>
-              <span className="text-gray-500">IFSC:</span>
-              <span className="font-mono text-white">HDFC0001234</span>
-              <span className="text-gray-500">Name:</span>
-              <span className="font-mono text-white">TradePro Pvt Ltd</span>
-            </div>
-            <div className="text-gray-400 mt-2 text-[11px]">
-              After payment, fill the form below + upload screenshot of confirmation.
-            </div>
-          </div>
-        )}
-
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="label">Amount ({currencySymbol(currency)})</label>
-            <input
-              type="number"
-              step="any"
-              min={isDemo ? '1' : '100'}
-              className="input font-mono"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              placeholder={isDemo ? 'e.g. 50000' : `min ${currencySymbol(currency)}100`}
-              required
-            />
-          </div>
-          <div>
-            <label className="label">Currency</label>
-            <select className="input" value={currency} onChange={(e) => setCurrency(e.target.value)}>
-              <option>INR</option>
-              <option>USD</option>
-              <option>USDT</option>
-              <option>BTC</option>
-            </select>
+          <div className="flex items-center gap-1 shrink-0">
+            <button type="button" title="How it works?" className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border-dark hover:border-primary-500/40 hover:bg-primary-500/5 text-text-primary text-xs font-semibold transition-colors">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><path d="M12 17h.01" /></svg>
+              How it works?
+            </button>
+            <a href="/helpdesk" title="Support" className="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+            </a>
+            <button type="button" onClick={onClose} className="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
+            </button>
           </div>
         </div>
 
-        {isReal && (
-          <>
-            <div>
-              <label className="label">Payment Method</label>
-              <select className="input" value={method} onChange={(e) => setMethod(e.target.value)}>
-                <option value="RAZORPAY">⚡ Razorpay (Instant — UPI / Card / NetBanking)</option>
-                <option value="UPI">UPI (manual — pay & upload screenshot)</option>
-                <option value="BANK">Bank Transfer (NEFT/IMPS — manual)</option>
-                <option value="CRYPTO">Crypto (USDT — manual)</option>
-                <option value="CARD">Card (manual)</option>
-              </select>
-            </div>
-
-            {/* Razorpay path: skip the manual fields entirely. The "Submit"
-                button below will open Razorpay Checkout and credit on success. */}
-            {method === 'RAZORPAY' && (
-              <div className="bg-emerald-900/15 border border-emerald-700/30 text-emerald-200 text-xs p-3 rounded">
-                ⚡ Pay instantly via UPI, Card, or NetBanking through Razorpay. Wallet credits within seconds — no screenshot needed.
-              </div>
-            )}
-
-            {method !== 'RAZORPAY' && (
-            <>
-            <div>
-              <label className="label">Transaction Reference / UPI Ref *</label>
-              <input
-                className="input font-mono"
-                value={txReference}
-                onChange={(e) => setTxReference(e.target.value)}
-                placeholder="e.g. 4123456789012"
-                required
-              />
-            </div>
-
-            <div>
-              <label className="label">Your Name (as on bank/UPI) *</label>
-              <input
-                className="input"
-                value={senderName}
-                onChange={(e) => setSenderName(e.target.value)}
-                placeholder="Full name"
-                required
-              />
-            </div>
-
-            {method === 'UPI' && (
-              <div>
-                <label className="label">Your UPI ID</label>
-                <input
-                  className="input font-mono"
-                  value={senderUpiId}
-                  onChange={(e) => setSenderUpiId(e.target.value)}
-                  placeholder="e.g. yourname@upi"
-                />
-              </div>
-            )}
-
-            {method === 'BANK' && (
-              <div>
-                <label className="label">Bank A/c Last 4 Digits</label>
-                <input
-                  className="input font-mono"
-                  maxLength={4}
-                  value={senderBankAccount}
-                  onChange={(e) => setSenderBankAccount(e.target.value)}
-                  placeholder="1234"
-                />
-              </div>
-            )}
-
-            {/* SCREENSHOT UPLOAD — REQUIRED FOR REAL */}
-            <div>
-              <label className="label">
-                Payment Screenshot * <span className="text-bear">(Required)</span>
-              </label>
-              {!screenshotPreview ? (
-                <div className="border-2 border-dashed border-border-dark rounded-lg p-6 text-center hover:border-primary-500 transition-colors">
-                  <input
-                    id="screenshot-upload"
-                    type="file"
-                    accept="image/png,image/jpeg,image/jpg"
-                    onChange={handleFileChange}
-                    className="hidden"
-                  />
-                  <label htmlFor="screenshot-upload" className="cursor-pointer">
-                    <div className="text-primary-500 text-3xl mb-2">📸</div>
-                    <div className="text-sm text-white font-medium">Click to upload payment screenshot</div>
-                    <div className="text-xs text-gray-500 mt-1">PNG/JPG · Max 500KB</div>
-                  </label>
-                </div>
-              ) : (
-                <div className="relative">
-                  <img
-                    src={screenshotPreview}
-                    alt="Payment screenshot"
-                    className="w-full max-h-48 object-contain rounded border border-border-dark bg-bg-dark"
-                  />
-                  <button
-                    type="button"
-                    onClick={removeScreenshot}
-                    className="absolute top-1 right-1 bg-bear text-white rounded w-6 h-6 text-xs"
+        {/* ── Stepper ──────────────────────────────────────────────── */}
+        <div className="px-6 py-5 border-b border-border-subtle">
+          <div className="flex items-start gap-1.5 sm:gap-3">
+            {effectiveSteps.map((s, i) => {
+              const isActive = i === step;
+              const isDone = i < step;
+              return (
+                <div key={s.id} className="flex items-start gap-2.5 flex-1 min-w-0">
+                  <span
+                    className={`w-9 h-9 rounded-full flex items-center justify-center text-[13px] font-bold shrink-0 transition-all ${
+                      isActive ? 'shadow-card' : ''
+                    }`}
+                    style={
+                      isActive ? { background: '#10B981', color: '#FFFFFF' }
+                      : isDone   ? { background: '#10B98122', color: '#10B981' }
+                      :            { background: '#E5E7EB', color: '#9CA3AF' }
+                    }
                   >
-                    ✕
-                  </button>
-                  <div className="text-xs text-bull mt-1">✓ Screenshot uploaded</div>
+                    {isDone ? (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7" /></svg>
+                    ) : <span className={isActive ? 'keep-white' : ''} style={isActive ? { color: '#FFFFFF' } : undefined}>{i + 1}</span>}
+                  </span>
+                  <div className="hidden md:flex flex-col min-w-0 leading-tight pt-0.5">
+                    <span className={`text-[13px] font-bold truncate ${isActive ? 'text-text-primary' : isDone ? 'text-text-primary' : 'text-text-muted'}`}>{s.label}</span>
+                    <span className="text-[11px] text-text-muted truncate">{s.sub}</span>
+                  </div>
+                  {i < effectiveSteps.length - 1 && (
+                    <span className="flex-1 mx-1 sm:mx-2 mt-4 h-px border-t border-dashed border-border-dark" />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* ── Body (scrollable) ─────────────────────────────────────── */}
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-5">
+
+          {/* Step 1 — Account selector */}
+          {stepId === 'account' && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-lg font-bold text-text-primary">Select an account</h3>
+                <p className="text-xs text-text-muted mt-0.5">Choose which trading account to credit.</p>
+              </div>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {accounts.map((a) => {
+                  const sel = a._id === accountId;
+                  const isR = a.accountType === 'REAL';
+                  const accCcy = a.baseCurrency || 'USD';
+                  // Per-account balance in its native currency.
+                  const w = (typeof balances !== 'undefined' && Array.isArray(balances))
+                    ? balances.find((b) => b.accountId === a._id && b.currency === accCcy)
+                    : null;
+                  const bal = Number(w?.balance || 0);
+                  return (
+                    <button
+                      key={a._id}
+                      type="button"
+                      onClick={() => setAccountId(a._id)}
+                      className={`relative w-full p-5 rounded-2xl border-2 text-left transition-all hover:shadow-card ${sel ? 'shadow-card' : 'hover:-translate-y-0.5'}`}
+                      style={sel
+                        ? { borderColor: '#10B981', background: '#10B98108' }
+                        : { borderColor: '#E5E7EB', background: '#FFFFFF' }
+                      }
+                    >
+                      {/* Top — avatar + check */}
+                      <div className="flex items-start justify-between gap-2">
+                        <span
+                          className="w-11 h-11 rounded-xl flex items-center justify-center text-sm font-extrabold shrink-0"
+                          style={{ background: '#1D4ED810', color: '#1D4ED8' }}
+                        >
+                          {(a.nickname || a.accountNumber || 'A').slice(0, 2).toUpperCase()}
+                        </span>
+                        <span
+                          className="shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all"
+                          style={sel
+                            ? { borderColor: '#10B981', background: '#10B981' }
+                            : { borderColor: '#E5E7EB', background: '#FFFFFF' }
+                          }
+                        >
+                          {sel && (
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round" className="keep-white"><path d="M5 13l4 4L19 7" /></svg>
+                          )}
+                        </span>
+                      </div>
+
+                      {/* Name + badge */}
+                      <div className="mt-3 flex items-center gap-2">
+                        <span className="text-base font-bold text-text-primary truncate">{a.nickname || a.accountNumber}</span>
+                        <span
+                          className="text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded"
+                          style={isR
+                            ? { background: '#10B98118', color: '#10B981' }
+                            : { background: '#1D4ED815', color: '#1D4ED8' }
+                          }
+                        >
+                          {isR ? 'Live · Real' : 'Demo'}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-text-muted font-mono mt-0.5">{a.accountNumber}</div>
+
+                      {/* Balance footer */}
+                      <div className="mt-4 flex items-end justify-between gap-2">
+                        <div>
+                          <div className="text-xl font-bold font-mono tabular-nums text-text-primary">
+                            {currencySymbol(accCcy)}{fmtNum(bal, 2)}
+                          </div>
+                          <div className="text-[11px] text-text-muted mt-0.5">Balance</div>
+                        </div>
+                        <span className="text-[10px] font-bold font-mono px-2 py-1 rounded-md bg-bg-hover text-text-secondary self-end">{accCcy}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Step 2 — Payment method cards */}
+          {stepId === 'method' && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-base font-bold text-text-primary">Choose payment method</h3>
+                <p className="text-xs text-text-muted mt-0.5">Pick how you'd like to fund your account.</p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {METHODS.map((m) => {
+                  const sel = method === m.id;
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => setMethod(m.id)}
+                      className={`relative text-left p-4 rounded-xl border-2 transition-all hover:shadow-card ${sel ? 'border-primary-500 bg-primary-500/[0.05]' : 'border-border-dark hover:border-primary-500/40'}`}
+                    >
+                      <div className="flex items-center gap-3">
+                        {m.icon}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-bold text-text-primary">{m.label}</span>
+                            {m.kind === 'instant' && <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-primary-500/15 text-primary-600">Instant</span>}
+                          </div>
+                          <div className="text-[11px] text-text-muted mt-0.5">{m.sub}</div>
+                          <div className="text-[11px] text-text-secondary mt-1">Min · {currencySymbol(currency)}{m.min}</div>
+                        </div>
+                      </div>
+                      <span className={`absolute top-3 right-3 w-4 h-4 rounded-full border-2 ${sel ? 'border-primary-500 bg-primary-500' : 'border-border-dark'} flex items-center justify-center`}>
+                        {sel && <span className="keep-white w-1.5 h-1.5 rounded-full bg-white" />}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Payment details card (manual methods) */}
+              {isReal && !isRazor && (
+                <div className="rounded-xl border border-border-dark bg-bg-hover p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: '#10B98118', color: '#10B981' }}>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="M9 12l2 2 4-4" /></svg>
+                      </span>
+                      <span className="text-sm font-bold text-text-primary">Pay to these details</span>
+                      <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-bull/15 text-bull">Verified</span>
+                    </div>
+                    <button type="button" title="Show QR" className="p-1.5 rounded-md hover:bg-white text-text-secondary hover:text-text-primary transition-colors">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><path d="M14 14h3v3h-3z" /><path d="M14 20h7M20 14v7" /></svg>
+                    </button>
+                  </div>
+                  <div className="space-y-2 text-xs">
+                    {[
+                      { l: 'UPI ID',      v: 'tradepro@upi' },
+                      { l: 'Bank A/C',    v: 'XXXX-XXXX-1234' },
+                      { l: 'IFSC',        v: 'HDFC0001234' },
+                      { l: 'Beneficiary', v: 'TradePro Pvt Ltd' },
+                    ].map((r) => (
+                      <div key={r.l} className="flex items-center justify-between gap-3">
+                        <span className="text-text-muted">{r.l}</span>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="font-mono font-semibold text-text-primary truncate">{r.v}</span>
+                          <button type="button" onClick={() => copy(r.v, `${r.l} copied`)} className="p-1 rounded text-text-muted hover:text-primary-600 hover:bg-white transition-colors shrink-0">
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
-            </>
-            )}
-          </>
-        )}
+          )}
 
-        <button type="submit" disabled={loading} className="btn-primary w-full">
-          {loading
-            ? 'Submitting...'
-            : isDemo
-              ? '🎮 Add to Demo Account'
-              : method === 'RAZORPAY'
-                ? `⚡ Pay ${fmtMoney(amount || 0, currency)} via Razorpay`
-                : '💸 Submit Deposit Request'}
-        </button>
+          {/* Step 3 — Amount */}
+          {stepId === 'amount' && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-base font-bold text-text-primary">Enter amount</h3>
+                <p className="text-xs text-text-muted mt-0.5">Pick a preset or enter your own.</p>
+              </div>
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+                {PRESETS.map((p) => {
+                  const sel = String(amount) === String(p);
+                  return (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => setAmount(String(p))}
+                      className={`px-3 py-2.5 rounded-xl border-2 text-sm font-bold transition-colors ${sel ? 'border-primary-500 bg-primary-500/[0.05] text-primary-600' : 'border-border-dark text-text-primary hover:border-primary-500/40'}`}
+                    >
+                      {currencySymbol(currency)}{p.toLocaleString()}
+                    </button>
+                  );
+                })}
+                <button type="button" onClick={() => setAmount('')} className={`px-3 py-2.5 rounded-xl border-2 text-sm font-bold transition-colors ${!PRESETS.some(p => String(p) === String(amount)) && amount ? 'border-primary-500 bg-primary-500/[0.05] text-primary-600' : 'border-border-dark text-text-primary hover:border-primary-500/40'}`}>
+                  Custom
+                </button>
+              </div>
 
-        {isReal && method !== 'RAZORPAY' && (
-          <div className="text-xs text-gray-500 text-center">
-            Admin will verify your screenshot within 1-24 hours.
-          </div>
-        )}
-        {isReal && method === 'RAZORPAY' && (
-          <div className="text-xs text-gray-500 text-center">
-            Instant credit. Powered by Razorpay — your card details never touch our servers.
-          </div>
-        )}
-      </form>
-    </Modal>
+              <div>
+                <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Custom amount</label>
+                <div className="relative mt-1.5">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted font-semibold">{currencySymbol(currency)}</span>
+                  <input type="number" step="any" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" className="w-full pl-8 pr-3 py-3 rounded-xl border-2 border-border-dark focus:border-primary-500 focus:outline-none bg-white text-lg font-bold text-text-primary" />
+                  <select value={currency} onChange={(e) => setCurrency(e.target.value)} className="absolute right-2 top-1/2 -translate-y-1/2 bg-bg-hover text-xs font-bold text-text-primary rounded-lg px-2 py-1.5 border border-border-dark focus:outline-none">
+                    {['INR', 'USD', 'USDT', 'BTC'].map((c) => <option key={c}>{c}</option>)}
+                  </select>
+                </div>
+              </div>
+
+              {/* Live summary — primary in the selected currency,
+                  secondary line converts to the *other* major currency
+                  (USD ↔ INR) so the user sees both at a glance. */}
+              {(() => {
+                const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
+                const amt = Number(amount) || 0;
+                const isInr = currency === 'INR';
+                const altCcy = isInr ? 'USD' : 'INR';
+                const altAmt = isInr ? amt / rate : amt * rate;
+                const fmtAlt = (v) => `${currencySymbol(altCcy)}${fmtNum(v, 2)}`;
+                return (
+                  <>
+                    <div className="grid grid-cols-3 gap-3 bg-bg-hover rounded-xl p-4">
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider font-semibold text-text-muted">You Pay</div>
+                        <div className="text-base font-bold font-mono tabular-nums text-text-primary mt-0.5">{currencySymbol(currency)}{fmtNum(amt, 2)}</div>
+                        <div className="text-[10px] font-mono tabular-nums text-text-muted mt-0.5">≈ {fmtAlt(altAmt)}</div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider font-semibold text-text-muted">Fees</div>
+                        <div className="text-base font-bold font-mono tabular-nums text-bull mt-0.5">{currencySymbol(currency)}0.00</div>
+                        <div className="text-[10px] font-mono tabular-nums text-text-muted mt-0.5">≈ {fmtAlt(0)}</div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider font-semibold text-text-muted">You Receive</div>
+                        <div className="text-base font-bold font-mono tabular-nums text-text-primary mt-0.5">{currencySymbol(currency)}{fmtNum(amt, 2)}</div>
+                        <div className="text-[10px] font-mono tabular-nums text-text-muted mt-0.5">≈ {fmtAlt(altAmt)}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between rounded-lg bg-primary-500/5 border border-primary-500/20 px-3 py-2 text-[11px]">
+                      <span className="flex items-center gap-1.5 text-text-secondary">
+                        <span className="w-1.5 h-1.5 rounded-full bg-bull animate-pulse" />
+                        Live FX rate
+                      </span>
+                      <span className="font-mono font-bold text-text-primary">1 USD = ₹{fmtNum(rate, 2)}</span>
+                    </div>
+                  </>
+                );
+              })()}
+
+              {isDemo && (
+                <div className="rounded-xl bg-info/10 border border-info/30 p-3 text-xs text-text-primary">
+                  ✨ Demo accounts are credited instantly. No payment is collected.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Step 4 — Upload proof + sender details */}
+          {stepId === 'proof' && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-base font-bold text-text-primary">Upload payment proof</h3>
+                <p className="text-xs text-text-muted mt-0.5">Drop a screenshot of the confirmation, plus your transaction reference.</p>
+              </div>
+
+              <div
+                onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+                onDragLeave={() => setDrag(false)}
+                onDrop={onDrop}
+                className={`rounded-2xl border-2 border-dashed p-6 text-center transition-all ${drag ? 'border-primary-500 bg-primary-500/[0.05]' : 'border-border-dark hover:border-primary-500/40'}`}
+              >
+                {!screenshotPreview ? (
+                  <>
+                    <input id="screenshot-upload" type="file" accept="image/png,image/jpeg,image/jpg" onChange={handleFileChange} className="hidden" />
+                    <label htmlFor="screenshot-upload" className="cursor-pointer block">
+                      <span className="inline-flex w-14 h-14 rounded-full items-center justify-center mb-3" style={{ background: '#1D4ED818', color: '#1D4ED8' }}>
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="M17 8l-5-5-5 5" /><path d="M12 3v12" /></svg>
+                      </span>
+                      <div className="text-sm font-bold text-text-primary">Drop file here or click to upload</div>
+                      <div className="text-[11px] text-text-muted mt-1">PNG / JPG · Max 500 KB</div>
+                    </label>
+                  </>
+                ) : (
+                  <div className="relative">
+                    <img src={screenshotPreview} alt="Payment screenshot" className="w-full max-h-56 object-contain rounded-xl border border-border-dark bg-white" />
+                    <button type="button" onClick={removeScreenshot} className="absolute top-2 right-2 w-7 h-7 rounded-full bg-bear text-white text-xs font-bold flex items-center justify-center shadow-card">
+                      <span className="keep-white" style={{ color: '#FFFFFF' }}>✕</span>
+                    </button>
+                    <div className="mt-3 inline-flex items-center gap-1.5 text-[11px] font-bold text-primary-600">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7" /></svg>
+                      Screenshot ready
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Transaction reference *</label>
+                  <input value={txReference} onChange={(e) => setTxReference(e.target.value)} placeholder="e.g. 4123456789012" className="w-full mt-1.5 px-3 py-2.5 rounded-xl border-2 border-border-dark focus:border-primary-500 focus:outline-none bg-white text-sm font-mono text-text-primary" />
+                </div>
+                <div>
+                  <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Your name *</label>
+                  <input value={senderName} onChange={(e) => setSenderName(e.target.value)} placeholder="As on bank / UPI" className="w-full mt-1.5 px-3 py-2.5 rounded-xl border-2 border-border-dark focus:border-primary-500 focus:outline-none bg-white text-sm text-text-primary" />
+                </div>
+                {method === 'UPI' && (
+                  <div className="sm:col-span-2">
+                    <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Your UPI ID</label>
+                    <input value={senderUpiId} onChange={(e) => setSenderUpiId(e.target.value)} placeholder="yourname@upi" className="w-full mt-1.5 px-3 py-2.5 rounded-xl border-2 border-border-dark focus:border-primary-500 focus:outline-none bg-white text-sm font-mono text-text-primary" />
+                  </div>
+                )}
+                {method === 'BANK' && (
+                  <div className="sm:col-span-2">
+                    <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Bank A/C last 4 digits</label>
+                    <input value={senderBankAccount} onChange={(e) => setSenderBankAccount(e.target.value)} maxLength={4} placeholder="1234" className="w-full mt-1.5 px-3 py-2.5 rounded-xl border-2 border-border-dark focus:border-primary-500 focus:outline-none bg-white text-sm font-mono text-text-primary" />
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Step 5 — Confirmation */}
+          {stepId === 'confirm' && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-base font-bold text-text-primary">Review &amp; confirm</h3>
+                <p className="text-xs text-text-muted mt-0.5">Double-check the details before submitting.</p>
+              </div>
+              <div className="rounded-2xl border border-border-dark p-5 space-y-3 bg-bg-hover/40">
+                {[
+                  { l: 'Account',  v: `${selectedAccount?.nickname || selectedAccount?.accountNumber} · ${selectedAccount?.accountType}` },
+                  { l: 'Method',   v: selectedMethodMeta.label },
+                  { l: 'Amount',   v: `${currencySymbol(currency)}${fmtNum(Number(amount) || 0, 2)}` },
+                  { l: 'Fees',     v: `${currencySymbol(currency)}0.00` },
+                  { l: 'Receive',  v: `${currencySymbol(currency)}${fmtNum(Number(amount) || 0, 2)}` },
+                  ...(isReal && !isRazor ? [
+                    { l: 'Reference', v: txReference || '—' },
+                    { l: 'Sender',    v: senderName || '—' },
+                  ] : []),
+                ].map((r) => (
+                  <div key={r.l} className="flex items-center justify-between text-sm">
+                    <span className="text-text-muted">{r.l}</span>
+                    <span className="font-semibold text-text-primary text-right truncate ml-3">{r.v}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="rounded-xl bg-bull/10 border border-bull/30 p-3 flex items-start gap-2.5">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16A34A" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
+                <div className="text-[11px] text-text-secondary">
+                  Your payment is protected with bank-grade encryption. {isReal && !isRazor ? 'Admin will verify your screenshot within 1–24 hours.' : isRazor ? 'Instant credit — powered by Razorpay.' : 'Demo funds credit instantly.'}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Sticky bottom action bar — Cancel/Back left, security
+            strip centre, primary action right. */}
+        <div className="border-t border-border-subtle bg-bg-hover/40 px-6 py-4 flex items-center justify-between gap-3 shrink-0">
+          <button
+            type="button"
+            onClick={step === 0 ? onClose : goBack}
+            className="px-5 py-2.5 rounded-xl border border-border-dark bg-white text-text-primary font-semibold text-sm hover:shadow-card transition-all"
+          >
+            {step === 0 ? 'Cancel' : '← Back'}
+          </button>
+          <span className="hidden md:flex items-center gap-2 text-[12px] text-text-secondary">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="11" width="16" height="9" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
+            Your funds are protected with bank-level security
+          </span>
+          {step < effectiveSteps.length - 1 ? (
+            <button
+              type="button"
+              onClick={goNext}
+              disabled={!canNext}
+              className="inline-flex items-center gap-1.5 px-6 py-2.5 rounded-xl font-bold text-sm shadow-card hover:shadow-elevated hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+              style={{ background: '#10B981', color: '#FFFFFF' }}
+            >
+              <span className="keep-white" style={{ color: '#FFFFFF' }}>Continue →</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={finalSubmit}
+              disabled={loading}
+              className="inline-flex items-center gap-1.5 px-6 py-2.5 rounded-xl font-bold text-sm shadow-card hover:shadow-elevated hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+              style={{ background: '#10B981', color: '#FFFFFF' }}
+            >
+              <span className="keep-white" style={{ color: '#FFFFFF' }}>
+                {loading ? 'Submitting…' : isDemo ? 'Add to Demo Account' : isRazor ? `Pay ${currencySymbol(currency)}${fmtNum(Number(amount) || 0, 2)} via Razorpay` : 'Confirm Deposit'}
+              </span>
+            </button>
+          )}
+        </div>
+      </div>
   );
 }
+
+// ─── Method-card glyphs ───────────────────────────────────────────────
+const MIcon = (bg, fg, child) => (
+  <span className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0" style={{ background: bg, color: fg }}>{child}</span>
+);
+const MUPI = () => MIcon('#7C3AED18', '#7C3AED',
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M7 4l10 8-10 8V4z" /></svg>
+);
+const MBank = () => MIcon('#1D4ED818', '#1D4ED8',
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 21h18" /><path d="M5 21V10" /><path d="M9 21V10" /><path d="M15 21V10" /><path d="M19 21V10" /><path d="M2 10l10-7 10 7" /></svg>
+);
+const MCrypto = () => MIcon('#26A17B18', '#26A17B',
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" /><text x="12" y="16" textAnchor="middle" fontSize="10" fontWeight="700" fill="#FFFFFF" fontFamily="Inter">₮</text></svg>
+);
+const MSkrill = () => (
+  <span className="w-11 h-11 rounded-xl flex items-center justify-center text-[10px] font-bold tracking-tight shrink-0" style={{ background: '#86198F18', color: '#86198F' }}>Skrill</span>
+);
+const MNeteller = () => (
+  <span className="w-11 h-11 rounded-xl flex items-center justify-center text-[9px] font-bold tracking-tight shrink-0" style={{ background: '#16A34A18', color: '#16A34A' }}>NETELLER</span>
+);
+const MRazor = () => MIcon('#3B82F618', '#3B82F6',
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M3 21l4-9 6 1.5 5-12 3 2-7 17z" /></svg>
+);
 
 function WithdrawModal({ balances, accounts, onClose, onDone }) {
   const realAccounts = accounts.filter((a) => a.accountType === 'REAL');
@@ -1019,7 +1577,7 @@ function WithdrawModal({ balances, accounts, onClose, onDone }) {
 
         {!isDemo && (
           <>
-            <div className="bg-bg-dark border border-border-dark p-3 rounded text-xs">
+            <div className="bg-bg-card border border-border-dark p-3 rounded text-xs">
               <div className="flex justify-between">
                 <span className="text-gray-500">Available Balance:</span>
                 <span className="font-mono text-bull font-semibold">
@@ -1071,8 +1629,8 @@ function WithdrawModal({ balances, accounts, onClose, onDone }) {
                         method === m
                           ? 'bg-primary-500 text-bg-dark'
                           : disabled
-                            ? 'bg-bg-dark text-gray-600 border border-border-dark opacity-40 cursor-not-allowed'
-                            : 'bg-bg-dark text-gray-400 border border-border-dark hover:border-primary-500'
+                            ? 'bg-bg-card text-gray-600 border border-border-dark opacity-40 cursor-not-allowed'
+                            : 'bg-bg-card text-gray-400 border border-border-dark hover:border-primary-500'
                       }`}
                     >
                       {m === 'UPI' ? 'UPI' : m === 'BANK' ? 'Bank' : 'Crypto'}
@@ -1172,7 +1730,7 @@ function WithdrawModal({ balances, accounts, onClose, onDone }) {
                     required
                   />
                 </div>
-                <div className="bg-yellow-900/20 border border-yellow-700/30 text-yellow-200 text-xs p-2 rounded">
+                <div className="bg-blue-50 border border-blue-200 text-blue-700 text-xs p-2 rounded">
                   ⚠️ Crypto address must be whitelisted (Profile → Whitelist) with 24h cooldown. This is a security check to prevent unauthorized withdrawals.
                 </div>
               </>
@@ -1191,5 +1749,1285 @@ function WithdrawModal({ balances, accounts, onClose, onDone }) {
         )}
       </form>
     </Modal>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Wallet sidebar sub-views — every nav item gets a fully-built workflow.
+// ═══════════════════════════════════════════════════════════════════════
+
+function AccountOverviewView({ totals, usd, usdSub, usdSubSigned, realBalances, accounts, recentTx, positions, setView }) {
+  const winRate = useMemo(() => {
+    if (!positions || !positions.length) return null;
+    const winners = positions.filter((p) => Number(p.unrealizedPnl || 0) >= 0).length;
+    return Math.round((winners / positions.length) * 100);
+  }, [positions]);
+  const openCount = positions?.length || 0;
+
+  return (
+    <>
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-bold text-text-primary">Account Overview</h1>
+          <p className="text-sm text-text-secondary mt-1">Complete wallet summary across every real trading account.</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setView('grow')}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-sm shadow-card hover:shadow-elevated transition-all"
+          style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)', color: '#FFFFFF' }}
+        >
+          <span className="keep-white" style={{ color: '#FFFFFF' }}>+ Deposit</span>
+        </button>
+      </div>
+
+      {/* Equity hero strip */}
+      <div className="bg-white border border-border-dark rounded-2xl p-5 sm:p-6 overflow-hidden relative">
+        <div className="absolute inset-0 pointer-events-none opacity-50" style={{ background: 'radial-gradient(circle at 100% 0%, rgba(29, 78, 216, 0.08), transparent 55%)' }} />
+        <div className="relative grid grid-cols-2 md:grid-cols-4 gap-5">
+          <Stat label="Equity"      value={usd(totals.equity)} secondary={usdSub(totals.equity)} hint="Balance + Unrealised" emphasis />
+          <Stat label="Free Margin" value={usd(totals.free)}   secondary={usdSub(totals.free)}   hint="Available to trade" />
+          <Stat
+            label="Margin Level"
+            value={totals.marginLevel != null ? `${fmtNum(totals.marginLevel, 2)}%` : '—'}
+            hint="Equity / Used Margin"
+            color={totals.marginLevel != null && totals.marginLevel < 100 ? '#DC2626' : undefined}
+          />
+          <Stat
+            label="Today's P&L"
+            value={`${totals.unrealized >= 0 ? '+' : ''}${usd(totals.unrealized)}`}
+            secondary={usdSubSigned(totals.unrealized)}
+            hint="Unrealised across positions"
+            color={totals.unrealized >= 0 ? '#16A34A' : '#DC2626'}
+          />
+        </div>
+      </div>
+
+      {/* 6-card metric grid */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+        <MetricCard tint="#1D4ED8" icon={WalletGlyph} label="Total Balance"   value={usd(totals.balance)} secondary={usdSub(totals.balance)} sub="All real accounts" />
+        <MetricCard tint="#0EA5E9" icon={ChartGlyph}  label="Trading Balance" value={usd(totals.equity)}  secondary={usdSub(totals.equity)}  sub="Includes open P&L" />
+        <MetricCard tint="#16A34A" icon={CheckGlyph}  label="Available Funds" value={usd(totals.free)}    secondary={usdSub(totals.free)}    sub="Ready to deploy" />
+        <MetricCard tint="#F59E0B" icon={LockGlyph}   label="Locked Margin"   value={usd(totals.locked)}  secondary={usdSub(totals.locked)}  sub="Used by open trades" />
+        <MetricCard tint="#8B5CF6" icon={GiftGlyph}   label="Bonus Balance"   value={usd(0)}              secondary={usdSub(0)}              sub="Promotions & rewards" />
+        <MetricCard tint={totals.unrealized >= 0 ? '#16A34A' : '#DC2626'} icon={TrendGlyph} label="Recent P&L"
+          value={`${totals.unrealized >= 0 ? '+' : ''}${usd(totals.unrealized)}`}
+          secondary={usdSubSigned(totals.unrealized)}
+          sub="Live across positions"
+          valueColor={totals.unrealized >= 0 ? '#16A34A' : '#DC2626'}
+        />
+      </div>
+
+      {/* Trading performance + per-account balances */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-white border border-border-dark rounded-2xl p-5">
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-sm font-bold text-text-primary">Trading Performance</span>
+            <button onClick={() => setView('history')} className="text-xs font-semibold text-primary-600 hover:text-primary-700">View ledger →</button>
+          </div>
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <div className="text-[10px] uppercase tracking-wider font-semibold text-text-muted">Open Positions</div>
+              <div className="text-2xl font-bold text-text-primary mt-1">{openCount}</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wider font-semibold text-text-muted">Win Rate</div>
+              <div className="text-2xl font-bold mt-1" style={{ color: winRate != null && winRate >= 50 ? '#16A34A' : '#DC2626' }}>
+                {winRate != null ? `${winRate}%` : '—'}
+              </div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wider font-semibold text-text-muted">Margin Used</div>
+              <div className="text-2xl font-bold text-text-primary mt-1 font-mono tabular-nums">{usd(totals.locked)}</div>
+              <div className="text-[11px] font-mono text-text-muted mt-0.5">{usdSub(totals.locked)}</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-white border border-border-dark rounded-2xl p-5">
+          <div className="text-sm font-bold text-text-primary mb-3">Accounts</div>
+          {realBalances.length === 0 ? (
+            <div className="text-xs text-text-muted">No real accounts funded yet.</div>
+          ) : (
+            <ul className="space-y-2.5">
+              {realBalances.slice(0, 5).map((b) => {
+                const acc = accounts.find((a) => a._id === b.accountId);
+                const cur = b.currency || 'USD';
+                return (
+                  <li key={b._id} className="flex items-center justify-between text-sm">
+                    <span className="text-text-primary font-semibold truncate">{acc?.nickname || acc?.accountNumber || '—'}</span>
+                    <span className="font-mono tabular-nums font-bold text-text-primary">{fmtMoney(b.balance, cur)}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
+
+      {/* Recent activity feed */}
+      <div className="bg-white border border-border-dark rounded-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border-subtle">
+          <span className="text-sm font-bold text-text-primary">Recent Activity</span>
+          <button onClick={() => setView('history')} className="text-xs font-semibold text-primary-600 hover:text-primary-700">View all →</button>
+        </div>
+        {recentTx.length === 0 ? (
+          <div className="py-8 text-center text-sm text-text-muted">No activity yet.</div>
+        ) : (
+          <ul className="divide-y divide-border-subtle">
+            {recentTx.slice(0, 5).map((t) => {
+              const isDeposit = t._kind === 'deposit';
+              const amt = Number(t.amount || 0);
+              return (
+                <li key={t._id || t.id} className="flex items-center gap-3 px-5 py-3 hover:bg-bg-hover transition-colors">
+                  <span className={`w-8 h-8 rounded-lg flex items-center justify-center ${isDeposit ? 'bg-bull/15 text-bull' : 'bg-bear/15 text-bear'}`}>
+                    {isDeposit ? <DepositGlyph /> : <WithdrawGlyph />}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold text-text-primary">{isDeposit ? 'Deposit' : 'Withdraw'}</div>
+                    <div className="text-[11px] text-text-muted">{fmtDate(t.createdAt)}</div>
+                  </div>
+                  <div className={`font-mono tabular-nums font-bold text-sm ${isDeposit ? 'text-bull' : 'text-bear'}`}>
+                    {isDeposit ? '+' : '-'}{currencySymbol(t.currency || 'INR')}{fmtNum(amt, 2)}
+                  </div>
+                  <StatusBadge status={t.status} />
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </>
+  );
+}
+
+function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCancel }) {
+  const realAccounts = accounts.filter((a) => a.accountType === 'REAL');
+  const [step, setStep] = useState(0);
+  const [accountId, setAccountId] = useState(realAccounts[0]?._id || accounts[0]?._id || '');
+  // INR-first input: the user enters an INR amount; on submit the
+  // amount is converted into USD via the live `fxRate` and the
+  // request is sent to the backend in USD (which is the canonical
+  // base currency for the trading wallet).
+  const [currency, setCurrency] = useState('INR');
+  const [method, setMethod] = useState('UPI');
+  const [amount, setAmount] = useState('');
+  // Currency-converter widget state — exposes the non-INR wallets the
+  // user is holding so they can flip those funds into INR (or any
+  // other supported currency) before withdrawing through Indian rails.
+  const [converterOpen, setConverterOpen] = useState(false);
+  const [convertFromCcy, setConvertFromCcy] = useState('USD');
+  const [convertAmount, setConvertAmount] = useState('');
+  const [converting, setConverting] = useState(false);
+
+  // UPI / Bank / Crypto destination fields — kept in shape with the
+  // existing /wallet/withdrawals payload contract.
+  const [upiId, setUpiId] = useState('');
+  const [bankAccountNumber, setBankAccountNumber] = useState('');
+  const [bankIFSC, setBankIFSC] = useState('');
+  const [bankAccountHolderName, setBankAccountHolderName] = useState('');
+  const [bankName, setBankName] = useState('');
+  const [cryptoAddress, setCryptoAddress] = useState('');
+  const [cryptoNetwork, setCryptoNetwork] = useState('USDT-TRC20');
+
+  const [loading, setLoading] = useState(false);
+
+  const selectedAccount = accounts.find((a) => a._id === accountId);
+  const isDemo = selectedAccount?.accountType === 'DEMO';
+  const sym = currencySymbol(currency);
+
+  // UPI / Bank are domestic INR rails — disable when the user is
+  // withdrawing in a non-INR currency.
+  useEffect(() => {
+    if (currency !== 'INR' && (method === 'UPI' || method === 'BANK')) setMethod('CRYPTO');
+  }, [currency, method]);
+
+  // Available balance — the platform stores wallets in USD as the base
+  // currency. When the user enters in INR we display the available
+  // figure by converting every USD wallet on the selected account
+  // into INR via the live `fxRate`. The submit handler converts the
+  // user's INR input back into USD before hitting the backend.
+  const availableBalance = (() => {
+    if (!accountId) return 0;
+    const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
+    const wallets = (balances || []).filter((b) => b.accountId === accountId);
+    let total = 0;
+    for (const w of wallets) {
+      const free = Math.max(0, Number(w.free || 0));
+      if (!free) continue;
+      if (w.currency === currency) total += free;
+      else if (w.currency === 'USD' && currency === 'INR') total += free * rate;
+      else if (w.currency === 'INR' && currency === 'USD') total += free / rate;
+      else total += free;
+    }
+    return total;
+  })();
+  // Other-currency hint — surfaced beside the hero so the user knows
+  // they have funds elsewhere even if the current currency reads 0.
+  const otherCurrencyHint = (() => {
+    if (!accountId) return null;
+    const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
+    const wallets = (balances || []).filter((b) => b.accountId === accountId && b.currency !== currency && Number(b.free || 0) > 0);
+    if (!wallets.length) return null;
+    const total = wallets.reduce((s, w) => {
+      const free = Number(w.free || 0);
+      if (w.currency === 'USD' && currency === 'INR') return s + free * rate;
+      if (w.currency === 'INR' && currency === 'USD') return s + free / rate;
+      return s + free;
+    }, 0);
+    return { wallets, totalInTargetCcy: total };
+  })();
+  const isOverBudget = Number(amount) > availableBalance;
+
+  const METHODS = [
+    // Withdrawals are user-entered in INR; the backend receives the
+    // converted USD figure (USD is the canonical wallet currency).
+    { id: 'UPI',    label: 'UPI',           sub: 'Instant · Free',          min: 500,  icon: <MUPI />,    inrOnly: false },
+    { id: 'BANK',   label: 'Bank Transfer', sub: 'NEFT / IMPS · 1-24 hrs',  min: 500,  icon: <MBank />,   inrOnly: false },
+    { id: 'CRYPTO', label: 'Crypto Wallet', sub: 'USDT / BTC / ETH · ~5min', min: 1000, icon: <MCrypto />, inrOnly: false },
+  ];
+  const STEPS = [
+    { id: 'account',     label: 'Account' },
+    { id: 'method',      label: 'Method' },
+    { id: 'amount',      label: 'Amount' },
+    { id: 'destination', label: 'Destination' },
+    { id: 'confirm',     label: 'Confirmation' },
+  ];
+  const stepId = STEPS[step]?.id;
+
+  const selectedMethodMeta = METHODS.find((m) => m.id === method) || METHODS[0];
+  const canNext = (() => {
+    if (step === 0) return !!accountId && !isDemo;
+    if (step === 1) return !!method;
+    if (step === 2) return amount && Number(amount) >= (selectedMethodMeta.min || 1) && !isOverBudget;
+    if (step === 3) {
+      if (method === 'UPI')    return upiId && upiId.includes('@');
+      if (method === 'BANK')   return bankAccountNumber.length >= 5 && bankIFSC.length === 11 && !!bankAccountHolderName.trim();
+      if (method === 'CRYPTO') return cryptoAddress.length >= 20;
+    }
+    return true;
+  })();
+
+  const goNext = () => setStep((s) => Math.min(s + 1, STEPS.length - 1));
+  const goBack = () => setStep((s) => Math.max(s - 1, 0));
+
+  const submit = async () => {
+    if (isDemo) { toast.error('Withdrawals not allowed from demo accounts'); return; }
+    if (!amount || Number(amount) <= 0) { toast.error('Enter a valid amount'); return; }
+    if (Number(amount) > availableBalance) {
+      toast.error(`Insufficient balance. Available: ${sym}${availableBalance.toLocaleString('en-IN')}`);
+      return;
+    }
+    setLoading(true);
+    try {
+      // Send the withdrawal as the user typed it (INR for Indian
+      // rails, USD for crypto). Matches the destination format the
+      // admin actually pays out, and matches what the user expects
+      // to see on their UPI / bank statement. The wallet's source
+      // wallet (if it's a different currency) is selected by the
+      // user via the "Also held in" chip on the Amount step.
+      const payload = {
+        accountId,
+        currency,
+        amount,
+        method,
+      };
+      if (method === 'UPI') payload.upiId = upiId.trim();
+      if (method === 'BANK') {
+        payload.bankAccountNumber = bankAccountNumber.trim();
+        payload.bankIFSC = bankIFSC.trim().toUpperCase();
+        payload.bankAccountHolderName = bankAccountHolderName.trim();
+        payload.bankName = bankName.trim();
+      }
+      if (method === 'CRYPTO') {
+        payload.cryptoAddress = cryptoAddress.trim();
+        payload.cryptoNetwork = cryptoNetwork;
+      }
+      await api.post('/wallet/withdrawals', payload);
+      toast.success('Withdrawal request submitted — admin will process within 24 hours');
+      onDone && onDone();
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <>
+      {/* Title */}
+      <div>
+        <h1 className="text-2xl sm:text-3xl font-bold text-text-primary">Withdraw Funds</h1>
+        <p className="text-sm text-text-secondary mt-1">Request a withdrawal to your registered bank or wallet.</p>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-border-dark shadow-card overflow-hidden flex flex-col">
+        {/* Stepper */}
+        <div className="px-6 py-4 border-b border-border-subtle bg-bg-hover/40">
+          <div className="flex items-center gap-1.5 sm:gap-3">
+            {STEPS.map((s, i) => {
+              const isActive = i === step;
+              const isDone = i < step;
+              return (
+                <div key={s.id} className="flex items-center gap-2 flex-1 min-w-0">
+                  <span
+                    className={`w-7 h-7 rounded-full flex items-center justify-center text-[12px] font-bold shrink-0 transition-all ${isActive ? 'scale-110' : ''}`}
+                    style={
+                      isActive ? { background: '#1D4ED8', color: '#FFFFFF' }
+                      : isDone   ? { background: '#1D4ED822', color: '#1D4ED8' }
+                      :            { background: '#E5E7EB', color: '#9CA3AF' }
+                    }
+                  >
+                    {isDone ? (
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7" /></svg>
+                    ) : <span className={isActive ? 'keep-white' : ''} style={isActive ? { color: '#FFFFFF' } : undefined}>{i + 1}</span>}
+                  </span>
+                  <span className={`hidden md:inline text-[12px] font-semibold truncate ${isActive ? 'text-text-primary' : isDone ? 'text-primary-600' : 'text-text-muted'}`}>{s.label}</span>
+                  {i < STEPS.length - 1 && (
+                    <span className="flex-1 mx-1 sm:mx-2 h-px border-t border-dashed border-border-dark" />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="px-6 py-5">
+
+          {/* Step 1 — Account */}
+          {stepId === 'account' && (
+            <div className="space-y-3">
+              <div>
+                <h3 className="text-base font-bold text-text-primary">Withdraw from</h3>
+                <p className="text-xs text-text-muted mt-0.5">Pick a real account to withdraw funds from.</p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {accounts.map((a) => {
+                  const sel = a._id === accountId;
+                  const isR = a.accountType === 'REAL';
+                  const tint = isR ? '#1D4ED8' : '#3B82F6';
+                  const inrWallet = balances.find((b) => b.accountId === a._id && b.currency === 'INR');
+                  const usdWallet = balances.find((b) => b.accountId === a._id && b.currency === 'USD');
+                  const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
+                  const accFree = (Number(inrWallet?.free) || 0) + (Number(usdWallet?.free) || 0) * rate;
+                  return (
+                    <button
+                      key={a._id}
+                      type="button"
+                      onClick={() => setAccountId(a._id)}
+                      disabled={!isR}
+                      className={`group relative w-full p-4 rounded-2xl border-2 text-left transition-all hover:shadow-elevated hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:shadow-none overflow-hidden ${sel ? 'border-primary-500 bg-primary-500/[0.04] shadow-card' : 'border-border-dark hover:border-primary-500/40 bg-white'}`}
+                    >
+                      {/* Soft accent glow on the top-right corner */}
+                      <span className="pointer-events-none absolute -top-8 -right-8 w-24 h-24 rounded-full opacity-50 transition-opacity group-hover:opacity-80" style={{ background: `radial-gradient(circle, ${tint}22, transparent 70%)` }} />
+
+                      {/* Top row — avatar + selection radio */}
+                      <div className="relative flex items-start justify-between gap-2">
+                        <span
+                          className="w-11 h-11 rounded-xl flex items-center justify-center text-sm font-extrabold shrink-0 shadow-sm"
+                          style={{ background: `linear-gradient(135deg, ${tint}22 0%, ${tint}11 100%)`, color: tint }}
+                        >
+                          {(a.nickname || a.accountNumber || 'A').slice(0, 2).toUpperCase()}
+                        </span>
+                        <span className={`shrink-0 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${sel ? 'border-primary-500 bg-primary-500' : 'border-border-dark bg-white'}`}>
+                          {sel && (
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round" className="keep-white"><path d="M5 13l4 4L19 7" /></svg>
+                          )}
+                        </span>
+                      </div>
+
+                      {/* Name + badge */}
+                      <div className="relative mt-3 flex items-center gap-2">
+                        <span className="text-sm font-bold text-text-primary truncate">{a.nickname || a.accountNumber}</span>
+                        <span className={`text-[9px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded ${isR ? 'bg-bull/15 text-bull' : 'bg-info/15 text-info'}`}>
+                          {isR ? 'Live · Real' : 'Demo'}
+                        </span>
+                      </div>
+
+                      {/* Footer row — account number + Free balance */}
+                      <div className="relative mt-1.5 flex items-center justify-between gap-2">
+                        <span className="text-[11px] text-text-muted font-mono truncate">{a.accountNumber}</span>
+                        <span className="text-[11px] font-bold font-mono tabular-nums text-bull">{fmtMoney(accFree, 'INR')}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              {isDemo && (
+                <div className="rounded-xl bg-bear/10 border border-bear/30 p-3 text-xs text-bear font-semibold">
+                  Withdrawals are not allowed from demo accounts.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Step 2 — Method */}
+          {stepId === 'method' && (
+            <div className="space-y-3">
+              <div>
+                <h3 className="text-base font-bold text-text-primary">Choose withdrawal method</h3>
+                <p className="text-xs text-text-muted mt-0.5">Where should we send the funds?</p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {METHODS.map((m) => {
+                  const sel = method === m.id;
+                  const disabled = m.inrOnly && currency !== 'INR';
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      disabled={disabled}
+                      title={disabled ? `${m.label} is only available for INR` : undefined}
+                      onClick={() => setMethod(m.id)}
+                      className={`relative text-left p-4 rounded-xl border-2 transition-all hover:shadow-card disabled:opacity-40 disabled:cursor-not-allowed ${sel ? 'border-primary-500 bg-primary-500/[0.05]' : 'border-border-dark hover:border-primary-500/40'}`}
+                    >
+                      <div className="flex items-center gap-3">
+                        {m.icon}
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-bold text-text-primary">{m.label}</div>
+                          <div className="text-[11px] text-text-muted mt-0.5">{m.sub}</div>
+                          <div className="text-[11px] text-text-secondary mt-1">Min · {sym}{m.min}</div>
+                        </div>
+                      </div>
+                      <span className={`absolute top-3 right-3 w-4 h-4 rounded-full border-2 ${sel ? 'border-primary-500 bg-primary-500' : 'border-border-dark'} flex items-center justify-center`}>
+                        {sel && <span className="keep-white w-1.5 h-1.5 rounded-full bg-white" />}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Step 3 — Amount */}
+          {stepId === 'amount' && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-base font-bold text-text-primary">How much would you like to withdraw?</h3>
+                <p className="text-xs text-text-muted mt-0.5">Pick a preset or enter your own.</p>
+              </div>
+
+              {/* Available balance hero */}
+              <div className="rounded-xl bg-bull/5 border border-bull/30 p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted">Available to Withdraw</div>
+                    <div className="text-2xl font-bold text-bull font-mono tabular-nums mt-1">{fmtMoney(availableBalance, currency)}</div>
+                  </div>
+                  <button type="button" onClick={() => setAmount(String(availableBalance))} disabled={availableBalance <= 0} className="text-xs font-bold text-bull bg-bull/15 px-3 py-1.5 rounded-lg hover:bg-bull/25 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                    Use MAX
+                  </button>
+                </div>
+                {otherCurrencyHint && otherCurrencyHint.wallets.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-bull/20 text-[11px] text-text-secondary flex items-center gap-2 flex-wrap">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#3B82F6" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M12 8v4" /><path d="M12 16h.01" /></svg>
+                    <span>Also held in:</span>
+                    {otherCurrencyHint.wallets.map((w) => (
+                      <button
+                        key={w.currency}
+                        type="button"
+                        onClick={() => setCurrency(w.currency)}
+                        className="px-2 py-0.5 rounded-md bg-white border border-border-dark text-text-primary font-mono font-semibold hover:border-primary-500 transition-colors"
+                      >
+                        {fmtMoney(Number(w.free || 0), w.currency)}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const first = otherCurrencyHint.wallets[0];
+                        setConvertFromCcy(first.currency);
+                        setConvertAmount(String(Number(first.free || 0)));
+                        setConverterOpen((v) => !v);
+                      }}
+                      className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-bold text-primary-600 bg-primary-500/10 border border-primary-500/30 hover:bg-primary-500/15 transition-colors"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M16 3l4 4-4 4" /><path d="M4 7h16" /><path d="M8 21l-4-4 4-4" /><path d="M20 17H4" /></svg>
+                      Convert to {currency}
+                    </button>
+                  </div>
+                )}
+                {converterOpen && otherCurrencyHint && (() => {
+                  const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
+                  const srcFree = (balances || []).find((b) => b.accountId === accountId && b.currency === convertFromCcy)?.free || 0;
+                  const amt = Math.max(0, Number(convertAmount) || 0);
+                  const isOver = amt > Number(srcFree);
+                  // FX math: convert any source currency into the
+                  // currently-selected target (INR by default). We use
+                  // the same fxRate the rest of the wallet uses so the
+                  // figures are coherent across the page.
+                  let converted = 0;
+                  if (convertFromCcy === 'USD' && currency === 'INR') converted = amt * rate;
+                  else if (convertFromCcy === 'INR' && currency === 'USD') converted = amt / rate;
+                  else if (convertFromCcy === currency) converted = amt;
+                  else converted = amt; // fallback — same magnitude
+                  const submitConvert = async () => {
+                    if (!amt || isOver) return;
+                    setConverting(true);
+                    try {
+                      // Best-effort backend call. If the platform
+                      // exposes a conversion endpoint, this lands
+                      // funds in the target wallet instantly.
+                      // Otherwise the error bubbles back through
+                      // errorMessage() so the user sees a clear toast.
+                      await api.post('/wallet/convert', {
+                        accountId,
+                        fromCurrency: convertFromCcy,
+                        toCurrency: currency,
+                        amount: amt,
+                      });
+                      toast.success(`Converted ${currencySymbol(convertFromCcy)}${fmtNum(amt, 2)} to ${currencySymbol(currency)}${fmtNum(converted, 2)}`);
+                      setConverterOpen(false);
+                      setConvertAmount('');
+                      onDone && onDone();
+                    } catch (err) {
+                      toast.error(errorMessage(err) || 'Currency conversion is not available — please contact support.');
+                    } finally {
+                      setConverting(false);
+                    }
+                  };
+                  return (
+                    <div className="mt-3 rounded-xl bg-white border border-primary-500/30 p-3 space-y-2.5">
+                      <div className="text-xs font-bold text-text-primary">Convert to {currency}</div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[10px] uppercase tracking-wider font-bold text-text-muted">From</label>
+                          <select value={convertFromCcy} onChange={(e) => setConvertFromCcy(e.target.value)} className="w-full mt-1 px-2.5 py-2 rounded-lg border border-border-dark bg-white text-xs font-semibold text-text-primary focus:border-primary-500 focus:outline-none">
+                            {otherCurrencyHint.wallets.map((w) => (
+                              <option key={w.currency} value={w.currency}>{w.currency} (Free: {currencySymbol(w.currency)}{fmtNum(Number(w.free || 0), 2)})</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-[10px] uppercase tracking-wider font-bold text-text-muted">Amount</label>
+                          <div className="relative mt-1">
+                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted font-semibold text-xs">{currencySymbol(convertFromCcy)}</span>
+                            <input type="number" step="any" value={convertAmount} onChange={(e) => setConvertAmount(e.target.value)} placeholder="0.00" className={`w-full pl-6 pr-2 py-2 rounded-lg border bg-white text-xs font-bold text-text-primary focus:outline-none ${isOver ? 'border-bear' : 'border-border-dark focus:border-primary-500'}`} />
+                          </div>
+                          {isOver && <div className="mt-1 text-[10px] text-bear font-semibold">Exceeds available balance</div>}
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between gap-3 rounded-lg bg-bg-hover px-3 py-2 text-[11px]">
+                        <div>
+                          <span className="text-text-muted">You give</span>
+                          <span className="ml-1.5 font-mono font-bold text-text-primary">{currencySymbol(convertFromCcy)}{fmtNum(amt, 2)}</span>
+                        </div>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-text-muted"><path d="M5 12h14" /><path d="M13 6l6 6-6 6" /></svg>
+                        <div>
+                          <span className="text-text-muted">You get</span>
+                          <span className="ml-1.5 font-mono font-bold text-bull">{currencySymbol(currency)}{fmtNum(converted, 2)}</span>
+                        </div>
+                      </div>
+                      <div className="text-[10px] text-text-muted font-mono">Rate · 1 USD = ₹{fmtNum(rate, 2)} (live)</div>
+                      <div className="flex items-center gap-2">
+                        <button type="button" onClick={() => setConverterOpen(false)} className="flex-1 py-1.5 rounded-lg text-xs font-semibold border border-border-dark text-text-primary hover:bg-bg-hover transition-colors">Cancel</button>
+                        <button
+                          type="button"
+                          onClick={submitConvert}
+                          disabled={!amt || isOver || converting}
+                          className="flex-1 py-1.5 rounded-lg text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+                          style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)', color: '#FFFFFF' }}
+                        >
+                          <span className="keep-white" style={{ color: '#FFFFFF' }}>{converting ? 'Converting…' : 'Confirm Conversion'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Percent presets */}
+              <div className="grid grid-cols-4 gap-2">
+                {[25, 50, 75, 100].map((pct) => {
+                  const v = ((availableBalance * pct) / 100);
+                  const sel = amount && Math.abs(Number(amount) - v) < 0.01;
+                  return (
+                    <button
+                      key={pct}
+                      type="button"
+                      onClick={() => setAmount(v.toFixed(2))}
+                      className={`px-3 py-2.5 rounded-xl border-2 text-sm font-bold transition-colors ${sel ? 'border-primary-500 bg-primary-500/[0.05] text-primary-600' : 'border-border-dark text-text-primary hover:border-primary-500/40'}`}
+                    >
+                      {pct === 100 ? 'MAX' : `${pct}%`}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div>
+                <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Custom amount</label>
+                <div className="relative mt-1.5">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted font-semibold">{sym}</span>
+                  <input
+                    type="number"
+                    step="any"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    placeholder="0.00"
+                    className={`w-full pl-8 pr-3 py-3 rounded-xl border-2 bg-white text-lg font-bold text-text-primary focus:outline-none ${isOverBudget ? 'border-bear' : 'border-border-dark focus:border-primary-500'}`}
+                  />
+                  <select value={currency} onChange={(e) => setCurrency(e.target.value)} className="absolute right-2 top-1/2 -translate-y-1/2 bg-bg-hover text-xs font-bold text-text-primary rounded-lg px-2 py-1.5 border border-border-dark focus:outline-none">
+                    {['INR', 'USD', 'USDT'].map((c) => <option key={c}>{c}</option>)}
+                  </select>
+                </div>
+                {isOverBudget && (
+                  <div className="mt-1.5 text-[11px] text-bear font-semibold">Exceeds your available balance</div>
+                )}
+              </div>
+
+              {/* Live summary — dual-currency. Primary line in the
+                  selected currency, sub-line in the converted INR↔USD
+                  equivalent so the user sees both at a glance. */}
+              {(() => {
+                const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
+                const amt = Number(amount) || 0;
+                const isInr = currency === 'INR';
+                const altCcy = isInr ? 'USD' : 'INR';
+                const altAmt = isInr ? amt / rate : amt * rate;
+                const fmtAlt = (v) => `${currencySymbol(altCcy)}${fmtNum(v, 2)}`;
+                return (
+                  <>
+                    <div className="grid grid-cols-3 gap-3 bg-bg-hover rounded-xl p-4">
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider font-semibold text-text-muted">You Withdraw</div>
+                        <div className="text-base font-bold font-mono tabular-nums text-text-primary mt-0.5">{sym}{fmtNum(amt, 2)}</div>
+                        <div className="text-[10px] font-mono tabular-nums text-text-muted mt-0.5">≈ {fmtAlt(altAmt)}</div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider font-semibold text-text-muted">Fees</div>
+                        <div className="text-base font-bold font-mono tabular-nums text-bull mt-0.5">{sym}0.00</div>
+                        <div className="text-[10px] font-mono tabular-nums text-text-muted mt-0.5">≈ {fmtAlt(0)}</div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider font-semibold text-text-muted">You Receive</div>
+                        <div className="text-base font-bold font-mono tabular-nums text-text-primary mt-0.5">{sym}{fmtNum(amt, 2)}</div>
+                        <div className="text-[10px] font-mono tabular-nums text-text-muted mt-0.5">≈ {fmtAlt(altAmt)}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between rounded-lg bg-primary-500/5 border border-primary-500/20 px-3 py-2 text-[11px]">
+                      <span className="flex items-center gap-1.5 text-text-secondary">
+                        <span className="w-1.5 h-1.5 rounded-full bg-bull animate-pulse" />
+                        Live FX rate
+                      </span>
+                      <span className="font-mono font-bold text-text-primary">1 USD = ₹{fmtNum(rate, 2)}</span>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          )}
+
+          {/* Step 4 — Destination details */}
+          {stepId === 'destination' && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-base font-bold text-text-primary">Destination details</h3>
+                <p className="text-xs text-text-muted mt-0.5">Where should the funds land?</p>
+              </div>
+
+              {method === 'UPI' && (
+                <div>
+                  <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Your UPI ID *</label>
+                  <input value={upiId} onChange={(e) => setUpiId(e.target.value)} placeholder="e.g. yourname@upi or 9876543210@paytm" className="w-full mt-1.5 px-3 py-2.5 rounded-xl border-2 border-border-dark focus:border-primary-500 focus:outline-none bg-white text-sm font-mono text-text-primary" />
+                  <div className="text-[11px] text-text-muted mt-1">Money will be sent to this UPI ID</div>
+                </div>
+              )}
+
+              {method === 'BANK' && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="sm:col-span-2">
+                    <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Account holder name *</label>
+                    <input value={bankAccountHolderName} onChange={(e) => setBankAccountHolderName(e.target.value)} placeholder="Full name as on bank account" className="w-full mt-1.5 px-3 py-2.5 rounded-xl border-2 border-border-dark focus:border-primary-500 focus:outline-none bg-white text-sm text-text-primary" />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Account number *</label>
+                    <input value={bankAccountNumber} onChange={(e) => setBankAccountNumber(e.target.value.replace(/\s/g, ''))} placeholder="e.g. 50100123456789" className="w-full mt-1.5 px-3 py-2.5 rounded-xl border-2 border-border-dark focus:border-primary-500 focus:outline-none bg-white text-sm font-mono text-text-primary" />
+                  </div>
+                  <div>
+                    <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">IFSC *</label>
+                    <input value={bankIFSC} onChange={(e) => setBankIFSC(e.target.value.toUpperCase())} maxLength={11} placeholder="HDFC0001234" className="w-full mt-1.5 px-3 py-2.5 rounded-xl border-2 border-border-dark focus:border-primary-500 focus:outline-none bg-white text-sm font-mono uppercase text-text-primary" />
+                  </div>
+                  <div>
+                    <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Bank name</label>
+                    <input value={bankName} onChange={(e) => setBankName(e.target.value)} placeholder="e.g. HDFC Bank" className="w-full mt-1.5 px-3 py-2.5 rounded-xl border-2 border-border-dark focus:border-primary-500 focus:outline-none bg-white text-sm text-text-primary" />
+                  </div>
+                </div>
+              )}
+
+              {method === 'CRYPTO' && (
+                <>
+                  <div>
+                    <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Network *</label>
+                    <select value={cryptoNetwork} onChange={(e) => setCryptoNetwork(e.target.value)} className="w-full mt-1.5 px-3 py-2.5 rounded-xl border-2 border-border-dark focus:border-primary-500 focus:outline-none bg-white text-sm font-semibold text-text-primary">
+                      {['USDT-TRC20', 'USDT-ERC20', 'USDT-BEP20', 'BTC', 'ETH'].map((n) => <option key={n}>{n}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Wallet address *</label>
+                    <input value={cryptoAddress} onChange={(e) => setCryptoAddress(e.target.value.trim())} placeholder="0x... or T..." className="w-full mt-1.5 px-3 py-2.5 rounded-xl border-2 border-border-dark focus:border-primary-500 focus:outline-none bg-white text-sm font-mono text-xs text-text-primary" />
+                  </div>
+                  <div className="rounded-xl bg-info/10 border border-info/30 p-3 text-[11px] text-text-secondary">
+                    <span className="font-bold text-text-primary">Heads up.</span> Crypto addresses may need to be whitelisted from your Profile (24 h cooldown) before they're accepted.
+                  </div>
+                </>
+              )}
+
+              <div className="rounded-xl bg-bull/10 border border-bull/30 p-3 flex items-start gap-2.5">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16A34A" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
+                <div className="text-[11px] text-text-secondary">
+                  <span className="font-bold text-text-primary">Security check.</span> Withdrawals are processed manually within 1-24 hours. Funds are locked from your balance immediately upon submission.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Step 5 — Confirmation */}
+          {stepId === 'confirm' && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-base font-bold text-text-primary">Review &amp; confirm</h3>
+                <p className="text-xs text-text-muted mt-0.5">Double-check the details before submitting.</p>
+              </div>
+              <div className="rounded-2xl border border-border-dark p-5 space-y-3 bg-bg-hover/40">
+                {[
+                  { l: 'Account',  v: `${selectedAccount?.nickname || selectedAccount?.accountNumber} · ${selectedAccount?.accountType}` },
+                  { l: 'Method',   v: selectedMethodMeta.label },
+                  { l: 'Amount',   v: `${sym}${fmtNum(Number(amount) || 0, 2)}` },
+                  { l: 'Fees',     v: `${sym}0.00` },
+                  { l: 'Receive',  v: `${sym}${fmtNum(Number(amount) || 0, 2)}` },
+                  ...(method === 'UPI'    ? [{ l: 'UPI ID',  v: upiId || '—' }] : []),
+                  ...(method === 'BANK'   ? [
+                    { l: 'Beneficiary',    v: bankAccountHolderName || '—' },
+                    { l: 'Account number', v: bankAccountNumber ? `••• ${bankAccountNumber.slice(-4)}` : '—' },
+                    { l: 'IFSC',           v: bankIFSC || '—' },
+                  ] : []),
+                  ...(method === 'CRYPTO' ? [
+                    { l: 'Network',  v: cryptoNetwork },
+                    { l: 'Address',  v: cryptoAddress ? `${cryptoAddress.slice(0, 8)}…${cryptoAddress.slice(-6)}` : '—' },
+                  ] : []),
+                ].map((r) => (
+                  <div key={r.l} className="flex items-center justify-between text-sm">
+                    <span className="text-text-muted">{r.l}</span>
+                    <span className="font-semibold text-text-primary text-right truncate ml-3">{r.v}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="rounded-xl bg-bull/10 border border-bull/30 p-3 flex items-start gap-2.5">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16A34A" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
+                <div className="text-[11px] text-text-secondary">
+                  Funds will be locked immediately on submit. Admin verifies and releases within 1–24 hours.
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Sticky action bar */}
+        <div className="border-t border-border-subtle bg-white px-6 py-4 flex items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={step === 0 ? (onCancel || (() => {})) : goBack}
+            className="px-5 py-2.5 rounded-xl border border-border-dark text-text-primary font-semibold text-sm hover:bg-bg-hover transition-colors"
+          >
+            {step === 0 ? 'Cancel' : '← Back'}
+          </button>
+          {step < STEPS.length - 1 ? (
+            <button
+              type="button"
+              onClick={goNext}
+              disabled={!canNext}
+              className="px-5 py-2.5 rounded-xl font-bold text-sm shadow-card hover:shadow-elevated transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ background: '#1D4ED8', color: '#FFFFFF' }}
+            >
+              <span className="keep-white" style={{ color: '#FFFFFF' }}>Continue →</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={submit}
+              disabled={loading || !canNext}
+              className="px-5 py-2.5 rounded-xl font-bold text-sm shadow-card hover:shadow-elevated transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              style={{ background: '#1D4ED8', color: '#FFFFFF' }}
+            >
+              <span className="keep-white" style={{ color: '#FFFFFF' }}>
+                {loading ? 'Submitting…' : `Request Withdrawal of ${sym}${fmtNum(Number(amount) || 0, 2)}`}
+              </span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Recent withdrawals — sits below the flow card */}
+      <div className="bg-white border border-border-dark rounded-2xl overflow-hidden">
+        <div className="px-5 py-4 border-b border-border-subtle">
+          <span className="text-sm font-bold text-text-primary">Recent Withdrawals</span>
+        </div>
+        <div className="overflow-x-auto p-5">
+          <WithdrawalsTable items={withdrawals} />
+        </div>
+      </div>
+    </>
+  );
+}
+
+function TransferView({ accounts, balances, onDone }) {
+  const [from, setFrom] = useState(accounts[0]?._id || '');
+  const [to, setTo] = useState(accounts[1]?._id || accounts[0]?._id || '');
+  const [currency, setCurrency] = useState('USD');
+  const [amount, setAmount] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+
+  const fromAcc = accounts.find((a) => a._id === from);
+  const toAcc = accounts.find((a) => a._id === to);
+  const fromBalance = balances.find((b) => b.accountId === from && b.currency === currency);
+  const free = Number(fromBalance?.free || 0);
+  const overBudget = Number(amount) > free;
+
+  const submit = async () => {
+    if (!from || !to || from === to || !amount) {
+      toast.error('Pick two different accounts and a positive amount');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await api.post('/wallet/transfers', { fromAccountId: from, toAccountId: to, currency, amount });
+      toast.success('Transfer completed');
+      setAmount('');
+      setConfirm(false);
+      onDone && onDone();
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <>
+      <div>
+        <h1 className="text-2xl sm:text-3xl font-bold text-text-primary">Internal Transfer</h1>
+        <p className="text-sm text-text-secondary mt-1">Move funds instantly between your trading and funding accounts.</p>
+      </div>
+
+      <div className="bg-white border border-border-dark rounded-2xl p-5 space-y-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">From</label>
+            <select value={from} onChange={(e) => setFrom(e.target.value)} className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none">
+              {accounts.map((a) => (
+                <option key={a._id} value={a._id}>{a.nickname || a.accountNumber} · {a.accountType}</option>
+              ))}
+            </select>
+            {fromAcc && (
+              <div className="mt-1.5 text-[11px] text-text-muted">
+                Free: <span className="font-mono font-semibold text-bull">{fmtMoney(free, currency)}</span>
+              </div>
+            )}
+          </div>
+          <div>
+            <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">To</label>
+            <select value={to} onChange={(e) => setTo(e.target.value)} className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none">
+              {accounts.map((a) => (
+                <option key={a._id} value={a._id}>{a.nickname || a.accountNumber} · {a.accountType}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+          <div>
+            <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Currency</label>
+            <select value={currency} onChange={(e) => setCurrency(e.target.value)} className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none">
+              {['USD', 'EUR', 'GBP', 'INR'].map((c) => <option key={c}>{c}</option>)}
+            </select>
+          </div>
+          <div className="col-span-2">
+            <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Amount</label>
+            <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" className={`w-full mt-1.5 px-3 py-2.5 rounded-xl border-2 bg-white text-lg font-bold text-text-primary focus:outline-none ${overBudget ? 'border-bear' : 'border-border-dark focus:border-primary-500'}`} />
+            {overBudget && <div className="mt-1.5 text-[11px] text-bear font-semibold">Exceeds source account balance</div>}
+          </div>
+        </div>
+
+        {from === to && from && (
+          <div className="text-[11px] text-bear font-semibold">Source and destination must be different accounts.</div>
+        )}
+
+        <button
+          type="button"
+          onClick={() => setConfirm(true)}
+          disabled={!from || !to || from === to || !amount || Number(amount) <= 0 || overBudget}
+          className="w-full py-3.5 rounded-xl font-bold text-base shadow-card hover:shadow-elevated transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)', color: '#FFFFFF' }}
+        >
+          <span className="keep-white" style={{ color: '#FFFFFF' }}>Review Transfer →</span>
+        </button>
+      </div>
+
+      {confirm && (
+        <Modal onClose={() => setConfirm(false)}>
+          <div className="text-lg font-bold text-text-primary">Confirm Transfer</div>
+          <p className="text-sm text-text-secondary mt-2">
+            Move <span className="font-mono font-bold text-text-primary">{fmtMoney(amount || '0', currency)}</span> from{' '}
+            <span className="font-semibold text-text-primary">{fromAcc?.nickname || fromAcc?.accountNumber}</span>{' '}
+            to <span className="font-semibold text-text-primary">{toAcc?.nickname || toAcc?.accountNumber}</span>?
+          </p>
+          <div className="mt-4 flex items-center gap-2">
+            <button onClick={() => setConfirm(false)} className="flex-1 py-2.5 rounded-xl border border-border-dark text-text-primary font-semibold text-sm hover:bg-bg-hover transition-colors">Cancel</button>
+            <button onClick={submit} disabled={submitting} className="flex-1 py-2.5 rounded-xl font-bold text-sm text-white disabled:opacity-50" style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)', color: '#FFFFFF' }}>
+              <span className="keep-white" style={{ color: '#FFFFFF' }}>{submitting ? 'Transferring…' : 'Confirm Transfer'}</span>
+            </button>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
+function MethodsView({ onAdd }) {
+  return (
+    <>
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-bold text-text-primary">Payment Methods</h1>
+          <p className="text-sm text-text-secondary mt-1">Saved cards, bank accounts, and crypto wallets for faster checkout.</p>
+        </div>
+        <button type="button" onClick={onAdd} className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-sm shadow-card hover:shadow-elevated transition-all" style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)', color: '#FFFFFF' }}>
+          <span className="keep-white" style={{ color: '#FFFFFF' }}>+ Add Method</span>
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {[
+          { type: 'Bank Account', name: 'HDFC Bank ••• 1234', sub: 'INR · Default', tint: '#1D4ED8', icon: <NIMethods />, isDefault: true },
+          { type: 'Crypto Wallet', name: 'USDT (TRC20)', sub: 'TX••sH7p', tint: '#10B981', icon: <PMUsdt /> },
+        ].map((m, i) => (
+          <div key={i} className="bg-white border border-border-dark rounded-2xl p-4 flex items-center gap-3 hover:shadow-card transition-shadow">
+            <span className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0" style={{ background: `${m.tint}18`, color: m.tint }}>{m.icon}</span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold text-text-primary truncate">{m.name}</span>
+                {m.isDefault && <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-bull/15 text-bull">Default</span>}
+              </div>
+              <div className="text-[11px] text-text-muted">{m.type} · {m.sub}</div>
+            </div>
+            <button className="text-xs font-semibold text-text-secondary hover:text-bear transition-colors px-3 py-1.5 rounded-lg hover:bg-bear/5">Remove</button>
+          </div>
+        ))}
+      </div>
+
+      <div className="bg-bg-hover border border-dashed border-border-dark rounded-2xl p-6 text-center">
+        <div className="text-sm font-semibold text-text-primary">Want faster deposits?</div>
+        <div className="text-xs text-text-muted mt-1">Add a card, bank account, or crypto address to skip re-entry on every transaction.</div>
+        <button onClick={onAdd} className="mt-3 text-xs font-bold text-primary-600 hover:text-primary-700">+ Add a method</button>
+      </div>
+    </>
+  );
+}
+
+function AccountDetailsView({ user, accounts, balances, fxRate, onRefresh, setView }) {
+  const fullName = [user?.firstName, user?.lastName].filter(Boolean).join(' ') || 'Trader';
+  const kyc = user?.kycStatus || 'NOT_STARTED';
+  const kycMeta = kyc === 'APPROVED'
+    ? { tint: '#16A34A', label: 'Verified' }
+    : kyc === 'PENDING' ? { tint: '#3B82F6', label: 'Under Review' }
+    : { tint: '#DC2626', label: 'Not verified' };
+
+  const [showCreate, setShowCreate] = useState(false);
+  const balanceFor = (accId, currency) => {
+    const w = balances?.find((x) => x.accountId === accId && x.currency === currency);
+    return w ? Number(w.balance) || 0 : 0;
+  };
+
+  return (
+    <>
+      <div className="flex items-start justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-bold text-text-primary">Account Details</h1>
+          <p className="text-sm text-text-secondary mt-1">Profile, trading accounts, KYC status, and security settings.</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setShowCreate(true)}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-sm shadow-card hover:shadow-elevated transition-all"
+          style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)', color: '#FFFFFF' }}
+        >
+          <span className="keep-white" style={{ color: '#FFFFFF' }}>+ New Account</span>
+        </button>
+      </div>
+
+      {/* Profile hero */}
+      <div className="bg-white border border-border-dark rounded-2xl p-5">
+        <div className="flex items-center gap-4">
+          <span className="w-16 h-16 rounded-full flex items-center justify-center text-xl font-bold text-white" style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)' }}>
+            <span className="keep-white" style={{ color: '#FFFFFF' }}>
+              {(fullName || 'T').split(' ').map((s) => s[0]).filter(Boolean).slice(0, 2).join('').toUpperCase()}
+            </span>
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-lg font-bold text-text-primary">{fullName}</div>
+            <div className="text-sm text-text-secondary truncate">{user?.email || '—'}</div>
+            <div className="mt-1.5 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] uppercase font-bold tracking-wider" style={{ background: `${kycMeta.tint}18`, color: kycMeta.tint }}>
+              KYC · {kycMeta.label}
+            </div>
+          </div>
+          <a href="/profile" className="text-xs font-semibold text-primary-600 hover:text-primary-700">Edit profile →</a>
+        </div>
+      </div>
+
+      {/* Trading Accounts — full grid (replaces the old /accounts page) */}
+      <div className="bg-white border border-border-dark rounded-2xl p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div className="text-sm font-bold text-text-primary">Trading Accounts <span className="text-text-muted font-semibold">({accounts.length})</span></div>
+          <button onClick={() => setView('transfer')} className="text-xs font-semibold text-primary-600 hover:text-primary-700">Transfer funds →</button>
+        </div>
+        {accounts.length === 0 ? (
+          <div className="py-8 text-center">
+            <div className="text-sm font-semibold text-text-primary">No accounts yet</div>
+            <div className="text-xs text-text-muted mt-1">Create your first trading account to start.</div>
+            <button onClick={() => setShowCreate(true)} className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold shadow-card hover:shadow-elevated transition-all" style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)', color: '#FFFFFF' }}>
+              <span className="keep-white" style={{ color: '#FFFFFF' }}>+ Create Account</span>
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            {accounts.map((a) => {
+              const isR = a.accountType === 'REAL';
+              const tint = isR ? '#1D4ED8' : '#3B82F6';
+              const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
+              // Show balance in both INR and USD. The native balance
+              // lives in `a.baseCurrency`; the alt is converted via
+              // fxRate so the user always sees the dual figure.
+              const native = balanceFor(a._id, a.baseCurrency);
+              let inr = 0, usd = 0;
+              if (a.baseCurrency === 'INR') { inr = native; usd = native / rate; }
+              else if (a.baseCurrency === 'USD') { usd = native; inr = native * rate; }
+              else { inr = native; usd = native / rate; }
+              return (
+                <div key={a._id} className="rounded-2xl border-2 border-border-dark p-4 hover:shadow-card hover:-translate-y-0.5 transition-all bg-white">
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="w-11 h-11 rounded-xl flex items-center justify-center text-sm font-extrabold shrink-0 shadow-sm" style={{ background: `linear-gradient(135deg, ${tint}22 0%, ${tint}11 100%)`, color: tint }}>
+                      {(a.nickname || a.accountNumber || 'A').slice(0, 2).toUpperCase()}
+                    </span>
+                    <span className={`text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded ${isR ? 'bg-bull/15 text-bull' : 'bg-info/15 text-info'}`}>
+                      {isR ? 'Live · Real' : a.accountType}
+                    </span>
+                  </div>
+                  <div className="mt-3 text-sm font-bold text-text-primary truncate">{a.nickname || a.accountNumber}</div>
+                  <div className="text-[11px] text-text-muted font-mono truncate">{a.accountNumber}</div>
+
+                  {/* Dual-currency balance — primary in native, INR & USD shown side-by-side. */}
+                  <div className="mt-3 grid grid-cols-2 gap-2 bg-bg-hover rounded-xl p-2.5">
+                    <div>
+                      <div className="text-[9px] text-text-muted uppercase tracking-wider font-semibold">INR</div>
+                      <div className="text-sm font-mono font-bold text-text-primary tabular-nums mt-0.5">₹{fmtNum(inr, 2)}</div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-text-muted uppercase tracking-wider font-semibold">USD</div>
+                      <div className="text-sm font-mono font-bold text-text-primary tabular-nums mt-0.5">${fmtNum(usd, 2)}</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-2.5 grid grid-cols-2 gap-2 text-[11px]">
+                    <div>
+                      <div className="text-text-muted uppercase tracking-wider font-semibold">Leverage</div>
+                      <div className="text-sm font-mono font-bold text-text-primary">1:{a.leverage}</div>
+                    </div>
+                    <div>
+                      <div className="text-text-muted uppercase tracking-wider font-semibold">Mode</div>
+                      <div className="text-sm font-mono font-bold text-text-primary truncate">{a.mode || '—'}</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-white border border-border-dark rounded-2xl p-5">
+          <div className="text-sm font-bold text-text-primary mb-3">Security</div>
+          <ul className="space-y-3 text-sm">
+            <li className="flex items-center justify-between">
+              <span className="text-text-primary">Two-Factor Authentication</span>
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded uppercase" style={{ background: user?.twoFactorEnabled ? '#16A34A18' : '#DC262618', color: user?.twoFactorEnabled ? '#16A34A' : '#DC2626' }}>
+                {user?.twoFactorEnabled ? 'Enabled' : 'Disabled'}
+              </span>
+            </li>
+            <li className="flex items-center justify-between">
+              <span className="text-text-primary">Password</span>
+              <a href="/profile" className="text-xs font-semibold text-primary-600 hover:text-primary-700">Change →</a>
+            </li>
+            <li className="flex items-center justify-between">
+              <span className="text-text-primary">Login alerts</span>
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded uppercase bg-bull/15 text-bull">Active</span>
+            </li>
+          </ul>
+        </div>
+
+        <div className="bg-white border border-border-dark rounded-2xl p-5">
+          <div className="text-sm font-bold text-text-primary mb-3">Profile</div>
+          <ul className="space-y-3 text-sm">
+            <li className="flex items-center justify-between">
+              <span className="text-text-primary">Name</span>
+              <span className="font-semibold text-text-primary truncate">{fullName}</span>
+            </li>
+            <li className="flex items-center justify-between">
+              <span className="text-text-primary">Email</span>
+              <span className="font-semibold text-text-primary text-right truncate ml-3">{user?.email || '—'}</span>
+            </li>
+            <li className="flex items-center justify-between">
+              <span className="text-text-primary">Phone</span>
+              <span className="font-semibold text-text-primary">{user?.phone || '—'}</span>
+            </li>
+          </ul>
+        </div>
+      </div>
+
+      {showCreate && (
+        <CreateAccountInlineModal
+          onClose={() => setShowCreate(false)}
+          onCreated={() => { setShowCreate(false); onRefresh && onRefresh(); }}
+        />
+      )}
+    </>
+  );
+}
+
+// Inline replacement for the old Accounts page's CreateAccountModal.
+function CreateAccountInlineModal({ onClose, onCreated }) {
+  const [form, setForm] = useState({
+    accountType: 'DEMO',
+    baseCurrency: 'INR',
+    leverage: 100,
+    mode: 'HYBRID',
+    nickname: '',
+    initialBalance: 100000,
+  });
+  const [submitting, setSubmitting] = useState(false);
+
+  const submit = async () => {
+    setSubmitting(true);
+    try {
+      // `initialBalance` is only valid for DEMO accounts — strip it
+      // from the payload otherwise to avoid the server's 400.
+      const { initialBalance, ...rest } = form;
+      const payload = form.accountType === 'DEMO' ? { ...rest, initialBalance } : rest;
+      await api.post('/user/accounts', payload);
+      toast.success('Account created');
+      onCreated();
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-elevated w-full max-w-md p-6" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-lg font-bold text-text-primary">Create Trading Account</h3>
+          <button onClick={onClose} className="p-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-hover">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
+          </button>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Account Type</label>
+            <select className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none" value={form.accountType} onChange={(e) => setForm({ ...form, accountType: e.target.value })}>
+              <option value="DEMO">Demo</option>
+              <option value="VIRTUAL">Virtual</option>
+              <option value="REAL">Real</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Nickname</label>
+            <input className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm text-text-primary focus:border-primary-500 focus:outline-none" value={form.nickname} onChange={(e) => setForm({ ...form, nickname: e.target.value })} placeholder="e.g. Scalping Account" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Base Currency</label>
+              <select className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none" value={form.baseCurrency} onChange={(e) => setForm({ ...form, baseCurrency: e.target.value })}>
+                <option>INR</option><option>USD</option><option>EUR</option><option>GBP</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Leverage</label>
+              <select className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none" value={form.leverage} onChange={(e) => setForm({ ...form, leverage: Number(e.target.value) })}>
+                {[1, 5, 10, 20, 50, 100, 200, 500].map((l) => <option key={l} value={l}>1:{l}</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Trading Mode</label>
+            <select className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none" value={form.mode} onChange={(e) => setForm({ ...form, mode: e.target.value })}>
+              <option value="INTERNAL">Internal Only</option>
+              <option value="EXTERNAL">External Feed</option>
+              <option value="HYBRID">Hybrid</option>
+            </select>
+          </div>
+          {form.accountType === 'DEMO' && (
+            <div>
+              <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Starting Balance</label>
+              <input type="number" className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-mono text-text-primary focus:border-primary-500 focus:outline-none" value={form.initialBalance} onChange={(e) => setForm({ ...form, initialBalance: Number(e.target.value) })} />
+            </div>
+          )}
+          <div className="flex gap-2 pt-2">
+            <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-border-dark text-text-primary font-semibold text-sm hover:bg-bg-hover transition-colors">Cancel</button>
+            <button onClick={submit} disabled={submitting} className="flex-1 py-2.5 rounded-xl font-bold text-sm disabled:opacity-50" style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)', color: '#FFFFFF' }}>
+              <span className="keep-white" style={{ color: '#FFFFFF' }}>{submitting ? 'Creating…' : 'Create'}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function BonusesView() {
+  const promos = [
+    { id: 1, title: '100% Welcome Bonus', sub: 'Up to $1,000 on your first deposit', cta: 'Claim now', tint: '#1D4ED8', tag: 'Featured', expires: 'Ends in 7 days' },
+    { id: 2, title: 'Refer & Earn $50', sub: 'For every funded friend you invite', cta: 'Invite', tint: '#10B981', tag: 'Ongoing' },
+    { id: 3, title: '10% Cashback on Spreads', sub: 'Auto-credited monthly', cta: 'See terms', tint: '#8B5CF6', tag: 'Active' },
+    { id: 4, title: 'XAUUSD Weekend Boost', sub: 'Zero commission on gold trades', cta: 'Trade gold', tint: '#F59E0B', tag: 'Limited' },
+  ];
+  return (
+    <>
+      <div>
+        <h1 className="text-2xl sm:text-3xl font-bold text-text-primary">Bonuses & Offers</h1>
+        <p className="text-sm text-text-secondary mt-1">Trading bonuses, cashback rewards, and seasonal promotions.</p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {promos.map((p) => (
+          <div key={p.id} className="relative bg-white border border-border-dark rounded-2xl p-5 hover:shadow-card transition-shadow overflow-hidden">
+            <div className="absolute inset-0 pointer-events-none opacity-40" style={{ background: `radial-gradient(circle at 100% 0%, ${p.tint}22, transparent 60%)` }} />
+            <div className="relative">
+              <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded" style={{ background: `${p.tint}18`, color: p.tint }}>{p.tag}</span>
+              <div className="text-lg font-bold text-text-primary mt-2">{p.title}</div>
+              <div className="text-xs text-text-secondary mt-1">{p.sub}</div>
+              <div className="mt-4 flex items-center justify-between gap-3">
+                <button type="button" onClick={() => toast.success(`${p.title} – feature coming soon`)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-transform hover:scale-[1.02] active:scale-[0.98]" style={{ background: p.tint, color: '#FFFFFF' }}>
+                  <span className="keep-white" style={{ color: '#FFFFFF' }}>{p.cta} →</span>
+                </button>
+                {p.expires && <span className="text-[10px] font-semibold text-text-muted">{p.expires}</span>}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="bg-white border border-border-dark rounded-2xl p-5">
+        <div className="text-sm font-bold text-text-primary mb-2">Referral Rewards</div>
+        <p className="text-xs text-text-secondary">Share your unique link and earn rebates on every trade your referrals make.</p>
+        <div className="mt-3 flex items-center gap-2">
+          <input value="https://tradepro.com/r/YOUR-CODE" readOnly className="flex-1 px-3 py-2 rounded-xl border border-border-dark bg-bg-hover text-xs font-mono text-text-secondary" />
+          <button onClick={() => { navigator.clipboard?.writeText('https://tradepro.com/r/YOUR-CODE'); toast.success('Link copied'); }} className="px-3 py-2 rounded-xl border border-border-dark hover:border-primary-500/50 text-xs font-bold text-text-primary transition-colors">Copy</button>
+        </div>
+      </div>
+    </>
   );
 }

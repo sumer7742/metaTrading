@@ -17,9 +17,9 @@ ReactDOM.createRoot(document.getElementById('root')).render(
       <Toaster
         position="top-right"
         toastOptions={{
-          style: { background: '#1a2129', color: '#fff', border: '1px solid #2a323d' },
-          success: { iconTheme: { primary: '#10b981', secondary: '#fff' } },
-          error: { iconTheme: { primary: '#ef4444', secondary: '#fff' } },
+          style: { background: '#FFFFFF', color: '#1F2937', border: '1px solid #E5E7EB', boxShadow: '0 6px 24px rgba(17,24,39,0.08)' },
+          success: { iconTheme: { primary: '#1D4ED8', secondary: '#fff' } },
+          error: { iconTheme: { primary: '#FF3B57', secondary: '#fff' } },
         }}
       />
     </BrowserRouter>

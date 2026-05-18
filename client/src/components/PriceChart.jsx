@@ -29,18 +29,43 @@ const chartPalette = () => ({
 });
 
 // TradingView-reference color palette — used across every chart type
-// for visual consistency. Centralised so a single tweak rolls everywhere.
+// for visual consistency. Bull/bear/volume colours stay constant in
+// both themes (green = up, red = down everywhere). Background, grid,
+// border, text and crosshair flip with the theme via `tvCanvas()`.
 const TV_COLORS = {
-  background: '#131722',
-  grid: 'rgba(255, 255, 255, 0.04)',
-  border: 'rgba(255, 255, 255, 0.1)',
-  text: '#787b86',
-  crosshair: 'rgba(255, 255, 255, 0.3)',
-  up: '#26a69a',
-  down: '#ef5350',
-  volumeUp: 'rgba(38, 166, 154, 0.5)',
-  volumeDown: 'rgba(239, 83, 80, 0.5)',
+  background: '#FFFFFF',
+  grid: 'rgba(17, 24, 39, 0.06)',
+  border: 'rgba(17, 24, 39, 0.10)',
+  text: '#6B7280',
+  crosshair: 'rgba(17, 24, 39, 0.25)',
+  up: '#00C853',
+  down: '#FF3B57',
+  volumeUp: 'rgba(0, 200, 83, 0.45)',
+  volumeDown: 'rgba(255, 59, 87, 0.45)',
 };
+
+// Theme-aware canvas palette — only the surface-level tokens flip.
+// The crosshair label chip also inverts so the time/price pill stays
+// readable on whichever canvas colour is in play.
+const tvCanvas = (theme) => (theme === 'dark'
+  ? {
+      background: '#0F1623',
+      grid: 'rgba(255, 255, 255, 0.06)',
+      border: 'rgba(255, 255, 255, 0.12)',
+      text: '#94A3B8',
+      crosshair: 'rgba(255, 255, 255, 0.30)',
+      crosshairLabelBg: '#E5E7EB',
+      crosshairLabelText: '#0F172A',
+    }
+  : {
+      background: '#FFFFFF',
+      grid: 'rgba(17, 24, 39, 0.06)',
+      border: 'rgba(17, 24, 39, 0.10)',
+      text: '#6B7280',
+      crosshair: 'rgba(17, 24, 39, 0.25)',
+      crosshairLabelBg: '#1F2937',
+      crosshairLabelText: '#FFFFFF',
+    });
 
 // ─── Chart-type catalog ──────────────────────────────────────────────
 // Each entry maps to a creator + an updater. The dropdown renders this
@@ -77,6 +102,57 @@ export const tfToSeconds = (tf) => TF_SECONDS[tf] || 60;
 /** Snap a Unix-seconds timestamp down to the start of its timeframe bucket. */
 export const bucketFloor = (sec, tfSec) => Math.floor(sec / tfSec) * tfSec;
 
+// ─── Candle cache ──────────────────────────────────────────────────────
+// Persists the last loaded candle batch per (symbol, timeframe) across
+// chart re-mounts (page navigations, logout / login, theme toggles, …).
+// Without this the chart shows a brief "empty" state every time the
+// PriceChart component unmounts and re-mounts — users perceived this as
+// "candle history gets deleted after logout". With it, the prior series
+// renders instantly while fresh data loads from the server.
+const CACHE_KEY = 'tradepro:candles:v1';
+const _memCache = new Map();
+
+function _cacheKey(symbol, timeframe) {
+  return `${symbol}:${timeframe}`;
+}
+function readCachedCandles(symbol, timeframe) {
+  const k = _cacheKey(symbol, timeframe);
+  if (_memCache.has(k)) return _memCache.get(k);
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const obj = JSON.parse(raw);
+    const entry = obj?.[k];
+    if (!entry || !Array.isArray(entry)) return null;
+    _memCache.set(k, entry);
+    return entry;
+  } catch (_) {
+    return null;
+  }
+}
+function writeCachedCandles(symbol, timeframe, candles) {
+  if (!Array.isArray(candles) || candles.length === 0) return;
+  const k = _cacheKey(symbol, timeframe);
+  // Keep last 300 in cache to stay under localStorage's ~5MB budget if
+  // the user browses many symbols.
+  const trimmed = candles.slice(-300);
+  _memCache.set(k, trimmed);
+  if (typeof window === 'undefined') return;
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    const obj = raw ? JSON.parse(raw) : {};
+    obj[k] = trimmed;
+    // Cap total cached symbol-tf pairs to ~40; FIFO eviction by key order.
+    const keys = Object.keys(obj);
+    if (keys.length > 40) {
+      const drop = keys.slice(0, keys.length - 40);
+      for (const d of drop) delete obj[d];
+    }
+    localStorage.setItem(CACHE_KEY, JSON.stringify(obj));
+  } catch (_) { /* quota / private mode — fall back to in-memory only */ }
+}
+
 /**
  * Walk a sorted+deduped candle array and insert carry-forward candles for
  * any missing bucket between consecutive entries. Input MUST already be
@@ -87,20 +163,43 @@ export const bucketFloor = (sec, tfSec) => Math.floor(sec / tfSec) * tfSec;
  * minute" without inventing price movement.
  */
 export function fillCandleGaps(candles, tfSec) {
-  if (!Array.isArray(candles) || candles.length < 2) return candles || [];
-  const out = [candles[0]];
-  for (let i = 1; i < candles.length; i++) {
+  if (!Array.isArray(candles) || candles.length === 0) return [];
+  // 1. Filter out null / invalid OHLC entries that would create visible
+  //    gaps in the chart (lightweight-charts skips bars with NaN).
+  const valid = candles.filter((c) =>
+    c &&
+    Number.isFinite(c.time) &&
+    Number.isFinite(c.open) && Number.isFinite(c.high) &&
+    Number.isFinite(c.low)  && Number.isFinite(c.close)
+  );
+  if (valid.length === 0) return [];
+  // 2. Snap every candle to its bucket and sort ascending — guards
+  //    against backends that return unsorted data.
+  const snapped = valid
+    .map((c) => ({ ...c, time: bucketFloor(c.time, tfSec) }))
+    .sort((a, b) => a.time - b.time);
+  // 3. Dedupe: when two candles share a bucket, the LATER one wins
+  //    (rolling-bar updates from the server).
+  const deduped = [];
+  for (const c of snapped) {
+    const last = deduped[deduped.length - 1];
+    if (last && last.time === c.time) deduped[deduped.length - 1] = c;
+    else deduped.push(c);
+  }
+  if (deduped.length < 2) return deduped;
+  // 4. Carry-forward fill every missing bucket between consecutive
+  //    candles so the time axis is fully contiguous (no white rail).
+  const out = [deduped[0]];
+  for (let i = 1; i < deduped.length; i++) {
     const prev = out[out.length - 1];
-    const next = candles[i];
-    // Defensive: if `next` isn't aligned to the bucket grid, snap it down.
-    const nextTime = bucketFloor(next.time, tfSec);
+    const next = deduped[i];
     let t = prev.time + tfSec;
-    while (t < nextTime) {
+    while (t < next.time) {
       const c = prev.close;
       out.push({ time: t, open: c, high: c, low: c, close: c, volume: 0 });
       t += tfSec;
     }
-    out.push({ ...next, time: nextTime });
+    out.push(next);
   }
   return out;
 }
@@ -152,43 +251,150 @@ export function convertToHeikinAshi(candles) {
  *
  * Extras (open LIMIT/STOP/SL/TP price lines) extend the range only
  * marginally so they remain visible without blowing the scale wide. */
-const makeAutoscaleProvider = (candlesRef, extraPricesRef) => () => {
+// Autoscale provider — invoked by lightweight-charts whenever it needs to
+// fit the price range to the visible candles. Library calls this with the
+// `firstIdx` / `lastIdx` of the currently-visible range, so we always
+// compute high/low from EXACTLY what the user is looking at — wherever
+// they scroll the price axis follows. Padding is proportional and
+// expressed as `margins` (pixels above/below the data range) so even
+// during a sharp price spike the wicks stay well inside the viewport.
+const makeAutoscaleProvider = (candlesRef, extraPricesRef, animStateRef, kickAnimRef, hysteresisRef) => (start, end) => {
   const data = candlesRef.current;
-  if (!data || data.length < 5) return null;
-  // Short recent window — tracks live action and produces a small price
-  // span, which is what the label-step heuristic latches onto.
-  const recent = data.slice(-40);
+  if (!data || data.length < 2) return null;
+
+  // The library passes firstIdx/lastIdx of the visible range — use them
+  // if present, otherwise fall back to the last 100 candles (initial
+  // mount, before timeScale settles).
+  let firstIdx, lastIdx;
+  if (typeof start === 'number' && typeof end === 'number') {
+    firstIdx = Math.max(0, Math.floor(start));
+    lastIdx  = Math.min(data.length - 1, Math.ceil(end));
+  } else {
+    firstIdx = Math.max(0, data.length - 100);
+    lastIdx  = data.length - 1;
+  }
+  if (lastIdx < firstIdx) return null;
+
   let lo = Infinity;
   let hi = -Infinity;
-  for (const c of recent) {
-    if (Number.isFinite(c.low) && c.low < lo) lo = c.low;
+  for (let i = firstIdx; i <= lastIdx; i++) {
+    const c = data[i];
+    if (!c) continue;
+    if (Number.isFinite(c.low)  && c.low  < lo) lo = c.low;
     if (Number.isFinite(c.high) && c.high > hi) hi = c.high;
   }
   if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+
+  // Always honour the latest candle's close so the live price line stays
+  // inside the visible range even mid-tick.
   const last = data[data.length - 1];
   if (Number.isFinite(last?.close)) {
     lo = Math.min(lo, last.close);
     hi = Math.max(hi, last.close);
   }
-  // Tiny symmetric pad so wicks don't kiss the top/bottom edge.
-  const span = Math.max(hi - lo, Math.abs(hi) * 1e-6, 1e-9);
-  const pad = span * 0.05;
-  lo -= pad;
-  hi += pad;
-  // Pull in user-placed price lines, but cap the stretch so a distant
-  // LIMIT can't ruin the tight scale that drives label density.
+
+  // Include user-placed price lines (SL/TP/LIMIT/STOP) but cap how far
+  // they can stretch the scale — a far-away LIMIT shouldn't compress the
+  // candle area to a sliver.
   const extras = extraPricesRef?.current;
   if (Array.isArray(extras) && extras.length) {
-    const maxStretch = span * 0.10;
+    const span0 = Math.max(hi - lo, 1e-9);
+    const maxStretch = span0 * 0.40;
     for (const p of extras) {
       if (!Number.isFinite(p) || p <= 0) continue;
       if (p < lo) lo = Math.max(p, lo - maxStretch);
       if (p > hi) hi = Math.min(p, hi + maxStretch);
     }
   }
+
+  // ── Hysteresis + soft animated interpolation ────────────────────────
+  // We don't want the axis to twitch on every micro-tick. Instead we
+  // keep a "committed" range (state.targetLo/Hi) with a deadband around
+  // it (a fraction of the committed span). The raw visible range can
+  // wander freely inside that deadband and the axis holds steady. Only
+  // when it breaches the band — either by pushing past on a fresh
+  // high/low, or by shrinking so far that the axis would look needlessly
+  // zoomed-out — do we commit a new target and ease toward it over
+  // ~260 ms (ease-out cubic).
+  let outLo = lo;
+  let outHi = hi;
+  if (animStateRef && animStateRef.current) {
+    const state = animStateRef.current;
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
+    const hysteresis = Math.max(0, Number(hysteresisRef?.current ?? 0.04));
+
+    // First call → snap (no entry animation, no deadband yet)
+    if (state.animLo == null || state.animHi == null) {
+      state.animLo = lo;  state.animHi = hi;
+      state.fromLo = lo;  state.fromHi = hi;
+      state.targetLo = lo; state.targetHi = hi;
+      state.startedAt = now;
+      state.duration = 0;
+    } else {
+      // Deadband sized to the COMMITTED span — not the raw span. Using
+      // the committed span keeps the threshold stable even while the
+      // raw range jitters; using raw would let a brief spike inflate
+      // the deadband and mask the very breach we're trying to detect.
+      const targetSpan = Math.max(state.targetHi - state.targetLo, Math.abs(state.targetHi) * 1e-6, 1e-9);
+      const deadband = targetSpan * hysteresis;
+      const rawSpan = Math.max(hi - lo, 1e-9);
+
+      // (a) Candle pushed above / below the committed band — must rescale.
+      const upperBreach = hi > state.targetHi + deadband;
+      const lowerBreach = lo < state.targetLo - deadband;
+      // (b) Visible range has shrunk well inside the committed band
+      // (e.g. a spike candle scrolled out of view). Re-zoom so the
+      // candles don't sit in the middle of an oversized axis. Uses a
+      // larger threshold (2× deadband) than (a) — shrinking is less
+      // urgent than overflow, and a higher bar avoids ping-ponging
+      // between zoom-in and zoom-out on choppy markets.
+      const zoomedOutTooMuch = (targetSpan - rawSpan) > deadband * 2;
+
+      if (upperBreach || lowerBreach || zoomedOutTooMuch) {
+        state.fromLo = state.animLo;
+        state.fromHi = state.animHi;
+        state.targetLo = lo;
+        state.targetHi = hi;
+        state.startedAt = now;
+        state.duration = 260;
+        if (kickAnimRef && typeof kickAnimRef.current === 'function') {
+          kickAnimRef.current();
+        }
+      }
+    }
+
+    // Advance the interpolation. Provider gets called many times per
+    // second by the RAF loop while animating, so each call moves
+    // animLo/animHi a step closer to the target.
+    if (state.duration > 0) {
+      const elapsed = now - state.startedAt;
+      let t = elapsed >= state.duration ? 1 : Math.max(0, elapsed / state.duration);
+      // ease-out cubic
+      t = 1 - Math.pow(1 - t, 3);
+      state.animLo = state.fromLo + (state.targetLo - state.fromLo) * t;
+      state.animHi = state.fromHi + (state.targetHi - state.fromHi) * t;
+      if (elapsed >= state.duration) {
+        state.duration = 0;
+        state.animLo = state.targetLo;
+        state.animHi = state.targetHi;
+      }
+    }
+
+    outLo = state.animLo;
+    outHi = state.animHi;
+  }
+
+  // Defer to lightweight-charts' built-in pixel margins (driven by the
+  // price scale's `scaleMargins`) for top/bottom whitespace. Returning a
+  // small `margins.above/below` in PRICE units adds extra safety so wicks
+  // never sit on the very top/bottom pixel even after the scaleMargins
+  // calculation. Bumped to 6 % so big volatility spikes have headroom
+  // before the next autoscale recompute catches them.
+  const span = Math.max(outHi - outLo, Math.abs(outHi) * 1e-6, 1e-9);
+  const safetyPad = span * 0.06;
   return {
-    priceRange: { minValue: lo, maxValue: hi },
-    margins: { above: 0, below: 0 },
+    priceRange: { minValue: outLo, maxValue: outHi },
+    margins: { above: safetyPad, below: safetyPad },
   };
 };
 
@@ -201,8 +407,8 @@ const makeAutoscaleProvider = (candlesRef, extraPricesRef) => () => {
  * this — otherwise the chart accumulates series and they fight for the
  * price scale.
  */
-export function createSeriesByChartType(chart, chartType, candlesRef, extraPricesRef) {
-  const autoscale = makeAutoscaleProvider(candlesRef, extraPricesRef);
+export function createSeriesByChartType(chart, chartType, candlesRef, extraPricesRef, animStateRef, kickAnimRef, hysteresisRef) {
+  const autoscale = makeAutoscaleProvider(candlesRef, extraPricesRef, animStateRef, kickAnimRef, hysteresisRef);
   switch (chartType) {
     case 'bars':
       return chart.addBarSeries({
@@ -227,7 +433,7 @@ export function createSeriesByChartType(chart, chartType, candlesRef, extraPrice
 
     case 'line':
       return chart.addLineSeries({
-        color: '#FCD535',
+        color: '#1D4ED8',
         lineWidth: 2,
         lineType: 0, // simple
         priceLineVisible: true,
@@ -237,7 +443,7 @@ export function createSeriesByChartType(chart, chartType, candlesRef, extraPrice
     case 'lineMarkers':
       // Same as line; markers are placed via setMarkers in updateSeriesData.
       return chart.addLineSeries({
-        color: '#FCD535',
+        color: '#1D4ED8',
         lineWidth: 2,
         lineType: 0,
         priceLineVisible: true,
@@ -248,7 +454,7 @@ export function createSeriesByChartType(chart, chartType, candlesRef, extraPrice
       // lineType=1 is WithSteps — values are connected by horizontal+vertical
       // segments rather than a smooth diagonal.
       return chart.addLineSeries({
-        color: '#FCD535',
+        color: '#1D4ED8',
         lineWidth: 2,
         lineType: 1,
         priceLineVisible: true,
@@ -256,9 +462,9 @@ export function createSeriesByChartType(chart, chartType, candlesRef, extraPrice
 
     case 'area':
       return chart.addAreaSeries({
-        topColor: 'rgba(252, 213, 53, 0.30)',
-        bottomColor: 'rgba(252, 213, 53, 0.00)',
-        lineColor: '#FCD535',
+        topColor: 'rgba(29, 78, 216, 0.30)',
+        bottomColor: 'rgba(29, 78, 216, 0.00)',
+        lineColor: '#1D4ED8',
         lineWidth: 2,
       });
 
@@ -333,7 +539,7 @@ export function updateSeriesData(series, chartType, candles) {
             time: c.time,
             position: 'inBar',
             shape: 'circle',
-            color: '#FCD535',
+            color: '#1D4ED8',
             size: 0.5,
           })));
         } catch (_) {}
@@ -423,7 +629,7 @@ function updateSeriesPoint(series, chartType, point, allCandles) {
             time: c.time,
             position: 'inBar',
             shape: 'circle',
-            color: '#FCD535',
+            color: '#1D4ED8',
             size: 0.5,
           })));
         } catch (_) {}
@@ -478,6 +684,30 @@ export default function PriceChart({
   // Optional account/instrument summary rendered as a top-right overlay
   // on the chart (matches the TradingView-reference layout).
   infoStrip = null,
+  // Quick-trade chip support — when these props are supplied we render a
+  // Sell / Spread / Buy mini-chip in the toolbar, just before the
+  // Indicators dropdown. The chip drives the parent's order-side state.
+  instrument = null,
+  orderSide = null,
+  onOrderSideChange = null,
+  // When the dedicated order panel is open the chip duplicates its
+  // BUY/SELL controls — hide it (with a smooth fade/collapse) so only
+  // one set of trade buttons is on screen at a time, the way
+  // TradingView and pro broker terminals behave.
+  hideQuickTrade = false,
+  // Optional chart-view controls — when provided we render expand /
+  // fullscreen icons in the toolbar's right cluster (so they don't
+  // overlap floating absolute-positioned buttons).
+  expanded = false,
+  onToggleExpand = null,
+  fullscreen = false,
+  onToggleFullscreen = null,
+  // Hysteresis (deadband) for the y-axis autoscale, expressed as a
+  // fraction of the currently-committed price span. The axis only
+  // rescales when the visible high/low breaches the committed range by
+  // more than this fraction — sub-threshold tick noise is absorbed so
+  // the axis stays steady. 0.04 = 4 % feels close to TradingView.
+  autoscaleHysteresis = 0.04,
 }) {
   const containerRef = useRef(null);
   const rsiContainerRef = useRef(null);
@@ -497,57 +727,154 @@ export default function PriceChart({
   // ensures user-placed price lines are always visible on the chart.
   const extraPricesRef = useRef([]);
 
+  // Soft-animation state for the y-axis. `animLo/animHi` are the
+  // currently-displayed range; `targetLo/targetHi` are where we're
+  // easing toward. The autoscale provider reads/updates this on every
+  // call; the RAF loop (kickAnimRef) keeps re-triggering the provider
+  // until the ease completes.
+  const animStateRef = useRef({
+    animLo: null, animHi: null,
+    fromLo: null, fromHi: null,
+    targetLo: null, targetHi: null,
+    startedAt: 0, duration: 0,
+  });
+  const animRafRef = useRef(null);
+  const kickAnimRef = useRef(null);
+  // Kept in sync with the `autoscaleHysteresis` prop so the autoscale
+  // provider (a closure created once at series-construction time) always
+  // reads the latest value without needing to be rebuilt.
+  const hysteresisRef = useRef(autoscaleHysteresis);
+
   const [indicators, setIndicators] = useState(INDICATOR_DEFAULTS);
   const [candles, setCandles] = useState([]);
   const [chartType, setChartType] = useState('candles');
   const [chartTypeOpen, setChartTypeOpen] = useState(false);
+  const [indicatorsOpen, setIndicatorsOpen] = useState(false);
+  const [timeframeOpen, setTimeframeOpen] = useState(false);
   const theme = useThemeStore((s) => s.theme);
 
   // ─── 1. Initialize chart (no main series yet — handled by chartType effect) ─
   useEffect(() => {
     if (!containerRef.current) return;
+    // Use the container's actual rendered height so the chart fills the
+    // available space; fall back to 460 px if measurement isn't ready yet.
+    const initialHeight = containerRef.current.clientHeight || 460;
     const chart = createChart(containerRef.current, {
+      // `autoSize: true` makes lightweight-charts attach its own
+      // ResizeObserver and follow the container's box. This is the
+      // reliable fix for "chart canvas keeps the expanded height after
+      // collapsing back" — the library tracks shrinks and grows itself
+      // instead of relying on our manual window-resize pings.
+      autoSize: true,
       width: containerRef.current.clientWidth,
-      height: 460,
-      layout: {
-        // TradingView-default dark bg — keeps chart aesthetic consistent
-        // regardless of app theme so candles read at full contrast.
-        background: { type: 'solid', color: TV_COLORS.background },
-        textColor: TV_COLORS.text,
-      },
+      height: initialHeight,
       grid: {
-        vertLines: { color: TV_COLORS.grid },
-        horzLines: { color: TV_COLORS.grid },
+        vertLines: { color: tvCanvas(theme).grid },
+        horzLines: { color: tvCanvas(theme).grid },
       },
       timeScale: {
         timeVisible: true,
         secondsVisible: false,
-        borderColor: TV_COLORS.border,
-        // Tighter spacing matches TradingView reference — more candles
-        // visible at a glance, less empty space.
-        barSpacing: 8,
-        minBarSpacing: 4,
-        rightOffset: 12,
+        borderColor: tvCanvas(theme).border,
+        // ── Spacing
+        barSpacing: 10,
+        minBarSpacing: 3,
+        rightOffset: 16,
+        // ── Continuity guards — match TradingView's tight render flow so
+        // missing intervals don't leave huge blank rails between candles.
+        fixLeftEdge: true,
+        lockVisibleTimeRangeOnResize: true,
+        rightBarStaysOnScroll: true,
+        shiftVisibleRangeOnNewBar: true,
       },
       rightPriceScale: {
-        borderColor: TV_COLORS.border,
-        // Tight top margin (8%) + volume row reserved at the bottom 25%
-        // gives candles ~67% of the height — matches the reference.
+        borderColor: tvCanvas(theme).border,
+        // Slightly more top breathing room (10 %) so big upward spikes
+        // don't push wicks against the chart's top edge. Bottom keeps
+        // 18% reserved for the volume row beneath the candles.
         autoScale: true,
-        scaleMargins: { top: 0.08, bottom: 0.25 },
+        scaleMargins: { top: 0.10, bottom: 0.18 },
+        mode: 0,                  // normal (not log, not percentage)
+        entireTextOnly: true,
+        alignLabels: true,
+        ticksVisible: true,
       },
       crosshair: {
         mode: 1, // Magnet — snaps to OHLC values
-        vertLine: { width: 1, color: TV_COLORS.crosshair, style: 2, labelBackgroundColor: TV_COLORS.background },
-        horzLine: { width: 1, color: TV_COLORS.crosshair, style: 2, labelBackgroundColor: TV_COLORS.background },
+        vertLine: {
+          width: 1,
+          color: tvCanvas(theme).crosshair,
+          style: 2,
+          labelBackgroundColor: tvCanvas(theme).crosshairLabelBg,
+          labelVisible: true,
+        },
+        horzLine: {
+          width: 1,
+          color: tvCanvas(theme).crosshair,
+          style: 2,
+          labelBackgroundColor: tvCanvas(theme).crosshairLabelBg,
+          labelVisible: true,
+        },
+      },
+      layout: {
+        background: { type: 'solid', color: tvCanvas(theme).background },
+        textColor: tvCanvas(theme).text,
+        // Slightly larger font sharper on retina; falls back gracefully
+        // on regular displays.
+        fontSize: 12,
+        fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, sans-serif',
       },
     });
     chartRef.current = chart;
 
+    // ── Subscribe to visible-range changes so the Y axis re-fits on every
+    // pan / zoom. lightweight-charts will call our autoscaleInfoProvider
+    // again, which reads the new visible range and returns fresh high/low.
+    // Debounced so a rapid drag doesn't fire dozens of applyOptions calls.
+    let _refitTimer = null;
+    const requestRefit = () => {
+      if (_refitTimer) cancelAnimationFrame(_refitTimer);
+      _refitTimer = requestAnimationFrame(() => {
+        try { candleSeriesRef.current?.priceScale().applyOptions({ autoScale: true }); }
+        catch (_) {}
+      });
+    };
+    try {
+      chart.timeScale().subscribeVisibleLogicalRangeChange(requestRefit);
+    } catch (_) { /* older lightweight-charts builds */ }
+
+    // ── Y-axis animation loop ─────────────────────────────────────────
+    // While the autoscale provider is interpolating between old and new
+    // ranges, we need to repeatedly force lightweight-charts to re-call
+    // the provider so each frame draws the next eased value. The loop
+    // ticks at display refresh rate and stops itself the moment the
+    // animState reports `duration === 0` (i.e. ease finished, range
+    // snapped to target).
+    kickAnimRef.current = () => {
+      if (animRafRef.current != null) return; // already ticking
+      const tick = () => {
+        animRafRef.current = null;
+        const state = animStateRef.current;
+        try {
+          candleSeriesRef.current?.priceScale().applyOptions({ autoScale: true });
+        } catch (_) {}
+        // If the provider still has ease time remaining, queue another
+        // frame. (The provider zeros `duration` on the final step.)
+        if (state && state.duration > 0) {
+          animRafRef.current = requestAnimationFrame(tick);
+        }
+      };
+      animRafRef.current = requestAnimationFrame(tick);
+    };
+
     const resize = () => {
       if (chart && containerRef.current) {
         const w = containerRef.current.clientWidth;
-        if (w > 0) chart.applyOptions({ width: w });
+        const h = containerRef.current.clientHeight;
+        const opts = {};
+        if (w > 0) opts.width = w;
+        if (h > 0) opts.height = h;
+        if (Object.keys(opts).length) chart.applyOptions(opts);
       }
       Object.values(subPanelChartsRef.current).forEach((sc) => {
         if (sc?.chart && sc?.container) {
@@ -567,6 +894,13 @@ export default function PriceChart({
     return () => {
       window.removeEventListener('resize', resize);
       if (ro) ro.disconnect();
+      if (_refitTimer) cancelAnimationFrame(_refitTimer);
+      if (animRafRef.current != null) {
+        cancelAnimationFrame(animRafRef.current);
+        animRafRef.current = null;
+      }
+      kickAnimRef.current = null;
+      try { chart.timeScale().unsubscribeVisibleLogicalRangeChange(requestRefit); } catch (_) {}
       for (const sc of Object.values(subPanelChartsRef.current)) {
         try { sc.chart?.remove(); } catch (_) {}
       }
@@ -580,10 +914,23 @@ export default function PriceChart({
   }, []);
 
   // ─── 2. Theme re-skin ────────────────────────────────────────────────
-  // Main chart keeps the fixed TV-default canvas (#131722) regardless of
-  // theme — chart aesthetic is intentionally constant. Sub-panels still
-  // follow the app theme.
+  // Re-paint BOTH the main chart and any open sub-panels (RSI / MACD)
+  // when the theme toggles, so the canvas, grid, axes, and crosshair
+  // labels all follow the app theme.
   useEffect(() => {
+    const cv = tvCanvas(theme);
+    try {
+      chartRef.current?.applyOptions({
+        layout: { background: { type: 'solid', color: cv.background }, textColor: cv.text },
+        grid: { vertLines: { color: cv.grid }, horzLines: { color: cv.grid } },
+        timeScale: { borderColor: cv.border },
+        rightPriceScale: { borderColor: cv.border },
+        crosshair: {
+          vertLine: { color: cv.crosshair, labelBackgroundColor: cv.crosshairLabelBg },
+          horzLine: { color: cv.crosshair, labelBackgroundColor: cv.crosshairLabelBg },
+        },
+      });
+    } catch (_) {}
     const pal = chartPalette();
     for (const sc of Object.values(subPanelChartsRef.current)) {
       try {
@@ -616,7 +963,7 @@ export default function PriceChart({
     }
     priceLinesRef.current.clear();
 
-    const series = createSeriesByChartType(chart, chartType, candlesRef, extraPricesRef);
+    const series = createSeriesByChartType(chart, chartType, candlesRef, extraPricesRef, animStateRef, kickAnimRef, hysteresisRef);
     candleSeriesRef.current = series;
 
     // Apply price precision matching the instrument, plus a dashed
@@ -636,7 +983,7 @@ export default function PriceChart({
       }
     } catch (_) {}
 
-    // Volume histogram lives in the bottom 22% of the chart on its own
+    // Volume histogram lives in the bottom 16% of the chart on its own
     // overlay price scale. Skip for the 'histogram' chart-type (where the
     // main series IS already volume).
     if (chartType !== 'histogram') {
@@ -645,9 +992,13 @@ export default function PriceChart({
           priceFormat: { type: 'volume' },
           priceScaleId: 'volume',
           color: TV_COLORS.volumeUp,
+          lastValueVisible: false,        // no last-value clutter on the axis
+          priceLineVisible: false,
         });
         chart.priceScale('volume').applyOptions({
-          scaleMargins: { top: 0.78, bottom: 0 },
+          // Top 84% = candles, bottom 16% = volume. Was 78/22 — too much
+          // dead space; new ratio matches TradingView's compact volume row.
+          scaleMargins: { top: 0.84, bottom: 0 },
         });
         volumeSeriesRef.current = volSeries;
       } catch (_) { /* fail-safe */ }
@@ -675,18 +1026,55 @@ export default function PriceChart({
     } catch (_) {}
   }, [pricePrecision, chartType]);
 
+  // Keep the autoscale hysteresis ref synced with the prop so changes
+  // take effect without rebuilding the chart series.
+  useEffect(() => {
+    const v = Number(autoscaleHysteresis);
+    hysteresisRef.current = Number.isFinite(v) && v >= 0 ? v : 0.04;
+  }, [autoscaleHysteresis]);
+
   // ─── 4. Load candles + subscribe to live updates ─────────────────────
   useEffect(() => {
     if (!candleSeriesRef.current) return;
     let cancelled = false;
     let unsub = null;
 
-    // Clear stale data immediately on symbol/timeframe switch.
-    try {
-      candleSeriesRef.current.setData([]);
-      candlesRef.current = [];
-    } catch (_) {}
-    setCandles([]);
+    // Symbol or timeframe just changed → reset the y-axis animation
+    // state so the new range snaps in (instead of easing from the prior
+    // symbol's price band, which would look wrong going from e.g. 2000
+    // to 1.08).
+    if (animStateRef.current) {
+      animStateRef.current.animLo = null;
+      animStateRef.current.animHi = null;
+      animStateRef.current.targetLo = null;
+      animStateRef.current.targetHi = null;
+      animStateRef.current.duration = 0;
+    }
+    if (animRafRef.current != null) {
+      cancelAnimationFrame(animRafRef.current);
+      animRafRef.current = null;
+    }
+
+    // Render cached candles immediately (if any) so the chart never shows
+    // a blank state on re-mount. Fresh data from the API replaces this
+    // ~100–300ms later.
+    const cached = readCachedCandles(symbol, timeframe);
+    if (cached && cached.length > 0) {
+      try {
+        candlesRef.current = cached;
+        setCandles(cached);
+        updateSeriesData(candleSeriesRef.current, chartType, cached);
+        _setVolumeData(volumeSeriesRef.current, cached);
+        _updateLastPriceLineColor(candleSeriesRef.current, cached);
+      } catch (_) { /* ignore */ }
+    } else {
+      // No cache → clear so we don't show stale data from the previous symbol.
+      try {
+        candleSeriesRef.current.setData([]);
+        candlesRef.current = [];
+      } catch (_) {}
+      setCandles([]);
+    }
 
     const load = async () => {
       try {
@@ -729,6 +1117,8 @@ export default function PriceChart({
         });
         candlesRef.current = filled;
         setCandles(filled);
+        // Persist for instant rendering on the next mount (page nav, logout/login).
+        writeCachedCandles(symbol, timeframe, filled);
         // Push to series in the chart-type-correct shape.
         updateSeriesData(candleSeriesRef.current, chartType, filled);
         _setVolumeData(volumeSeriesRef.current, filled);
@@ -824,16 +1214,22 @@ export default function PriceChart({
       }
       _updateLastPriceLineColor(candleSeriesRef.current, nextRef);
       setCandles(nextRef);
+      // Persist the latest series so the next mount sees up-to-date history.
+      writeCachedCandles(symbol, timeframe, nextRef);
 
-      // Auto-scroll: if the latest bar is currently visible (user hasn't
-      // panned away), keep it in view. Otherwise leave the user's chosen
-      // scroll position untouched so live updates don't yank them back.
+      // Re-fit the Y axis on EVERY tick (not only when the user is at the
+      // live edge). Volatility spikes that arrive while the user is
+      // scrolled through history still adjust the price axis so the
+      // candle they're looking at never clips. Auto-scroll horizontally
+      // only when the user is already at the right edge — so historical
+      // browsing isn't yanked back to live.
       try {
         const ts = chartRef.current?.timeScale();
         const range = ts?.getVisibleLogicalRange();
-        if (range && range.to >= nextRef.length - 2) {
-          ts.scrollToRealTime();
-        }
+        const followingLive = range && range.to >= nextRef.length - 2;
+        // Always refit the Y axis.
+        candleSeriesRef.current?.priceScale().applyOptions({ autoScale: true });
+        if (followingLive) ts.scrollToRealTime();
       } catch (_) { /* timeScale may not be ready */ }
     });
 
@@ -851,10 +1247,10 @@ export default function PriceChart({
     if (!chartRef.current || !candles.length) return;
 
     const emaConfigs = [
-      { key: 'ema12', period: 12, color: '#fbbf24' },
-      { key: 'ema26', period: 26, color: '#60a5fa' },
-      { key: 'ema50', period: 50, color: '#a78bfa' },
-      { key: 'ema200', period: 200, color: '#f472b6' },
+      { key: 'ema12', period: 12, color: '#1D4ED8' },  // dark blue — primary brand
+      { key: 'ema26', period: 26, color: '#60A5FA' },  // medium blue
+      { key: 'ema50', period: 50, color: '#A78BFA' },  // purple
+      { key: 'ema200', period: 200, color: '#F472B6' }, // pink
     ];
 
     for (const cfg of emaConfigs) {
@@ -1110,18 +1506,14 @@ export default function PriceChart({
   const currentType = CHART_TYPES.find((t) => t.id === chartType) || CHART_TYPES[0];
 
   return (
-    <div className="card overflow-visible">
+    <div className="card overflow-visible h-full flex flex-col">
       {/* Premium header — chart type dropdown + indicator pills + timeframe */}
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-border-dark flex-wrap gap-2 bg-gradient-to-r from-bg-card to-bg-card/50">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="w-1.5 h-1.5 rounded-full bg-bull animate-pulse" />
-          <span className="text-sm font-bold text-white">{symbol}</span>
-          <span className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold ml-1">
-            {timeframe}
-          </span>
 
           {/* Chart-type dropdown */}
-          <div className="relative ml-2">
+          <div className="relative">
             <button
               type="button"
               onClick={() => setChartTypeOpen((o) => !o)}
@@ -1171,47 +1563,198 @@ export default function PriceChart({
               </>
             )}
           </div>
+
+          {/* Indicators dropdown */}
+          {(() => {
+            const indicatorList = [
+              { key: 'ema12',  label: 'EMA 12',  color: '#1D4ED8' },
+              { key: 'ema26',  label: 'EMA 26',  color: '#60A5FA' },
+              { key: 'ema50',  label: 'EMA 50',  color: '#A78BFA' },
+              { key: 'ema200', label: 'EMA 200', color: '#F472B6' },
+              { key: 'rsi',    label: 'RSI',     color: '#8B5CF6' },
+              { key: 'macd',   label: 'MACD',    color: '#2DD4BF' },
+            ];
+            const activeCount = indicatorList.filter((i) => indicators[i.key]).length;
+            return (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => { setIndicatorsOpen((o) => !o); setTimeframeOpen(false); setChartTypeOpen(false); }}
+                  className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-md border border-border-dark bg-white text-text-primary hover:bg-bg-hover transition-colors"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18" /><path d="M7 15l4-4 4 4 6-7" /></svg>
+                  Indicators
+                  {activeCount > 0 && (
+                    <span className="text-[9px] font-bold px-1.5 py-px rounded-full bg-primary-500 text-white">{activeCount}</span>
+                  )}
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
+                </button>
+                {indicatorsOpen && (
+                  <>
+                    <div className="fixed inset-0 z-30" onClick={() => setIndicatorsOpen(false)} />
+                    <div className="absolute left-0 top-full mt-1 z-40 w-44 bg-white border border-border-dark rounded-lg shadow-elevated overflow-hidden">
+                      {indicatorList.map((ind) => (
+                        <button
+                          key={ind.key}
+                          type="button"
+                          onClick={() => toggle(ind.key)}
+                          className="w-full flex items-center justify-between gap-2 px-3 py-2 text-[12px] hover:bg-bg-hover transition-colors text-left"
+                        >
+                          <span className="flex items-center gap-2 min-w-0">
+                            <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: ind.color }} />
+                            <span className="text-text-primary font-medium">{ind.label}</span>
+                          </span>
+                          <span
+                            className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center ${
+                              indicators[ind.key] ? 'bg-primary-500 border-primary-500' : 'bg-white border-border-dark'
+                            }`}
+                          >
+                            {indicators[ind.key] && (
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7" /></svg>
+                            )}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* Timeframe dropdown */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => { setTimeframeOpen((o) => !o); setIndicatorsOpen(false); setChartTypeOpen(false); }}
+              className="inline-flex items-center gap-1.5 text-[11px] font-bold px-3 py-1.5 rounded-md border border-border-dark bg-white text-text-primary hover:bg-bg-hover transition-colors"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" /></svg>
+              {timeframe}
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
+            </button>
+            {timeframeOpen && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setTimeframeOpen(false)} />
+                <div className="absolute left-0 top-full mt-1 z-40 w-24 bg-white border border-border-dark rounded-lg shadow-elevated overflow-hidden">
+                  {TF_OPTIONS.map((tf) => (
+                    <button
+                      key={tf}
+                      type="button"
+                      onClick={() => { onTimeframeChange(tf); setTimeframeOpen(false); }}
+                      className={`w-full text-left px-3 py-2 text-[12px] font-semibold transition-colors ${
+                        tf === timeframe
+                          ? 'bg-primary-500 text-white'
+                          : 'text-text-primary hover:bg-bg-hover'
+                      }`}
+                    >
+                      {tf}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         </div>
 
-        <div className="flex items-center gap-3 flex-wrap">
-          {/* Indicator pills */}
-          <div className="flex gap-1">
-            <IndButton active={indicators.ema12} onClick={() => toggle('ema12')} color="#fbbf24">EMA 12</IndButton>
-            <IndButton active={indicators.ema26} onClick={() => toggle('ema26')} color="#60a5fa">EMA 26</IndButton>
-            <IndButton active={indicators.ema50} onClick={() => toggle('ema50')} color="#a78bfa">EMA 50</IndButton>
-            <IndButton active={indicators.ema200} onClick={() => toggle('ema200')} color="#f472b6">EMA 200</IndButton>
-            <IndButton active={indicators.rsi} onClick={() => toggle('rsi')} color="#8b5cf6">RSI</IndButton>
-            <IndButton active={indicators.macd} onClick={() => toggle('macd')} color="#2dd4bf">MACD</IndButton>
-          </div>
-          {/* Timeframe segmented control */}
-          <div className="flex items-center p-0.5 rounded-md border border-border-dark bg-bg-panel">
-            {TF_OPTIONS.map((tf) => (
-              <button
-                key={tf}
-                onClick={() => onTimeframeChange(tf)}
-                className={`text-[11px] px-2.5 py-1 rounded transition-all ${
-                  tf === timeframe
-                    ? 'text-bg-dark font-bold shadow-md'
-                    : 'text-text-muted hover:text-text-primary'
+        {/* Right side — Sell / Spread / Buy quick-trade chip only. */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {instrument && orderSide && onOrderSideChange && (() => {
+            const last = Number(instrument.lastPrice) || 0;
+            const half = Number(instrument.spreadValue || 0) / 2;
+            const bid = instrument.spreadType === 'PERCENTAGE' ? last * (1 - half) : last - half;
+            const ask = instrument.spreadType === 'PERCENTAGE' ? last * (1 + half) : last + half;
+            const spread = ask - bid;
+            const prec = Math.min(instrument.pricePrecision || pricePrecision || 2, 5);
+            // Outer wrapper handles the fade+collapse animation so the
+            // chip melts away (rather than vanishing) when the order
+            // panel opens. The negative right margin when hidden cancels
+            // the parent flex `gap-2` so the remaining toolbar buttons
+            // don't leave an 8 px ghost-gap where the chip used to sit.
+            return (
+              <div
+                aria-hidden={hideQuickTrade}
+                className={`overflow-hidden transition-all duration-200 ease-out ${
+                  hideQuickTrade
+                    ? 'opacity-0 max-w-0 -translate-x-1 -mr-2 pointer-events-none'
+                    : 'opacity-100 max-w-[260px] translate-x-0'
                 }`}
-                style={
-                  tf === timeframe
-                    ? { background: 'linear-gradient(135deg, #FFE74D 0%, #FCD535 100%)' }
-                    : undefined
-                }
               >
-                {tf}
-              </button>
-            ))}
-          </div>
+                <div className="flex items-stretch h-8 rounded-md overflow-hidden border border-border-dark">
+                  <button
+                    type="button"
+                    onClick={() => onOrderSideChange('SELL')}
+                    title="Sell at bid"
+                    tabIndex={hideQuickTrade ? -1 : 0}
+                    className={`px-2.5 flex flex-col items-center justify-center gap-px font-bold leading-none transition-all ${
+                      orderSide === 'SELL' ? 'bg-bear' : 'bg-bear/10 text-bear hover:bg-bear/20'
+                    }`}
+                    style={orderSide === 'SELL' ? { color: '#FFFFFF' } : undefined}
+                  >
+                    <span className="text-[8px] uppercase tracking-wider opacity-90">Sell</span>
+                    <span className="font-mono text-[10px] tabular-nums">{bid.toFixed(prec)}</span>
+                  </button>
+                  <span className="px-2 flex items-center justify-center text-[10px] font-mono font-semibold text-text-secondary bg-bg-card border-x border-border-dark">
+                    {spread.toFixed(prec)}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onOrderSideChange('BUY')}
+                    title="Buy at ask"
+                    tabIndex={hideQuickTrade ? -1 : 0}
+                    className={`px-2.5 flex flex-col items-center justify-center gap-px font-bold leading-none transition-all ${
+                      orderSide === 'BUY' ? 'bg-primary-500' : 'bg-primary-500/10 text-primary-600 hover:bg-primary-500/20'
+                    }`}
+                    style={orderSide === 'BUY' ? { color: '#FFFFFF' } : undefined}
+                  >
+                    <span className="text-[8px] uppercase tracking-wider opacity-90">Buy</span>
+                    <span className="font-mono text-[10px] tabular-nums">{ask.toFixed(prec)}</span>
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Expand / Fullscreen controls — moved into the toolbar from
+              the floating overlay so they don't overlap the Sell/Buy chip. */}
+          {onToggleExpand && (
+            <button
+              type="button"
+              onClick={onToggleExpand}
+              title={expanded ? 'Show panels (E)' : 'Expand chart — hide panels (E)'}
+              className="p-1.5 rounded-md border border-border-dark bg-white text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
+            >
+              {expanded ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 14h6v6" /><path d="M20 10h-6V4" /><path d="M14 10l7-7" /><path d="M3 21l7-7" /></svg>
+              ) : (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6" /><path d="M9 21H3v-6" /><path d="M21 3l-7 7" /><path d="M3 21l7-7" /></svg>
+              )}
+            </button>
+          )}
+          {onToggleFullscreen && (
+            <button
+              type="button"
+              onClick={onToggleFullscreen}
+              title={fullscreen ? 'Exit fullscreen (F or Esc)' : 'Fullscreen chart (F)'}
+              className="p-1.5 rounded-md border border-border-dark bg-white text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
+            >
+              {fullscreen ? (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3" /><path d="M21 8h-3a2 2 0 0 1-2-2V3" /><path d="M3 16h3a2 2 0 0 1 2 2v3" /><path d="M16 21v-3a2 2 0 0 1 2-2h3" /></svg>
+              ) : (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3h6v2H5v4H3V3z" /><path d="M21 3v6h-2V5h-4V3h6z" /><path d="M3 21v-6h2v4h4v2H3z" /><path d="M21 21h-6v-2h4v-4h2v6z" /></svg>
+              )}
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Main chart canvas + top-right info-strip overlay */}
-      <div className="relative w-full" style={{ background: TV_COLORS.background }}>
-        <div ref={containerRef} className="w-full" />
+      {/* Main chart canvas + top-right info-strip overlay.
+          flex-1 + min-h-0 lets the chart container claim every remaining
+          pixel under the toolbar instead of falling back to a 460 px tile. */}
+      <div className="relative w-full flex-1 min-h-0" style={{ background: tvCanvas(theme).background }}>
+        <div ref={containerRef} className="w-full h-full" />
         {infoStrip && (
-          <div className="pointer-events-none absolute top-2 left-2 z-10 flex items-center gap-3 px-3 py-1.5 rounded-md bg-black/30 backdrop-blur-sm border border-white/5 text-[11px] font-medium tracking-wide">
+          <div className="pointer-events-none absolute top-2 left-2 z-10 flex items-center gap-3 px-3 py-1.5 rounded-md bg-white/85 backdrop-blur-sm border border-border-dark text-[11px] font-medium tracking-wide shadow-card">
             {infoStrip.margin != null && (
               <span className="text-text-muted">
                 Margin <span className="text-bull font-semibold">{infoStrip.margin}</span>

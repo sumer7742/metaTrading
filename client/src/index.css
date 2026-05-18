@@ -1,4 +1,6 @@
-/* Exness-inspired theme — yellow accent, dark/light modes via CSS variables */
+/* Groww-inspired theme — clean light fintech surface, #1D4ED8 primary.
+   A single light palette only — the dark variant from the previous Exness
+   look has been retired per the redesign brief. */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 @tailwind base;
@@ -6,48 +8,50 @@
 @tailwind utilities;
 
 /* ───────────────────────── Theme tokens ─────────────────────────
-   `:root` (or [data-theme="dark"]) holds the dark palette — that's the
-   default the app has always shipped with. [data-theme="light"] flips the
-   surface and text tokens to a clean light palette. Brand yellow and
-   bull/bear stay identical so charts and CTAs read the same way in both.
-   The whole site re-skins by toggling the data attribute on <html>. */
+   Light is the default Groww palette. Dark uses dark surfaces while keeping
+   the green primary — intended for the trading terminal experience. */
 :root,
-[data-theme='dark'] {
-  --color-bg-dark: 15 15 18;        /* #0F0F12 */
-  --color-bg-card: 26 26 31;        /* #1A1A1F */
-  --color-bg-panel: 31 31 37;       /* #1F1F25 */
-  --color-bg-hover: 42 42 48;       /* #2A2A30 */
-  --color-bg-sidebar: 10 10 13;     /* #0A0A0D */
-  --color-border-dark: 45 45 52;    /* #2D2D34 */
-  --color-border-subtle: 31 31 37;  /* #1F1F25 */
-  --color-text-primary: 255 255 255;
-  --color-text-secondary: 176 176 184;
-  --color-text-muted: 110 110 120;
-  --color-scrollbar-track: 15 15 18;
-  --color-scrollbar-thumb: 45 45 52;
+[data-theme='light'] {
+  --color-bg-dark: 255 255 255;        /* page background — pure white */
+  --color-bg-card: 248 249 251;        /* card surface, #F8F9FB */
+  --color-bg-panel: 248 249 251;       /* panel matches card */
+  --color-bg-hover: 243 244 246;       /* gentle hover wash */
+  --color-bg-sidebar: 255 255 255;     /* legacy token */
+  --color-border-dark: 209 213 219;    /* #D1D5DB — slightly stronger hairline */
+  --color-border-subtle: 229 231 235;
+  --color-text-primary: 15 23 42;      /* #0F172A — slate-900, nearly black */
+  --color-text-secondary: 31 41 55;    /* #1F2937 — gray-800 */
+  --color-text-muted: 75 85 99;        /* #4B5563 — gray-600, was muted-400 */
+  --color-scrollbar-track: 248 249 251;
+  --color-scrollbar-thumb: 156 163 175;
 }
 
-[data-theme='light'] {
-  --color-bg-dark: 248 249 251;      /* page background, subtle off-white */
-  --color-bg-card: 255 255 255;      /* card surface, pure white */
-  --color-bg-panel: 244 245 247;     /* panel/elevated, slightly warm gray */
-  --color-bg-hover: 235 237 240;     /* hover state */
-  --color-bg-sidebar: 252 252 253;   /* sidebar, just shy of white */
-  --color-border-dark: 220 224 230;
-  --color-border-subtle: 235 237 240;
-  --color-text-primary: 17 24 39;    /* near-black for primary text */
-  --color-text-secondary: 75 85 99;
-  --color-text-muted: 150 156 168;
-  --color-scrollbar-track: 244 245 247;
-  --color-scrollbar-thumb: 200 205 212;
+[data-theme='dark'] {
+  --color-bg-dark: 13 17 23;           /* #0D1117 — terminal page background */
+  --color-bg-card: 22 27 34;           /* #161B22 — card surface */
+  --color-bg-panel: 30 36 44;          /* #1E242C */
+  --color-bg-hover: 42 49 58;          /* hover wash */
+  --color-bg-sidebar: 17 21 27;
+  --color-border-dark: 48 54 61;       /* #30363D */
+  --color-border-subtle: 33 38 45;
+  --color-text-primary: 240 246 252;
+  --color-text-secondary: 173 181 191;
+  --color-text-muted: 125 133 144;
+  --color-scrollbar-track: 13 17 23;
+  --color-scrollbar-thumb: 48 54 61;
 }
 
 @layer base {
+  html, body {
+    background-color: #FFFFFF;
+  }
   body {
     @apply bg-bg-dark text-text-primary antialiased;
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-weight: 450;          /* default a touch heavier than 400 for readability */
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    color-scheme: light;
   }
   * {
     box-sizing: border-box;
@@ -58,225 +62,238 @@
   }
 }
 
-/* Light-theme overrides for HARDCODED Tailwind utility classes scattered
-   through components (text-white, text-gray-300, bg-black/50, etc.). Without
-   these overrides, light mode would still leave white text on white cards
-   in dozens of places. Listing them here is hacky but lets us migrate the
-   app to true light/dark without rewriting every component. */
+/* ─── Light-mode compatibility overrides ─────────────────────────────
+   Existing pages were authored against the original dark theme — they
+   hardcode `text-white`, `text-gray-300`, etc. in many spots. These rules
+   keep those classes readable on the white surface in LIGHT mode only —
+   in dark mode they're left alone so light-on-dark works as authored. */
 [data-theme='light'] .text-white,
 [data-theme='light'] .hover\:text-white:hover {
-  color: rgb(17 24 39);
+  color: rgb(15 23 42) !important;        /* slate-900 — nearly black on white */
 }
-[data-theme='light'] .text-gray-200 { color: rgb(31 41 55); }
-[data-theme='light'] .text-gray-300 { color: rgb(55 65 81); }
-[data-theme='light'] .text-gray-400 { color: rgb(75 85 99); }
-[data-theme='light'] .text-gray-500 { color: rgb(107 114 128); }
-[data-theme='light'] .text-gray-600 { color: rgb(150 156 168); }
-[data-theme='light'] .text-gray-700 { color: rgb(75 85 99); }
-[data-theme='light'] .placeholder-gray-500::placeholder { color: rgb(150 156 168); }
-[data-theme='light'] .bg-bg-dark.text-white,
-[data-theme='light'] .text-bg-dark { color: rgb(255 255 255); }   /* keep yellow CTAs readable */
+[data-theme='light'] .text-gray-200 { color: rgb(15 23 42) !important; }
+[data-theme='light'] .text-gray-300 { color: rgb(17 24 39) !important; }
+[data-theme='light'] .text-gray-400 { color: rgb(31 41 55) !important; }
+[data-theme='light'] .text-gray-500 { color: rgb(55 65 81) !important; }
+[data-theme='light'] .text-gray-600 { color: rgb(55 65 81) !important; }
+[data-theme='light'] .text-gray-700 { color: rgb(31 41 55) !important; }
+[data-theme='light'] .placeholder-gray-500::placeholder { color: rgb(107 114 128); }
 
-/* Same-element exception: when text-white sits on a bull/bear/primary
-   background, the global flip would make it dark on a colored gradient
-   (unreadable). Force white back in light mode for these specific cases —
-   covers BUY/SELL buttons, submit CTAs, and all tinted action chips. */
-[data-theme='light'] .bg-bull.text-white,
-[data-theme='light'] .bg-bear.text-white,
-[data-theme='light'] .bg-primary-500.text-white { color: #ffffff !important; }
-[data-theme='light'] .bg-bull:hover.text-white,
-[data-theme='light'] .bg-bear:hover.text-white { color: #ffffff !important; }
+/* Tinted-surface exceptions: when text-white sits on a colored gradient
+   (BUY/SELL/CTA), the light-mode override above would make it dark on
+   green/red — unreadable. Force white back for those specific surfaces.
+   These apply in both themes since the surface itself is colored. */
+.bg-bull.text-white,
+.bg-bear.text-white,
+.bg-primary-500.text-white,
+.btn-bull,
+.btn-bear,
+.btn-primary { color: #FFFFFF !important; }
+.btn-primary { color: #FFFFFF !important; }
+
+/* Glassmorphism utility — frosted card surface for terminal panels.
+   Slightly more opaque so the text inside reads cleanly against any
+   background instead of blurring with it. */
+.glass {
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+}
+[data-theme='dark'] .glass {
+  background: rgba(22, 27, 34, 0.85);
+}
+
+/* Many components use `bg-black` overlays for modals — they still work on
+   white because they're translucent, so we leave those alone. */
+
+/* ─── Dark-mode `bg-white` remap ──────────────────────────────────────
+   Many components hard-code `bg-white` (carryover from the light-theme
+   redesign). In dark mode that punches bright white panels through the
+   otherwise-dark UI. Map any `bg-white` surface to the dark card
+   colour so the page reads as fully dark. The `:not(.keep-white)`
+   carve-out lets us opt specific elements (e.g. toggle slider thumbs)
+   out — they need to stay white in both themes for contrast against
+   their colored track. */
+[data-theme='dark'] .bg-white:not(.keep-white) {
+  background-color: rgb(var(--color-bg-card)) !important;
+}
+[data-theme='dark'] .bg-white\/85:not(.keep-white),
+[data-theme='dark'] .bg-white\/90:not(.keep-white),
+[data-theme='dark'] .bg-white\/95:not(.keep-white) {
+  background-color: rgb(var(--color-bg-card) / 0.9) !important;
+}
 
 @layer components {
-  /* Cards — slightly more elevated feel like Exness */
+  /* Cards — Groww uses a soft off-white card on a white page with a hairline
+     border and a barely-there shadow. No glow. */
   .card {
-    @apply bg-bg-card border border-border-dark rounded-lg shadow-card;
+    @apply bg-bg-card border border-border-dark rounded-xl shadow-card;
   }
   .panel {
     @apply bg-bg-panel border border-border-dark rounded-xl;
   }
 
-  /* Buttons — Exness signature: yellow primary CTA */
+  /* Buttons */
   .btn {
-    @apply inline-flex items-center justify-center px-4 py-2 rounded-md font-semibold text-sm transition-all duration-150;
+    @apply inline-flex items-center justify-center px-4 py-2 rounded-lg font-semibold text-sm transition-all duration-150;
   }
   .btn-primary {
-    @apply btn text-bg-dark;
-    background: linear-gradient(180deg, #FFE74D 0%, #FCD535 100%);
-    color: #111827; /* hard-coded so light mode keeps yellow CTAs readable */
+    @apply btn;
+    background: #1D4ED8;
+    color: #FFFFFF;
   }
   .btn-primary:hover {
-    background: linear-gradient(180deg, #FFDE26 0%, #E6BF1F 100%);
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(252, 213, 53, 0.25);
+    background: #1E40AF;
+    box-shadow: 0 4px 12px rgba(29, 78, 216, 0.25);
   }
-  .btn-primary:active {
-    transform: translateY(0);
-  }
+  .btn-primary:active { transform: translateY(0); }
   .btn-secondary {
-    @apply btn bg-bg-hover hover:bg-bg-panel text-text-primary border border-border-dark;
+    @apply btn bg-bg-card hover:bg-bg-hover text-text-primary border border-border-dark;
   }
   .btn-bull {
     @apply btn text-white;
-    background: linear-gradient(180deg, #00E676 0%, #00C853 100%);
+    background: #00C853;
   }
-  .btn-bull:hover {
-    background: linear-gradient(180deg, #00C853 0%, #00A847 100%);
-  }
+  .btn-bull:hover { background: #00A847; }
   .btn-bear {
     @apply btn text-white;
-    background: linear-gradient(180deg, #FF5C8A 0%, #FF3D71 100%);
+    background: #FF3B57;
   }
-  .btn-bear:hover {
-    background: linear-gradient(180deg, #FF3D71 0%, #E62E5C 100%);
-  }
-  /* Buy/Sell labels on green/red gradients should always be white regardless
-     of theme — the override above turns text-white black in light mode, which
-     would be invisible on the bull/bear backgrounds. */
-  [data-theme='light'] .btn-bull,
-  [data-theme='light'] .btn-bear { color: #ffffff; }
+  .btn-bear:hover { background: #E62E48; }
   .btn-ghost {
     @apply btn bg-transparent border border-border-dark hover:border-primary-500 hover:bg-bg-hover text-text-secondary hover:text-text-primary;
   }
 
-  /* Inputs */
+  /* Inputs — white surface, soft border, primary-green focus ring */
   .input {
-    @apply w-full px-3 py-2.5 bg-bg-dark border border-border-dark rounded-md text-sm text-text-primary placeholder-text-muted focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500/30 transition-all;
+    @apply w-full px-3 py-2.5 bg-white border border-border-dark rounded-lg text-sm text-text-primary placeholder-text-muted focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/20 transition-all;
   }
   .label {
     @apply block text-xs text-text-secondary mb-1.5 uppercase tracking-wider font-medium;
   }
 
-  /* Tables */
+  /* Tables — soft row hover, subtle dividers */
   .table-row {
     @apply border-b border-border-subtle hover:bg-bg-hover transition-colors;
   }
 
-  /* Sidebar nav items (legacy — kept so any references elsewhere still work) */
-  .nav-item {
-    @apply flex items-center gap-3 px-4 py-2.5 text-sm rounded-md text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-all;
+  /* ─── Top-navigation primitives (Groww-style) ─────────────────────
+     The Layout no longer has a sidebar. Main nav links sit in a horizontal
+     pill row beneath the brand bar; active state is an underline + tint,
+     not a filled pill, to match Groww's restrained header. */
+  .topnav-link {
+    @apply relative inline-flex items-center gap-2 px-3 py-3 text-sm font-semibold text-text-secondary hover:text-text-primary transition-colors;
   }
-  .nav-item-active {
-    @apply nav-item;
-    background: linear-gradient(90deg, rgba(252, 213, 53, 0.15) 0%, rgba(252, 213, 53, 0.05) 100%);
-    color: #FCD535;
-    border-left: 3px solid #FCD535;
-    border-radius: 0 6px 6px 0;
-    padding-left: calc(1rem - 3px);
+  .topnav-link-active {
+    color: #1E40AF !important;
+    font-weight: 700;
   }
-
-  /* ─── Premium sidebar ──────────────────────────────────────
-     `.sidebar-elevated` — vertical gradient backdrop + a hairline yellow
-     accent at the top edge so the brand area pops without a heavy header.
-     Falls back to bg-bg-sidebar token in light mode (CSS vars handle it). */
-  .sidebar-elevated {
-    background: linear-gradient(180deg, rgb(var(--color-bg-sidebar)) 0%, rgb(var(--color-bg-dark)) 100%);
-    box-shadow: inset 0 1px 0 rgba(252, 213, 53, 0.25);
-  }
-
-  /* Pill-shaped nav link. Hover state slides a faint yellow tint and
-     brightens the icon — gives each row a small but tangible affordance
-     without going over the top. */
-  .sidebar-link {
-    @apply relative flex items-center gap-3 px-3 py-2.5 text-sm rounded-lg text-text-secondary transition-colors duration-150;
-  }
-  .sidebar-link:hover {
-    @apply text-text-primary bg-bg-hover;
-  }
-  .sidebar-link-icon {
-    @apply text-text-muted transition-colors duration-150;
-  }
-  .sidebar-link:hover .sidebar-link-icon {
-    color: #FCD535;
-  }
-
-  /* Active item: full yellow gradient pill with a soft glow. We also fade
-     the inset top border that the parent shows so the active item reads as
-     "lifted" out of the gradient. */
-  .sidebar-link-active {
-    color: #111827 !important; /* readable on the yellow regardless of theme */
-    background: linear-gradient(135deg, #FFE74D 0%, #FCD535 100%);
-    box-shadow:
-      0 0 0 1px rgba(252, 213, 53, 0.3),
-      0 4px 14px rgba(252, 213, 53, 0.25);
-    font-weight: 600;
-  }
-  .sidebar-link-active .sidebar-link-icon {
-    color: #111827 !important;
-  }
-  .sidebar-link-active:hover {
-    background: linear-gradient(135deg, #FFDE26 0%, #E6BF1F 100%);
-  }
-  /* Vertical "you are here" tab on the left edge of the active pill —
-     small but the kind of detail that reads as "a designer touched this". */
-  .sidebar-link-active::before {
+  .topnav-link-active::after {
     content: '';
     position: absolute;
-    left: -12px;
-    top: 25%;
-    bottom: 25%;
-    width: 3px;
-    background: #FCD535;
-    border-radius: 0 3px 3px 0;
-    box-shadow: 0 0 8px rgba(252, 213, 53, 0.7);
+    left: 12px;
+    right: 12px;
+    bottom: 0;
+    height: 3px;
+    background: #1D4ED8;
+    border-radius: 3px 3px 0 0;
+  }
+  .topnav-sublink {
+    @apply inline-flex items-center px-3 py-1.5 text-xs font-medium text-text-secondary hover:text-text-primary rounded-md hover:bg-bg-hover transition-colors;
+  }
+  .topnav-sublink-active {
+    color: #1D4ED8 !important;
+    background: rgba(29, 78, 216, 0.08);
+    font-weight: 600;
   }
 
-  /* Price ticker style */
-  .price-up {
-    @apply text-bull font-mono;
+  /* Legacy sidebar-link classes — repointed to no-op styles so any stray
+     references render harmlessly as plain links (e.g. mobile menu reuse). */
+  .nav-item,
+  .sidebar-link {
+    @apply flex items-center gap-3 px-3 py-2.5 text-sm rounded-lg text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors;
   }
-  .price-down {
-    @apply text-bear font-mono;
+  .nav-item-active,
+  .sidebar-link-active {
+    background: rgba(29, 78, 216, 0.10);
+    color: #1E40AF !important;
+    font-weight: 600;
   }
+  .sidebar-link-icon { @apply text-text-muted; }
+  .sidebar-elevated { background: #FFFFFF; box-shadow: none; }
 
-  /* Yellow accent badge */
+  /* Price ticker */
+  .price-up { @apply text-bull font-mono; }
+  .price-down { @apply text-bear font-mono; }
+
+  /* Badges */
   .badge-primary {
-    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-primary-500/15 text-primary-500 border border-primary-500/30;
+    @apply inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold;
+    background: rgba(29, 78, 216, 0.10);
+    color: #1E40AF;
+    border: 1px solid rgba(29, 78, 216, 0.25);
   }
   .badge-bull {
-    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-bull/15 text-bull border border-bull/30;
+    @apply inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-bull/10 text-bull border border-bull/30;
   }
   .badge-bear {
-    @apply inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-bear/15 text-bear border border-bear/30;
+    @apply inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-bear/10 text-bear border border-bear/30;
   }
 
-  /* Stat card — like Exness dashboard cards */
   .stat-card {
-    @apply card p-5 hover:border-primary-500/30 transition-colors;
+    @apply card p-5 hover:border-primary-500/40 transition-colors;
   }
 }
 
-/* Custom scrollbar — track + thumb pull from theme variables */
+/* ─── Targeted overrides for hardcoded yellow gradients ──────────────
+   A handful of pages were authored with inline `background: linear-gradient(...
+   yellow ...)` for logo chips, symbol pills, etc. Catch those generically
+   so they render as the new green primary without per-file edits. */
+[style*='linear-gradient'][style*='FCD535'],
+[style*='linear-gradient'][style*='FFE74D'],
+[style*='linear-gradient'][style*='FFDE26'] {
+  /* legacy yellow brand chips → recolour to blue per redesign request */
+  background: #3B82F6 !important;
+  color: #FFFFFF !important;
+}
+
+/* Inline radial-gradient yellow tints used as decorative card glows — turn
+   them off so cards read as clean surfaces, not neon dashboards. */
+[style*='radial-gradient'][style*='252, 213, 53'],
+[style*='radial-gradient'][style*='FCD535'] {
+  background: transparent !important;
+}
+
+/* Hide scrollbar utility — used by horizontal ticker rails */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* Custom scrollbar */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: rgb(var(--color-scrollbar-track)); }
 ::-webkit-scrollbar-thumb { background: rgb(var(--color-scrollbar-thumb)); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #FCD535; }
+::-webkit-scrollbar-thumb:hover { background: #1D4ED8; }
 
-/* Live pulse animation */
+/* Live pulse */
 @keyframes pulse-slow {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
 }
-.pulse-live {
-  animation: pulse-slow 2s ease-in-out infinite;
-}
+.pulse-live { animation: pulse-slow 2s ease-in-out infinite; }
 
-/* Subtle yellow glow for important elements */
-@keyframes yellow-glow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(252, 213, 53, 0); }
-  50% { box-shadow: 0 0 0 4px rgba(252, 213, 53, 0.2); }
+/* Subtle green glow */
+@keyframes green-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(29, 78, 216, 0); }
+  50% { box-shadow: 0 0 0 4px rgba(29, 78, 216, 0.20); }
 }
-.glow-primary {
-  animation: yellow-glow 2s ease-in-out infinite;
-}
+.glow-primary { animation: green-glow 2s ease-in-out infinite; }
 
-/* Number flash on update (price change indicator) */
 @keyframes flash-up {
-  0% { background-color: rgba(0, 200, 83, 0.3); }
+  0% { background-color: rgba(0, 200, 83, 0.20); }
   100% { background-color: transparent; }
 }
 @keyframes flash-down {
-  0% { background-color: rgba(255, 61, 113, 0.3); }
+  0% { background-color: rgba(255, 59, 87, 0.20); }
   100% { background-color: transparent; }
 }
 .flash-up { animation: flash-up 0.5s ease-out; }

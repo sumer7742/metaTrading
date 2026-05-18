@@ -3,13 +3,33 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { fmtPriceDual, fmtMoneyDual } from '../utils/format';
 import { useFxRate } from '../hooks/useFxRate';
+import AssetIcon from './AssetIcon';
 
-export default function OrderForm({ instrument, account, onPlaced, onPendingPriceChange }) {
+export default function OrderForm({
+  instrument,
+  account,
+  onPlaced,
+  onPendingPriceChange,
+  // Optional controlled side — when the parent (Trade page) provides a
+  // `side` value, the inline BUY / SELL toggle inside the form is hidden
+  // because the parent's chart-top Sell/Buy chip drives the side instead.
+  side: controlledSide,
+  onSideChange,
+  // Optional close callback — when provided a small × renders inline
+  // next to the asset name in the compact header.
+  onClose,
+}) {
   const maxLev = instrument?.maxLeverage || 100;
   const initialLev = Math.min(account?.leverage || 1, maxLev);
   const fxRate = useFxRate();
 
-  const [side, setSide] = useState('BUY');
+  const [internalSide, setInternalSide] = useState('BUY');
+  const sideControlled = controlledSide === 'BUY' || controlledSide === 'SELL';
+  const side = sideControlled ? controlledSide : internalSide;
+  const setSide = (next) => {
+    if (sideControlled) onSideChange?.(next);
+    else setInternalSide(next);
+  };
   // The order panel only exposes MARKET and LIMIT to the user. The backend
   // auto-resolves a "LIMIT" mode order to either LIMIT or STOP depending
   // on the price's relationship to the current bid/ask. STOP-tab is gone.
@@ -229,57 +249,67 @@ export default function OrderForm({ instrument, account, onPlaced, onPendingPric
     `${acctSym}${Number(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   return (
-    <div className="card p-4">
-      {/* Header — accent bar + title + live last price chip */}
-      <div className="flex items-center justify-between gap-2 mb-4">
-        <div className="flex items-center gap-2">
-          <span className="w-1 h-5 bg-primary-500 rounded-full" />
-          <div className="text-sm font-bold text-text-primary uppercase tracking-wider">Place Order</div>
+    // Card hugs its content (no `flex-1` — that left a tall blank
+    // strip below the CTA after the cost-summary card was removed).
+    // `max-h-full` + `overflow-y-auto` still let it scroll internally
+    // if the form ever grows taller than the surrounding aside.
+    <div className="card p-5 max-h-full overflow-y-auto">
+      {/* Compact header — asset icon + symbol on the left, × close on the
+          right (same row). Both sit on a single line. */}
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <AssetIcon row={instrument} size={20} round />
+          <span className="text-sm font-bold text-text-primary tracking-tight truncate">
+            {instrument?.symbol}
+          </span>
         </div>
-        {livePxDual && (
-          <div className="text-right">
-            <div className="text-[9px] uppercase tracking-wider text-text-muted font-bold leading-none">Last</div>
-            <div className="text-xs font-mono text-text-primary leading-tight mt-0.5">{livePxDual.primary}</div>
-          </div>
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            title="Close panel"
+            aria-label="Close order panel"
+            className="shrink-0 p-1 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
+          </button>
         )}
       </div>
 
-      {/* BUY / SELL pill — yellow active glow proportional to side */}
-      <div className="grid grid-cols-2 gap-2 mb-4">
+      {/* BUY / SELL split — always visible (matches Exness-style panel). */}
+      <div className="grid grid-cols-2 gap-2.5 mb-5">
         <button
           type="button"
           onClick={() => setSide('BUY')}
-          className={`py-3 rounded-lg font-bold text-sm transition-all flex flex-col items-center gap-0.5 ${
+          className={`py-3.5 rounded-xl font-bold text-sm transition-all flex flex-col items-center gap-1 ${
             side === 'BUY'
-              ? 'bg-bull text-white shadow-lg shadow-bull/30 scale-[1.02]'
-              : 'bg-bg-hover text-text-secondary hover:bg-bg-panel hover:text-text-primary border border-border-dark'
+              ? 'bg-bull text-white shadow-lg shadow-bull/35 scale-[1.02] ring-2 ring-bull/20'
+              : 'bg-bg-card text-text-secondary hover:bg-bg-hover hover:text-text-primary border border-border-dark'
           }`}
         >
-          <span>BUY · LONG</span>
-          <span className={`text-[9px] font-mono ${side === 'BUY' ? 'text-white/80' : 'text-text-muted'}`}>
+          <span className="tracking-wide">BUY · LONG</span>
+          <span className={`text-[10px] font-medium ${side === 'BUY' ? 'text-white/85' : 'text-text-muted'}`}>
             ↑ Profit if price rises
           </span>
         </button>
         <button
           type="button"
           onClick={() => setSide('SELL')}
-          className={`py-3 rounded-lg font-bold text-sm transition-all flex flex-col items-center gap-0.5 ${
+          className={`py-3.5 rounded-xl font-bold text-sm transition-all flex flex-col items-center gap-1 ${
             side === 'SELL'
-              ? 'bg-bear text-white shadow-lg shadow-bear/30 scale-[1.02]'
-              : 'bg-bg-hover text-text-secondary hover:bg-bg-panel hover:text-text-primary border border-border-dark'
+              ? 'bg-bear text-white shadow-lg shadow-bear/35 scale-[1.02] ring-2 ring-bear/20'
+              : 'bg-bg-card text-text-secondary hover:bg-bg-hover hover:text-text-primary border border-border-dark'
           }`}
         >
-          <span>SELL · SHORT</span>
-          <span className={`text-[9px] font-mono ${side === 'SELL' ? 'text-white/80' : 'text-text-muted'}`}>
+          <span className="tracking-wide">SELL · SHORT</span>
+          <span className={`text-[10px] font-medium ${side === 'SELL' ? 'text-white/85' : 'text-text-muted'}`}>
             ↓ Profit if price falls
           </span>
         </button>
       </div>
 
-      {/* Order mode tabs — only MARKET and LIMIT exposed to the user.
-          A "LIMIT" with a price above the ask (BUY) or below the bid
-          (SELL) is auto-routed by the server as a STOP under the hood. */}
-      <div className="flex gap-0.5 mb-4 border-b border-border-dark">
+      {/* Order mode tabs — segmented control style (pill on track). */}
+      <div className="flex p-1 mb-5 rounded-lg bg-bg-card border border-border-dark">
         {['MARKET', 'LIMIT'].map((m) => (
           <button
             key={m}
@@ -288,14 +318,13 @@ export default function OrderForm({ instrument, account, onPlaced, onPendingPric
               setOrderMode(m);
               if (m === 'LIMIT' && !price && instrument?.lastPrice) setPrice(instrument.lastPrice);
             }}
-            className={`relative text-xs font-semibold px-4 py-2 transition-colors ${
-              orderMode === m ? 'text-text-primary' : 'text-text-muted hover:text-text-secondary'
+            className={`flex-1 text-xs font-bold py-2 rounded-md transition-all ${
+              orderMode === m
+                ? 'bg-white text-text-primary shadow-card'
+                : 'text-text-secondary hover:text-text-primary'
             }`}
           >
             {m}
-            {orderMode === m && (
-              <span className="absolute bottom-0 left-2 right-2 h-0.5 bg-primary-500 rounded-t-full" />
-            )}
           </button>
         ))}
       </div>
@@ -341,16 +370,16 @@ export default function OrderForm({ instrument, account, onPlaced, onPendingPric
 
         {/* Quantity + quick presets */}
         <div>
-          <div className="flex items-center justify-between mb-1.5">
+          <div className="flex items-center justify-between mb-2">
             <label className="label !mb-0">Quantity ({instrument?.baseCurrency})</label>
-            <div className="flex gap-0.5">
+            <div className="flex gap-1">
               {[25, 50, 75, 100].map((pct) => (
                 <button
                   key={pct}
                   type="button"
                   onClick={() => setPresetPct(pct)}
                   disabled={!refPrice || !free}
-                  className="text-[10px] font-bold px-2 py-0.5 rounded border border-border-dark text-text-muted hover:text-primary-500 hover:border-primary-500/40 hover:bg-primary-500/5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="text-[10px] font-bold px-2.5 py-1 rounded-full border border-border-dark text-text-secondary hover:text-white hover:bg-primary-500 hover:border-primary-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                   title={`Use ${pct}% of free margin`}
                 >
                   {pct === 100 ? 'MAX' : `${pct}%`}
@@ -361,7 +390,7 @@ export default function OrderForm({ instrument, account, onPlaced, onPendingPric
           <input
             type="number"
             step="any"
-            className="input font-mono"
+            className="input font-mono text-base"
             value={quantity}
             onChange={(e) => setQuantity(e.target.value)}
             placeholder={`min ${instrument?.minOrderSize || '0.001'}`}
@@ -409,11 +438,14 @@ export default function OrderForm({ instrument, account, onPlaced, onPendingPric
           </div>
         </div>
 
-        {/* Leverage slider with tick marks at common preset values */}
+        {/* Leverage slider — primary-tinted with the chosen multiplier
+            displayed as a pill instead of inline text. */}
         <div>
-          <div className="flex items-center justify-between mb-1.5">
+          <div className="flex items-center justify-between mb-2">
             <label className="label !mb-0">Leverage</label>
-            <span className="text-sm font-mono font-bold text-primary-500">1:{leverage}</span>
+            <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-full bg-primary-500/10 text-primary-600 border border-primary-500/30">
+              1:{leverage}
+            </span>
           </div>
           <input
             type="range"
@@ -421,59 +453,38 @@ export default function OrderForm({ instrument, account, onPlaced, onPendingPric
             max={instrument?.maxLeverage || 100}
             value={leverage}
             onChange={(e) => setLeverage(Number(e.target.value))}
-            className="w-full accent-primary-500"
+            className="w-full accent-primary-500 h-1.5"
           />
-          <div className="flex justify-between text-[10px] text-text-muted mt-1 font-mono">
+          <div className="flex justify-between text-[10px] text-text-muted mt-2 font-mono font-semibold">
             <span>1×</span>
             <span>{Math.round((instrument?.maxLeverage || 100) / 2)}×</span>
             <span>{instrument?.maxLeverage || 100}×</span>
           </div>
         </div>
 
-        {/* Cost summary — notional, margin, post-trade free balance.
-            Border tints red when over budget so it reads as a warning. */}
-        <div
-          className={`rounded-lg border p-3 space-y-1.5 ${
-            overBudget
-              ? 'border-bear/40 bg-bear/5'
-              : 'border-border-dark bg-bg-panel'
-          }`}
-        >
-          <Row label="Notional" value={notional > 0 ? fmtAcct(notional) : '—'} mono />
-          <Row label="Required Margin" value={requiredMargin > 0 ? fmtAcct(requiredMargin) : '—'} mono bold />
-          <div className="border-t border-border-subtle pt-1.5">
-            <Row
-              label="Available"
-              value={accountFree != null ? fmtAcct(free) : '—'}
-              mono
-              valueClass="text-text-secondary"
-            />
-            {requiredMargin > 0 && (
-              <Row
-                label="After Order"
-                value={fmtAcct(remainingAfter)}
-                mono
-                valueClass={overBudget ? 'text-bear font-bold' : 'text-bull'}
-              />
-            )}
+        {/* Insufficient-margin warning — kept inline (the full cost
+            summary card was removed). The Place-Order button itself is
+            still disabled when overBudget, so the warning is the only
+            extra cue the user needs. */}
+        {overBudget && (
+          <div className="text-[11px] text-bear font-bold flex items-center gap-1.5">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M12 8v5" /><path d="M12 16h.01" /></svg>
+            Insufficient free margin
           </div>
-          {overBudget && (
-            <div className="text-[10px] text-bear font-semibold mt-1">
-              ⚠ Insufficient free margin
-            </div>
-          )}
-        </div>
+        )}
 
         <button
           type="submit"
           disabled={loading || overBudget || !!limitInvalidReason}
-          className={`w-full py-3 rounded-lg font-bold text-sm transition-all ${
+          className={`w-full py-4 rounded-xl font-extrabold text-base tracking-wide transition-all ${
             side === 'BUY'
-              ? 'bg-bull hover:bg-emerald-600 shadow-md shadow-bull/30'
-              : 'bg-bear hover:bg-red-600 shadow-md shadow-bear/30'
-          } text-white disabled:opacity-50 disabled:shadow-none disabled:cursor-not-allowed hover:scale-[1.01]`}
+              ? 'bg-bull hover:bg-emerald-600 shadow-lg shadow-bull/35'
+              : 'bg-bear hover:bg-red-600 shadow-lg shadow-bear/35'
+          } text-white disabled:opacity-50 disabled:shadow-none disabled:cursor-not-allowed hover:scale-[1.01] active:scale-[0.99]`}
         >
-          {loading ? 'Placing…' : `Place ${side === 'BUY' ? 'Buy' : 'Sell'} Order`}
+          {loading
+            ? 'Placing…'
+            : `Place ${side === 'BUY' ? 'Buy' : 'Sell'} Order`}
         </button>
       </form>
     </div>

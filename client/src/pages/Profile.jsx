@@ -194,7 +194,7 @@ function KycTab({ user, onUpdate }) {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-xs uppercase text-gray-500 bg-bg-dark">
+              <tr className="text-xs uppercase text-gray-500 bg-bg-card">
                 <th className="text-left py-2 px-4">Type</th>
                 <th className="text-left py-2 px-4">Filename</th>
                 <th className="text-left py-2 px-4">Uploaded</th>
@@ -283,7 +283,7 @@ function SecurityTab({ user, onUpdate }) {
         </div>
 
         {setup && !user?.twoFactorEnabled && (
-          <div className="mt-6 p-4 rounded bg-bg-dark border border-border-dark space-y-3">
+          <div className="mt-6 p-4 rounded bg-bg-card border border-border-dark space-y-3">
             <p className="text-sm text-gray-300">1. Scan this QR with your authenticator app:</p>
             <img src={setup.qrDataUrl} alt="2FA QR" className="w-48 h-48 mx-auto bg-white p-2 rounded" />
             <p className="text-xs text-gray-400 text-center">Or manually enter: <code className="text-teal-accent">{setup.secret}</code></p>
@@ -306,7 +306,7 @@ function SecurityTab({ user, onUpdate }) {
           <div className="mt-6 p-4 rounded bg-warn/10 border border-warn/30">
             <h4 className="text-warn font-semibold mb-2">⚠️ Save these backup codes</h4>
             <p className="text-xs text-gray-300 mb-3">Each code can be used once if you lose access to your authenticator. They won't be shown again.</p>
-            <pre className="bg-bg-dark p-3 rounded text-teal-accent font-mono text-sm">{backupCodes.join('\n')}</pre>
+            <pre className="bg-bg-card p-3 rounded text-teal-accent font-mono text-sm">{backupCodes.join('\n')}</pre>
             <button
               onClick={() => { navigator.clipboard.writeText(backupCodes.join('\n')); toast.success('Copied'); }}
               className="btn-secondary text-sm mt-3"
@@ -343,7 +343,7 @@ function DevicesTab() {
       ) : (
         <div className="space-y-2">
           {devices.map((d) => (
-            <div key={d.id} className="flex items-center justify-between p-3 rounded bg-bg-dark border border-border-dark">
+            <div key={d.id} className="flex items-center justify-between p-3 rounded bg-bg-card border border-border-dark">
               <div>
                 <div className="text-sm text-white">{d.deviceInfo}</div>
                 <div className="text-xs text-gray-500">Created {new Date(d.createdAt).toLocaleString()}</div>
@@ -388,7 +388,7 @@ function WhitelistTab() {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-xs uppercase text-gray-500 bg-bg-dark">
+              <tr className="text-xs uppercase text-gray-500 bg-bg-card">
                 <th className="text-left py-2 px-4">Label</th>
                 <th className="text-left py-2 px-4">Method</th>
                 <th className="text-left py-2 px-4">Currency</th>

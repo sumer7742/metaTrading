@@ -4,8 +4,18 @@ const depositSchema = new mongoose.Schema(
   {
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     accountId: { type: mongoose.Schema.Types.ObjectId, ref: 'TradingAccount', required: true },
+    // What the user actually saw / paid in (e.g. INR via UPI). Admin
+    // reconciles against this against the UPI/bank receipt. Wallet
+    // credit, however, happens in the base currency (USD) — see
+    // `baseAmount` below.
     currency: { type: String, required: true },
     amount: { type: String, required: true },
+    // Canonical base-currency view. The wallet is single-source-of-
+    // truth in USD; every deposit gets normalised here so credit /
+    // debit logic only ever touches one currency row per account.
+    baseCurrency: { type: String, default: 'USD' },
+    baseAmount:   { type: String, default: '0' },
+    fxRateUsed:   { type: Number, default: 1 },   // rate that was applied to derive baseAmount
     method: String, // 'BANK', 'UPI', 'CRYPTO', 'CARD', 'MANUAL'
     txReference: String, // bank ref / UPI ref / tx hash
     // Payment proof — REQUIRED for real-money deposits.
@@ -35,8 +45,14 @@ const withdrawalSchema = new mongoose.Schema(
   {
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     accountId: { type: mongoose.Schema.Types.ObjectId, ref: 'TradingAccount', required: true },
+    // What the user requested (e.g. ₹500 to a UPI ID). Admin pays this
+    // exact value via UPI / IMPS. The wallet, meanwhile, debits the
+    // USD equivalent stored in `baseAmount`.
     currency: { type: String, required: true },
     amount: { type: String, required: true },
+    baseCurrency: { type: String, default: 'USD' },
+    baseAmount:   { type: String, default: '0' },
+    fxRateUsed:   { type: Number, default: 1 },
     fee: { type: String, default: '0' },
     method: String, // 'UPI', 'BANK', 'CRYPTO'
     destination: String, // legacy single field; details below preferred

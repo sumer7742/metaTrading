@@ -8,13 +8,28 @@ export default function Deposits() {
   const [items, setItems] = useState([]);
   const [filter, setFilter] = useState('PENDING');
   const [viewing, setViewing] = useState(null); // deposit being viewed in detail modal
+  const [refreshing, setRefreshing] = useState(false);
 
   const load = async () => {
-    const { data } = await api.get('/admin/deposits', { params: filter ? { status: filter } : {} });
-    setItems(data.data);
+    setRefreshing(true);
+    try {
+      const { data } = await api.get('/admin/deposits', { params: filter ? { status: filter } : {} });
+      setItems(data.data);
+    } finally {
+      setRefreshing(false);
+    }
   };
 
-  useEffect(() => { load(); }, [filter]);
+  // Poll every 8 s while the user is on this page, plus refresh on
+  // tab focus, so new PENDING deposits show up without a manual reload.
+  useEffect(() => {
+    load();
+    const id = setInterval(load, 8000);
+    const onFocus = () => load();
+    window.addEventListener('focus', onFocus);
+    return () => { clearInterval(id); window.removeEventListener('focus', onFocus); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter]);
 
   const confirm = async (id) => {
     if (!window.confirm('Confirm this deposit? This will credit the user wallet immediately.')) return;
@@ -52,7 +67,7 @@ export default function Deposits() {
         subtitle="Review user payment screenshots and approve or reject incoming deposits."
       />
 
-      <div className="flex space-x-2">
+      <div className="flex items-center space-x-2">
         {['PENDING', 'CONFIRMED', 'REJECTED', ''].map((s) => (
           <button
             key={s || 'all'}
@@ -60,8 +75,19 @@ export default function Deposits() {
             className={`text-xs px-3 py-1.5 rounded ${filter === s ? 'btn-primary' : 'bg-bg-card text-gray-400 hover:bg-bg-hover'}`}
           >
             {s || 'All'}
+            {s === 'PENDING' && items.filter((i) => i.status === 'PENDING').length > 0 && filter === 'PENDING' && (
+              <span className="ml-1.5 inline-flex items-center justify-center w-4 h-4 rounded-full bg-yellow-500/30 text-yellow-200 text-[10px] font-bold">{items.length}</span>
+            )}
           </button>
         ))}
+        <span className="flex-1" />
+        <span className="text-[11px] text-gray-500 flex items-center gap-1.5">
+          <span className={`w-1.5 h-1.5 rounded-full ${refreshing ? 'bg-bull animate-pulse' : 'bg-gray-600'}`} />
+          Auto-refresh · 8s
+        </span>
+        <button onClick={load} className="text-xs px-3 py-1.5 rounded bg-bg-card text-gray-400 hover:bg-bg-hover" title="Refresh now">
+          {refreshing ? 'Refreshing…' : 'Refresh'}
+        </button>
       </div>
 
       <div className="card overflow-x-auto">

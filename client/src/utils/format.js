@@ -60,13 +60,11 @@ export const toInr = (price, quoteCurrency = 'USD', fxRate = 83) => {
 };
 
 /**
- * Money formatter for balances / PnL / equity — USD-primary across the app.
- * Returns:
- *   { primary: '$1,204.82', secondary: '', primaryRaw, secondaryRaw }
+ * Compact money formatter — INR-primary across the app. Returns:
+ *   { primary: '₹1,00,000.00', secondary: '', primaryRaw, secondaryRaw }
  *
- * The fxRate is used to convert INR-sourced numbers (e.g. legacy INR
- * wallets) into USD. Signature is kept identical to the previous
- * dual-currency helper so call sites don't have to change.
+ * The fxRate converts USD-sourced numbers into INR. Signature stays
+ * identical to the previous dual helper so call sites don't change.
  *
  * Sign-aware: negatives keep their sign; `withSign=true` adds a leading
  * '+' on positives (useful for PnL display).
@@ -74,17 +72,17 @@ export const toInr = (price, quoteCurrency = 'USD', fxRate = 83) => {
 export const fmtMoneyDual = (value, sourceCurrency = 'USD', fxRate = 83, withSign = false) => {
   const n = Number(value);
   if (!isFinite(n)) {
-    return { primary: '$0.00', secondary: '', primaryRaw: 0, secondaryRaw: 0 };
+    return { primary: '₹0.00', secondary: '', primaryRaw: 0, secondaryRaw: 0 };
   }
   const sign = withSign && n > 0 ? '+' : (n < 0 ? '-' : '');
   const abs = Math.abs(n);
-  const rate = Number(fxRate || 0);
+  const rate = Number(fxRate || 0) > 0 ? Number(fxRate) : 83;
 
-  let usdAbs;
-  if (sourceCurrency === 'USD') {
-    usdAbs = abs;
-  } else if (sourceCurrency === 'INR') {
-    usdAbs = rate > 0 ? abs / rate : abs;
+  let inrAbs;
+  if (sourceCurrency === 'INR') {
+    inrAbs = abs;
+  } else if (sourceCurrency === 'USD') {
+    inrAbs = abs * rate;
   } else {
     // Unknown source currency — display native (no FX conversion).
     return {
@@ -95,20 +93,26 @@ export const fmtMoneyDual = (value, sourceCurrency = 'USD', fxRate = 83, withSig
     };
   }
 
-  const signedUsd = usdAbs * (n < 0 ? -1 : 1);
+  const signedInr = inrAbs * (n < 0 ? -1 : 1);
   return {
-    primary: `${sign}$${fmtNum(usdAbs, 2)}`,
+    primary: `${sign}₹${fmtNum(inrAbs, 2)}`,
     secondary: '',
-    primaryRaw: signedUsd,
-    secondaryRaw: signedUsd,
+    primaryRaw: signedInr,
+    secondaryRaw: signedInr,
   };
 };
 
 /**
  * Both-currency money formatter — used on the headline "final total"
  * summary cards (Wallet equity, Funds real-balance / demo-balance hero
- * cards, Dashboard top-line balance). Returns:
- *   { primary: '$1,204.82', secondary: '₹1,00,000.00' }
+ * cards, Dashboard top-line balance, Account cards, PnL summaries).
+ *
+ * India-first display policy:
+ *   { primary: '₹1,00,000.00', secondary: '≈ $1,204.82 USD' }
+ *
+ * Primary is INR (large), secondary is USD (small, prefixed with ≈
+ * and suffixed " USD"). Conversion uses the live `fxRate` passed from
+ * the `useFxRate` hook.
  *
  * Everywhere ELSE (PnL columns, chart info-strip, per-account rows) we
  * stick with the USD-only `fmtMoneyDual`. This helper is intentionally
@@ -117,11 +121,11 @@ export const fmtMoneyDual = (value, sourceCurrency = 'USD', fxRate = 83, withSig
 export const fmtMoneyBoth = (value, sourceCurrency = 'USD', fxRate = 83, withSign = false) => {
   const n = Number(value);
   if (!isFinite(n)) {
-    return { primary: '$0.00', secondary: '₹0.00', primaryRaw: 0, secondaryRaw: 0 };
+    return { primary: '₹0.00', secondary: '≈ $0.00 USD', primaryRaw: 0, secondaryRaw: 0 };
   }
   const sign = withSign && n > 0 ? '+' : (n < 0 ? '-' : '');
   const abs = Math.abs(n);
-  const rate = Number(fxRate || 0);
+  const rate = Number(fxRate || 0) > 0 ? Number(fxRate) : 83;
 
   let usdAbs;
   let inrAbs;
@@ -130,7 +134,7 @@ export const fmtMoneyBoth = (value, sourceCurrency = 'USD', fxRate = 83, withSig
     inrAbs = abs * rate;
   } else if (sourceCurrency === 'INR') {
     inrAbs = abs;
-    usdAbs = rate > 0 ? abs / rate : 0;
+    usdAbs = abs / rate;
   } else {
     // Unknown source currency — display native as primary, no INR convert.
     return {
@@ -144,10 +148,12 @@ export const fmtMoneyBoth = (value, sourceCurrency = 'USD', fxRate = 83, withSig
   const signedUsd = usdAbs * (n < 0 ? -1 : 1);
   const signedInr = inrAbs * (n < 0 ? -1 : 1);
   return {
-    primary: `${sign}$${fmtNum(usdAbs, 2)}`,
-    secondary: `${sign}₹${fmtNum(inrAbs, 2)}`,
-    primaryRaw: signedUsd,
-    secondaryRaw: signedInr,
+    // INR is the dominant figure (India-first). USD reads as an
+    // approximate conversion below.
+    primary: `${sign}₹${fmtNum(inrAbs, 2)}`,
+    secondary: `≈ ${sign}$${fmtNum(usdAbs, 2)} USD`,
+    primaryRaw: signedInr,
+    secondaryRaw: signedUsd,
   };
 };
 

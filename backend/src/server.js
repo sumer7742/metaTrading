@@ -181,6 +181,7 @@ if (walletRoutes.razorpayWebhookHandler) {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/user', userRoutes);
+console.log('[server] mounting /api/wallet · type:', typeof walletRoutes, '· has .use?', typeof walletRoutes.use === 'function');
 app.use('/api/wallet', walletRoutes);
 app.use('/api/instruments', instrumentRoutes);
 app.use('/api/trading', tradingRoutes);

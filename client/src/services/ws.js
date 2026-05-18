@@ -23,44 +23,62 @@ class WSClient {
   connect(token) {
     this.token = token;
     const url = token ? `${WS_URL}?token=${token}` : WS_URL;
-    this.ws = new WebSocket(url);
+    // Close any prior socket before swapping the reference so a late
+    // onclose from the old one doesn't trigger a second reconnect race.
+    if (this.ws) {
+      try { this.ws.onclose = null; this.ws.close(); } catch (_) {}
+    }
+    const ws = new WebSocket(url);
+    this.ws = ws;
 
-    this.ws.onopen = () => {
+    ws.onopen = () => {
+      // Only the CURRENT socket can flip `connected` and replay
+      // subscriptions. If a stale socket's onopen fires after a
+      // reconnect, ignore it (its sends would hit a CONNECTING new
+      // socket and throw `InvalidStateError`).
+      if (this.ws !== ws) return;
       this.connected = true;
       this.reconnectAttempts = 0;
-      // Re-subscribe to all channels
       for (const channel of this.subscriptions.keys()) {
         this._send({ action: 'subscribe', channel });
       }
     };
 
-    this.ws.onmessage = (e) => {
+    ws.onmessage = (e) => {
+      if (this.ws !== ws) return;
       try {
         const msg = JSON.parse(e.data);
         if (msg.type === 'event' && msg.channel) {
-          // strip user id suffix on user channels
           const baseChannel = msg.channel.replace(/^(user:[^:]+):.*$/, '$1');
           const cbs = this.subscriptions.get(msg.channel) || this.subscriptions.get(baseChannel);
           if (cbs) cbs.forEach((cb) => cb(msg.data));
         }
-      } catch (err) {
-        // ignore
-      }
+      } catch (err) { /* ignore */ }
     };
 
-    this.ws.onclose = () => {
+    ws.onclose = () => {
+      // Stale onclose (from a socket we already replaced) shouldn't
+      // schedule another reconnect — that snowballs into a thundering
+      // herd of sockets.
+      if (this.ws !== ws) return;
       this.connected = false;
-      // Reconnect with backoff
       const delay = Math.min(1000 * 2 ** this.reconnectAttempts, 30000);
       this.reconnectAttempts++;
       setTimeout(() => this.connect(this.token), delay);
     };
 
-    this.ws.onerror = () => {};
+    ws.onerror = () => {};
   }
 
+  // Defensive send: only attempts when the socket is OPEN. Browsers
+  // throw `InvalidStateError` if the send is dispatched while the
+  // socket is still CONNECTING (or CLOSING/CLOSED).
   _send(obj) {
-    if (this.ws && this.connected) this.ws.send(JSON.stringify(obj));
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    try {
+      ws.send(JSON.stringify(obj));
+    } catch (_) { /* throw absorbed — network race */ }
   }
 
   subscribe(channel, callback) {

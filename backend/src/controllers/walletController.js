@@ -2,8 +2,14 @@ const { Wallet, WalletLedger } = require('../models/Wallet');
 const { Deposit, Withdrawal } = require('../models/index');
 const TradingAccount = require('../models/TradingAccount');
 const walletService = require('../services/walletService');
+const currencyService = require('../services/currencyService');
 const { sendSuccess, asyncHandler, AppError } = require('../utils/errors');
 const { gt, sub } = require('../utils/decimal');
+
+// Single source of truth: every account holds ONE real wallet,
+// denominated in this base currency. Other currencies (INR / EUR /
+// GBP / USDT) are display-only conversions.
+const BASE_CURRENCY = 'USD';
 
 const getBalances = asyncHandler(async (req, res) => {
   const { accountId } = req.query;
@@ -107,39 +113,49 @@ const createDeposit = asyncHandler(async (req, res) => {
       );
     }
 
-    // Auto-confirm demo deposits — no admin review needed
+    // Auto-confirm demo deposits — no admin review needed. Store the
+    // original currency/amount the user typed AND the USD-equivalent
+    // base figures, then credit the base wallet only.
+    const convDemo = await currencyService.toBase(currency || 'INR', amtNum);
     const dep = await Deposit.create({
       userId: req.userId,
       accountId,
       currency: currency || 'INR',
-      amount: String(amtNum), // canonical numeric form
+      amount: String(amtNum), // user-facing original
+      baseCurrency: convDemo.baseCurrency,
+      baseAmount: String(convDemo.baseAmount),
+      fxRateUsed: convDemo.rate,
       method: method || 'DEMO',
       txReference: 'DEMO-' + Date.now(),
       status: 'CONFIRMED',
       confirmedAt: new Date(),
       note: 'Demo balance top-up (auto-approved)',
     });
-    // Credit demo wallet immediately
     const { credit } = require('../services/walletService');
     await credit({
       userId: req.userId,
       accountId,
-      currency: currency || 'INR',
-      amount: String(amtNum),
+      currency: BASE_CURRENCY,
+      amount: String(convDemo.baseAmount),
       type: 'DEPOSIT',
       referenceType: 'Deposit',
       referenceId: dep._id,
-      note: 'Demo balance top-up',
+      note: `Demo top-up · ${convDemo.originalAmount} ${convDemo.originalCurrency} @ ${convDemo.rate}`,
     });
     return sendSuccess(res, dep, 201);
   }
 
-  // REAL deposits — pending admin review
+  // REAL deposits — pending admin review. Pre-compute the USD base
+  // figure so the eventual admin confirm credits the base wallet.
+  const convReal = await currencyService.toBase(currency || 'INR', amtNum);
   const dep = await Deposit.create({
     userId: req.userId,
     accountId,
     currency: currency || 'INR',
     amount: String(amount),
+    baseCurrency: convReal.baseCurrency,
+    baseAmount: String(convReal.baseAmount),
+    fxRateUsed: convReal.rate,
     method: method || 'UPI',
     txReference,
     note,
@@ -150,6 +166,18 @@ const createDeposit = asyncHandler(async (req, res) => {
     senderBankAccount,
     status: 'PENDING',
   });
+  // Echo to the user's open sessions so the notification bell + wallet
+  // history table show the new pending deposit row instantly.
+  try {
+    const broadcaster = require('../websocket/server');
+    broadcaster.notifyUser(String(req.userId), 'wallet', {
+      action: 'pending',
+      reason: 'DEPOSIT_CREATED',
+      depositId: String(dep._id),
+      amount: dep.amount,
+      currency: dep.currency,
+    });
+  } catch (_) {}
   sendSuccess(res, dep, 201);
 });
 
@@ -291,11 +319,29 @@ const requestWithdrawal = asyncHandler(async (req, res) => {
     recentTransactions: recentTxs,
   });
 
-  // check available balance
-  const wallet = await Wallet.findOne({ userId: req.userId, accountId, currency: currency || 'INR' });
-  if (!wallet) throw new AppError('Wallet not found', 404);
-  const free = gt(wallet.balance, wallet.locked || '0') ? sub(wallet.balance, wallet.locked || '0') : '0';
-  if (gt(amount, free)) throw new AppError('Insufficient free balance', 400, 'INSUFFICIENT_FUNDS');
+  // Convert the user-requested amount into the canonical base
+  // currency (USD) using the live FX rate. The single real wallet is
+  // USD-denominated; non-USD inputs are display-only.
+  const displayCur = currency || 'INR';
+  const conv = await currencyService.toBase(displayCur, amount);
+  const baseAmountStr = String(conv.baseAmount);
+
+  // Check the canonical USD wallet's free balance.
+  const wallet = await Wallet.findOne({ userId: req.userId, accountId, currency: BASE_CURRENCY });
+  if (!wallet) {
+    throw new AppError('No funds on this account. Make a deposit first.', 400, 'INSUFFICIENT_FUNDS');
+  }
+  const freeBase = gt(wallet.balance, wallet.locked || '0') ? sub(wallet.balance, wallet.locked || '0') : '0';
+  if (gt(baseAmountStr, freeBase)) {
+    // Convert the available base figure back into the user's display
+    // currency for a friendlier error.
+    const freeDisplay = await currencyService.fromBase(displayCur, Number(freeBase));
+    throw new AppError(
+      `Insufficient balance. Available: ${freeDisplay.toFixed(2)} ${displayCur} (requested ${amount} ${displayCur}).`,
+      400,
+      'INSUFFICIENT_FUNDS'
+    );
+  }
 
   // Build destination summary string for backwards-compat display
   let destSummary = '';
@@ -303,14 +349,13 @@ const requestWithdrawal = asyncHandler(async (req, res) => {
   else if (m === 'BANK') destSummary = `${bankAccountHolderName} - ${bankAccountNumber} (${bankIFSC})`;
   else if (m === 'CRYPTO') destSummary = `${cryptoAddress} (${cryptoNetwork})`;
 
-  // Lock the funds FIRST so a free-balance race can't open a window where
-  // the withdrawal is PENDING but the funds aren't reserved (admin could
-  // approve and we'd over-pay). If create fails, roll the lock back.
+  // Lock the canonical USD funds FIRST so a free-balance race can't
+  // approve while the funds aren't reserved.
   await walletService.lock({
     userId: req.userId,
     accountId,
-    currency: currency || 'INR',
-    amount: String(amount),
+    currency: BASE_CURRENCY,
+    amount: baseAmountStr,
   });
 
   let wd;
@@ -318,8 +363,15 @@ const requestWithdrawal = asyncHandler(async (req, res) => {
     wd = await Withdrawal.create({
       userId: req.userId,
       accountId,
-      currency: currency || 'INR',
+      // User-facing original — what the admin pays out and what the
+      // user sees in their history.
+      currency: displayCur,
       amount: String(amount),
+      // Canonical base — what's actually locked / debited on the
+      // single USD wallet.
+      baseCurrency: BASE_CURRENCY,
+      baseAmount: baseAmountStr,
+      fxRateUsed: conv.rate,
       method: m,
       destination: destSummary,
       upiId: m === 'UPI' ? upiId : undefined,
@@ -332,13 +384,13 @@ const requestWithdrawal = asyncHandler(async (req, res) => {
       status: 'PENDING',
     });
   } catch (createErr) {
-    // Rollback the lock so the user's funds aren't stuck.
+    // Rollback the lock so funds aren't stuck.
     try {
       await walletService.unlock({
         userId: req.userId,
         accountId,
-        currency: currency || 'INR',
-        amount: String(amount),
+        currency: BASE_CURRENCY,
+        amount: baseAmountStr,
       });
     } catch (e) {
       console.error('[wallet] failed to unlock after withdrawal create error:', e.message);
@@ -357,6 +409,20 @@ const requestWithdrawal = asyncHandler(async (req, res) => {
       destination: destSummary,
     });
   } catch (e) { /* non-fatal */ }
+
+  // Live update to the user's open sessions so the wallet hero +
+  // history table show the pending withdrawal + locked funds without
+  // a refresh.
+  try {
+    const broadcaster = require('../websocket/server');
+    broadcaster.notifyUser(String(req.userId), 'wallet', {
+      action: 'pending',
+      reason: 'WITHDRAWAL_REQUESTED',
+      withdrawalId: String(wd._id),
+      amount: wd.amount,
+      currency: wd.currency,
+    });
+  } catch (_) {}
 
   sendSuccess(res, { ...wd.toObject(), aml: aml.requiresReview ? { flagged: true, score: aml.score, flags: aml.flags } : undefined }, 201);
 });
@@ -597,6 +663,95 @@ const razorpayWebhook = asyncHandler(async (req, res) => {
   res.json({ ok: true });
 });
 
+/**
+ * In-account currency conversion. Debits the source wallet and credits
+ * the destination wallet (same account) with the converted amount.
+ *
+ * The fxRate is supplied by the client (which uses the live `useFxRate`
+ * hook) so the user sees the same rate the rest of the UI is showing.
+ * The server still validates the rate looks sane (within ±20 % of the
+ * configured FX_DEFAULT_RATE) to prevent obvious tampering.
+ */
+const convertCurrency = asyncHandler(async (req, res) => {
+  const { accountId, fromCurrency, toCurrency, amount, fxRate: clientFxRate } = req.body;
+
+  if (!accountId || !fromCurrency || !toCurrency) {
+    throw new AppError('accountId, fromCurrency, toCurrency required', 400);
+  }
+  if (String(fromCurrency).toUpperCase() === String(toCurrency).toUpperCase()) {
+    throw new AppError('Source and target currency must be different', 400);
+  }
+  const amtNum = Number(amount);
+  if (!Number.isFinite(amtNum) || amtNum <= 0) {
+    throw new AppError('Amount must be a positive number', 400);
+  }
+  const from = String(fromCurrency).toUpperCase();
+  const to = String(toCurrency).toUpperCase();
+
+  const account = await TradingAccount.findOne({ _id: accountId, userId: req.userId });
+  if (!account) throw new AppError('Account not found', 404);
+
+  // Resolve the FX rate. Sanity-bound the client's value (±20 %) so a
+  // tampered request can't get a 1000x conversion. Falls back to the
+  // configured default if the client didn't send a rate.
+  const DEFAULT_RATE = Number(process.env.FX_DEFAULT_RATE || 83);
+  let rate = Number(clientFxRate);
+  if (!Number.isFinite(rate) || rate <= 0) rate = DEFAULT_RATE;
+  const minRate = DEFAULT_RATE * 0.8;
+  const maxRate = DEFAULT_RATE * 1.2;
+  if (rate < minRate || rate > maxRate) rate = DEFAULT_RATE;
+
+  // Compute the target amount. Only USD↔INR pairs are auto-converted;
+  // anything else returns the same magnitude (no FX risk taken).
+  let targetAmount;
+  if (from === 'USD' && to === 'INR') targetAmount = amtNum * rate;
+  else if (from === 'INR' && to === 'USD') targetAmount = amtNum / rate;
+  else targetAmount = amtNum;
+
+  // Debit source first; if credit fails, compensate to keep the user whole.
+  await walletService.debit({
+    userId: req.userId,
+    accountId,
+    currency: from,
+    amount: String(amtNum),
+    type: WALLET_TX_TYPE.ADJUSTMENT,
+    referenceType: 'conversion',
+    note: `Convert ${amtNum} ${from} → ${to} @ ${rate}`,
+  });
+  try {
+    await walletService.credit({
+      userId: req.userId,
+      accountId,
+      currency: to,
+      amount: String(targetAmount.toFixed(2)),
+      type: WALLET_TX_TYPE.ADJUSTMENT,
+      referenceType: 'conversion',
+      note: `Convert ${amtNum} ${from} → ${to} @ ${rate}`,
+    });
+  } catch (err) {
+    // Rollback the debit so the user's funds aren't lost.
+    await walletService.credit({
+      userId: req.userId,
+      accountId,
+      currency: from,
+      amount: String(amtNum),
+      type: WALLET_TX_TYPE.ADJUSTMENT,
+      referenceType: 'conversion-rollback',
+      note: `Convert rollback (credit failed)`,
+    });
+    throw err;
+  }
+
+  sendSuccess(res, {
+    accountId,
+    fromCurrency: from,
+    toCurrency: to,
+    fromAmount: String(amtNum),
+    toAmount: targetAmount.toFixed(2),
+    rate,
+  });
+});
+
 module.exports = {
   getBalances,
   getLedger,
@@ -605,6 +760,7 @@ module.exports = {
   requestWithdrawal,
   listWithdrawals,
   internalTransfer,
+  convertCurrency,
   createRazorpayOrder,
   verifyRazorpayPayment,
   razorpayWebhook,

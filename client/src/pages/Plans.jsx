@@ -167,7 +167,7 @@ export default function Plans() {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-bg-dark text-xs uppercase text-gray-500">
+              <tr className="bg-bg-card text-xs uppercase text-gray-500">
                 <th className="text-left py-2 px-4">Feature</th>
                 {plans.map((p) => <th key={p._id} className="text-center py-2 px-4">{p.name}</th>)}
               </tr>

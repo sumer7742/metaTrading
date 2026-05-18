@@ -230,22 +230,26 @@ const approveWithdrawal = asyncHandler(async (req, res) => {
   wd.payoutProofMimeType = payoutProofMimeType;
   await wd.save();
 
-  // Debit balance + unlock
+  // Debit balance + unlock on the canonical base wallet. Use the
+  // pre-stored baseCurrency / baseAmount; fall back to currency /
+  // amount for legacy records written before the base columns existed.
+  const wdBaseCcy = wd.baseCurrency || 'USD';
+  const wdBaseAmt = wd.baseAmount && Number(wd.baseAmount) > 0 ? wd.baseAmount : wd.amount;
   await walletService.unlock({
     userId: wd.userId,
     accountId: wd.accountId,
-    currency: wd.currency,
-    amount: wd.amount,
+    currency: wdBaseCcy,
+    amount: wdBaseAmt,
   });
   await walletService.debit({
     userId: wd.userId,
     accountId: wd.accountId,
-    currency: wd.currency,
-    amount: wd.amount,
+    currency: wdBaseCcy,
+    amount: wdBaseAmt,
     type: WALLET_TX_TYPE.WITHDRAWAL,
     referenceType: 'withdrawal',
     referenceId: wd._id,
-    note: `Withdrawal paid out: ${payoutTxReference}`,
+    note: `Withdrawal paid out: ${payoutTxReference} · ${wd.amount} ${wd.currency} @ ${wd.fxRateUsed || 1}`,
   });
 
   await logAction(req, 'WITHDRAWAL_COMPLETED', { type: 'WITHDRAWAL', id: wd._id, payoutRef: payoutTxReference });
@@ -265,6 +269,19 @@ const approveWithdrawal = asyncHandler(async (req, res) => {
     }
   } catch (e) { /* non-fatal */ }
 
+  // Push live update to user's open sessions.
+  try {
+    const broadcaster = require('../websocket/server');
+    broadcaster.notifyUser(String(wd.userId), 'wallet', {
+      action: 'debited',
+      reason: 'WITHDRAWAL_COMPLETED',
+      withdrawalId: String(wd._id),
+      amount: wd.amount,
+      currency: wd.currency,
+      payoutTxReference,
+    });
+  } catch (_) {}
+
   sendSuccess(res, wd);
 });
 
@@ -276,14 +293,25 @@ const rejectWithdrawal = asyncHandler(async (req, res) => {
   wd.status = 'REJECTED';
   wd.rejectedReason = reason || 'Rejected by admin';
   await wd.save();
-  // Unlock the funds
+  // Unlock the funds on the canonical base wallet.
   await walletService.unlock({
     userId: wd.userId,
     accountId: wd.accountId,
-    currency: wd.currency,
-    amount: wd.amount,
+    currency: wd.baseCurrency || 'USD',
+    amount: wd.baseAmount && Number(wd.baseAmount) > 0 ? wd.baseAmount : wd.amount,
   });
   await logAction(req, 'WITHDRAWAL_REJECTED', { type: 'WITHDRAWAL', id: wd._id }, { reason });
+  try {
+    const broadcaster = require('../websocket/server');
+    broadcaster.notifyUser(String(wd.userId), 'wallet', {
+      action: 'rejected',
+      reason: 'WITHDRAWAL_REJECTED',
+      withdrawalId: String(wd._id),
+      amount: wd.amount,
+      currency: wd.currency,
+      rejectionReason: wd.rejectedReason,
+    });
+  } catch (_) {}
   sendSuccess(res, wd);
 });
 
@@ -303,17 +331,37 @@ const confirmDeposit = asyncHandler(async (req, res) => {
   dep.confirmedAt = new Date();
   dep.confirmedBy = req.userId;
   await dep.save();
+  // Credit the canonical USD wallet. `baseAmount` was pre-computed at
+  // submit-time using the live FX rate; fallback to the original
+  // amount only when this is a legacy record without base fields.
+  const creditCurrency = dep.baseCurrency || 'USD';
+  const creditAmount = dep.baseAmount && Number(dep.baseAmount) > 0
+    ? dep.baseAmount
+    : dep.amount;
   await walletService.credit({
     userId: dep.userId,
     accountId: dep.accountId,
-    currency: dep.currency,
-    amount: dep.amount,
+    currency: creditCurrency,
+    amount: creditAmount,
     type: WALLET_TX_TYPE.DEPOSIT,
     referenceType: 'deposit',
     referenceId: dep._id,
-    note: 'Deposit confirmed',
+    note: `Deposit confirmed · ${dep.amount} ${dep.currency} @ ${dep.fxRateUsed || 1}`,
   });
   await logAction(req, 'DEPOSIT_CONFIRMED', { type: 'DEPOSIT', id: dep._id });
+  // Push the credit to the user's open sessions so the wallet hero,
+  // notification center, and dashboard balance update instantly
+  // without a manual refresh.
+  try {
+    const broadcaster = require('../websocket/server');
+    broadcaster.notifyUser(String(dep.userId), 'wallet', {
+      action: 'credited',
+      reason: 'DEPOSIT_CONFIRMED',
+      depositId: String(dep._id),
+      amount: dep.amount,
+      currency: dep.currency,
+    });
+  } catch (_) { /* socket optional */ }
   sendSuccess(res, dep);
 });
 
@@ -325,6 +373,19 @@ const rejectDeposit = asyncHandler(async (req, res) => {
   dep.rejectionReason = req.body?.reason || 'No reason provided';
   await dep.save();
   await logAction(req, 'DEPOSIT_REJECTED', { type: 'DEPOSIT', id: dep._id, reason: dep.rejectionReason });
+  // Inform the user-side notification system that their deposit was
+  // rejected so the bell + toast can surface it immediately.
+  try {
+    const broadcaster = require('../websocket/server');
+    broadcaster.notifyUser(String(dep.userId), 'wallet', {
+      action: 'rejected',
+      reason: 'DEPOSIT_REJECTED',
+      depositId: String(dep._id),
+      amount: dep.amount,
+      currency: dep.currency,
+      rejectionReason: dep.rejectionReason,
+    });
+  } catch (_) {}
   sendSuccess(res, dep);
 });
 

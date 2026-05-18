@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../services/api';
+import AssetIcon from '../components/AssetIcon';
 import { wsClient } from '../services/ws';
 import { fmtMoney, fmtMoneyDual, fmtMoneyBoth, currencySymbol } from '../utils/format';
 import { useFxRate } from '../hooks/useFxRate';
@@ -100,7 +101,26 @@ export default function Dashboard() {
   const kycPending = data.user?.kycStatus !== 'APPROVED';
   const kycStep = data.user?.kycStatus === 'PENDING' ? 1 : data.user?.kycStatus === 'APPROVED' ? 2 : 0;
   const primaryCur = data.balance?.primaryCurrency || 'INR';
-  const liveBalance = Number(data.balance?.live || 0);
+  // The server's `balance.live` only counts the wallet in the primary
+  // currency — which leaves equity reading $0 / ₹0 when the user's
+  // money is held in a different currency (e.g. INR-primary user with
+  // $2 659 USD). Fall back to summing every currency in
+  // `liveByCurrency` and converting into the primary currency via fxRate.
+  const liveByCur = data.balance?.liveByCurrency || {};
+  const liveBalance = (() => {
+    const direct = Number(data.balance?.live || 0);
+    if (direct !== 0) return direct;
+    const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
+    return Object.entries(liveByCur).reduce((sum, [cur, t]) => {
+      const bal = Number(t?.balance || 0);
+      if (!Number.isFinite(bal) || bal === 0) return sum;
+      if (cur === primaryCur) return sum + bal;
+      if (cur === 'USD' && primaryCur === 'INR') return sum + bal * rate;
+      if (cur === 'INR' && primaryCur === 'USD') return sum + bal / rate;
+      // Unknown pairing → assume already in primary so we don't drop it.
+      return sum + bal;
+    }, 0);
+  })();
   // Recompute unrealized client-side using live ticker prices when available;
   // fall back to the server-computed number for symbols we haven't received
   // a tick for yet. This is what makes the equity number move tick-by-tick.
@@ -119,7 +139,6 @@ export default function Dashboard() {
   const todayPnl = Number(data.pnl?.realizedToday || 0);
   const lifetimePnl = Number(data.pnl?.realizedLifetime || 0);
   const winRate = data.pnl?.winRate;
-  const liveByCur = data.balance?.liveByCurrency || {};
   const recentActivity = data.recentActivity || [];
 
   return (
@@ -405,10 +424,13 @@ export default function Dashboard() {
                     }`}>
                       {t.side === 'BUY' ? '↑' : '↓'}
                     </span>
-                    <div className="min-w-0">
-                      <div className="text-sm text-white font-semibold">{t.symbol}</div>
-                      <div className="text-[11px] text-text-muted font-mono">
-                        {Number(t.quantity).toFixed(4)} @ {Number(t.price).toFixed(2)}
+                    <div className="min-w-0 flex items-center gap-2">
+                      <AssetIcon symbol={t.symbol} size={22} round />
+                      <div className="min-w-0">
+                        <div className="text-sm text-white font-semibold">{t.symbol}</div>
+                        <div className="text-[11px] text-text-muted font-mono">
+                          {Number(t.quantity).toFixed(4)} @ {Number(t.price).toFixed(2)}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -427,7 +449,7 @@ export default function Dashboard() {
         {/* Quick actions — premium hover with yellow glow + arrow slide */}
         <div className="space-y-3">
           <QuickAction to="/trade" icon={<ChartIcon />} title="Start Trading" desc="Open new positions" tone="primary" />
-          <QuickAction to="/funds" icon={<WalletIcon />} title="Manage Funds" desc="Deposit, withdraw, transfer" tone="bull" />
+          <QuickAction to="/wallet" icon={<WalletIcon />} title="Manage Funds" desc="Deposit, withdraw, transfer" tone="bull" />
           <QuickAction to="/accounts" icon={<BriefcaseIcon />} title="Trading Accounts" desc="Leverage, mode, history" tone="info" />
         </div>
       </div>

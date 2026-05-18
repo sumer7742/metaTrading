@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import PageHero from '../components/PageHero';
+import AssetIcon from '../components/AssetIcon';
 
 const downloadCsv = async (path, filename) => {
   try {
@@ -119,7 +120,7 @@ export default function Reports() {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-xs uppercase text-gray-500 bg-bg-dark">
+              <tr className="text-xs uppercase text-gray-500 bg-bg-card">
                 <th className="text-left py-2 px-4">Date</th>
                 <th className="text-left py-2 px-4">Symbol</th>
                 <th className="text-left py-2 px-4">Side</th>
@@ -139,7 +140,12 @@ export default function Reports() {
               {trades.slice(0, 50).map((t) => (
                 <tr key={t._id} className="table-row">
                   <td className="py-2 px-4 text-gray-300">{new Date(t.createdAt).toLocaleString()}</td>
-                  <td className="py-2 px-4 text-white font-medium">{t.symbol}</td>
+                  <td className="py-2 px-4 text-white font-medium">
+                    <div className="flex items-center gap-2">
+                      <AssetIcon symbol={t.symbol} size={20} round />
+                      <span>{t.symbol}</span>
+                    </div>
+                  </td>
                   <td className={`py-2 px-4 font-semibold ${t.side === 'BUY' ? 'text-bull' : 'text-bear'}`}>{t.side}</td>
                   <td className="py-2 px-4 text-gray-300">{t.type}</td>
                   <td className="py-2 px-4 text-right font-mono text-white">{t.filledQuantity || t.quantity}</td>

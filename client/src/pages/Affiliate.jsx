@@ -94,7 +94,7 @@ export default function Affiliate() {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-xs uppercase text-gray-500 bg-bg-dark">
+              <tr className="text-xs uppercase text-gray-500 bg-bg-card">
                 <th className="text-left py-2 px-4">Date</th>
                 <th className="text-left py-2 px-4">Level</th>
                 <th className="text-left py-2 px-4">Source</th>

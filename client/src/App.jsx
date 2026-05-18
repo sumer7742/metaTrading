@@ -22,14 +22,14 @@ const Trade = lazy(() => import('./pages/Trade'));
 const Wallet = lazy(() => import('./pages/Wallet'));
 const Profile = lazy(() => import('./pages/Profile'));
 const Orders = lazy(() => import('./pages/Orders'));
-const Accounts = lazy(() => import('./pages/Accounts'));
 const Reports = lazy(() => import('./pages/Reports'));
 const Affiliate = lazy(() => import('./pages/Affiliate'));
 const PriceAlerts = lazy(() => import('./pages/PriceAlerts'));
 const Plans = lazy(() => import('./pages/Plans'));
-const Funds = lazy(() => import('./pages/Funds'));
 const Feedback = lazy(() => import('./pages/Feedback'));
 const Helpdesk = lazy(() => import('./pages/Helpdesk'));
+const Explore = lazy(() => import('./pages/Explore'));
+const MarketList = lazy(() => import('./pages/MarketList'));
 
 // Minimal fallback while a chunk is fetched. Branded so it doesn't feel
 // jarring; lasts <100ms on a warm cache, <500ms on first cold load.
@@ -68,6 +68,8 @@ export default function App() {
 
         <Route path="/" element={<Page><Navigate to="/dashboard" replace /></Page>} />
         <Route path="/dashboard" element={<Page><Dashboard /></Page>} />
+        <Route path="/explore" element={<Page><Explore /></Page>} />
+        <Route path="/markets" element={<Page><MarketList /></Page>} />
         <Route path="/trade" element={<Page><Trade /></Page>} />
         <Route path="/orders" element={<Page><Orders /></Page>} />
         <Route path="/reports" element={<Page><Reports /></Page>} />
@@ -75,9 +77,9 @@ export default function App() {
         <Route path="/affiliate" element={<Page><Affiliate /></Page>} />
         <Route path="/plans" element={<Page><Plans /></Page>} />
         <Route path="/wallet" element={<Page><Wallet /></Page>} />
-        <Route path="/accounts" element={<Page><Accounts /></Page>} />
+        <Route path="/accounts" element={<Navigate to="/wallet" replace />} />
         <Route path="/profile" element={<Page><Profile /></Page>} />
-        <Route path="/funds" element={<Page><Funds /></Page>} />
+        <Route path="/funds" element={<Navigate to="/wallet" replace />} />
         <Route path="/ib-room" element={<Page><Affiliate /></Page>} />
         <Route path="/bonuses" element={<Page><Plans /></Page>} />
         <Route path="/helpdesk" element={<Page><Helpdesk /></Page>} />

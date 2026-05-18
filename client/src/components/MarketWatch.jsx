@@ -3,6 +3,8 @@ import { api } from '../services/api';
 import { wsClient } from '../services/ws';
 import { fmtNum, fmtPriceDual } from '../utils/format';
 import { useFxRate } from '../hooks/useFxRate';
+import CountryFlag from './CountryFlag';
+import AssetIcon from './AssetIcon';
 
 const FAVS_KEY = 'tradepro:favorites';
 
@@ -50,11 +52,10 @@ function avatarFor(row) {
     return { kind: 'tile', glyph: base.slice(0, 2), bg: '#FCD535', fg: '#0F0F12' };
   }
 
-  // Forex pairs — two overlapped flag emojis
-  const baseFlag = CURRENCY_FLAG[base];
-  const quoteFlag = CURRENCY_FLAG[quote];
-  if (baseFlag && quoteFlag) {
-    return { kind: 'pair', flag1: baseFlag, flag2: quoteFlag };
+  // Forex pairs — two overlapped CountryFlag images (CDN-served, render
+  // identically across all platforms including Windows).
+  if (CURRENCY_FLAG[base] && CURRENCY_FLAG[quote]) {
+    return { kind: 'pair', baseCurrency: base, quoteCurrency: quote };
   }
   // Fallback — text initials
   return { kind: 'tile', glyph: sym.slice(0, 2), bg: '#475569', fg: '#fff' };
@@ -282,26 +283,11 @@ function Row({ row, isActive, isFav, fxRate, onSelect, onToggleFav }) {
           : 'hover:bg-bg-hover'
       }`}
     >
-      {/* Avatar */}
+      {/* Avatar — delegates to <AssetIcon /> so crypto rows get the real
+          coin logo, forex pairs get stacked flag PNGs, commodities and
+          indices keep their coloured tile glyph. */}
       <div className="shrink-0">
-        {av.kind === 'tile' ? (
-          <div
-            className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-extrabold border border-border-dark"
-            style={{ background: av.bg, color: av.fg }}
-          >
-            {av.glyph}
-          </div>
-        ) : (
-          // Pair: two flag emojis stacked, slightly offset for that "broker" look
-          <div className="relative w-10 h-10">
-            <div className="absolute left-0 top-0 w-7 h-7 rounded-full bg-bg-hover border border-border-dark flex items-center justify-center text-base">
-              {av.flag1}
-            </div>
-            <div className="absolute right-0 bottom-0 w-7 h-7 rounded-full bg-bg-hover border border-border-dark flex items-center justify-center text-base">
-              {av.flag2}
-            </div>
-          </div>
-        )}
+        <AssetIcon row={row} size={40} round />
       </div>
 
       {/* Symbol + name + spread */}

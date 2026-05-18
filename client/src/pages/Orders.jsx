@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../services/api';
 import { fmtNum } from '../utils/format';
+import AssetIcon from '../components/AssetIcon';
 
 /**
  * Trade History — closed positions for the selected trading account, with
@@ -244,7 +245,12 @@ export default function Orders() {
                 return (
                   <tr key={p._id} className="border-b border-border-subtle hover:bg-bg-hover transition-colors">
                     <td className="px-4 py-3 font-mono text-gray-300">{shortId(p._id)}</td>
-                    <td className="px-4 py-3 font-bold text-white">{p.symbol}</td>
+                    <td className="px-4 py-3 font-bold text-white">
+                      <div className="flex items-center gap-2">
+                        <AssetIcon symbol={p.symbol} size={20} round />
+                        <span>{p.symbol}</span>
+                      </div>
+                    </td>
                     <td className="px-4 py-3"><SidePill side={p.side} /></td>
                     <td className="px-4 py-3 text-right font-mono">{fmtLot(p.quantity)}</td>
                     <td className="px-4 py-3 text-right font-mono">{fmtNum(p.entryPrice, 5)}</td>
