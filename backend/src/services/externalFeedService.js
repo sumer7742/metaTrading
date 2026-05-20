@@ -43,41 +43,74 @@ const setBroadcaster = (b) => {
   broadcaster = b;
 };
 
-const _buildSubscribeMessage = () => {
+// Build a single stream list (trade + ticker + depth per symbol) used
+// directly in the connection URL — far more reliable than sending a
+// follow-up SUBSCRIBE message, which Binance has been observed to
+// silently drop for partial-depth streams on the combined endpoint.
+const _buildStreamList = () => {
   const params = [];
   for (const [extSym] of symbolMap) {
-    params.push(`${extSym.toLowerCase()}@trade`);
-    params.push(`${extSym.toLowerCase()}@ticker`);
+    const s = extSym.toLowerCase();
+    params.push(`${s}@trade`);
+    params.push(`${s}@ticker`);
     // L2 depth — top 20 levels, refreshed every 100ms. Drives the
     // Market Depth panel for every crypto instrument in real time.
-    params.push(`${extSym.toLowerCase()}@depth20@100ms`);
+    params.push(`${s}@depth20@100ms`);
   }
-  return JSON.stringify({ method: 'SUBSCRIBE', params, id: 1 });
+  return params.join('/');
 };
 
 const _connect = () => {
-  // Use the COMBINED stream endpoint (`/stream` not `/ws`) so every
-  // payload is wrapped with `{ stream, data }`. The raw endpoint omits
-  // the symbol on partial-depth streams which breaks attribution when
-  // multiple symbols are subscribed.
-  const url = process.env.BINANCE_WS_URL || 'wss://stream.binance.com:9443/stream';
-  console.log(`[ExternalFeed] Connecting to ${url}...`);
+  // Combined stream endpoint (`/stream`) with all subscriptions baked
+  // into the URL query string (`?streams=...`). Each payload arrives
+  // wrapped as `{ stream, data }`. Binance allows up to 1024 streams
+  // per connection — 13 symbols × 3 streams = 39 streams, well under.
+  const base = process.env.BINANCE_WS_URL || 'wss://stream.binance.com:9443/stream';
+  const streams = _buildStreamList();
+  const url = streams ? `${base}?streams=${streams}` : base;
+  console.log(`[ExternalFeed] Connecting to combined stream (${symbolMap.size} symbols, ${streams.split('/').length} streams)`);
   ws = new WebSocket(url);
 
   ws.on('open', () => {
-    console.log('[ExternalFeed] Connected to Binance');
+    console.log('[ExternalFeed] ✓ Connected to Binance combined stream');
     if (symbolMap.size) {
-      ws.send(_buildSubscribeMessage());
-      console.log(`[ExternalFeed] Subscribed to ${symbolMap.size} symbols`);
+      const symbols = [...symbolMap.keys()].join(', ');
+      console.log(`[ExternalFeed] ✓ Streams active for ${symbolMap.size} symbols: ${symbols}`);
+      console.log('[ExternalFeed]   @trade · @ticker · @depth20@100ms per symbol (subscribed via URL)');
+      console.log('[ExternalFeed]   Expecting first depth/ticker messages within 1-2 seconds...');
+    } else {
+      console.log('[ExternalFeed] ⚠ No symbols subscribed — set externalProvider=BINANCE on instruments');
     }
   });
+
+  // One-shot trace flags — log the FIRST occurrence of each message
+  // type so the operator can verify the WS handshake worked end-to-end.
+  let _loggedFirstAny = false;
+  let _loggedFirstDepth = false;
+  let _loggedFirstTicker = false;
 
   ws.on('message', async (raw) => {
     try {
       const wrapper = JSON.parse(raw.toString());
 
+      if (!_loggedFirstAny) {
+        _loggedFirstAny = true;
+        console.log('[ExternalFeed] ✓ First message received from Binance:', JSON.stringify(wrapper).slice(0, 200));
+      }
+
       // SUBSCRIBE / UNSUBSCRIBE acknowledgements: { result: null, id: 1 }
-      if (wrapper.result !== undefined) return;
+      if (wrapper.result !== undefined) {
+        console.log('[ExternalFeed] ✓ SUBSCRIBE ack:', JSON.stringify(wrapper));
+        return;
+      }
+      if (wrapper.stream?.includes('depth') && !_loggedFirstDepth) {
+        _loggedFirstDepth = true;
+        console.log(`[ExternalFeed] ✓ First DEPTH stream message: ${wrapper.stream}`);
+      }
+      if (wrapper.stream?.includes('ticker') && !_loggedFirstTicker) {
+        _loggedFirstTicker = true;
+        console.log(`[ExternalFeed] ✓ First TICKER stream message: ${wrapper.stream}`);
+      }
 
       // Combined-stream payloads are wrapped: { stream, data }.
       // Older raw-stream payloads come through directly without wrapping.
@@ -266,13 +299,15 @@ const start = async () => {
   enabled = true;
   _connect();
 
-  // Re-check symbol mapping every 60s in case admin adds new external instruments
+  // Re-check symbol mapping every 60s in case admin adds new external instruments.
+  // URL-based subs can't be modified on a live connection, so we tear down +
+  // reconnect when the list changes — picks up the new symbols + drops removed ones.
   setInterval(async () => {
     const before = symbolMap.size;
     await _refreshSymbolMap();
-    if (symbolMap.size !== before && ws && ws.readyState === WebSocket.OPEN) {
-      console.log(`[ExternalFeed] Symbol map changed (${before} -> ${symbolMap.size}), re-subscribing`);
-      ws.send(_buildSubscribeMessage());
+    if (symbolMap.size !== before && ws) {
+      console.log(`[ExternalFeed] Symbol map changed (${before} -> ${symbolMap.size}), reconnecting...`);
+      try { ws.close(); } catch (_) { /* will auto-reconnect via on('close') */ }
     }
   }, 60000);
 };
