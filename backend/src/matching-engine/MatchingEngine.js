@@ -751,6 +751,17 @@ class MatchingEngine {
       fee = add(fee, shareFee);
     }
 
+    // ── Losing-trade fee waiver ──────────────────────────────────────
+    // Policy decision (platform-level): commission is waived on closes
+    // that book a loss. The user already pays for the bad trade in the
+    // PnL line itself — charging an extra commission on top adds salt
+    // to the wound. Only profitable closes incur the base commission +
+    // any profit-share fee (already conditional above).
+    //   gt('0', closePnl) === true  ⇔  closePnl < 0
+    if (gt('0', closePnl)) {
+      fee = '0';
+    }
+
     // dedupeKey scopes the settle to (this fill, this user) — both sides of
     // an internal match share a tradeId but are credited to different
     // wallets, so we include userId to avoid the maker's settle colliding

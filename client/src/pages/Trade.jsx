@@ -7,12 +7,14 @@ import PriceChart from '../components/PriceChart';
 import OrderForm from '../components/OrderForm';
 import NotificationCenter from '../components/NotificationCenter';
 import MarketWatch from '../components/MarketWatch';
-import { fmtNum, fmtPnlSimple, fmtMoney, fmtPriceDual, fmtMoneyDual } from '../utils/format';
+import { fmtNum, fmtPnlSimple, fmtMoney, fmtPriceDual, fmtMoneyDual, currencySymbol } from '../utils/format';
 import { useFxRate } from '../hooks/useFxRate';
 import { useThemeStore } from '../store/theme';
 import { Link } from 'react-router-dom';
 import { recordRecentlyViewed } from '../hooks/useRecentlyViewed';
 import AssetIcon from '../components/AssetIcon';
+import TradeSettingsPanel from '../components/settings/TradeSettingsPanel';
+import { getMarketSession } from '../utils/marketSession';
 
 // Drawing-tools rail — the icon row that sits to the left of the chart.
 // Selection state is tracked locally so the rail feels alive even though
@@ -114,6 +116,20 @@ export default function Trade() {
   );
   const [showInstruments, setShowInstruments] = useState(true);
   const [showOrderPanel, setShowOrderPanel] = useState(true);
+  // Active panel tab in the left mini-sidebar — TradingView-style icon
+  // strip on the far edge that switches what content the 280px panel
+  // shows. 'watchlist' is the default (= the existing instruments list).
+  const [leftPanelTab, setLeftPanelTab] = useState('watchlist');
+  // Live order-book snapshot for the active symbol — populated only when
+  // the Market Depth tab is open (avoid wasted polling/subscriptions for
+  // tabs the user never visits).
+  const [orderBook, setOrderBook] = useState(null);
+  const [orderBookLoading, setOrderBookLoading] = useState(false);
+  // Movers panel — live overlay of change24h from WS ticker enrichment.
+  // Keyed by symbol; sparsely populated as Binance ticker frames arrive.
+  // We merge this into `instrumentRows` so the panel re-sorts in real
+  // time without waiting for /watchlist polling.
+  const [moverOverlay, setMoverOverlay] = useState({});
 
   // Clean the `view=terminal` flag from the URL once we've consumed it, so
   // the user can exit fullscreen and stay on /trade in normal mode.
@@ -140,6 +156,11 @@ export default function Trade() {
   // overlay; auto-resets when the user exits fullscreen so a stale
   // overlay doesn't reappear next time they re-enter.
   const [showFloatingOrder, setShowFloatingOrder] = useState(false);
+  // Floating order overlay drag state — offsets from its default
+  // centred position. Reset to (0,0) every time the panel re-opens so
+  // it doesn't reappear at a stale location.
+  const [floatPos, setFloatPos] = useState({ x: 0, y: 0 });
+  const floatDragRef = useRef({ dragging: false, startX: 0, startY: 0, startPosX: 0, startPosY: 0 });
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   // The account dropdown has two sub-views: 'metrics' (Exness-style
   // numbers + quick-actions) and 'switch' (account picker list).
@@ -404,6 +425,39 @@ export default function Trade() {
     };
   }, [symbol]);
 
+  // ── Market Depth — real order-book data for the active symbol.
+  // Only fetches + subscribes when the Depth tab is actually open so we
+  // don't pay for the WS channel + REST snapshot on every page load.
+  useEffect(() => {
+    if (leftPanelTab !== 'depth' || !symbol) {
+      setOrderBook(null);
+      setOrderBookLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setOrderBookLoading(true);
+    setOrderBook(null);
+    const load = async () => {
+      try {
+        const { data } = await api.get(`/instruments/${encodeURIComponent(symbol)}/orderbook`, { params: { depth: 20 } });
+        if (!cancelled) {
+          setOrderBook(data?.data || null);
+          setOrderBookLoading(false);
+        }
+      } catch (_) {
+        if (!cancelled) { setOrderBook(null); setOrderBookLoading(false); }
+      }
+    };
+    load();
+    const unsub = wsClient.subscribe(`orderbook:${symbol}`, (snap) => {
+      if (snap) {
+        setOrderBook(snap);
+        setOrderBookLoading(false);
+      }
+    });
+    return () => { cancelled = true; unsub && unsub(); };
+  }, [leftPanelTab, symbol]);
+
   // Subscribe to ALL symbols where the user has open positions so PnL ticks
   // for every row, not just the chart's symbol. Depend on the stable
   // joined-symbol key (not the `positions` array) so a refresh that returns
@@ -582,6 +636,55 @@ export default function Trade() {
       });
   }, [instruments, priceMap]);
 
+  // ── Movers — when the panel is open, subscribe to ticker frames for
+  // every active instrument and capture change24h / dayHigh / dayLow
+  // into a sparse overlay map. This drives the panel's live sort.
+  // Also force-refreshes the watchlist endpoint on open so older
+  // cached `_cache` blobs from useInstruments get the fresh numbers.
+  useEffect(() => {
+    if (leftPanelTab !== 'hotlist') return;
+    if (!instrumentRows.length) return;
+    // Best-effort refresh of the watchlist endpoint — patch the
+    // module-level cache so all consumers (this row + nav etc.) see fresh numbers.
+    api.get('/instruments/watchlist').then(({ data }) => {
+      const rows = data?.data || [];
+      const next = {};
+      for (const r of rows) {
+        if (Number.isFinite(Number(r.change24h))) {
+          next[r.symbol] = {
+            change24h: Number(r.change24h),
+            dayHigh:   Number(r.dayHigh),
+            dayLow:    Number(r.dayLow),
+            volume24h: Number(r.volume24h),
+            lastPrice: Number(r.lastPrice),
+          };
+        }
+      }
+      setMoverOverlay((prev) => ({ ...prev, ...next }));
+    }).catch(() => {});
+    // Subscribe to live ticker updates for every symbol — Binance's
+    // 24hrTicker now broadcasts change24h on the same ticker:<symbol>
+    // channel, so even if the watchlist endpoint is stale the overlay
+    // gets refreshed on every tick.
+    const unsubs = instrumentRows.map((r) =>
+      wsClient.subscribe(`ticker:${r.symbol}`, (tick) => {
+        if (!tick) return;
+        if (!Number.isFinite(Number(tick.change24h))) return;
+        setMoverOverlay((prev) => ({
+          ...prev,
+          [r.symbol]: {
+            change24h: Number(tick.change24h),
+            dayHigh:   Number(tick.dayHigh),
+            dayLow:    Number(tick.dayLow),
+            volume24h: Number(tick.volume24h),
+            lastPrice: Number(tick.lastPrice),
+          },
+        }));
+      })
+    );
+    return () => unsubs.forEach((u) => u && u());
+  }, [leftPanelTab, instrumentRows]);
+
   // Distinct categories present in the dataset — drives the dropdown
   // options so a freshly-added asset class (e.g. ETF) appears
   // automatically with no UI change.
@@ -692,6 +795,45 @@ export default function Trade() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [showFloatingOrder]);
+
+  // ── Floating order overlay — drag-to-move support ─────────────────
+  // Global mouse listeners track pointer movement once the user
+  // grabs the drag handle on the overlay header. The position is
+  // expressed as a delta from the centred baseline so the existing
+  // CSS positioning (`top: 50%; right: 30%`) keeps working.
+  useEffect(() => {
+    const onMove = (e) => {
+      const st = floatDragRef.current;
+      if (!st.dragging) return;
+      const dx = e.clientX - st.startX;
+      const dy = e.clientY - st.startY;
+      setFloatPos({ x: st.startPosX + dx, y: st.startPosY + dy });
+    };
+    const onUp = () => { floatDragRef.current.dragging = false; document.body.style.userSelect = ''; };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+  // Reset position whenever the overlay closes — re-opening lands it
+  // at the default centred location, not at the last drag spot.
+  useEffect(() => {
+    if (!showFloatingOrder) setFloatPos({ x: 0, y: 0 });
+  }, [showFloatingOrder]);
+  const startFloatDrag = (e) => {
+    floatDragRef.current = {
+      dragging: true,
+      startX: e.clientX,
+      startY: e.clientY,
+      startPosX: floatPos.x,
+      startPosY: floatPos.y,
+    };
+    // Prevent the chart underneath from registering text-selection
+    // while the user drags across it.
+    document.body.style.userSelect = 'none';
+  };
   // Wrap the side-change handler so clicking BUY/SELL on the chip in
   // fullscreen pops the floating overlay (instead of just silently
   // toggling state with no visible UI, which is what happened before
@@ -1048,19 +1190,47 @@ export default function Trade() {
           min-h-0 across all breakpoints keeps the page locked to exactly
           viewport height (no scroll). */}
       <div className="flex-1 flex flex-col lg:flex-row gap-1 min-h-0">
-        {/* Left re-open tab — shown only when Instruments is collapsed */}
-        {!showInstruments && !isFullscreen && (
-          <button
-            type="button"
-            onClick={() => setShowInstruments(true)}
-            title="Show instruments"
-            className="hidden lg:flex w-7 shrink-0 self-start flex-col items-center justify-center gap-2 py-3 glass border border-border-dark rounded-xl text-text-secondary hover:text-text-primary transition-colors"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18l6-6-6-6" /></svg>
-            <span className="text-[9px] uppercase tracking-[0.2em] font-bold whitespace-nowrap" style={{ writingMode: 'vertical-rl' }}>
-              Instruments
-            </span>
-          </button>
+        {/* Mini icon strip — TradingView-style panel switcher.
+            Always visible on lg+ (hidden on mobile because the page
+            stacks vertically). Stays mounted even when the wider
+            Instruments panel is hidden — clicking an icon will both
+            re-open the panel and switch its content. */}
+        {(showInstruments || !isFullscreen) && (
+          <aside className={`${isFullscreen ? 'hidden' : 'hidden lg:flex'} w-16 shrink-0 flex-col gap-1 p-1 -mt-1 -ml-1 glass border-r border-border-dark overflow-y-auto`}>
+            {[
+              { id: 'watchlist',    label: 'Instruments',  icon: <SbWatchI /> },
+              { id: 'details',      label: 'Details',      icon: <SbDetailsI /> },
+              { id: 'about',        label: 'About',        icon: <SbAboutI /> },
+              { id: 'performance',  label: 'Performance',  icon: <SbPerfI /> },
+              { id: 'depth',        label: 'Depth',        icon: <SbDepthI /> },
+              { id: 'hotlist',      label: 'Movers',       icon: <SbHotI /> },
+            ].map((t) => {
+              const active = leftPanelTab === t.id && showInstruments;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => { setLeftPanelTab(t.id); if (!showInstruments) setShowInstruments(true); }}
+                  title={t.label}
+                  aria-label={t.label}
+                  className={`w-full py-1.5 rounded-md flex flex-col items-center justify-center gap-0.5 transition-all ${
+                    active
+                      ? 'bg-primary-500/15 text-primary-600 ring-1 ring-primary-500/30'
+                      : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+                  }`}
+                >
+                  {t.icon}
+                  <span className="text-[9px] font-semibold leading-none tracking-tight">{t.label}</span>
+                </button>
+              );
+            })}
+
+            {/* Settings — same tab behaviour as the others (no drawer). */}
+            <SettingsTabBtn
+              active={leftPanelTab === 'settings' && showInstruments}
+              onClick={() => { setLeftPanelTab('settings'); if (!showInstruments) setShowInstruments(true); }}
+            />
+          </aside>
         )}
 
         {/* Left — INSTRUMENTS panel (closes individually + via Expand) */}
@@ -1068,9 +1238,17 @@ export default function Trade() {
           <div className="px-3 py-2.5 border-b border-border-dark flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span className="text-[11px] uppercase tracking-[0.15em] font-extrabold text-text-primary">
-                Instruments
+                {leftPanelTab === 'watchlist' ? 'Instruments'
+                 : leftPanelTab === 'details' ? 'Symbol Details'
+                 : leftPanelTab === 'about' ? 'About'
+                 : leftPanelTab === 'performance' ? 'Performance'
+                 : leftPanelTab === 'depth' ? 'Market Depth'
+                 : leftPanelTab === 'settings' ? 'Settings'
+                 : 'Top Movers'}
               </span>
-              <span className="text-text-secondary text-xs font-semibold">{instrumentRows.length}</span>
+              {leftPanelTab === 'watchlist' && (
+                <span className="text-text-secondary text-xs font-semibold">{instrumentRows.length}</span>
+              )}
             </div>
             <button
               type="button"
@@ -1082,6 +1260,9 @@ export default function Trade() {
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
             </button>
           </div>
+
+          {/* ── Panel content switches by leftPanelTab ─────────────── */}
+          {leftPanelTab === 'watchlist' && (<>
           <div className="p-2 border-b border-border-subtle space-y-2">
             <input
               type="text"
@@ -1204,7 +1385,615 @@ export default function Trade() {
                 );
               })}
           </div>
+          </>)}
+
+          {/* ── Symbol Details pane ─────────────────────────────────── */}
+          {leftPanelTab === 'details' && instrument && (
+            <div className="flex-1 overflow-y-auto p-3 space-y-3 text-xs">
+              <div className="flex items-center gap-2.5 pb-3 border-b border-border-subtle">
+                <AssetIcon row={instrument} size={36} round />
+                <div className="min-w-0">
+                  <div className="text-sm font-bold text-text-primary truncate">{instrument.symbol}</div>
+                  <div className="text-[11px] text-text-muted truncate">{instrument.name || `${instrument.baseCurrency}/${instrument.quoteCurrency}`}</div>
+                </div>
+              </div>
+              {[
+                { label: 'Category', value: instrument.category },
+                { label: 'Base / Quote', value: `${instrument.baseCurrency || '—'} / ${instrument.quoteCurrency || '—'}` },
+                { label: 'Last Price', value: fmtNum(instrument.lastPrice, Math.min(instrument.pricePrecision || 2, 5)), mono: true },
+                { label: 'Bid / Ask', value: `${fmtNum(instrument.bid, Math.min(instrument.pricePrecision || 2, 5))} / ${fmtNum(instrument.ask, Math.min(instrument.pricePrecision || 2, 5))}`, mono: true },
+                { label: 'Spread', value: instrument.spreadValue ? `${instrument.spreadValue} (${instrument.spreadType || 'FIXED'})` : '—' },
+                { label: 'Max Leverage', value: instrument.maxLeverage ? `1:${instrument.maxLeverage}` : '—' },
+                { label: 'Min Order', value: instrument.minOrderSize || '—' },
+                { label: 'Precision', value: `${instrument.pricePrecision || 2} digits` },
+                { label: 'Feed', value: instrument.externalProvider || 'Internal' },
+                { label: 'Status', value: instrument.isActive ? 'Active' : 'Inactive', tone: instrument.isActive ? 'bull' : 'muted' },
+              ].map((row) => (
+                <div key={row.label} className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] uppercase tracking-wider font-bold text-text-muted">{row.label}</span>
+                  <span className={`${row.mono ? 'font-mono' : ''} text-text-primary text-right truncate`}
+                        style={row.tone === 'bull' ? { color: '#16A34A' } : undefined}>
+                    {row.value}
+                  </span>
+                </div>
+              ))}
+              {Number.isFinite(Number(instrument.change24h)) && (
+                <div className="pt-3 border-t border-border-subtle">
+                  <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted mb-1">24h Change</div>
+                  <div className="text-lg font-bold font-mono"
+                       style={{ color: Number(instrument.change24h) >= 0 ? '#16A34A' : '#DC2626' }}>
+                    {Number(instrument.change24h) >= 0 ? '+' : ''}{Number(instrument.change24h).toFixed(2)}%
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {leftPanelTab === 'details' && !instrument && (
+            <div className="flex-1 flex items-center justify-center text-xs text-text-muted px-4 text-center">
+              Pick an instrument from Watchlist to see its details here.
+            </div>
+          )}
+
+          {/* ── Top Movers pane — top 5 gainers + 5 losers ─────────── */}
+          {leftPanelTab === 'hotlist' && (
+            <div className="flex-1 overflow-y-auto">
+              {(() => {
+                // Merge the static instrumentRows snapshot with the
+                // live `moverOverlay` map (populated from WS ticker
+                // frames + fresh watchlist on tab open).
+                const merged = instrumentRows.map((r) => {
+                  const o = moverOverlay[r.symbol];
+                  return o
+                    ? {
+                        ...r,
+                        change24h: o.change24h,
+                        dayHigh:   o.dayHigh,
+                        dayLow:    o.dayLow,
+                        volume24h: o.volume24h,
+                        lastPrice: Number.isFinite(o.lastPrice) ? o.lastPrice : r.lastPrice,
+                      }
+                    : r;
+                });
+                const ranked = merged
+                  .filter((r) => Number.isFinite(Number(r.change24h)))
+                  .sort((a, b) => Number(b.change24h) - Number(a.change24h));
+                const gainers = ranked.slice(0, 8);
+                const losers = ranked.slice(-8).reverse();
+                const Row = ({ r }) => {
+                  const change = Number(r.change24h);
+                  const pos = change >= 0;
+                  const prec = Math.min(r.pricePrecision || 2, 5);
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => openTab(r.symbol)}
+                      className="w-full flex items-center gap-2 px-3 py-2 hover:bg-bg-hover transition-colors text-left"
+                    >
+                      <AssetIcon row={r} size={22} round />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold text-text-primary truncate">{r.symbol}</div>
+                        <div className="text-[10px] font-mono text-text-muted">{fmtNum(r.lastPrice, prec)}</div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="text-[11px] font-bold font-mono tabular-nums" style={{ color: pos ? '#16A34A' : '#DC2626' }}>
+                          {pos ? '+' : ''}{change.toFixed(2)}%
+                        </div>
+                        {Number.isFinite(Number(r.volume24h)) && Number(r.volume24h) > 0 && (
+                          <div className="text-[9px] font-mono text-text-muted mt-0.5">
+                            Vol {Number(r.volume24h) >= 1e6
+                              ? (Number(r.volume24h) / 1e6).toFixed(1) + 'M'
+                              : Number(r.volume24h) >= 1e3
+                                ? (Number(r.volume24h) / 1e3).toFixed(1) + 'K'
+                                : Number(r.volume24h).toFixed(0)}
+                          </div>
+                        )}
+                      </div>
+                    </button>
+                  );
+                };
+                return (
+                  <>
+                    {/* Live status header */}
+                    <div className="px-3 py-2 text-[10px] uppercase tracking-wider font-bold text-text-muted bg-bg-hover/40 border-b border-border-subtle flex items-center justify-between">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="relative flex w-1.5 h-1.5">
+                          <span className="absolute inline-flex h-full w-full rounded-full bg-bull opacity-70 animate-ping" />
+                          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-bull" />
+                        </span>
+                        Live · {ranked.length} symbols
+                      </span>
+                    </div>
+                    <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider font-bold text-bull bg-bull/5 border-b border-border-subtle">▲ Top Gainers</div>
+                    {gainers.length === 0
+                      ? <div className="px-3 py-4 text-[11px] text-text-muted text-center">Waiting for 24h data…</div>
+                      : gainers.map((r) => <Row key={`g-${r.symbol}`} r={r} />)}
+                    <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider font-bold text-bear bg-bear/5 border-y border-border-subtle">▼ Top Losers</div>
+                    {losers.length === 0
+                      ? <div className="px-3 py-4 text-[11px] text-text-muted text-center">Waiting for 24h data…</div>
+                      : losers.map((r) => <Row key={`l-${r.symbol}`} r={r} />)}
+                  </>
+                );
+              })()}
+            </div>
+          )}
+
+          {/* ── About pane — descriptive asset-class info + key facts ── */}
+          {leftPanelTab === 'about' && instrument && (() => {
+            const cat = String(instrument.category || '').toUpperCase();
+            const desc = cat === 'CRYPTO'
+              ? 'Cryptocurrency pair trading 24/7 against the US Dollar. High volatility — risk management essential.'
+              : cat === 'FOREX'
+              ? 'Currency pair traded on the spot FX market. Liquidity peaks during overlapping London + New York sessions.'
+              : cat === 'STOCK'
+              ? 'Listed equity — price reflects company shares traded on its primary exchange during market hours.'
+              : cat === 'COMMODITY'
+              ? 'Physical-asset derivative — gold, silver, oil and similar contracts settled against spot reference prices.'
+              : cat === 'INDEX'
+              ? 'Stock-index CFD — exposure to a basket of listed equities tracked by the underlying benchmark.'
+              : 'Tradable instrument quoted in real time.';
+            const hours = cat === 'CRYPTO' ? '24 / 7' : cat === 'FOREX' ? 'Mon 00:00 → Fri 22:00 UTC' : 'Exchange hours';
+            return (
+              <div className="flex-1 overflow-y-auto p-3 space-y-3 text-xs">
+                <div className="flex items-center gap-2.5 pb-3 border-b border-border-subtle">
+                  <AssetIcon row={instrument} size={36} round />
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold text-text-primary truncate">{instrument.symbol}</div>
+                    <div className="text-[11px] text-text-muted truncate">{instrument.name || `${instrument.baseCurrency}/${instrument.quoteCurrency}`}</div>
+                  </div>
+                </div>
+                <p className="text-[12px] leading-relaxed text-text-secondary">{desc}</p>
+                <div className="space-y-2">
+                  {[
+                    { l: 'Asset Class',  v: cat ? cat.charAt(0) + cat.slice(1).toLowerCase() : '—' },
+                    { l: 'Quote Curr.',  v: instrument.quoteCurrency || '—' },
+                    { l: 'Trading Hours', v: hours },
+                  ].map((r) => (
+                    <div key={r.l} className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] uppercase tracking-wider font-bold text-text-muted">{r.l}</span>
+                      <span className="text-text-primary text-right truncate">{r.v}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="pt-3 border-t border-border-subtle">
+                  <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted mb-2">Risk Notice</div>
+                  <p className="text-[11px] text-text-muted leading-relaxed">
+                    Leveraged trading carries significant risk and may not be suitable for all investors. Past performance is not indicative of future results.
+                  </p>
+                </div>
+              </div>
+            );
+          })()}
+          {leftPanelTab === 'about' && !instrument && (
+            <div className="flex-1 flex items-center justify-center text-xs text-text-muted px-4 text-center">
+              Pick an instrument to see its description here.
+            </div>
+          )}
+
+          {/* ── Performance pane — 24h stats + range visualisation ───── */}
+          {leftPanelTab === 'performance' && instrument && (() => {
+            const session = getMarketSession(instrument.category);
+            const change = Number(instrument.change24h);
+            const pos = Number.isFinite(change) ? change >= 0 : null;
+            // Prefer the live WS price so the readout ticks in real time —
+            // fall back to the snapshot field if the stream is silent.
+            const last = Number(livePrice ?? instrument.lastPrice);
+            const hi = Number(instrument.dayHigh);
+            const lo = Number(instrument.dayLow);
+            const hasRange = Number.isFinite(hi) && Number.isFinite(lo) && hi > lo;
+            const pctOfRange = hasRange ? ((last - lo) / (hi - lo)) * 100 : null;
+            const prec = Math.min(instrument.pricePrecision || 2, 5);
+            const tone = pos == null ? '#9CA3AF' : pos ? '#16A34A' : '#DC2626';
+            // Derived metrics — all from instrument fields:
+            //  - 24h open: reverse-engineered from last + change%
+            //  - mid:      (bid + ask) / 2
+            //  - spread%:  spread relative to mid (basis points)
+            //  - range%:   intraday volatility = (hi - lo) / lo
+            const open24h = Number.isFinite(last) && Number.isFinite(change) && change !== -100
+              ? last / (1 + change / 100)
+              : null;
+            const bid = Number(instrument.bid);
+            const ask = Number(instrument.ask);
+            const haveBA = Number.isFinite(bid) && Number.isFinite(ask) && ask > 0;
+            const mid = haveBA ? (bid + ask) / 2 : null;
+            const spreadAbs = haveBA ? ask - bid : null;
+            const spreadBps = mid && spreadAbs != null ? (spreadAbs / mid) * 10000 : null;
+            const rangePct = hasRange ? ((hi - lo) / lo) * 100 : null;
+            const volNum = Number(instrument.volume24h);
+            const turnover = Number.isFinite(volNum) && Number.isFinite(last) ? volNum * last : null;
+            const fmtCompact = (n) => {
+              if (!Number.isFinite(n) || n <= 0) return '—';
+              if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+              if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+              if (n >= 1e3) return (n / 1e3).toFixed(2) + 'K';
+              return n.toFixed(0);
+            };
+            return (
+              <div className="flex-1 overflow-y-auto p-3 space-y-4 text-xs">
+                {/* Market session banner (closed only) */}
+                {!session.isOpen && (
+                  <div className="rounded-xl border border-warn/30 bg-warn/10 px-3 py-2 flex items-center gap-2">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-warn shrink-0"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[11px] font-bold text-text-primary">{session.label}</div>
+                      {session.detail && <div className="text-[10px] text-text-muted truncate">{session.detail}</div>}
+                    </div>
+                  </div>
+                )}
+
+                {/* Headline 24h change */}
+                <div className="rounded-xl border border-border-subtle bg-bg-hover/40 p-3">
+                  <div className="flex items-center justify-between">
+                    <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted">24h Change</div>
+                    {session.isOpen ? (
+                      <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-bull">
+                        <span className="relative flex w-1.5 h-1.5">
+                          <span className="absolute inline-flex h-full w-full rounded-full bg-bull opacity-70 animate-ping" />
+                          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-bull" />
+                        </span>
+                        Live
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-text-muted">
+                        <span className="w-1.5 h-1.5 rounded-full bg-text-muted" />
+                        Closed
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-1 text-2xl font-bold font-mono tabular-nums" style={{ color: tone }}>
+                    {pos == null ? '—' : `${pos ? '+' : ''}${change.toFixed(2)}%`}
+                  </div>
+                  <div className="mt-1 text-[10px] font-mono text-text-muted">
+                    Last · <span className="text-text-primary font-bold">{fmtNum(last, prec)}</span> {instrument.quoteCurrency}
+                    {open24h != null && (
+                      <span className="ml-2">Open · <span className="text-text-secondary">{fmtNum(open24h, prec)}</span></span>
+                    )}
+                  </div>
+                </div>
+
+                {/* 24h range visualisation */}
+                {hasRange && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5 text-[10px] uppercase tracking-wider font-bold text-text-muted">
+                      <span>24h Low</span>
+                      <span>24h High</span>
+                    </div>
+                    <div className="relative h-1.5 rounded-full bg-bg-hover overflow-hidden">
+                      <div className="absolute inset-y-0 left-0 right-0 bg-gradient-to-r from-bear/30 via-text-muted/20 to-bull/30 rounded-full" />
+                      <div
+                        className="absolute top-1/2 -translate-y-1/2 w-2 h-2 rounded-full ring-2 ring-white"
+                        style={{ left: `calc(${Math.max(0, Math.min(100, pctOfRange))}% - 4px)`, background: tone }}
+                      />
+                    </div>
+                    <div className="mt-1.5 flex items-center justify-between text-[11px] font-mono tabular-nums">
+                      <span className="text-bear">{fmtNum(lo, prec)}</span>
+                      <span className="text-bull">{fmtNum(hi, prec)}</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Section: Price & Quote */}
+                <div className="space-y-2 pt-2 border-t border-border-subtle">
+                  <div className="text-[9px] uppercase tracking-[0.18em] font-bold text-text-muted">Price · Quote</div>
+                  {[
+                    { l: 'Last',     v: fmtNum(last, prec),                              tone: 'normal' },
+                    { l: 'Open',     v: open24h != null ? fmtNum(open24h, prec) : '—',   tone: 'normal' },
+                    { l: 'Mid',      v: mid != null    ? fmtNum(mid, prec)    : '—',     tone: 'normal' },
+                    { l: 'Bid',      v: fmtNum(bid, prec),                               tone: 'bull' },
+                    { l: 'Ask',      v: fmtNum(ask, prec),                               tone: 'bear' },
+                    { l: 'Spread',   v: spreadAbs != null ? fmtNum(spreadAbs, prec) : '—' },
+                    { l: 'Spread (bps)', v: spreadBps != null ? spreadBps.toFixed(2) : '—' },
+                  ].map((r) => (
+                    <div key={r.l} className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="text-text-muted">{r.l}</span>
+                      <span
+                        className="font-mono tabular-nums font-semibold"
+                        style={r.tone === 'bull' ? { color: '#16A34A' } : r.tone === 'bear' ? { color: '#DC2626' } : { color: 'inherit' }}
+                      >
+                        {r.v}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Section: Range & Volume */}
+                <div className="space-y-2 pt-2 border-t border-border-subtle">
+                  <div className="text-[9px] uppercase tracking-[0.18em] font-bold text-text-muted">Range · Volume</div>
+                  {[
+                    { l: '24h High',  v: hasRange ? fmtNum(hi, prec) : '—', tone: 'bull' },
+                    { l: '24h Low',   v: hasRange ? fmtNum(lo, prec) : '—', tone: 'bear' },
+                    { l: 'Range',     v: hasRange ? fmtNum(hi - lo, prec) : '—' },
+                    { l: 'Range (%)', v: rangePct != null ? rangePct.toFixed(2) + '%' : '—' },
+                    { l: 'Volume',    v: fmtCompact(volNum) },
+                    { l: 'Turnover',  v: turnover != null ? `${currencySymbol(instrument.quoteCurrency || 'USD')}${fmtCompact(turnover)}` : '—' },
+                  ].map((r) => (
+                    <div key={r.l} className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="text-text-muted">{r.l}</span>
+                      <span
+                        className="font-mono tabular-nums font-semibold"
+                        style={r.tone === 'bull' ? { color: '#16A34A' } : r.tone === 'bear' ? { color: '#DC2626' } : { color: 'inherit' }}
+                      >
+                        {r.v}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Section: Symbol info + Trading */}
+                <div className="space-y-2 pt-2 border-t border-border-subtle">
+                  <div className="text-[9px] uppercase tracking-[0.18em] font-bold text-text-muted">Symbol · Trading</div>
+                  {[
+                    { l: 'Symbol',       v: instrument.symbol || '—' },
+                    { l: 'Category',     v: instrument.category ? instrument.category.charAt(0) + instrument.category.slice(1).toLowerCase() : '—' },
+                    { l: 'Base / Quote', v: `${instrument.baseCurrency || '—'} / ${instrument.quoteCurrency || '—'}` },
+                    { l: 'Precision',    v: `${instrument.pricePrecision || 2} digits` },
+                    { l: 'Min Order',    v: instrument.minOrderSize || '—' },
+                    { l: 'Max Leverage', v: instrument.maxLeverage ? `1:${instrument.maxLeverage}` : '—' },
+                    { l: 'Commission',   v: instrument.commissionPercent ? `${(Number(instrument.commissionPercent) * 100).toFixed(3)}%` : '—' },
+                    { l: 'Feed',         v: instrument.externalProvider || 'Internal' },
+                  ].map((r) => (
+                    <div key={r.l} className="flex items-center justify-between gap-2 text-[11px]">
+                      <span className="text-text-muted">{r.l}</span>
+                      <span className="font-mono tabular-nums font-semibold text-right truncate">{r.v}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+          {leftPanelTab === 'performance' && !instrument && (
+            <div className="flex-1 flex items-center justify-center text-xs text-text-muted px-4 text-center">
+              Pick an instrument to see performance stats here.
+            </div>
+          )}
+
+          {/* ── Market Depth pane — real order-book data ───────────── */}
+          {leftPanelTab === 'depth' && instrument && (() => {
+            const session = getMarketSession(instrument.category);
+            // Market closed (forex weekend, stocks after-hours, etc.) →
+            // show a clear status card instead of streaming stale data.
+            if (!session.isOpen) {
+              return (
+                <div className="flex-1 flex flex-col items-center justify-center px-6 py-10 text-center">
+                  <span className="w-12 h-12 rounded-full bg-bg-hover flex items-center justify-center text-text-muted mb-3">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
+                  </span>
+                  <div className="text-sm font-bold text-text-primary">{session.label}</div>
+                  {session.detail && <p className="mt-1 text-[11px] text-text-muted max-w-[220px]">{session.detail}</p>}
+                  <div className="mt-3 text-[10px] uppercase tracking-wider font-bold text-text-muted">{instrument.symbol} · {instrument.category}</div>
+                </div>
+              );
+            }
+            // Render immediately with whatever we have (real book or
+            // top-of-book fallback). No loading spinner — even the
+            // first frame shows useful data via the derived bid/ask.
+            const prec = Math.min(instrument.pricePrecision || 2, 5);
+            const realBids = Array.isArray(orderBook?.bids) ? orderBook.bids : [];
+            const realAsks = Array.isArray(orderBook?.asks) ? orderBook.asks : [];
+            const hasRealBook = realBids.length > 0 || realAsks.length > 0;
+
+            // Normalise to the same shape used by the simulated fallback.
+            // Backend returns { price, quantity (string), count }; convert
+            // to numbers and clip to the top 8 each side.
+            const realAsksRows = realAsks.slice(0, 8).map((l) => ({
+              price: Number(l.price), size: Number(l.quantity), count: l.count,
+            })).filter((r) => Number.isFinite(r.price));
+            const realBidsRows = realBids.slice(0, 8).map((l) => ({
+              price: Number(l.price), size: Number(l.quantity), count: l.count,
+            })).filter((r) => Number.isFinite(r.price));
+
+            // Real data only — no simulated levels. When the matching
+            // engine has no internal orders queued, we fall back to a
+            // single-level "Top of Book" using the LIVE bid/ask. We
+            // resolve bid/ask through three fallbacks (in order):
+            //   1. instrument.bid / instrument.ask (from /watchlist)
+            //   2. livePrice ± spread/2 (live WS tick × instrument's spread)
+            //   3. instrument.lastPrice ± spread/2 (last known price)
+            // This way even instruments whose `bid`/`ask` watchlist
+            // fields are missing/zero still show real market prices.
+            const _deriveBA = () => {
+              const fromWl = (v) => {
+                const n = Number(v);
+                return Number.isFinite(n) && n > 0 ? n : null;
+              };
+              let b = fromWl(instrument.bid);
+              let a = fromWl(instrument.ask);
+              if (b && a) return { bid: b, ask: a };
+              const lp = fromWl(livePrice) || fromWl(instrument.lastPrice);
+              if (!lp) return { bid: null, ask: null };
+              const sv = Number(instrument.spreadValue) || 0;
+              const half = sv > 0 ? sv / 2 : 0;
+              if (instrument.spreadType === 'PERCENTAGE') {
+                return { bid: lp * (1 - half), ask: lp * (1 + half) };
+              }
+              return { bid: lp - half, ask: lp + half };
+            };
+            const { bid: fbBid, ask: fbAsk } = _deriveBA();
+
+            let asks = [...realAsksRows].sort((a, b) => b.price - a.price);
+            let bids = [...realBidsRows].sort((a, b) => b.price - a.price);
+            if (asks.length === 0 && Number.isFinite(fbAsk)) {
+              asks = [{ price: fbAsk, size: NaN, count: null, _topOnly: true }];
+            }
+            if (bids.length === 0 && Number.isFinite(fbBid)) {
+              bids = [{ price: fbBid, size: NaN, count: null, _topOnly: true }];
+            }
+
+            const bestBid = bids[0]?.price;
+            const bestAsk = asks[asks.length - 1]?.price;
+            const spread = (Number.isFinite(bestAsk) && Number.isFinite(bestBid)) ? bestAsk - bestBid : null;
+            const midPrice = (Number.isFinite(bestAsk) && Number.isFinite(bestBid)) ? (bestAsk + bestBid) / 2 : null;
+            const spreadBps = midPrice && spread != null ? (spread / midPrice) * 10000 : null;
+            const maxSize = Math.max(
+              ...asks.map((a) => a.size).filter(Number.isFinite),
+              ...bids.map((b) => b.size).filter(Number.isFinite),
+              0.0001,
+            );
+            // Aggregate stats — sums + counts + imbalance + cumulative depth
+            const sumSize = (arr) => arr.reduce((s, r) => s + (Number.isFinite(r.size) ? r.size : 0), 0);
+            const sumNotional = (arr) => arr.reduce((s, r) => s + (Number.isFinite(r.size) && Number.isFinite(r.price) ? r.size * r.price : 0), 0);
+            const totalBidSize = sumSize(bids);
+            const totalAskSize = sumSize(asks);
+            const totalBidNotional = sumNotional(bids);
+            const totalAskNotional = sumNotional(asks);
+            const totalSize = totalBidSize + totalAskSize;
+            const bidPct = totalSize > 0 ? (totalBidSize / totalSize) * 100 : 50;
+            const askPct = 100 - bidPct;
+            // Cumulative running totals — asks counted from the spread
+            // outward (bottom row of the asks block = lowest ask = first
+            // to fill if you buy aggressively). Bids same logic from
+            // their best (top of bids block).
+            //   asks are sorted high→low for render, so we walk in REVERSE
+            //   to accumulate from the lowest ask up.
+            const askCumul = new Array(asks.length).fill(0);
+            let runA = 0;
+            for (let i = asks.length - 1; i >= 0; i--) {
+              runA += (Number.isFinite(asks[i].size) ? asks[i].size : 0);
+              askCumul[i] = runA;
+            }
+            //   bids are sorted high→low — cumul walks forward from best bid.
+            const bidCumul = new Array(bids.length).fill(0);
+            let runB = 0;
+            for (let i = 0; i < bids.length; i++) {
+              runB += (Number.isFinite(bids[i].size) ? bids[i].size : 0);
+              bidCumul[i] = runB;
+            }
+            return (
+              <div className="flex-1 overflow-y-auto text-[11px]">
+                {/* Live indicator */}
+                <div className="px-3 pt-2 pb-1 flex items-center justify-between text-[9px] uppercase tracking-wider font-bold text-text-muted">
+                  <span className="flex items-center gap-1.5">
+                    {hasRealBook ? (
+                      <>
+                        <span className="relative flex w-1.5 h-1.5">
+                          <span className="absolute inline-flex h-full w-full rounded-full bg-bull opacity-70 animate-ping" />
+                          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-bull" />
+                        </span>
+                        Live · {realBids.length + realAsks.length} levels
+                      </>
+                    ) : (
+                      <>
+                        <span className="w-1.5 h-1.5 rounded-full bg-text-muted" />
+                        Book empty
+                      </>
+                    )}
+                  </span>
+                  {orderBook?.ts && (
+                    <span className="font-mono text-[9px] text-text-muted">
+                      {new Date(orderBook.ts).toLocaleTimeString()}
+                    </span>
+                  )}
+                </div>
+
+                {/* Summary strip — Bid / Ask totals + counts + mid */}
+                <div className="px-3 pt-1 pb-2 grid grid-cols-3 gap-2 text-[10px] border-b border-border-subtle">
+                  <div>
+                    <div className="text-text-muted uppercase tracking-wider text-[8px] font-bold">Bids · {bids.length}</div>
+                    <div className="font-mono font-bold text-bull tabular-nums mt-0.5">{totalBidSize.toFixed(2)}</div>
+                    <div className="font-mono text-[9px] text-text-muted tabular-nums">{totalBidNotional > 0 ? totalBidNotional.toFixed(0) : '—'}</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="text-text-muted uppercase tracking-wider text-[8px] font-bold">Mid</div>
+                    <div className="font-mono font-bold text-text-primary tabular-nums mt-0.5">{midPrice != null ? fmtNum(midPrice, prec) : '—'}</div>
+                    <div className="font-mono text-[9px] text-text-muted tabular-nums">{spreadBps != null ? `${spreadBps.toFixed(1)} bps` : '—'}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-text-muted uppercase tracking-wider text-[8px] font-bold">Asks · {asks.length}</div>
+                    <div className="font-mono font-bold text-bear tabular-nums mt-0.5">{totalAskSize.toFixed(2)}</div>
+                    <div className="font-mono text-[9px] text-text-muted tabular-nums">{totalAskNotional > 0 ? totalAskNotional.toFixed(0) : '—'}</div>
+                  </div>
+                </div>
+
+                {/* Imbalance bar — % lean of bids vs asks */}
+                <div className="px-3 py-2 border-b border-border-subtle">
+                  <div className="flex items-center justify-between text-[9px] uppercase tracking-wider font-bold text-text-muted mb-1">
+                    <span>Buy {bidPct.toFixed(0)}%</span>
+                    <span>Sell {askPct.toFixed(0)}%</span>
+                  </div>
+                  <div className="relative h-1.5 rounded-full bg-bg-hover overflow-hidden flex">
+                    <span className="bg-bull transition-all duration-300" style={{ width: `${bidPct}%` }} />
+                    <span className="bg-bear transition-all duration-300" style={{ width: `${askPct}%` }} />
+                  </div>
+                </div>
+
+                {/* Column headers */}
+                <div className="px-2 pt-2 text-[9px] uppercase tracking-wider font-bold text-text-muted grid grid-cols-4 gap-2 mb-1">
+                  <span>Price</span>
+                  <span className="text-right">Size</span>
+                  <span className="text-right">Total</span>
+                  <span className="text-right">Cumul</span>
+                </div>
+
+                {/* Asks (red, top half) */}
+                <div>
+                  {asks.length === 0 ? (
+                    <div className="px-3 py-3 text-center text-[10px] text-text-muted">No asks</div>
+                  ) : asks.map((row, i) => {
+                    const pct = (row.size / maxSize) * 100;
+                    const cum = askCumul[i];
+                    return (
+                      <div key={`a-${i}`} className="relative grid grid-cols-4 gap-2 px-2 py-1 font-mono tabular-nums">
+                        <span className="absolute inset-y-0 right-0 bg-bear/10" style={{ width: `${pct}%` }} />
+                        <span className="relative text-bear">{fmtNum(row.price, prec)}</span>
+                        <span className="relative text-right text-text-secondary">{Number.isFinite(row.size) ? row.size.toFixed(4) : '—'}</span>
+                        <span className="relative text-right text-text-muted">{Number.isFinite(row.size) && Number.isFinite(row.price) ? (row.size * row.price).toFixed(0) : '—'}</span>
+                        <span className="relative text-right text-text-muted">{Number.isFinite(cum) && cum > 0 ? cum.toFixed(2) : '—'}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Mid spread */}
+                <div className="my-2 px-3 py-2 bg-bg-hover/60 border-y border-border-subtle flex items-center justify-between font-mono">
+                  <span className="text-[10px] uppercase tracking-wider font-bold text-text-muted">Spread</span>
+                  <span className="text-text-primary font-bold tabular-nums">
+                    {spread != null && spread > 0 ? `${fmtNum(spread, prec)} · ${spreadBps != null ? spreadBps.toFixed(1) + ' bps' : '—'}` : '—'}
+                  </span>
+                </div>
+
+                {/* Bids (green, bottom half) */}
+                <div>
+                  {bids.length === 0 ? (
+                    <div className="px-3 py-3 text-center text-[10px] text-text-muted">No bids</div>
+                  ) : bids.map((row, i) => {
+                    const pct = (row.size / maxSize) * 100;
+                    const cum = bidCumul[i];
+                    return (
+                      <div key={`b-${i}`} className="relative grid grid-cols-4 gap-2 px-2 py-1 font-mono tabular-nums">
+                        <span className="absolute inset-y-0 right-0 bg-bull/10" style={{ width: `${pct}%` }} />
+                        <span className="relative text-bull">{fmtNum(row.price, prec)}</span>
+                        <span className="relative text-right text-text-secondary">{Number.isFinite(row.size) ? row.size.toFixed(4) : '—'}</span>
+                        <span className="relative text-right text-text-muted">{Number.isFinite(row.size) && Number.isFinite(row.price) ? (row.size * row.price).toFixed(0) : '—'}</span>
+                        <span className="relative text-right text-text-muted">{Number.isFinite(cum) && cum > 0 ? cum.toFixed(2) : '—'}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {!hasRealBook && asks.length === 0 && bids.length === 0 && (
+                  <div className="px-3 py-6 text-[10px] text-text-muted text-center">
+                    Waiting for price feed for {instrument.symbol}…<br />
+                    <span className="text-text-muted/70">Check that the external feed is running.</span>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+          {leftPanelTab === 'depth' && !instrument && (
+            <div className="flex-1 flex items-center justify-center text-xs text-text-muted px-4 text-center">
+              Pick an instrument to see market depth here.
+            </div>
+          )}
+
+          {/* ── Settings pane — same slot as the other tabs ─────── */}
+          {leftPanelTab === 'settings' && <TradeSettingsPanel />}
+
         </aside>
+
+        {/* Wrapper — vertical stack: [chart + order form row] then [equity bar].
+            Lets the equity bar span the full width of chart + order form
+            (i.e. everything to the right of the instruments panel). */}
+        <div className="flex-1 flex flex-col gap-1 min-w-0 min-h-0">
+          <div className="flex-1 flex gap-1 min-h-0 min-w-0">
 
         {/* Center — chart + bottom tabs (with draggable splitter) */}
         <div ref={chartGroupRef} className="flex-1 flex flex-col min-w-0 min-h-0">
@@ -1253,23 +2042,34 @@ export default function Trade() {
                   zooming, indicators) behind the panel. */}
               {isFullscreen && instrument && account && (
                 <div
-                  className={`absolute top-1/2 right-[30%] w-[340px] max-w-[calc(100vw-1.5rem)] max-h-[calc(100%-1.5rem)] z-30 -translate-y-1/2 transition-all duration-200 ease-out ${
+                  className={`absolute w-[340px] max-w-[calc(100vw-1.5rem)] max-h-[calc(100%-1.5rem)] z-30 transition-opacity duration-200 ease-out ${
                     showFloatingOrder
-                      ? 'opacity-100 translate-x-0 pointer-events-auto'
-                      : 'opacity-0 translate-x-6 pointer-events-none'
+                      ? 'opacity-100 pointer-events-auto'
+                      : 'opacity-0 pointer-events-none'
                   }`}
+                  style={{
+                    top: `calc(50% + ${floatPos.y}px)`,
+                    right: `calc(30% - ${floatPos.x}px)`,
+                    transform: 'translateY(-50%)',
+                  }}
                   aria-hidden={!showFloatingOrder}
                   role="dialog"
                   aria-label="Place order"
                 >
-                  {/* Wrapper hugs OrderForm's content height (no
-                      `h-full`) so the glass card matches the form's
-                      natural size instead of stretching to the bottom
-                      of the chart and leaving a blank strip below the
-                      Place Order button. `max-h-` on the parent +
-                      OrderForm's own `overflow-y-auto` handle tiny
-                      viewports. */}
+                  {/* Glass card wraps OrderForm. Tiny drag handle at top
+                      lets the user reposition the panel anywhere over the
+                      chart. */}
                   <div className="glass border border-border-dark rounded-xl shadow-2xl overflow-hidden flex flex-col backdrop-blur-xl">
+                    {/* Drag handle bar */}
+                    <div
+                      onMouseDown={startFloatDrag}
+                      className="cursor-move select-none flex items-center justify-center py-1.5 bg-bg-hover/40 hover:bg-bg-hover/60 border-b border-border-subtle transition-colors group"
+                      title="Drag to move"
+                      role="separator"
+                      aria-label="Drag to reposition"
+                    >
+                      <span className="w-10 h-1 rounded-full bg-text-muted/50 group-hover:bg-text-muted transition-colors" />
+                    </div>
                     <OrderForm
                       instrument={instrument}
                       account={account}
@@ -1435,6 +2235,7 @@ export default function Trade() {
               )}
             </div>
           </div>
+
         </div>
 
         {/* Right — order form panel (closes individually + via Expand).
@@ -1468,23 +2269,65 @@ export default function Trade() {
             </span>
           </button>
         )}
+
+          </div>{/* end flex-row: chart + order form */}
+
+          {/* ── Equity bar — spans the full width of chart + order form. */}
+          {equityNums && !isFullscreen && (
+            <div className="glass border border-border-dark rounded-xl px-4 py-2.5 flex items-center justify-between flex-wrap gap-x-6 gap-y-1 text-xs shrink-0">
+              <FooterStat label="Equity"       value={fmtMoney(equityNums.equity, equityNums.base)} />
+              <FooterStat label="Free Margin"  value={fmtMoney(equityNums.free, equityNums.base)} />
+              <FooterStat label="Balance"      value={fmtMoney(equityNums.balance, equityNums.base)} />
+              <FooterStat label="Margin"       value={fmtMoney(equityNums.used, equityNums.base)} />
+              <FooterStat
+                label="Margin Level"
+                value={equityNums.marginLevel != null ? `${equityNums.marginLevel.toFixed(2)}%` : '—'}
+                color={equityNums.marginLevel != null && equityNums.marginLevel < 100 ? '#DC2626' : undefined}
+              />
+            </div>
+          )}
+        </div>{/* end wrapper flex-col */}
       </div>
 
-      {/* ── Equity footer — live margin/balance/equity bar (hidden in fullscreen) ── */}
-      {equityNums && !isFullscreen && (
-        <div className="mt-2 glass border border-border-dark rounded-xl px-4 py-2.5 flex items-center justify-between flex-wrap gap-x-6 gap-y-1 text-xs shrink-0">
-          <FooterStat label="Equity"       value={fmtMoney(equityNums.equity, equityNums.base)} />
-          <FooterStat label="Free Margin"  value={fmtMoney(equityNums.free, equityNums.base)} />
-          <FooterStat label="Balance"      value={fmtMoney(equityNums.balance, equityNums.base)} />
-          <FooterStat label="Margin"       value={fmtMoney(equityNums.used, equityNums.base)} />
-          <FooterStat
-            label="Margin Level"
-            value={equityNums.marginLevel != null ? `${equityNums.marginLevel.toFixed(2)}%` : '—'}
-            color={equityNums.marginLevel != null && equityNums.marginLevel < 100 ? '#DC2626' : undefined}
-          />
-        </div>
-      )}
     </div>
+  );
+}
+
+// ─── Left mini-sidebar icons ─────────────────────────────────────────
+const SbS = ({ children }) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+    {children}
+  </svg>
+);
+const SbWatchI   = () => <SbS><line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><circle cx="4" cy="6" r="1" fill="currentColor" /><circle cx="4" cy="12" r="1" fill="currentColor" /><circle cx="4" cy="18" r="1" fill="currentColor" /></SbS>;
+const SbDetailsI = () => <SbS><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></SbS>;
+const SbHotI     = () => <SbS><polyline points="23 6 13.5 15.5 8.5 10.5 1 18" /><polyline points="17 6 23 6 23 12" /></SbS>;
+const SbAboutI   = () => <SbS><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></SbS>;
+const SbPerfI    = () => <SbS><path d="M3 3v18h18" /><path d="M7 14l4-4 4 4 5-7" /><circle cx="11" cy="10" r="0.7" fill="currentColor" /></SbS>;
+const SbDepthI   = () => <SbS><line x1="3" y1="6"  x2="21" y2="6" /><line x1="6" y1="10" x2="18" y2="10" /><line x1="3" y1="14" x2="21" y2="14" /><line x1="6" y1="18" x2="18" y2="18" /></SbS>;
+const SbGearI    = () => <SbS><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></SbS>;
+
+// Settings trigger button — opens the right-side drawer. Lives in the
+// mini-sidebar bottom slot so it's always one click away.
+// Settings is now a panel tab — no longer needs its own component
+// (kept the wrapper exported only because the sidebar map still uses it).
+// Receives the same active/onClick wiring as other tabs.
+function SettingsTabBtn({ active, onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Trading Settings"
+      aria-label="Trading Settings"
+      className={`w-full py-1.5 rounded-md flex flex-col items-center justify-center gap-0.5 transition-all ${
+        active
+          ? 'bg-primary-500/15 text-primary-600 ring-1 ring-primary-500/30'
+          : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+      }`}
+    >
+      <SbGearI />
+      <span className="text-[9px] font-semibold leading-none tracking-tight">Settings</span>
+    </button>
   );
 }
 

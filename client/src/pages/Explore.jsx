@@ -5,8 +5,9 @@ import AssetIcon from '../components/AssetIcon';
 import { useInstruments } from '../hooks/useInstruments';
 import { useRecentlyViewed } from '../hooks/useRecentlyViewed';
 import { wsClient } from '../services/ws';
-import { api } from '../services/api';
+import { api, errorMessage } from '../services/api';
 import { fmtNum } from '../utils/format';
+import toast from 'react-hot-toast';
 
 /**
  * Explore — Groww-style discovery page. Most sections pull from the live
@@ -373,12 +374,26 @@ export default function Explore() {
   // ticker subscriptions above, so unrealised PnL ticks in real time
   // without any extra fan-out.
   const [positions, setPositions] = useState([]);
+  const [pendingOrders, setPendingOrders] = useState([]);
+  // Tab inside the "Your activity" card — flips between live positions
+  // and pending limit / stop orders. Defaults to positions so the user
+  // sees their actual P/L first.
+  const [activityTab, setActivityTab] = useState('positions');
+  // Bulk-action busy flag — disables Close All / Cancel All buttons
+  // while the corresponding API call is in flight to prevent
+  // double-fires from impatient clicks.
+  const [bulkBusy, setBulkBusy] = useState(false);
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       try {
-        const { data } = await api.get('/trading/positions');
-        if (!cancelled) setPositions(Array.isArray(data?.data) ? data.data : []);
+        const [posRes, ordRes] = await Promise.all([
+          api.get('/trading/positions'),
+          api.get('/trading/orders/open').catch(() => ({ data: { data: [] } })),
+        ]);
+        if (cancelled) return;
+        setPositions(Array.isArray(posRes?.data?.data) ? posRes.data.data : []);
+        setPendingOrders(Array.isArray(ordRes?.data?.data) ? ordRes.data.data : []);
       } catch (_) { /* keep prior; empty state will render */ }
     };
     load();
@@ -396,6 +411,49 @@ export default function Explore() {
     const livePnl = p.side === 'BUY' ? (markPx - entry) * qty : (entry - markPx) * qty;
     return { ...p, markPrice: markPx, unrealizedPnl: livePnl };
   }), [positions, priceMap]);
+
+  // ── Position / order action handlers ──────────────────────────────
+  // Matches the same endpoints used on the Trade page so behaviour is
+  // identical (single-source backend, single permission check).
+  const closePosition = async (id) => {
+    try {
+      await api.post(`/trading/positions/${id}/close`);
+      toast.success('Position closing');
+    } catch (err) { toast.error(errorMessage(err)); }
+  };
+  const closeAllPositions = async () => {
+    if (!livePositions.length) return;
+    if (!window.confirm(`Close all ${livePositions.length} open position(s)?`)) return;
+    setBulkBusy(true);
+    try {
+      const accountId = livePositions[0]?.accountId;
+      const { data } = await api.post('/trading/positions/close-all', accountId ? { accountId } : {});
+      const r = data?.data || {};
+      if (r.failed?.length) toast.error(`Closed ${r.closed}/${r.total}. ${r.failed.length} failed.`);
+      else toast.success(`Closed ${r.closed ?? livePositions.length} position(s)`);
+    } catch (err) { toast.error(errorMessage(err)); }
+    finally { setBulkBusy(false); }
+  };
+  const cancelOrder = async (id) => {
+    try {
+      await api.delete(`/trading/orders/${id}`);
+      toast.success('Order cancelled');
+    } catch (err) { toast.error(errorMessage(err)); }
+  };
+  const cancelAllOrders = async () => {
+    if (!pendingOrders.length) return;
+    if (!window.confirm(`Cancel all ${pendingOrders.length} pending order(s)?`)) return;
+    setBulkBusy(true);
+    // No bulk endpoint exists — fan out single deletes and tally.
+    const results = await Promise.allSettled(
+      pendingOrders.map((o) => api.delete(`/trading/orders/${o._id}`))
+    );
+    const ok = results.filter((r) => r.status === 'fulfilled').length;
+    const failed = results.length - ok;
+    if (failed) toast.error(`Cancelled ${ok}/${results.length}. ${failed} failed.`);
+    else toast.success(`Cancelled ${ok} order(s)`);
+    setBulkBusy(false);
+  };
 
   // ── Recently viewed — localStorage-tracked list of symbols the user has
   // visited via /trade. Resolved against the live catalog so we can render
@@ -753,87 +811,257 @@ export default function Explore() {
 
       {/* ── Right sidebar — Your investments + Products & Tools ───────── */}
       <aside className="lg:col-span-4 space-y-4">
-        {/* Your positions — live from /trading/positions. Empty state
-            kicks in when nothing is open; otherwise a compact list with
-            symbol, side, entry, mark and live PnL. */}
+        {/* Your activity — tabbed card with Positions + Pending Orders.
+            Tabs swap content inline with a soft cross-fade; empty
+            states stay visually centred so the card never looks lopsided. */}
         <div>
-          <h3 className="text-base font-bold text-text-primary mb-3">Your positions</h3>
-          {livePositions.length === 0 ? (
-            <div className="bg-white border border-border-dark rounded-[20px] p-6 flex flex-col items-center text-center">
-              <InvestmentsIllustration />
-              <p className="mt-4 text-sm text-text-secondary">No open trades yet</p>
-              <p className="mt-1 text-xs text-text-muted">Fund your account and place your first FX or crypto trade.</p>
-              <div className="mt-4 flex items-center gap-2">
-                <Link
-                  to="/wallet"
-                  className="inline-flex items-center gap-2 bg-primary-500 hover:bg-primary-600 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
-                >
-                  Add funds {I.arrow}
-                </Link>
-                <Link
-                  to="/trade"
-                  className="inline-flex items-center gap-2 border border-border-dark hover:border-primary-500/50 hover:bg-primary-500/5 text-text-primary text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
-                >
-                  Start trading
-                </Link>
-              </div>
-            </div>
-          ) : (
-            <div className="bg-white border border-border-dark rounded-[20px] divide-y divide-border-subtle overflow-hidden">
-              {livePositions.slice(0, 5).map((p) => {
-                const inst = instruments.find((i) => i.symbol === p.symbol);
-                const prec = Math.min(inst?.pricePrecision || 2, 5);
-                const pnl = Number(p.unrealizedPnl || 0);
-                const pnlPositive = pnl >= 0;
-                const sideBull = p.side === 'BUY';
+          <div className="bg-white border border-border-dark rounded-[20px] shadow-sm overflow-hidden">
+            {/* ── Tab bar ─────────────────────────────────────────── */}
+            <div className="flex items-center gap-1 px-3 pt-3 pb-2 border-b border-border-subtle">
+              {[
+                { id: 'positions', label: 'Positions',      count: livePositions.length },
+                { id: 'orders',    label: 'Pending Orders', count: pendingOrders.length },
+              ].map((t) => {
+                const active = activityTab === t.id;
                 return (
-                  <Link
-                    key={p._id || `${p.symbol}-${p.entryPrice}`}
-                    to={`/trade?symbol=${encodeURIComponent(p.symbol)}`}
-                    className="flex items-center gap-3 px-4 py-3 hover:bg-bg-hover transition-colors"
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setActivityTab(t.id)}
+                    className={`flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold transition-all duration-200 ${
+                      active
+                        ? 'bg-primary-500/10 text-primary-600 shadow-sm'
+                        : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+                    }`}
+                    aria-pressed={active}
                   >
-                    <AssetIcon row={inst || { symbol: p.symbol, category: p.category }} size={28} round />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-text-primary truncate">{p.symbol}</span>
-                        <span
-                          className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded"
-                          style={{
-                            background: sideBull ? 'rgba(0,200,83,0.12)' : 'rgba(255,59,87,0.12)',
-                            color: sideBull ? '#16A34A' : '#DC2626',
-                          }}
-                        >
-                          {sideBull ? 'Long' : 'Short'}
-                        </span>
-                      </div>
-                      <div className="text-[11px] text-text-muted font-mono mt-0.5 tabular-nums">
-                        {Number(p.quantity).toLocaleString('en-US', { maximumFractionDigits: 6 })} @ {fmtNum(p.entryPrice, prec)}
-                      </div>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <div
-                        className="text-sm font-bold font-mono tabular-nums"
-                        style={{ color: pnlPositive ? '#16A34A' : '#DC2626' }}
+                    <span>{t.label}</span>
+                    {t.count > 0 && (
+                      <span
+                        className={`min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold inline-flex items-center justify-center transition-colors ${
+                          active ? 'bg-primary-500 text-white' : 'bg-bg-hover text-text-muted'
+                        }`}
                       >
-                        {pnlPositive ? '+' : ''}{pnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </div>
-                      <div className="text-[10px] text-text-muted font-mono mt-0.5 tabular-nums">
-                        {fmtNum(p.markPrice || p.entryPrice, prec)}
-                      </div>
-                    </div>
-                  </Link>
+                        {t.count}
+                      </span>
+                    )}
+                  </button>
                 );
               })}
-              {livePositions.length > 5 && (
-                <Link
-                  to="/trade"
-                  className="block px-4 py-2.5 text-center text-[12px] font-semibold text-primary-600 hover:bg-bg-hover transition-colors"
-                >
-                  View all {livePositions.length} positions →
-                </Link>
-              )}
             </div>
-          )}
+
+            {/* ── Tab body with soft cross-fade ───────────────────── */}
+            <div className="relative">
+              {/* POSITIONS */}
+              <div
+                key="positions-pane"
+                className={`transition-all duration-300 ease-out ${
+                  activityTab === 'positions' ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-1 pointer-events-none absolute inset-0'
+                }`}
+              >
+                {livePositions.length === 0 ? (
+                  <div className="p-6 flex flex-col items-center text-center">
+                    <InvestmentsIllustration />
+                    <p className="mt-4 text-sm text-text-secondary">No open trades yet</p>
+                    <p className="mt-1 text-xs text-text-muted">Fund your account and place your first FX or crypto trade.</p>
+                    <div className="mt-4 flex items-center gap-2">
+                      <Link
+                        to="/wallet"
+                        className="inline-flex items-center gap-2 bg-primary-500 hover:bg-primary-600 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
+                      >
+                        Add funds {I.arrow}
+                      </Link>
+                      <Link
+                        to="/trade"
+                        className="inline-flex items-center gap-2 border border-border-dark hover:border-primary-500/50 hover:bg-primary-500/5 text-text-primary text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
+                      >
+                        Start trading
+                      </Link>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="divide-y divide-border-subtle">
+                      {livePositions.slice(0, 5).map((p) => {
+                        const inst = instruments.find((i) => i.symbol === p.symbol);
+                        const prec = Math.min(inst?.pricePrecision || 2, 5);
+                        const pnl = Number(p.unrealizedPnl || 0);
+                        const pnlPositive = pnl >= 0;
+                        const sideBull = p.side === 'BUY';
+                        return (
+                          <div
+                            key={p._id || `${p.symbol}-${p.entryPrice}`}
+                            className="group flex items-center gap-3 px-4 py-3 hover:bg-bg-hover transition-colors"
+                          >
+                            <Link
+                              to={`/trade?symbol=${encodeURIComponent(p.symbol)}`}
+                              className="flex items-center gap-3 min-w-0 flex-1"
+                            >
+                              <AssetIcon row={inst || { symbol: p.symbol, category: p.category }} size={28} round />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-semibold text-text-primary truncate">{p.symbol}</span>
+                                  <span
+                                    className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded"
+                                    style={{
+                                      background: sideBull ? 'rgba(0,200,83,0.12)' : 'rgba(255,59,87,0.12)',
+                                      color: sideBull ? '#16A34A' : '#DC2626',
+                                    }}
+                                  >
+                                    {sideBull ? 'Long' : 'Short'}
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-text-muted font-mono mt-0.5 tabular-nums">
+                                  {Number(p.quantity).toLocaleString('en-US', { maximumFractionDigits: 6 })} @ {fmtNum(p.entryPrice, prec)}
+                                </div>
+                              </div>
+                              <div className="text-right shrink-0">
+                                <div
+                                  className="text-sm font-bold font-mono tabular-nums"
+                                  style={{ color: pnlPositive ? '#16A34A' : '#DC2626' }}
+                                >
+                                  {pnlPositive ? '+' : ''}{pnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </div>
+                                <div className="text-[10px] text-text-muted font-mono mt-0.5 tabular-nums">
+                                  {fmtNum(p.markPrice || p.entryPrice, prec)}
+                                </div>
+                              </div>
+                            </Link>
+                            <button
+                              type="button"
+                              onClick={() => closePosition(p._id)}
+                              title="Close position"
+                              className="opacity-0 group-hover:opacity-100 sm:opacity-100 text-[11px] font-bold px-2.5 py-1.5 rounded-md bg-bear/10 text-bear border border-bear/25 hover:bg-bear/20 hover:scale-[1.03] active:scale-95 transition-all shrink-0"
+                            >
+                              Close
+                            </button>
+                          </div>
+                        );
+                      })}
+                      {livePositions.length > 5 && (
+                        <Link
+                          to="/trade"
+                          className="block px-4 py-2.5 text-center text-[12px] font-semibold text-primary-600 hover:bg-bg-hover transition-colors"
+                        >
+                          View all {livePositions.length} positions →
+                        </Link>
+                      )}
+                    </div>
+                    <div className="px-4 py-3 border-t border-border-subtle bg-bg-hover/30 flex items-center justify-end">
+                      <button
+                        type="button"
+                        onClick={closeAllPositions}
+                        disabled={bulkBusy}
+                        className="inline-flex items-center gap-1.5 text-[12px] font-bold px-3 py-1.5 rounded-lg bg-bear/10 text-bear border border-bear/30 hover:bg-bear/20 hover:shadow-sm hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {bulkBusy ? 'Closing…' : `Close All (${livePositions.length})`}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* PENDING ORDERS */}
+              <div
+                key="orders-pane"
+                className={`transition-all duration-300 ease-out ${
+                  activityTab === 'orders' ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-1 pointer-events-none absolute inset-0'
+                }`}
+              >
+                {pendingOrders.length === 0 ? (
+                  <div className="p-6 flex flex-col items-center text-center">
+                    <InvestmentsIllustration />
+                    <p className="mt-4 text-sm text-text-secondary">No pending orders yet</p>
+                    <p className="mt-1 text-xs text-text-muted">Limit and stop orders waiting to be filled will appear here.</p>
+                    <div className="mt-4 flex items-center gap-2">
+                      <Link
+                        to="/trade"
+                        className="inline-flex items-center gap-2 bg-primary-500 hover:bg-primary-600 text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
+                      >
+                        Place an order {I.arrow}
+                      </Link>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="divide-y divide-border-subtle">
+                      {pendingOrders.slice(0, 5).map((o) => {
+                        const inst = instruments.find((i) => i.symbol === o.symbol);
+                        const prec = Math.min(inst?.pricePrecision || 2, 5);
+                        const sideBull = o.side === 'BUY';
+                        const trigger = Number(o.limitPrice ?? o.stopPrice ?? o.price ?? 0);
+                        return (
+                          <div
+                            key={o._id || `${o.symbol}-${o.createdAt}`}
+                            className="group flex items-center gap-3 px-4 py-3 hover:bg-bg-hover transition-colors"
+                          >
+                            <Link
+                              to={`/trade?symbol=${encodeURIComponent(o.symbol)}`}
+                              className="flex items-center gap-3 min-w-0 flex-1"
+                            >
+                              <AssetIcon row={inst || { symbol: o.symbol, category: o.category }} size={28} round />
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-semibold text-text-primary truncate">{o.symbol}</span>
+                                  <span
+                                    className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded"
+                                    style={{
+                                      background: sideBull ? 'rgba(0,200,83,0.12)' : 'rgba(255,59,87,0.12)',
+                                      color: sideBull ? '#16A34A' : '#DC2626',
+                                    }}
+                                  >
+                                    {sideBull ? 'Buy' : 'Sell'}
+                                  </span>
+                                  <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-bg-hover text-text-muted">
+                                    {o.orderType || 'LIMIT'}
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-text-muted font-mono mt-0.5 tabular-nums">
+                                  {Number(o.quantity).toLocaleString('en-US', { maximumFractionDigits: 6 })} @ {fmtNum(trigger, prec)}
+                                </div>
+                              </div>
+                              <div className="text-right shrink-0">
+                                <div className="text-sm font-bold font-mono tabular-nums text-text-primary">
+                                  {fmtNum(priceMap[o.symbol] ?? inst?.lastPrice ?? trigger, prec)}
+                                </div>
+                                <div className="text-[10px] text-text-muted font-mono mt-0.5">Mark</div>
+                              </div>
+                            </Link>
+                            <button
+                              type="button"
+                              onClick={() => cancelOrder(o._id)}
+                              title="Cancel order"
+                              className="opacity-0 group-hover:opacity-100 sm:opacity-100 text-[11px] font-bold px-2.5 py-1.5 rounded-md bg-bear/10 text-bear border border-bear/25 hover:bg-bear/20 hover:scale-[1.03] active:scale-95 transition-all shrink-0"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        );
+                      })}
+                      {pendingOrders.length > 5 && (
+                        <Link
+                          to="/trade"
+                          className="block px-4 py-2.5 text-center text-[12px] font-semibold text-primary-600 hover:bg-bg-hover transition-colors"
+                        >
+                          View all {pendingOrders.length} orders →
+                        </Link>
+                      )}
+                    </div>
+                    <div className="px-4 py-3 border-t border-border-subtle bg-bg-hover/30 flex items-center justify-end">
+                      <button
+                        type="button"
+                        onClick={cancelAllOrders}
+                        disabled={bulkBusy}
+                        className="inline-flex items-center gap-1.5 text-[12px] font-bold px-3 py-1.5 rounded-lg bg-bear/10 text-bear border border-bear/30 hover:bg-bear/20 hover:shadow-sm hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {bulkBusy ? 'Cancelling…' : `Cancel All (${pendingOrders.length})`}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Products & Tools — compact list */}

@@ -33,9 +33,9 @@ const I = {
 // Primary top-nav categories — sit in the brand header.
 const PRIMARY_NAV = [
   { to: '/explore', label: 'Explore' },
+  { to: '/watchlist', label: 'Watchlist' },
   { to: '/dashboard', label: 'Portfolio' },
   { to: '/wallet', label: 'Wallets' },
-  { to: '/reports', label: 'Reports' },
 ];
 
 // Secondary nav was removed — these destinations now live in Explore's

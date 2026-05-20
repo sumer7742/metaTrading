@@ -2,8 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createChart } from 'lightweight-charts';
 import { api } from '../services/api';
 import { wsClient } from '../services/ws';
-import { ema, rsi, macd } from '../utils/indicators';
+import { sma, ema, rsi, macd, bollinger, vwap, stochastic, atr, williamsR, cci, donchian, keltner } from '../utils/indicators';
 import { useThemeStore } from '../store/theme';
+import { useChartDrawings } from '../hooks/useChartDrawings';
+import ChartDrawingToolbar from './ChartDrawingToolbar';
 
 // ─── Theme palette helpers ───────────────────────────────────────────
 // Resolve a CSS-variable RGB triplet into an `rgb(R, G, B)` string the
@@ -664,12 +666,25 @@ function updateSeriesPoint(series, chartType, point, allCandles) {
 const TF_OPTIONS = ['1m', '5m', '15m', '1h', '4h', '1d'];
 
 const INDICATOR_DEFAULTS = {
+  // Overlays on main chart
   ema12: false,
   ema26: false,
   ema50: false,
   ema200: false,
+  sma20: false,
+  sma50: false,
+  sma200: false,
+  bb: false,        // Bollinger Bands
+  donchian: false,  // Donchian Channels
+  keltner: false,   // Keltner Channels
+  vwap: false,      // Volume-Weighted Average Price
+  // Sub-panels
   rsi: false,
   macd: false,
+  stoch: false,     // Stochastic
+  atr: false,       // Average True Range
+  wr: false,        // Williams %R
+  cci: false,       // Commodity Channel Index
 };
 
 export default function PriceChart({
@@ -712,6 +727,10 @@ export default function PriceChart({
   const containerRef = useRef(null);
   const rsiContainerRef = useRef(null);
   const macdContainerRef = useRef(null);
+  const stochContainerRef = useRef(null);
+  const atrContainerRef = useRef(null);
+  const wrContainerRef = useRef(null);
+  const cciContainerRef = useRef(null);
   const chartRef = useRef(null);
   const candleSeriesRef = useRef(null);  // main series — type swaps but ref name stays
   const overlayRef = useRef({});
@@ -757,6 +776,11 @@ export default function PriceChart({
   const [indicatorsOpen, setIndicatorsOpen] = useState(false);
   const [timeframeOpen, setTimeframeOpen] = useState(false);
   const theme = useThemeStore((s) => s.theme);
+
+  // Drawing tools — vertical toolbar + chart-click handlers + persistence.
+  // The hook attaches itself to the existing chart/series refs and does not
+  // touch any other rendering logic, so it can be added / removed safely.
+  const drawingControls = useChartDrawings({ chartRef, candleSeriesRef, containerRef, symbol });
 
   // ─── 1. Initialize chart (no main series yet — handled by chartType effect) ─
   useEffect(() => {
@@ -1293,45 +1317,78 @@ export default function PriceChart({
   // Compute closes once per candles update
   const closes = useMemo(() => candles.map((c) => c.close), [candles]);
 
-  // ─── 5. EMA overlays ─────────────────────────────────────────────────
+  // ─── 5. EMA + SMA + Bollinger + VWAP overlays ───────────────────────
+  // All overlay indicators share the same lifecycle pattern: create a
+  // line series on toggle-on, remove it on toggle-off, refresh data
+  // whenever candles change. Each entry below describes the series
+  // metadata + a `compute` function that takes the live closes/candles
+  // and returns aligned numeric values.
   useEffect(() => {
     if (!chartRef.current || !candles.length) return;
 
-    const emaConfigs = [
-      { key: 'ema12', period: 12, color: '#1D4ED8' },  // dark blue — primary brand
-      { key: 'ema26', period: 26, color: '#60A5FA' },  // medium blue
-      { key: 'ema50', period: 50, color: '#A78BFA' },  // purple
-      { key: 'ema200', period: 200, color: '#F472B6' }, // pink
+    const overlayConfigs = [
+      // ── EMAs
+      { key: 'ema12',  period: 12,  color: '#1D4ED8', title: 'EMA 12',  compute: () => ema(closes, 12) },
+      { key: 'ema26',  period: 26,  color: '#60A5FA', title: 'EMA 26',  compute: () => ema(closes, 26) },
+      { key: 'ema50',  period: 50,  color: '#A78BFA', title: 'EMA 50',  compute: () => ema(closes, 50) },
+      { key: 'ema200', period: 200, color: '#F472B6', title: 'EMA 200', compute: () => ema(closes, 200) },
+      // ── SMAs
+      { key: 'sma20',  period: 20,  color: '#F59E0B', title: 'SMA 20',  compute: () => sma(closes, 20) },
+      { key: 'sma50',  period: 50,  color: '#EAB308', title: 'SMA 50',  compute: () => sma(closes, 50) },
+      { key: 'sma200', period: 200, color: '#DC2626', title: 'SMA 200', compute: () => sma(closes, 200) },
+      // ── Bollinger Bands — 3 lines share the toggle key
+      { key: 'bb',  subKey: 'bbU', color: '#0EA5E9', lineWidth: 1, title: 'BB Upper',  compute: () => bollinger(closes, 20, 2).upper },
+      { key: 'bb',  subKey: 'bbM', color: '#0EA5E9', lineWidth: 1, lineStyle: 'dashed', title: 'BB Middle', compute: () => bollinger(closes, 20, 2).middle },
+      { key: 'bb',  subKey: 'bbL', color: '#0EA5E9', lineWidth: 1, title: 'BB Lower',  compute: () => bollinger(closes, 20, 2).lower },
+      // ── Donchian Channels — 3 lines (highest high / lowest low / midline)
+      { key: 'donchian', subKey: 'dcU', color: '#10B981', lineWidth: 1, title: 'DC Upper',  compute: () => donchian(candles, 20).upper },
+      { key: 'donchian', subKey: 'dcM', color: '#10B981', lineWidth: 1, lineStyle: 'dashed', title: 'DC Middle', compute: () => donchian(candles, 20).middle },
+      { key: 'donchian', subKey: 'dcL', color: '#10B981', lineWidth: 1, title: 'DC Lower',  compute: () => donchian(candles, 20).lower },
+      // ── Keltner Channels — EMA ± 2 × ATR
+      { key: 'keltner', subKey: 'ktU', color: '#F97316', lineWidth: 1, title: 'KC Upper',  compute: () => keltner(candles, 20, 2, 10).upper },
+      { key: 'keltner', subKey: 'ktM', color: '#F97316', lineWidth: 1, lineStyle: 'dashed', title: 'KC Middle', compute: () => keltner(candles, 20, 2, 10).middle },
+      { key: 'keltner', subKey: 'ktL', color: '#F97316', lineWidth: 1, title: 'KC Lower',  compute: () => keltner(candles, 20, 2, 10).lower },
+      // ── VWAP
+      { key: 'vwap', color: '#7C3AED', lineWidth: 2, title: 'VWAP', compute: () => vwap(candles) },
     ];
 
-    for (const cfg of emaConfigs) {
+    for (const cfg of overlayConfigs) {
       const enabled = indicators[cfg.key];
-      const exists = overlayRef.current[cfg.key];
+      const refKey = cfg.subKey || cfg.key;
+      const exists = overlayRef.current[refKey];
       if (enabled && !exists) {
-        const series = chartRef.current.addLineSeries({
+        const seriesOpts = {
           color: cfg.color,
-          // 2px is the sweet spot — 1.5px disappeared against candles,
-          // 3px over-emphasizes a derived line vs the actual price.
-          lineWidth: 2,
+          lineWidth: cfg.lineWidth || 2,
           priceLineVisible: false,
           lastValueVisible: true,
           crosshairMarkerVisible: true,
-          title: `EMA ${cfg.period}`,
-        });
-        overlayRef.current[cfg.key] = series;
+          title: cfg.title,
+        };
+        if (cfg.lineStyle === 'dashed') {
+          // lightweight-charts LineStyle.Dashed = 1
+          seriesOpts.lineStyle = 1;
+        }
+        const series = chartRef.current.addLineSeries(seriesOpts);
+        overlayRef.current[refKey] = series;
       } else if (!enabled && exists) {
         try { chartRef.current.removeSeries(exists); } catch (_) {}
-        delete overlayRef.current[cfg.key];
+        delete overlayRef.current[refKey];
       }
-      if (enabled && overlayRef.current[cfg.key]) {
-        const values = ema(closes, cfg.period);
+      if (enabled && overlayRef.current[refKey]) {
+        const values = cfg.compute();
         const data = candles
-          .map((c, i) => (values[i] != null ? { time: c.time, value: values[i] } : null))
+          .map((c, i) => (values[i] != null && Number.isFinite(values[i]) ? { time: c.time, value: values[i] } : null))
           .filter(Boolean);
-        overlayRef.current[cfg.key].setData(data);
+        overlayRef.current[refKey].setData(data);
       }
     }
-  }, [indicators.ema12, indicators.ema26, indicators.ema50, indicators.ema200, candles, closes]);
+  }, [
+    indicators.ema12, indicators.ema26, indicators.ema50, indicators.ema200,
+    indicators.sma20, indicators.sma50, indicators.sma200,
+    indicators.bb, indicators.donchian, indicators.keltner, indicators.vwap,
+    candles, closes,
+  ]);
 
   // ─── 6. RSI sub-panel ────────────────────────────────────────────────
   useEffect(() => {
@@ -1371,6 +1428,132 @@ export default function PriceChart({
     overbought.setData(rsiData.map((d) => ({ time: d.time, value: 70 })));
     oversold.setData(rsiData.map((d) => ({ time: d.time, value: 30 })));
   }, [indicators.rsi, candles, closes]);
+
+  // ─── 6b. Stochastic sub-panel — %K + %D + 80/20 bands ────────────────
+  useEffect(() => {
+    const enabled = indicators.stoch;
+    const container = stochContainerRef.current;
+    if (!container) return;
+    if (!enabled) {
+      const existing = subPanelChartsRef.current.stoch;
+      if (existing) { try { existing.chart.remove(); } catch (_) {} delete subPanelChartsRef.current.stoch; }
+      return;
+    }
+    if (!subPanelChartsRef.current.stoch) {
+      const pal = chartPalette();
+      const chart = createChart(container, {
+        width: container.clientWidth, height: 120,
+        layout: { background: { type: 'solid', color: pal.background }, textColor: pal.text },
+        grid: { vertLines: { color: pal.grid }, horzLines: { color: pal.grid } },
+        timeScale: { timeVisible: true, secondsVisible: false, borderColor: pal.border },
+        rightPriceScale: { borderColor: pal.border },
+      });
+      const k = chart.addLineSeries({ color: '#3B82F6', lineWidth: 1.5, title: '%K' });
+      const d = chart.addLineSeries({ color: '#F97316', lineWidth: 1.5, title: '%D' });
+      const overbought = chart.addLineSeries({ color: '#ef4444', lineWidth: 1, lineStyle: 2 });
+      const oversold = chart.addLineSeries({ color: '#10b981', lineWidth: 1, lineStyle: 2 });
+      subPanelChartsRef.current.stoch = { chart, k, d, overbought, oversold, container };
+    }
+    const { k: kS, d: dS, overbought, oversold } = subPanelChartsRef.current.stoch;
+    const { k, d } = stochastic(candles, 14, 3);
+    const kData = candles.map((c, i) => (k[i] != null ? { time: c.time, value: k[i] } : null)).filter(Boolean);
+    const dData = candles.map((c, i) => (d[i] != null ? { time: c.time, value: d[i] } : null)).filter(Boolean);
+    kS.setData(kData);
+    dS.setData(dData);
+    overbought.setData(kData.map((p) => ({ time: p.time, value: 80 })));
+    oversold.setData(kData.map((p) => ({ time: p.time, value: 20 })));
+  }, [indicators.stoch, candles, closes]);
+
+  // ─── 6c. ATR sub-panel — single volatility line ──────────────────────
+  useEffect(() => {
+    const enabled = indicators.atr;
+    const container = atrContainerRef.current;
+    if (!container) return;
+    if (!enabled) {
+      const existing = subPanelChartsRef.current.atr;
+      if (existing) { try { existing.chart.remove(); } catch (_) {} delete subPanelChartsRef.current.atr; }
+      return;
+    }
+    if (!subPanelChartsRef.current.atr) {
+      const pal = chartPalette();
+      const chart = createChart(container, {
+        width: container.clientWidth, height: 110,
+        layout: { background: { type: 'solid', color: pal.background }, textColor: pal.text },
+        grid: { vertLines: { color: pal.grid }, horzLines: { color: pal.grid } },
+        timeScale: { timeVisible: true, secondsVisible: false, borderColor: pal.border },
+        rightPriceScale: { borderColor: pal.border },
+      });
+      const series = chart.addLineSeries({ color: '#0EA5E9', lineWidth: 1.5, title: 'ATR 14' });
+      subPanelChartsRef.current.atr = { chart, series, container };
+    }
+    const { series } = subPanelChartsRef.current.atr;
+    const values = atr(candles, 14);
+    series.setData(candles.map((c, i) => (values[i] != null ? { time: c.time, value: values[i] } : null)).filter(Boolean));
+  }, [indicators.atr, candles, closes]);
+
+  // ─── 6d. Williams %R sub-panel — single line + -20/-80 bands ─────────
+  useEffect(() => {
+    const enabled = indicators.wr;
+    const container = wrContainerRef.current;
+    if (!container) return;
+    if (!enabled) {
+      const existing = subPanelChartsRef.current.wr;
+      if (existing) { try { existing.chart.remove(); } catch (_) {} delete subPanelChartsRef.current.wr; }
+      return;
+    }
+    if (!subPanelChartsRef.current.wr) {
+      const pal = chartPalette();
+      const chart = createChart(container, {
+        width: container.clientWidth, height: 110,
+        layout: { background: { type: 'solid', color: pal.background }, textColor: pal.text },
+        grid: { vertLines: { color: pal.grid }, horzLines: { color: pal.grid } },
+        timeScale: { timeVisible: true, secondsVisible: false, borderColor: pal.border },
+        rightPriceScale: { borderColor: pal.border },
+      });
+      const series = chart.addLineSeries({ color: '#DB2777', lineWidth: 1.5, title: 'W%R 14' });
+      const overbought = chart.addLineSeries({ color: '#ef4444', lineWidth: 1, lineStyle: 2 });
+      const oversold = chart.addLineSeries({ color: '#10b981', lineWidth: 1, lineStyle: 2 });
+      subPanelChartsRef.current.wr = { chart, series, overbought, oversold, container };
+    }
+    const { series, overbought, oversold } = subPanelChartsRef.current.wr;
+    const values = williamsR(candles, 14);
+    const data = candles.map((c, i) => (values[i] != null ? { time: c.time, value: values[i] } : null)).filter(Boolean);
+    series.setData(data);
+    overbought.setData(data.map((p) => ({ time: p.time, value: -20 })));
+    oversold.setData(data.map((p) => ({ time: p.time, value: -80 })));
+  }, [indicators.wr, candles, closes]);
+
+  // ─── 6e. CCI sub-panel — single line + ±100 bands ────────────────────
+  useEffect(() => {
+    const enabled = indicators.cci;
+    const container = cciContainerRef.current;
+    if (!container) return;
+    if (!enabled) {
+      const existing = subPanelChartsRef.current.cci;
+      if (existing) { try { existing.chart.remove(); } catch (_) {} delete subPanelChartsRef.current.cci; }
+      return;
+    }
+    if (!subPanelChartsRef.current.cci) {
+      const pal = chartPalette();
+      const chart = createChart(container, {
+        width: container.clientWidth, height: 110,
+        layout: { background: { type: 'solid', color: pal.background }, textColor: pal.text },
+        grid: { vertLines: { color: pal.grid }, horzLines: { color: pal.grid } },
+        timeScale: { timeVisible: true, secondsVisible: false, borderColor: pal.border },
+        rightPriceScale: { borderColor: pal.border },
+      });
+      const series = chart.addLineSeries({ color: '#7C3AED', lineWidth: 1.5, title: 'CCI 20' });
+      const overbought = chart.addLineSeries({ color: '#ef4444', lineWidth: 1, lineStyle: 2 });
+      const oversold = chart.addLineSeries({ color: '#10b981', lineWidth: 1, lineStyle: 2 });
+      subPanelChartsRef.current.cci = { chart, series, overbought, oversold, container };
+    }
+    const { series, overbought, oversold } = subPanelChartsRef.current.cci;
+    const values = cci(candles, 20);
+    const data = candles.map((c, i) => (values[i] != null ? { time: c.time, value: values[i] } : null)).filter(Boolean);
+    series.setData(data);
+    overbought.setData(data.map((p) => ({ time: p.time, value: 100 })));
+    oversold.setData(data.map((p) => ({ time: p.time, value: -100 })));
+  }, [indicators.cci, candles, closes]);
 
   // ─── 7. Symbol-scoped order/position filters ─────────────────────────
   const symbolOrders = useMemo(
@@ -1618,14 +1801,30 @@ export default function PriceChart({
           {/* Indicators dropdown */}
           {(() => {
             const indicatorList = [
+              { group: 'Moving Averages — EMA' },
               { key: 'ema12',  label: 'EMA 12',  color: '#1D4ED8' },
               { key: 'ema26',  label: 'EMA 26',  color: '#60A5FA' },
               { key: 'ema50',  label: 'EMA 50',  color: '#A78BFA' },
               { key: 'ema200', label: 'EMA 200', color: '#F472B6' },
-              { key: 'rsi',    label: 'RSI',     color: '#8B5CF6' },
-              { key: 'macd',   label: 'MACD',    color: '#2DD4BF' },
+              { group: 'Moving Averages — SMA' },
+              { key: 'sma20',  label: 'SMA 20',  color: '#F59E0B' },
+              { key: 'sma50',  label: 'SMA 50',  color: '#EAB308' },
+              { key: 'sma200', label: 'SMA 200', color: '#DC2626' },
+              { group: 'Channels & Bands' },
+              { key: 'bb',       label: 'Bollinger Bands',   color: '#0EA5E9' },
+              { key: 'donchian', label: 'Donchian Channels', color: '#10B981' },
+              { key: 'keltner',  label: 'Keltner Channels',  color: '#F97316' },
+              { group: 'Volume' },
+              { key: 'vwap',     label: 'VWAP',              color: '#7C3AED' },
+              { group: 'Oscillators (sub-panel)' },
+              { key: 'rsi',      label: 'RSI',           color: '#8B5CF6' },
+              { key: 'macd',     label: 'MACD',          color: '#2DD4BF' },
+              { key: 'stoch',    label: 'Stochastic',    color: '#3B82F6' },
+              { key: 'atr',      label: 'ATR',           color: '#0EA5E9' },
+              { key: 'wr',       label: 'Williams %R',   color: '#DB2777' },
+              { key: 'cci',      label: 'CCI',           color: '#7C3AED' },
             ];
-            const activeCount = indicatorList.filter((i) => indicators[i.key]).length;
+            const activeCount = indicatorList.filter((i) => i.key && indicators[i.key]).length;
             return (
               <div className="relative">
                 <button
@@ -1643,29 +1842,38 @@ export default function PriceChart({
                 {indicatorsOpen && (
                   <>
                     <div className="fixed inset-0 z-30" onClick={() => setIndicatorsOpen(false)} />
-                    <div className="absolute left-0 top-full mt-1 z-40 w-44 bg-white border border-border-dark rounded-lg shadow-elevated overflow-hidden">
-                      {indicatorList.map((ind) => (
-                        <button
-                          key={ind.key}
-                          type="button"
-                          onClick={() => toggle(ind.key)}
-                          className="w-full flex items-center justify-between gap-2 px-3 py-2 text-[12px] hover:bg-bg-hover transition-colors text-left"
-                        >
-                          <span className="flex items-center gap-2 min-w-0">
-                            <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: ind.color }} />
-                            <span className="text-text-primary font-medium">{ind.label}</span>
-                          </span>
-                          <span
-                            className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center ${
-                              indicators[ind.key] ? 'bg-primary-500 border-primary-500' : 'bg-white border-border-dark'
-                            }`}
+                    <div className="absolute left-0 top-full mt-1 z-40 w-52 bg-white border border-border-dark rounded-lg shadow-elevated overflow-hidden max-h-[400px] overflow-y-auto">
+                      {indicatorList.map((ind, idx) => {
+                        if (ind.group) {
+                          return (
+                            <div key={`g-${idx}`} className="px-3 pt-2.5 pb-1 text-[9px] uppercase tracking-wider font-bold text-text-muted bg-bg-hover/40 border-b border-border-subtle">
+                              {ind.group}
+                            </div>
+                          );
+                        }
+                        return (
+                          <button
+                            key={ind.key}
+                            type="button"
+                            onClick={() => toggle(ind.key)}
+                            className="w-full flex items-center justify-between gap-2 px-3 py-2 text-[12px] hover:bg-bg-hover transition-colors text-left"
                           >
-                            {indicators[ind.key] && (
-                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7" /></svg>
-                            )}
-                          </span>
-                        </button>
-                      ))}
+                            <span className="flex items-center gap-2 min-w-0">
+                              <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: ind.color }} />
+                              <span className="text-text-primary font-medium">{ind.label}</span>
+                            </span>
+                            <span
+                              className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center ${
+                                indicators[ind.key] ? 'bg-primary-500 border-primary-500' : 'bg-white border-border-dark'
+                              }`}
+                            >
+                              {indicators[ind.key] && (
+                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7" /></svg>
+                              )}
+                            </span>
+                          </button>
+                        );
+                      })}
                     </div>
                   </>
                 )}
@@ -1804,8 +2012,23 @@ export default function PriceChart({
           pixel under the toolbar instead of falling back to a 460 px tile. */}
       <div className="relative w-full flex-1 min-h-0" style={{ background: tvCanvas(theme).background }}>
         <div ref={containerRef} className="w-full h-full" />
+        <ChartDrawingToolbar controls={drawingControls} />
+        {drawingControls.measureReadout && (
+          <div className="absolute top-2 right-2 z-20 px-3 py-2 rounded-lg bg-white/95 border border-border-dark text-[11px] font-mono shadow-card backdrop-blur-sm flex items-center gap-3">
+            <span className="text-text-muted">Δ Price</span>
+            <span className={`font-bold ${drawingControls.measureReadout.dPrice >= 0 ? 'text-bull' : 'text-bear'}`}>
+              {drawingControls.measureReadout.dPrice >= 0 ? '+' : ''}{drawingControls.measureReadout.dPrice.toFixed(2)}
+            </span>
+            <span className={`font-bold ${drawingControls.measureReadout.dPct >= 0 ? 'text-bull' : 'text-bear'}`}>
+              ({drawingControls.measureReadout.dPct >= 0 ? '+' : ''}{drawingControls.measureReadout.dPct.toFixed(2)}%)
+            </span>
+            <button type="button" onClick={drawingControls.clearMeasure} className="ml-1 text-text-muted hover:text-text-primary">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
+            </button>
+          </div>
+        )}
         {infoStrip && (
-          <div className="pointer-events-none absolute top-2 left-2 z-10 flex items-center gap-3 px-3 py-1.5 rounded-md bg-white/85 backdrop-blur-sm border border-border-dark text-[11px] font-medium tracking-wide shadow-card">
+          <div className="pointer-events-none absolute top-1 left-11 z-10 flex items-center gap-3 px-3 py-1.5 rounded-md bg-white/85 backdrop-blur-sm border border-border-dark text-[11px] font-medium tracking-wide shadow-card">
             {infoStrip.margin != null && (
               <span className="text-text-muted">
                 Margin <span className="text-bull font-semibold">{infoStrip.margin}</span>
@@ -1842,6 +2065,46 @@ export default function PriceChart({
             MACD <span className="text-text-secondary">(12, 26, 9)</span>
           </div>
           <div ref={macdContainerRef} className="w-full" />
+        </div>
+      )}
+
+      {/* Stochastic sub-panel */}
+      {indicators.stoch && (
+        <div className="border-t border-border-dark">
+          <div className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold px-4 py-1.5 bg-bg-panel/50 border-b border-border-subtle">
+            STOCHASTIC <span className="text-text-secondary">(14, 3)</span>
+          </div>
+          <div ref={stochContainerRef} className="w-full" />
+        </div>
+      )}
+
+      {/* ATR sub-panel */}
+      {indicators.atr && (
+        <div className="border-t border-border-dark">
+          <div className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold px-4 py-1.5 bg-bg-panel/50 border-b border-border-subtle">
+            ATR <span className="text-text-secondary">(14)</span>
+          </div>
+          <div ref={atrContainerRef} className="w-full" />
+        </div>
+      )}
+
+      {/* Williams %R sub-panel */}
+      {indicators.wr && (
+        <div className="border-t border-border-dark">
+          <div className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold px-4 py-1.5 bg-bg-panel/50 border-b border-border-subtle">
+            WILLIAMS %R <span className="text-text-secondary">(14)</span>
+          </div>
+          <div ref={wrContainerRef} className="w-full" />
+        </div>
+      )}
+
+      {/* CCI sub-panel */}
+      {indicators.cci && (
+        <div className="border-t border-border-dark">
+          <div className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold px-4 py-1.5 bg-bg-panel/50 border-b border-border-subtle">
+            CCI <span className="text-text-secondary">(20)</span>
+          </div>
+          <div ref={cciContainerRef} className="w-full" />
         </div>
       )}
     </div>

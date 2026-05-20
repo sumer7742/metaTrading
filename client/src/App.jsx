@@ -30,6 +30,8 @@ const Feedback = lazy(() => import('./pages/Feedback'));
 const Helpdesk = lazy(() => import('./pages/Helpdesk'));
 const Explore = lazy(() => import('./pages/Explore'));
 const MarketList = lazy(() => import('./pages/MarketList'));
+const Watchlist = lazy(() => import('./pages/Watchlist'));
+const OrderModalPreview = lazy(() => import('./pages/OrderModalPreview'));
 
 // Minimal fallback while a chunk is fetched. Branded so it doesn't feel
 // jarring; lasts <100ms on a warm cache, <500ms on first cold load.
@@ -70,6 +72,10 @@ export default function App() {
         <Route path="/dashboard" element={<Page><Dashboard /></Page>} />
         <Route path="/explore" element={<Page><Explore /></Page>} />
         <Route path="/markets" element={<Page><MarketList /></Page>} />
+        <Route path="/watchlist" element={<Page><Watchlist /></Page>} />
+        <Route path="/wishlist" element={<Navigate to="/watchlist" replace />} />
+        <Route path="/favorites" element={<Navigate to="/watchlist" replace />} />
+        <Route path="/preview/order-modal" element={<Page><OrderModalPreview /></Page>} />
         <Route path="/trade" element={<Page><Trade /></Page>} />
         <Route path="/orders" element={<Page><Orders /></Page>} />
         <Route path="/reports" element={<Page><Reports /></Page>} />

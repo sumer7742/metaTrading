@@ -43,6 +43,7 @@ async function fetchOnce() {
         dayHigh: wl.dayHigh,
         dayLow: wl.dayLow,
         change24h: wl.change24h,
+        volume24h: wl.volume24h ?? r.volume24h,
       };
     });
     _inflight = null;

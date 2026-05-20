@@ -5,10 +5,14 @@ import { Toaster } from 'react-hot-toast';
 import App from './App.jsx';
 import './index.css';
 import { applyInitialTheme } from './store/theme';
+import { applyInitialTradeSettings } from './store/tradeSettings';
 
 // Stamp the saved/system theme on <html> BEFORE React renders. Doing it later
 // causes a brief flash of the wrong palette ("FOUC") on every page load.
 applyInitialTheme();
+// Apply persisted Trade Settings appearance (overrides plain theme when the
+// user picked light/dark/system from the drawer).
+applyInitialTradeSettings();
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

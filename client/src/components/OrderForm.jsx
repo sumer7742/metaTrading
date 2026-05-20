@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { fmtPriceDual, fmtMoneyDual } from '../utils/format';
 import { useFxRate } from '../hooks/useFxRate';
+import { useTradeSettings } from '../store/tradeSettings';
 import AssetIcon from './AssetIcon';
 
 export default function OrderForm({
@@ -19,8 +20,15 @@ export default function OrderForm({
   // next to the asset name in the compact header.
   onClose,
 }) {
-  const maxLev = instrument?.maxLeverage || 100;
-  const initialLev = Math.min(account?.leverage || 1, maxLev);
+  // ── Leverage cap ────────────────────────────────────────────────
+  // The user explicitly requested "unlimited" leverage on the UI side,
+  // so we ignore the per-instrument maxLeverage cap here and expose a
+  // very high ceiling instead. The slider goes 1× → MAX_LEVERAGE_UI,
+  // and the inline editor below it accepts any integer up to that ceiling.
+  // (Backend may still enforce its own validation depending on the
+  // instrument's risk settings — that's a separate guardrail.)
+  const MAX_LEVERAGE_UI = 9999;
+  const initialLev = Math.max(1, Number(account?.leverage) || 1);
   const fxRate = useFxRate();
 
   const [internalSide, setInternalSide] = useState('BUY');
@@ -30,10 +38,30 @@ export default function OrderForm({
     if (sideControlled) onSideChange?.(next);
     else setInternalSide(next);
   };
+  // Order-entry mode comes from the global Trade Settings store so the
+  // user's choice persists across sessions and stays in sync with the
+  // Settings panel's dropdown. Three modes:
+  //   - regular   → full form (default)
+  //   - oneClick  → simplified one-tap market entry (no confirmation)
+  //   - riskCalc  → full form + risk-sizing helper above Quantity
+  const openOrderMode = useTradeSettings((s) => s.trading.openOrderMode);
+  const setOpenOrderMode = useTradeSettings((s) => s.set);
+  const confirmBeforeOrder = useTradeSettings((s) => s.autoTrading.confirmOrder);
+  const isOneClick = openOrderMode === 'oneClick';
+  const isRiskCalc = openOrderMode === 'riskCalc';
   // The order panel only exposes MARKET and LIMIT to the user. The backend
   // auto-resolves a "LIMIT" mode order to either LIMIT or STOP depending
   // on the price's relationship to the current bid/ask. STOP-tab is gone.
-  const [orderMode, setOrderMode] = useState('LIMIT');
+  // One-click mode forces MARKET — no limit price selection.
+  const [orderMode, setOrderMode] = useState(isOneClick ? 'MARKET' : 'LIMIT');
+  // Auto-force MARKET when user flips into oneClick mode
+  useEffect(() => {
+    if (isOneClick && orderMode !== 'MARKET') setOrderMode('MARKET');
+  }, [isOneClick, orderMode]);
+
+  // Risk-calculator inputs — only shown when riskCalc mode is active.
+  const [riskPct, setRiskPct] = useState('1');     // % of free margin to risk
+  const [stopDistance, setStopDistance] = useState(''); // distance in price units
   const [quantity, setQuantity] = useState('');
   const [price, setPrice] = useState(instrument?.lastPrice || '');
   const [stopLoss, setStopLoss] = useState('');
@@ -43,9 +71,11 @@ export default function OrderForm({
   const [accountFree, setAccountFree] = useState(null);
 
   useEffect(() => {
-    setLeverage((curr) => Math.min(curr, instrument?.maxLeverage || 100));
+    // Leverage is uncapped on the UI side — only re-clamp to the global
+    // MAX_LEVERAGE_UI ceiling if the previous value somehow exceeded it.
+    setLeverage((curr) => Math.min(Math.max(1, curr), MAX_LEVERAGE_UI));
     setPrice(instrument?.lastPrice || '');
-  }, [instrument?._id, instrument?.maxLeverage, instrument?.lastPrice]);
+  }, [instrument?._id, instrument?.lastPrice]);
 
   // Fetch free balance for the selected account so we can show an
   // "Available" line and compute % presets accurately.
@@ -83,6 +113,14 @@ export default function OrderForm({
     if (orderMode === 'LIMIT') {
       if (!price || Number(price) <= 0) return toast.error('Enter a valid limit price');
       if (limitInvalidReason) return toast.error(limitInvalidReason);
+    }
+    // Confirmation step — gated by "Confirm before order" setting AND
+    // not in one-click mode (which by definition skips confirmation).
+    if (confirmBeforeOrder && !isOneClick) {
+      const sideLabel = side === 'BUY' ? 'Buy' : 'Sell';
+      const modeLabel = orderMode === 'LIMIT' ? `LIMIT @ ${price}` : 'MARKET';
+      const ok = window.confirm(`Confirm ${sideLabel} ${quantity} ${instrument?.baseCurrency} (${modeLabel}) with 1:${leverage} leverage?`);
+      if (!ok) return;
     }
     setLoading(true);
     try {
@@ -254,14 +292,35 @@ export default function OrderForm({
     // `max-h-full` + `overflow-y-auto` still let it scroll internally
     // if the form ever grows taller than the surrounding aside.
     <div className="card p-5 max-h-full overflow-y-auto">
-      {/* Compact header — asset icon + symbol on the left, × close on the
-          right (same row). Both sit on a single line. */}
-      <div className="flex items-center justify-between gap-2 mb-3">
-        <div className="flex items-center gap-2 min-w-0">
-          <AssetIcon row={instrument} size={20} round />
-          <span className="text-sm font-bold text-text-primary tracking-tight truncate">
-            {instrument?.symbol}
-          </span>
+      {/* Header row — asset icon + symbol on the left, live price chip
+          + close on the right. Live price comes from the instrument
+          snapshot (updates whenever Trade.jsx refreshes the row). */}
+      <div className="flex items-center justify-between gap-2 mb-3.5">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <AssetIcon row={instrument} size={24} round />
+          <div className="min-w-0">
+            <div className="text-[15px] font-bold text-text-primary tracking-tight truncate leading-none">
+              {instrument?.symbol}
+            </div>
+            {Number.isFinite(Number(instrument?.lastPrice)) && (
+              <div className="flex items-center gap-2 text-[11px] font-mono tabular-nums mt-1">
+                <span className="text-text-primary font-bold">
+                  {Number(instrument.lastPrice).toFixed(Math.min(instrument?.pricePrecision || 2, 5))}
+                </span>
+                {Number.isFinite(Number(instrument?.change24h)) && (
+                  <span
+                    className="font-bold text-[10px] px-1.5 py-0.5 rounded"
+                    style={{
+                      color: Number(instrument.change24h) >= 0 ? '#16A34A' : '#DC2626',
+                      background: Number(instrument.change24h) >= 0 ? 'rgba(22,163,74,0.10)' : 'rgba(220,38,38,0.10)',
+                    }}
+                  >
+                    {Number(instrument.change24h) >= 0 ? '▲' : '▼'} {Math.abs(Number(instrument.change24h)).toFixed(2)}%
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
         </div>
         {onClose && (
           <button
@@ -269,65 +328,192 @@ export default function OrderForm({
             onClick={onClose}
             title="Close panel"
             aria-label="Close order panel"
-            className="shrink-0 p-1 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors"
+            className="shrink-0 w-7 h-7 rounded-full hover:bg-bg-hover flex items-center justify-center text-text-muted hover:text-text-primary transition-all hover:rotate-90 duration-300"
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
           </button>
         )}
       </div>
 
-      {/* BUY / SELL split — always visible (matches Exness-style panel). */}
-      <div className="grid grid-cols-2 gap-2.5 mb-5">
+      {/* Bid / Ask strip — quick reference for the user when placing
+          limit orders or eyeballing the current spread. Mid is the
+          average of the two; spread is shown in basis points. */}
+      {(() => {
+        const bid = Number(instrument?.bid);
+        const ask = Number(instrument?.ask);
+        if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0) return null;
+        const prec = Math.min(instrument?.pricePrecision || 2, 5);
+        const mid = (bid + ask) / 2;
+        const spread = ask - bid;
+        const spreadBps = mid > 0 ? (spread / mid) * 10000 : 0;
+        return (
+          <div className="grid grid-cols-3 gap-1.5 mb-3.5">
+            <div className="rounded-lg bg-bull/8 border border-bull/20 px-2 py-2 flex flex-col items-center gap-0.5">
+              <span className="text-[9px] uppercase tracking-[0.15em] font-bold text-text-muted">Bid</span>
+              <span className="font-mono font-bold text-[12px] text-bull tabular-nums leading-none">{bid.toFixed(prec)}</span>
+            </div>
+            <div className="rounded-lg bg-bg-hover/60 border border-border-subtle px-2 py-2 flex flex-col items-center gap-0.5">
+              <span className="text-[9px] uppercase tracking-[0.15em] font-bold text-text-muted">Mid</span>
+              <span className="font-mono font-bold text-[12px] text-text-primary tabular-nums leading-none">{mid.toFixed(prec)}</span>
+              <span className="text-[9px] font-mono text-text-muted">{spreadBps.toFixed(1)} bps</span>
+            </div>
+            <div className="rounded-lg bg-bear/8 border border-bear/20 px-2 py-2 flex flex-col items-center gap-0.5">
+              <span className="text-[9px] uppercase tracking-[0.15em] font-bold text-text-muted">Ask</span>
+              <span className="font-mono font-bold text-[12px] text-bear tabular-nums leading-none">{ask.toFixed(prec)}</span>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Order Mode dropdown with leading icon ─────────────────────
+          Switches between Regular / One-click / Risk-calculator forms.
+          Persisted via the global Trade Settings store. */}
+      <div className="mb-3 relative">
+        <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-primary-600 pointer-events-none">
+          {openOrderMode === 'oneClick' ? (
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" /></svg>
+          ) : openOrderMode === 'riskCalc' ? (
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="2" width="16" height="20" rx="2" /><line x1="8" y1="6" x2="16" y2="6" /><line x1="8" y1="10" x2="10" y2="10" /><line x1="13" y1="10" x2="16" y2="10" /><line x1="8" y1="14" x2="10" y2="14" /><line x1="13" y1="14" x2="16" y2="14" /><line x1="8" y1="18" x2="10" y2="18" /><line x1="13" y1="18" x2="16" y2="18" /></svg>
+          ) : (
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="9" y1="13" x2="15" y2="13" /><line x1="9" y1="17" x2="15" y2="17" /></svg>
+          )}
+        </span>
+        <select
+          value={openOrderMode}
+          onChange={(e) => setOpenOrderMode('trading.openOrderMode', e.target.value)}
+          aria-label="Order entry mode"
+          className="appearance-none cursor-pointer w-full pl-9 pr-7 py-2 rounded-lg border border-border-dark bg-bg-hover/30 text-xs font-bold text-text-primary hover:border-primary-500/40 hover:bg-primary-500/5 focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/15 transition-all"
+        >
+          <option value="regular">Regular form</option>
+          <option value="oneClick">One-click form</option>
+          <option value="riskCalc">Risk calculator</option>
+        </select>
+        <svg
+          width="12" height="12" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-text-secondary pointer-events-none"
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </div>
+
+      {/* BUY / SELL split — compact two-line buttons. */}
+      <div className="grid grid-cols-2 gap-2 mb-4">
         <button
           type="button"
           onClick={() => setSide('BUY')}
-          className={`py-3.5 rounded-xl font-bold text-sm transition-all flex flex-col items-center gap-1 ${
+          className={`py-2.5 rounded-xl font-extrabold text-[13px] transition-all flex flex-col items-center justify-center gap-0.5 leading-tight tracking-wide ${
             side === 'BUY'
-              ? 'bg-bull text-white shadow-lg shadow-bull/35 scale-[1.02] ring-2 ring-bull/20'
-              : 'bg-bg-card text-text-secondary hover:bg-bg-hover hover:text-text-primary border border-border-dark'
+              ? 'bg-bull text-white shadow-md shadow-bull/30 ring-2 ring-bull/20'
+              : 'bg-white text-text-secondary hover:bg-bull/5 hover:text-bull hover:border-bull/40 border border-border-dark'
           }`}
         >
-          <span className="tracking-wide">BUY · LONG</span>
-          <span className={`text-[10px] font-medium ${side === 'BUY' ? 'text-white/85' : 'text-text-muted'}`}>
+          <span>BUY · LONG</span>
+          <span className={`text-[9px] font-medium normal-case tracking-normal ${side === 'BUY' ? 'text-white/80' : 'text-text-muted'}`}>
             ↑ Profit if price rises
           </span>
         </button>
         <button
           type="button"
           onClick={() => setSide('SELL')}
-          className={`py-3.5 rounded-xl font-bold text-sm transition-all flex flex-col items-center gap-1 ${
+          className={`py-2.5 rounded-xl font-extrabold text-[13px] transition-all flex flex-col items-center justify-center gap-0.5 leading-tight tracking-wide ${
             side === 'SELL'
-              ? 'bg-bear text-white shadow-lg shadow-bear/35 scale-[1.02] ring-2 ring-bear/20'
-              : 'bg-bg-card text-text-secondary hover:bg-bg-hover hover:text-text-primary border border-border-dark'
+              ? 'bg-bear text-white shadow-md shadow-bear/30 ring-2 ring-bear/20'
+              : 'bg-white text-text-secondary hover:bg-bear/5 hover:text-bear hover:border-bear/40 border border-border-dark'
           }`}
         >
-          <span className="tracking-wide">SELL · SHORT</span>
-          <span className={`text-[10px] font-medium ${side === 'SELL' ? 'text-white/85' : 'text-text-muted'}`}>
+          <span>SELL · SHORT</span>
+          <span className={`text-[9px] font-medium normal-case tracking-normal ${side === 'SELL' ? 'text-white/80' : 'text-text-muted'}`}>
             ↓ Profit if price falls
           </span>
         </button>
       </div>
 
-      {/* Order mode tabs — segmented control style (pill on track). */}
-      <div className="flex p-1 mb-5 rounded-lg bg-bg-card border border-border-dark">
-        {['MARKET', 'LIMIT'].map((m) => (
-          <button
-            key={m}
-            type="button"
-            onClick={() => {
-              setOrderMode(m);
-              if (m === 'LIMIT' && !price && instrument?.lastPrice) setPrice(instrument.lastPrice);
-            }}
-            className={`flex-1 text-xs font-bold py-2 rounded-md transition-all ${
-              orderMode === m
-                ? 'bg-white text-text-primary shadow-card'
-                : 'text-text-secondary hover:text-text-primary'
-            }`}
-          >
-            {m}
-          </button>
-        ))}
-      </div>
+      {/* Order mode tabs — segmented control style (pill on track).
+          Hidden in one-click mode (forces MARKET only). */}
+      {!isOneClick && (
+        <div className="relative flex p-1 mb-4 rounded-xl bg-bg-hover/60 border border-border-subtle">
+          {['MARKET', 'LIMIT'].map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => {
+                setOrderMode(m);
+                if (m === 'LIMIT' && !price && instrument?.lastPrice) setPrice(instrument.lastPrice);
+              }}
+              className={`flex-1 text-[12px] font-bold py-1.5 rounded-lg tracking-wide transition-all ${
+                orderMode === m
+                  ? 'bg-white text-text-primary shadow-sm'
+                  : 'text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ── Risk calculator panel — appears above the form fields when
+          riskCalc mode is active. Auto-derives a recommended quantity
+          from: free margin × risk% / stop distance. */}
+      {isRiskCalc && (() => {
+        const free = Number(accountFree || 0);
+        const px = Number(price || instrument?.lastPrice || 0);
+        const riskAmt = free * (Number(riskPct) || 0) / 100;
+        const dist = Number(stopDistance) || 0;
+        const recommendedQty = dist > 0 ? (riskAmt / dist) : 0;
+        return (
+          <div className="mb-5 rounded-xl border border-primary-500/30 bg-primary-500/5 p-3 space-y-2.5">
+            <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider font-bold text-primary-600">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M12 8v4" /><path d="M12 16h.01" /></svg>
+              Risk Calculator
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="text-[11px] font-semibold text-text-secondary">
+                Risk %
+                <div className="relative mt-1">
+                  <input
+                    type="number"
+                    step="any"
+                    value={riskPct}
+                    onChange={(e) => setRiskPct(e.target.value)}
+                    className="w-full px-2 py-1.5 rounded-md border border-border-dark bg-white text-xs font-mono"
+                  />
+                </div>
+              </label>
+              <label className="text-[11px] font-semibold text-text-secondary">
+                Stop distance ({instrument?.quoteCurrency})
+                <input
+                  type="number"
+                  step="any"
+                  value={stopDistance}
+                  onChange={(e) => setStopDistance(e.target.value)}
+                  placeholder="0.00"
+                  className="w-full mt-1 px-2 py-1.5 rounded-md border border-border-dark bg-white text-xs font-mono"
+                />
+              </label>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-[10px] pt-1">
+              <div>
+                <div className="text-text-muted uppercase tracking-wider font-bold">Risk amount</div>
+                <div className="font-mono font-bold text-bear">{fmtAcct(riskAmt)}</div>
+              </div>
+              <div className="text-right">
+                <div className="text-text-muted uppercase tracking-wider font-bold">Suggested qty</div>
+                <button
+                  type="button"
+                  onClick={() => recommendedQty > 0 && setQuantity(recommendedQty.toFixed(4))}
+                  disabled={!recommendedQty}
+                  className="font-mono font-bold text-primary-600 hover:underline disabled:no-underline disabled:opacity-50"
+                  title={recommendedQty > 0 ? 'Click to apply' : 'Enter stop distance'}
+                >
+                  {recommendedQty > 0 ? recommendedQty.toFixed(4) : '—'}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       <form onSubmit={submit} className="space-y-3">
         {/* Limit price input — only when LIMIT mode is selected. The
@@ -398,7 +584,8 @@ export default function OrderForm({
           />
         </div>
 
-        {/* SL / TP with % distance hint */}
+        {/* SL / TP with % distance hint — hidden in one-click mode */}
+        {!isOneClick && (
         <div className="grid grid-cols-2 gap-2">
           <div>
             <label className="label flex items-center justify-between">
@@ -437,38 +624,111 @@ export default function OrderForm({
             />
           </div>
         </div>
+        )}
 
         {/* Leverage slider — primary-tinted with the chosen multiplier
             displayed as a pill instead of inline text. */}
         <div>
           <div className="flex items-center justify-between mb-2">
             <label className="label !mb-0">Leverage</label>
-            <span className="text-xs font-mono font-bold px-2.5 py-1 rounded-full bg-primary-500/10 text-primary-600 border border-primary-500/30">
-              1:{leverage}
+            {/* Editable pill — user can type any value up to the UI cap.
+                Empty input falls back to 1× on blur. */}
+            <span className="inline-flex items-center gap-1 text-xs font-mono font-bold px-2 py-1 rounded-full bg-primary-500/10 text-primary-600 border border-primary-500/30 focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500/15">
+              <span>1:</span>
+              <input
+                type="number"
+                min={1}
+                max={MAX_LEVERAGE_UI}
+                step={1}
+                value={leverage}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  if (Number.isFinite(v)) setLeverage(Math.max(1, Math.min(MAX_LEVERAGE_UI, Math.round(v))));
+                }}
+                onBlur={() => { if (!leverage || leverage < 1) setLeverage(1); }}
+                className="w-16 bg-transparent text-right outline-none font-mono font-bold text-primary-600"
+                aria-label="Leverage multiplier"
+              />
+              <span>×</span>
             </span>
           </div>
           <input
             type="range"
             min={1}
-            max={instrument?.maxLeverage || 100}
+            max={MAX_LEVERAGE_UI}
             value={leverage}
             onChange={(e) => setLeverage(Number(e.target.value))}
             className="w-full accent-primary-500 h-1.5"
           />
           <div className="flex justify-between text-[10px] text-text-muted mt-2 font-mono font-semibold">
             <span>1×</span>
-            <span>{Math.round((instrument?.maxLeverage || 100) / 2)}×</span>
-            <span>{instrument?.maxLeverage || 100}×</span>
+            <span>{Math.round(MAX_LEVERAGE_UI / 2)}×</span>
+            <span>{MAX_LEVERAGE_UI}×</span>
           </div>
         </div>
 
-        {/* Insufficient-margin warning — kept inline (the full cost
-            summary card was removed). The Place-Order button itself is
-            still disabled when overBudget, so the warning is the only
-            extra cue the user needs. */}
+        {/* ── Trade summary card — concise readout of cost + remaining
+            balance + estimated SL/TP PnL. Surfaces the impact of the
+            order before the user commits. Only renders when there's
+            a meaningful preview (qty + price both set). */}
+        {qtyNum > 0 && refPrice > 0 && (
+          <div className="rounded-xl bg-bg-hover/50 border border-border-subtle p-3.5 space-y-2">
+            <div className="text-[10px] uppercase tracking-[0.18em] font-bold text-text-muted mb-1.5">Order Summary</div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-text-secondary font-medium">Notional</span>
+              <span className="font-mono font-bold text-text-primary tabular-nums">{fmtAcct(notional)}</span>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-text-secondary font-medium">Margin required</span>
+              <span className="font-mono font-semibold text-text-primary tabular-nums">{fmtAcct(requiredMargin)}</span>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-text-secondary font-medium">Free after</span>
+              <span
+                className="font-mono font-bold tabular-nums"
+                style={{ color: overBudget ? '#DC2626' : '#16A34A' }}
+              >
+                {fmtAcct(remainingAfter)}
+              </span>
+            </div>
+            {/* Estimated SL / TP outcomes, when set */}
+            {(Number.isFinite(Number(stopLoss)) && Number(stopLoss) > 0) && (() => {
+              const sl = Number(stopLoss);
+              const slPnl = side === 'BUY' ? (sl - refPrice) * qtyNum : (refPrice - sl) * qtyNum;
+              return (
+                <div className="flex items-center justify-between text-xs pt-2 border-t border-border-subtle">
+                  <span className="text-text-secondary font-medium flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-bear" />
+                    If SL hits
+                  </span>
+                  <span className="font-mono font-bold text-bear tabular-nums">
+                    {slPnl >= 0 ? '+' : ''}{fmtAcct(slPnl)}
+                  </span>
+                </div>
+              );
+            })()}
+            {(Number.isFinite(Number(takeProfit)) && Number(takeProfit) > 0) && (() => {
+              const tp = Number(takeProfit);
+              const tpPnl = side === 'BUY' ? (tp - refPrice) * qtyNum : (refPrice - tp) * qtyNum;
+              return (
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-text-secondary font-medium flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-bull" />
+                    If TP hits
+                  </span>
+                  <span className="font-mono font-bold text-bull tabular-nums">
+                    {tpPnl >= 0 ? '+' : ''}{fmtAcct(tpPnl)}
+                  </span>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* Insufficient-margin warning */}
         {overBudget && (
-          <div className="text-[11px] text-bear font-bold flex items-center gap-1.5">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M12 8v5" /><path d="M12 16h.01" /></svg>
+          <div className="rounded-lg bg-bear/10 border border-bear/30 px-3 py-2 text-[11px] text-bear font-bold flex items-center gap-1.5">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><circle cx="12" cy="12" r="10" /><path d="M12 8v5" /><path d="M12 16h.01" /></svg>
             Insufficient free margin
           </div>
         )}
@@ -484,8 +744,15 @@ export default function OrderForm({
         >
           {loading
             ? 'Placing…'
-            : `Place ${side === 'BUY' ? 'Buy' : 'Sell'} Order`}
+            : isOneClick
+              ? `⚡ ${side === 'BUY' ? 'Quick Buy' : 'Quick Sell'} at Market`
+              : `Place ${side === 'BUY' ? 'Buy' : 'Sell'} Order`}
         </button>
+        {isOneClick && (
+          <div className="text-[10px] text-text-muted text-center mt-1">
+            One-click mode · order fires immediately at market price
+          </div>
+        )}
       </form>
     </div>
   );
@@ -499,3 +766,5 @@ function Row({ label, value, mono, bold, valueClass = 'text-text-primary' }) {
     </div>
   );
 }
+
+

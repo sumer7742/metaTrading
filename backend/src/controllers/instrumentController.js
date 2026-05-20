@@ -3,6 +3,7 @@ const Candle = require('../models/Candle');
 const { sendSuccess, asyncHandler, AppError } = require('../utils/errors');
 const { getCandles } = require('../services/candleService');
 const matchingEngine = require('../matching-engine/MatchingEngine');
+const externalFeed = require('../services/externalFeedService');
 const { D } = require('../utils/decimal');
 
 const list = asyncHandler(async (req, res) => {
@@ -78,9 +79,18 @@ const watchlist = asyncHandler(async (req, res) => {
     }
     const spread = ask.minus(bid).toString();
 
+    // ── Prefer the exchange-side 24h ticker when available (crypto via
+    // Binance). Falls back to our own candle aggregation for forex /
+    // stocks / commodities, which is computed below.
+    const extTicker = externalFeed.getExternalTicker(inst.symbol);
+
     const day = dayBySymbol.get(inst.symbol);
-    let dayHigh = day?.high || null;
-    let dayLow = day?.low || null;
+    let dayHigh = extTicker?.dayHigh != null && Number.isFinite(extTicker.dayHigh)
+      ? String(extTicker.dayHigh)
+      : (day?.high || null);
+    let dayLow = extTicker?.dayLow != null && Number.isFinite(extTicker.dayLow)
+      ? String(extTicker.dayLow)
+      : (day?.low || null);
 
     // Fallback to 1h aggregation when 1d candle is missing.
     const hourly = hourlyBySymbol.get(inst.symbol) || [];
@@ -96,7 +106,10 @@ const watchlist = asyncHandler(async (req, res) => {
     }
 
     let change24h = null;
-    if (hourly.length >= 2 && Number(inst.lastPrice) > 0) {
+    if (extTicker && Number.isFinite(extTicker.change24h)) {
+      // Exchange-computed % — always preferred when present.
+      change24h = extTicker.change24h;
+    } else if (hourly.length >= 2 && Number(inst.lastPrice) > 0) {
       // Find the candle closest to (now - 24h) without going past it.
       let baseline = hourly[0];
       for (const c of hourly) {
@@ -107,6 +120,10 @@ const watchlist = asyncHandler(async (req, res) => {
         change24h = ((Number(inst.lastPrice) - Number(baseline.close)) / Number(baseline.close)) * 100;
       }
     }
+
+    const volume24h = extTicker && Number.isFinite(extTicker.volume24h)
+      ? String(extTicker.volume24h)
+      : (inst.volume24h || null);
 
     return {
       symbol: inst.symbol,
@@ -123,6 +140,7 @@ const watchlist = asyncHandler(async (req, res) => {
       dayHigh,
       dayLow,
       change24h,
+      volume24h,
     };
   });
 
@@ -145,8 +163,24 @@ const candles = asyncHandler(async (req, res) => {
 
 const orderbook = asyncHandler(async (req, res) => {
   const { symbol } = req.params;
+  const sym = symbol.toUpperCase();
   const depth = Number(req.query.depth || 25);
-  const snap = matchingEngine.getSnapshot(symbol.toUpperCase(), depth);
+  // 1. Prefer the cached external L2 book (Binance for crypto). This is
+  //    what a real trader expects when they ask for "market depth".
+  const ext = externalFeed.getExternalOrderbook(sym);
+  if (ext && (ext.bids?.length || ext.asks?.length)) {
+    const trimmed = {
+      symbol: ext.symbol,
+      bids: ext.bids.slice(0, depth),
+      asks: ext.asks.slice(0, depth),
+      ts: ext.ts,
+      source: ext.source,
+    };
+    return sendSuccess(res, trimmed);
+  }
+  // 2. Fallback to the internal matching engine snapshot (user-placed
+  //    limit orders, mostly empty for crypto pairs).
+  const snap = matchingEngine.getSnapshot(sym, depth);
   sendSuccess(res, snap);
 });
 
