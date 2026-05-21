@@ -60,8 +60,11 @@ export default function TradeSettingsPanel() {
             <SettingsRow label="Open positions">
               <Toggle label="Positions" checked={s.showOnChart.positions} onChange={(v) => setVal('showOnChart.positions', v)} />
             </SettingsRow>
-            <SettingsRow label="TP / SL / Stop / Limit">
+            <SettingsRow label="TP / SL on positions">
               <Toggle label="TP/SL" checked={s.showOnChart.tpsl} onChange={(v) => setVal('showOnChart.tpsl', v)} />
+            </SettingsRow>
+            <SettingsRow label="Stop / Limit orders">
+              <Toggle label="Stop/Limit" checked={s.showOnChart.stopLimit} onChange={(v) => setVal('showOnChart.stopLimit', v)} />
             </SettingsRow>
             <SettingsRow label="Economic calendar">
               <Toggle label="Calendar" checked={s.showOnChart.calendar} onChange={(v) => setVal('showOnChart.calendar', v)} />
@@ -207,7 +210,7 @@ export default function TradeSettingsPanel() {
 }
 
 const SECTION_INDEX = [
-  { id: 'chart',    title: 'Show on Chart',              labels: ['Signals', 'HMR periods', 'Price alerts', 'Open positions', 'TP / SL / Stop / Limit', 'Economic calendar'] },
+  { id: 'chart',    title: 'Show on Chart',              labels: ['Signals', 'HMR periods', 'Price alerts', 'Open positions', 'TP / SL on positions', 'Stop / Limit orders', 'Economic calendar'] },
   { id: 'calendar', title: 'Economic Calendar Filters',  labels: ['High impact', 'Medium impact', 'Low impact', 'Lowest impact'] },
   { id: 'sound',    title: 'Sound Effects',              labels: ['Price alerts sound', 'TP / SL / SO closing sound'] },
   { id: 'trading',  title: 'Trading Settings',           labels: ['Open order mode', 'Regular form', 'One-click form', 'Risk calculator', 'Price source', 'Bid', 'Ask', 'Mid Price', 'Appearance', 'Light', 'Dark', 'System', 'Time zone', 'UTC', 'GMT', 'Local Time'] },

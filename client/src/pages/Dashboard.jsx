@@ -112,20 +112,27 @@ export default function Dashboard() {
   }, [livePositions]);
 
   if (loading) {
-    return (
-      <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-12 flex items-center justify-center">
-        <div className="flex items-center gap-3 text-text-muted text-sm">
-          <span className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
-          Loading portfolio…
-        </div>
-      </div>
-    );
+    return <DashboardSkeleton />;
   }
   if (!data) {
     return (
       <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-12">
-        <div className="bg-white border border-bear/30 rounded-2xl p-6 text-center text-bear text-sm">
-          Failed to load portfolio. Try refreshing.
+        <div className="bg-white border border-bear/30 rounded-2xl p-8 text-center">
+          <div className="mx-auto w-14 h-14 rounded-full bg-bear/15 text-bear flex items-center justify-center mb-3">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+          </div>
+          <h2 className="text-text-primary font-bold text-lg mb-1">Couldn't load your portfolio</h2>
+          <p className="text-sm text-text-secondary mb-4">Check your connection and try again.</p>
+          <button
+            onClick={() => { setLoading(true); api.get('/user/dashboard').then((r) => setData(r.data.data)).catch(() => {}).finally(() => setLoading(false)); }}
+            className="btn-primary"
+          >
+            Retry
+          </button>
         </div>
       </div>
     );
@@ -644,6 +651,45 @@ const CAT_COLORS = {
 };
 
 // ─── Time-ago helper ─────────────────────────────────────────────────
+// Skeleton placeholder used while the dashboard is loading. Mirrors the
+// final layout (header + 4 stat cards + chart + 2 lists) so the page
+// shape appears immediately rather than a centered spinner.
+function DashboardSkeleton() {
+  const Block = ({ className = '' }) => (
+    <div className={`bg-bg-hover/60 rounded-lg animate-pulse ${className}`} />
+  );
+  return (
+    <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-6 space-y-6">
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div className="space-y-2">
+          <Block className="h-8 w-40" />
+          <Block className="h-4 w-72" />
+        </div>
+        <Block className="h-9 w-28" />
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="bg-white border border-border-subtle rounded-2xl p-5 space-y-3">
+            <Block className="h-3 w-20" />
+            <Block className="h-8 w-32" />
+            <Block className="h-3 w-16" />
+          </div>
+        ))}
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 bg-white border border-border-subtle rounded-2xl p-5 space-y-3">
+          <Block className="h-4 w-32" />
+          <Block className="h-48 w-full" />
+        </div>
+        <div className="bg-white border border-border-subtle rounded-2xl p-5 space-y-3">
+          <Block className="h-4 w-24" />
+          {[0, 1, 2, 3].map((i) => <Block key={i} className="h-10 w-full" />)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function timeAgo(iso) {
   if (!iso) return '';
   const diffMs = Date.now() - new Date(iso).getTime();

@@ -25,8 +25,14 @@ const planSchema = new mongoose.Schema(
 
     limits: {
       maxAccounts: { type: Number, default: 2 },
-      maxLeverageOverride: { type: Number, default: null }, // null = no override
-      withdrawalDailyLimit: { type: String, default: null }, // null = no extra cap
+      maxLeverageOverride: { type: Number, default: null }, // @deprecated, kept for back-compat
+      // Default max leverage granted by this plan. The trading engine
+      // uses this as a CAP unless an admin override is set on the user.
+      //   FREE    →  50
+      //   PREMIUM → 200
+      //   VIP     → 500
+      defaultLeverage: { type: Number, default: 100 },
+      withdrawalDailyLimit: { type: String, default: null },
     },
     features: {
       feeDiscountPercent: { type: String, default: '0' }, // 0.00 to 1.00

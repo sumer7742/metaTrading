@@ -32,6 +32,12 @@ export default function Wallet() {
   const fxRate = useFxRate();
   const [searchParams, setSearchParams] = useSearchParams();
 
+  // Ref captures a pending deep-link target (e.g. "withdraw") so a later
+  // effect that wires up `setView` can consume it once the view-state
+  // exists. Declared BEFORE the effect that writes to it — fragile
+  // initialization order was the bug previously.
+  const pendingDeepLinkRef = useRef(null);
+
   // Deep-link from /funds, header CTAs, etc. Both Deposit and Withdraw
   // now live inline on the Wallet page — the deep-link handler just
   // switches to the relevant sidebar view and strips the URL flag so a
@@ -39,15 +45,12 @@ export default function Wallet() {
   useEffect(() => {
     const action = searchParams.get('action');
     if (action === 'deposit' || action === 'withdraw') {
-      // setView is declared below — defer until after this render so
-      // the assignment can find it in scope.
       pendingDeepLinkRef.current = action === 'withdraw' ? 'withdraw' : 'grow';
       const next = new URLSearchParams(searchParams);
       next.delete('action');
       setSearchParams(next, { replace: true });
     }
   }, [searchParams, setSearchParams]);
-  const pendingDeepLinkRef = useRef(null);
 
   const load = async () => {
     // Settled-with-fallback so a single slow/failing endpoint doesn't blank

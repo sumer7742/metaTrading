@@ -23,6 +23,10 @@ const EMPTY = {
   commissionPerTrade: '0',
   commissionPercent: '0',
   maxLeverage: 100,
+  // Per-instrument routing override — mirrors the user-level override.
+  // INHERIT = use the global Settings → Routing Mode. An explicit
+  // value (A_BOOK / B_BOOK / HYBRID) wins over the global for THIS symbol.
+  routingOverride: 'INHERIT',
   isActive: true,
 };
 
@@ -82,23 +86,37 @@ export default function Instruments() {
               <th className="text-left p-3">Category</th>
               <th className="text-right p-3">Last Price</th>
               <th className="text-right p-3">Max Lev</th>
+              <th className="text-center p-3">Routing</th>
               <th className="text-right p-3"></th>
             </tr>
           </thead>
           <tbody>
-            {items.map((it) => (
-              <tr key={it._id} className="table-row">
-                <td className="p-3 font-medium">{it.symbol}</td>
-                <td className="p-3 text-gray-400">{it.name}</td>
-                <td className="p-3 text-xs">{it.category}</td>
-                <td className="p-3 text-right font-mono">{fmtNum(it.lastPrice, it.pricePrecision)}</td>
-                <td className="p-3 text-right">1:{it.maxLeverage}</td>
-                <td className="p-3 text-right space-x-1">
-                  <button onClick={() => setEditing(it)} className="btn-ghost text-xs">Edit</button>
-                  <button onClick={() => remove(it.symbol)} className="btn-ghost text-xs text-bear">Disable</button>
-                </td>
-              </tr>
-            ))}
+            {items.map((it) => {
+              const routing = it.routingOverride || 'INHERIT';
+              const routingTone =
+                routing === 'A_BOOK'  ? 'bg-blue-500/15 text-blue-400 border-blue-500/30' :
+                routing === 'B_BOOK'  ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' :
+                routing === 'HYBRID'  ? 'bg-violet-500/15 text-violet-400 border-violet-500/30' :
+                                        'bg-bg-card text-gray-500 border-border-dark';
+              return (
+                <tr key={it._id} className="table-row">
+                  <td className="p-3 font-medium">{it.symbol}</td>
+                  <td className="p-3 text-gray-400">{it.name}</td>
+                  <td className="p-3 text-xs">{it.category}</td>
+                  <td className="p-3 text-right font-mono">{fmtNum(it.lastPrice, it.pricePrecision)}</td>
+                  <td className="p-3 text-right">1:{it.maxLeverage}</td>
+                  <td className="p-3 text-center">
+                    <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${routingTone}`}>
+                      {routing}
+                    </span>
+                  </td>
+                  <td className="p-3 text-right space-x-1">
+                    <button onClick={() => setEditing(it)} className="btn-ghost text-xs">Edit</button>
+                    <button onClick={() => remove(it.symbol)} className="btn-ghost text-xs text-bear">Disable</button>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -190,9 +208,26 @@ function InstrumentEditor({ data, onSave, onClose }) {
             <label className="label">External Feed Symbol</label>
             <input className="input" value={form.externalFeedSymbol || ''} onChange={update('externalFeedSymbol')} placeholder="e.g. BTCUSDT" />
           </div>
-          {/* B-Book / Mode toggles removed — routing is now a platform-wide
-              setting (Admin → Settings → Routing Mode). Instruments are
-              just symbol/feed config. */}
+          <div>
+            <label className="label">Routing Override</label>
+            <select
+              className="input"
+              value={form.routingOverride || 'INHERIT'}
+              onChange={update('routingOverride')}
+            >
+              <option value="INHERIT">INHERIT</option>
+              <option value="A_BOOK">A_BOOK</option>
+              <option value="B_BOOK">B_BOOK</option>
+              <option value="HYBRID">HYBRID</option>
+            </select>
+            <div className="text-[10px] text-gray-500 mt-1 leading-snug">
+              INHERIT = use global Settings → Routing Mode. An explicit
+              value forces THIS symbol regardless of the global setting
+              (still subject to per-user override).
+            </div>
+          </div>
+          {/* B-Book / Mode toggles (legacy fields) removed — per-instrument
+              routing is now controlled by the Routing Override above. */}
           <div className="col-span-2 flex items-center gap-4 mt-2">
             <label className="flex items-center text-sm text-gray-300">
               <input type="checkbox" className="mr-2" checked={!!form.isActive} onChange={checkbox('isActive')} />

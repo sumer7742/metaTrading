@@ -37,15 +37,26 @@ whitelistedAddressSchema.index({ userId: 1, currency: 1 });
 const commissionSchema = new mongoose.Schema(
   {
     referrerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    refereeId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    level: { type: Number, enum: [1, 2, 3], required: true },
-    sourceType: { type: String, enum: ['TRADE_FEE', 'SPREAD', 'DEPOSIT_BONUS'], default: 'SPREAD' },
-    sourceId: { type: mongoose.Schema.Types.ObjectId }, // Trade._id typically
+    // Required for trade-derived commissions; optional for admin
+    // adjustments (sourceType: 'ADJUSTMENT') where there's no specific
+    // referee transaction behind the credit.
+    refereeId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', index: true },
+    // Level is only meaningful for the L1/L2/L3 trade-fee chain.
+    // Admin adjustments use level=0 (effectively n/a).
+    level: { type: Number, enum: [0, 1, 2, 3], required: true, default: 0 },
+    sourceType: {
+      type: String,
+      enum: ['TRADE_FEE', 'SPREAD', 'DEPOSIT_BONUS', 'ADJUSTMENT'],
+      default: 'SPREAD',
+    },
+    sourceId: { type: mongoose.Schema.Types.ObjectId }, // Trade._id typically; null for ADJUSTMENT
     currency: { type: String, default: 'USD' },
     amount: { type: String, required: true }, // commission amount (positive)
     rate: { type: String }, // % rate applied (informational)
     status: { type: String, enum: ['PENDING', 'PAID', 'REVERSED'], default: 'PENDING', index: true },
     paidAt: Date,
+    // For ADJUSTMENT rows — who credited it (admin user _id).
+    adjustedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     note: String,
   },
   { timestamps: true }

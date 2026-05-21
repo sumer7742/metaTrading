@@ -79,7 +79,7 @@ const createAccount = asyncHandler(async (req, res) => {
     accountNumber,
     accountType,
     baseCurrency: baseCurrency || 'INR',
-    leverage: leverage || 100,
+    leverage: Number(leverage) || 100,
     mode: mode || TRADING_MODE.HYBRID,
     nickname,
   });

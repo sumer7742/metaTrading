@@ -131,10 +131,10 @@ export default function Orders() {
             <select
               value={selectedAccountId}
               onChange={(e) => { setSelectedAccountId(e.target.value); setPage(1); }}
-              className="bg-transparent text-white font-mono text-xs focus:outline-none"
+              className="bg-white text-text-primary font-mono text-xs focus:outline-none border border-border-subtle rounded px-1 py-0.5"
             >
               {accounts.map((a) => (
-                <option key={a._id} value={a._id} className="bg-bg-dark">
+                <option key={a._id} value={a._id}>
                   {a.accountNumber}
                 </option>
               ))}
@@ -149,18 +149,26 @@ export default function Orders() {
           {/* Filters toggle */}
           <button
             onClick={() => setFiltersOpen((o) => !o)}
-            className="btn-ghost flex items-center gap-1 text-sm"
+            className="btn-ghost flex items-center gap-1.5 text-sm"
           >
-            <span>▽</span> Filters
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+            </svg>
+            Filters
           </button>
 
           {/* Download */}
           <button
             onClick={downloadReport}
             disabled={!items.length}
-            className="border border-border-dark rounded px-3 py-1.5 text-sm text-white hover:bg-bg-hover disabled:opacity-40"
+            className="border border-border-dark rounded px-3 py-1.5 text-sm text-text-primary hover:bg-bg-hover disabled:opacity-40 inline-flex items-center gap-1.5"
           >
-            ⬇ Download Report
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            Download Report
           </button>
         </div>
       </div>
@@ -239,7 +247,7 @@ export default function Orders() {
                 <th className="text-right px-4 py-3 font-normal">P/L</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className={loading ? 'opacity-50 transition-opacity' : 'transition-opacity'}>
               {items.map((p) => {
                 const pnl = Number(p.realizedPnl || 0);
                 return (

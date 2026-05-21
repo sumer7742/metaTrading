@@ -723,6 +723,18 @@ export default function PriceChart({
   // more than this fraction — sub-threshold tick noise is absorbed so
   // the axis stays steady. 0.04 = 4 % feels close to TradingView.
   autoscaleHysteresis = 0.04,
+  // Trade-Settings driven props — defaults stay backwards-compatible.
+  showAlerts = true,      // 'Show on Chart > Price alerts' toggle (price-alert lines)
+  showSignals = false,    // 'Show on Chart > Signals' — RSI-derived buy/sell arrows
+  showHmr = false,        // 'Show on Chart > HMR periods' — high-momentum bars
+  showCalendar = false,   // 'Show on Chart > Economic calendar' — event markers
+  showPositions = true,   // header toggle state — drives the ON/OFF dot in status pill
+  showTpSl = true,        // header toggle state — drives TP/SL chip in status pill
+  showStopLimit = true,   // header toggle state — drives STP/LIM chip in status pill
+  positionsCount = 0,     // total positions on this symbol (for the chip badge)
+  ordersCount = 0,        // total pending orders on this symbol (for the chip badge)
+  calendarFilters = { high: true, medium: true, low: false, lowest: false },
+  timeZone = 'local',     // 'local' | 'utc' | 'gmt'
 }) {
   const containerRef = useRef(null);
   const rsiContainerRef = useRef(null);
@@ -768,6 +780,11 @@ export default function PriceChart({
   // a "HH:MM" tick (intraday) and a "DD Mon" tick (daily).
   const timeframeRef = useRef(timeframe);
   useEffect(() => { timeframeRef.current = timeframe; }, [timeframe]);
+  // Same ref pattern for the user's selected timezone — formatters read
+  // this on every call so axis labels update immediately when the user
+  // flips Settings > Trading > Time Zone.
+  const timeZoneRef = useRef(timeZone);
+  useEffect(() => { timeZoneRef.current = timeZone; }, [timeZone]);
 
   const [indicators, setIndicators] = useState(INDICATOR_DEFAULTS);
   const [candles, setCandles] = useState([]);
@@ -780,7 +797,112 @@ export default function PriceChart({
   // Drawing tools — vertical toolbar + chart-click handlers + persistence.
   // The hook attaches itself to the existing chart/series refs and does not
   // touch any other rendering logic, so it can be added / removed safely.
-  const drawingControls = useChartDrawings({ chartRef, candleSeriesRef, containerRef, symbol });
+  // ── Overlay markers driven by Settings (Signals / HMR / Calendar) ──
+  // Computed from `candles` so they re-derive whenever new bars arrive.
+  // Empty array when all overlays are off → no perf cost.
+  const externalMarkers = useMemo(() => {
+    if (!candles.length) return [];
+    const out = [];
+
+    // 1. Signals — RSI overbought (>70) / oversold (<30) crossovers.
+    if (showSignals) {
+      const closes = candles.map((c) => Number(c.close));
+      const rsiVals = rsi(closes, 14);
+      let prevR = null;
+      for (let i = 0; i < candles.length; i++) {
+        const r = rsiVals[i];
+        if (r == null) { prevR = r; continue; }
+        if (prevR != null) {
+          // Cross down through 30 → bullish reversal (BUY)
+          if (prevR <= 30 && r > 30) {
+            out.push({
+              time: candles[i].time, position: 'belowBar',
+              color: '#10B981', shape: 'arrowUp', text: 'BUY',
+            });
+          }
+          // Cross up through 70 → bearish reversal (SELL)
+          if (prevR >= 70 && r < 70) {
+            out.push({
+              time: candles[i].time, position: 'aboveBar',
+              color: '#EF4444', shape: 'arrowDown', text: 'SELL',
+            });
+          }
+        }
+        prevR = r;
+      }
+    }
+
+    // 2. HMR — High Momentum Reversal: candles where |close - open| / open
+    //    exceeds 1.5% AND magnitude beats the rolling 20-bar mean by >1.8×.
+    if (showHmr) {
+      const moves = candles.map((c) => Math.abs(Number(c.close) - Number(c.open)) / Math.max(Number(c.open), 1e-9));
+      let rollingSum = 0;
+      const N = 20;
+      for (let i = 0; i < candles.length; i++) {
+        rollingSum += moves[i];
+        if (i >= N) rollingSum -= moves[i - N];
+        if (i < N) continue;
+        const mean = rollingSum / N;
+        const m = moves[i];
+        if (m > 0.015 && m > mean * 1.8) {
+          const bullish = Number(candles[i].close) > Number(candles[i].open);
+          out.push({
+            time: candles[i].time,
+            position: bullish ? 'belowBar' : 'aboveBar',
+            color: bullish ? '#8B5CF6' : '#F59E0B',
+            shape: 'circle',
+            text: 'HMR',
+          });
+        }
+      }
+    }
+
+    // 3. Economic Calendar — events for the active symbol's currencies,
+    //    filtered by impact level. Anchored to the candle nearest the event.
+    if (showCalendar && instrument) {
+      // Lazy-require so the chart doesn't pull the calendar util on every load
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { getCalendarEvents } = require('../utils/economicCalendar');
+        const wantedImpacts = new Set();
+        if (calendarFilters.high)   wantedImpacts.add('high');
+        if (calendarFilters.medium) wantedImpacts.add('medium');
+        if (calendarFilters.low)    wantedImpacts.add('low');
+        if (calendarFilters.lowest) wantedImpacts.add('lowest');
+        const myCurrencies = new Set([instrument.baseCurrency, instrument.quoteCurrency].filter(Boolean));
+        const events = getCalendarEvents({ lookbackDays: 7, lookaheadDays: 7, max: 80 }) || [];
+        const firstT = Number(candles[0].time);
+        const lastT  = Number(candles[candles.length - 1].time);
+        for (const ev of events) {
+          if (!wantedImpacts.has(ev.impact)) continue;
+          if (myCurrencies.size && ev.currency && !myCurrencies.has(ev.currency)) continue;
+          const tSec = Math.floor(new Date(ev.date).getTime() / 1000);
+          if (!Number.isFinite(tSec)) continue;
+          // Only mark events that fall inside the loaded candle range.
+          if (tSec < firstT || tSec > lastT) continue;
+          // Snap to the nearest candle's time to avoid lightweight-charts
+          // rejecting a non-matching time key.
+          let nearest = candles[0].time;
+          let bestDiff = Math.abs(Number(candles[0].time) - tSec);
+          for (const c of candles) {
+            const d = Math.abs(Number(c.time) - tSec);
+            if (d < bestDiff) { bestDiff = d; nearest = c.time; }
+          }
+          const tint = ev.impact === 'high' ? '#DC2626' : ev.impact === 'medium' ? '#3B82F6' : '#9CA3AF';
+          out.push({
+            time: nearest,
+            position: 'aboveBar',
+            color: tint,
+            shape: 'square',
+            text: ev.code || 'EVT',
+          });
+        }
+      } catch (_) { /* calendar util not available */ }
+    }
+    return out;
+  }, [candles, showSignals, showHmr, showCalendar, instrument, calendarFilters.high, calendarFilters.medium, calendarFilters.low, calendarFilters.lowest]);
+
+  const drawingControls = useChartDrawings({ chartRef, candleSeriesRef, containerRef, symbol, externalMarkers });
 
   // ─── 1. Initialize chart (no main series yet — handled by chartType effect) ─
   useEffect(() => {
@@ -788,11 +910,16 @@ export default function PriceChart({
     // Use the container's actual rendered height so the chart fills the
     // available space; fall back to 460 px if measurement isn't ready yet.
     const initialHeight = containerRef.current.clientHeight || 460;
-    // Local-timezone formatters — lightweight-charts treats `time` as Unix
-    // seconds in UTC by default, so axis labels read UTC and a user in IST
-    // sees yesterday's date for an "early today UTC" bar. These formatters
-    // re-render the same timestamp using the browser's local timezone so
-    // the chart axis matches what the user expects from their clock.
+    // Time-zone aware formatters — honour the user's "Trading > Time Zone"
+    // setting (local/utc/gmt). lightweight-charts treats `time` as Unix
+    // seconds in UTC by default; we re-render through Intl.DateTimeFormat
+    // with the right timeZone option.
+    //   'local' → browser default (omit timeZone option)
+    //   'utc' / 'gmt' → 'UTC' (they're functionally equivalent for display)
+    const _tzOpt = () => {
+      const tz = timeZoneRef.current;
+      return (tz === 'utc' || tz === 'gmt') ? { timeZone: 'UTC' } : {};
+    };
     const _localTickFmt = (timeOrBusiness) => {
       const sec = typeof timeOrBusiness === 'number'
         ? timeOrBusiness
@@ -801,9 +928,9 @@ export default function PriceChart({
       const tf = timeframeRef.current;
       const isIntradayTf = tf === '1m' || tf === '5m' || tf === '15m' || tf === '1h' || tf === '4h';
       if (isIntradayTf) {
-        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+        return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false, ..._tzOpt() });
       }
-      return d.toLocaleDateString([], { day: '2-digit', month: 'short' });
+      return d.toLocaleDateString([], { day: '2-digit', month: 'short', ..._tzOpt() });
     };
     const _localCrosshairFmt = (timeOrBusiness) => {
       const sec = typeof timeOrBusiness === 'number'
@@ -811,6 +938,7 @@ export default function PriceChart({
         : Math.floor(Date.UTC(timeOrBusiness.year, timeOrBusiness.month - 1, timeOrBusiness.day) / 1000);
       return new Date(sec * 1000).toLocaleString([], {
         day: '2-digit', month: 'short', year: 'numeric',
+        ..._tzOpt(),
         hour: '2-digit', minute: '2-digit', hour12: false,
       });
     };
@@ -1618,6 +1746,24 @@ export default function PriceChart({
     }
 
     for (const p of symbolPositions) {
+      // Entry-price line — always drawn for every open position so the
+      // toggle has a visible effect even when SL/TP aren't set. Colored
+      // by side; label shows side + qty + live P&L vs current price.
+      if (p.entryPrice && Number(p.entryPrice) > 0) {
+        const isBuy = p.side === 'BUY';
+        const pnlNum = Number(p.unrealizedPnl || 0);
+        const pnlStr = Number.isFinite(pnlNum) && Math.abs(pnlNum) >= 0.005
+          ? ` · ${pnlNum >= 0 ? '+' : ''}${pnlNum.toFixed(2)}`
+          : '';
+        desired.set(`pos:${p._id}:entry`, {
+          price: Number(p.entryPrice),
+          color: isBuy ? '#16A34A' : '#DC2626',
+          lineWidth: 2,
+          lineStyle: 0, // solid
+          axisLabelVisible: true,
+          title: `${isBuy ? 'BUY' : 'SELL'} ${Number(p.quantity).toLocaleString('en-US', { maximumFractionDigits: 4 })}${pnlStr}`,
+        });
+      }
       if (p.stopLoss) {
         desired.set(`pos:${p._id}:sl`, {
           price: Number(p.stopLoss),
@@ -2046,6 +2192,19 @@ export default function PriceChart({
             )}
           </div>
         )}
+        {/* Show-on-Chart status pill — ALWAYS visible so the user can verify
+            instantly that a toggle click landed, even with no data. Each
+            chip = ON (filled color) or OFF (faded outline). Number badges
+            show how many items of that type exist on the current symbol. */}
+        <div className="pointer-events-none absolute top-1 right-2 z-10 flex items-center gap-1 px-2 py-1 rounded-md bg-white/90 backdrop-blur-sm border border-border-dark text-[9.5px] font-bold tracking-wide shadow-card">
+          <StatusChip on={showPositions}  label="POS"     count={positionsCount} colorOn="emerald" />
+          <StatusChip on={showTpSl}       label="TP/SL"                          colorOn="indigo"  />
+          <StatusChip on={showStopLimit}  label="STP/LIM" count={ordersCount}    colorOn="amber"   />
+          <StatusChip on={showAlerts}     label="ALERTS"                          colorOn="pink"    />
+          <StatusChip on={showSignals}    label="SIG"                             colorOn="blue"    />
+          <StatusChip on={showHmr}        label="HMR"                             colorOn="violet"  />
+          <StatusChip on={showCalendar}   label="CAL"                             colorOn="sky"     />
+        </div>
       </div>
 
       {/* RSI sub-panel */}
@@ -2108,6 +2267,35 @@ export default function PriceChart({
         </div>
       )}
     </div>
+  );
+}
+
+// Chart status pill chip — solid colored when ON, faded outline when OFF.
+// Optional count badge on the right (e.g. "POS 3").
+function StatusChip({ on, label, count, colorOn = 'emerald' }) {
+  const onMap = {
+    emerald: 'bg-emerald-500 text-white border-emerald-600',
+    indigo:  'bg-indigo-500  text-white border-indigo-600',
+    amber:   'bg-amber-500   text-white border-amber-600',
+    pink:    'bg-pink-500    text-white border-pink-600',
+    blue:    'bg-blue-500    text-white border-blue-600',
+    violet:  'bg-violet-500  text-white border-violet-600',
+    sky:     'bg-sky-500     text-white border-sky-600',
+  };
+  return (
+    <span
+      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border transition-all ${
+        on
+          ? (onMap[colorOn] || onMap.emerald)
+          : 'bg-transparent text-text-muted/60 border-border-subtle'
+      }`}
+      title={`${label} — ${on ? 'ON' : 'OFF'}${count ? ` · ${count}` : ''}`}
+    >
+      <span className="leading-none">{label}</span>
+      {on && count > 0 && (
+        <span className="leading-none text-[9px] px-1 rounded bg-white/25">{count}</span>
+      )}
+    </span>
   );
 }
 

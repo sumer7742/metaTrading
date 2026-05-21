@@ -15,6 +15,16 @@ router.get('/users/:id', c.getUser);
 router.put('/users/:id/status', c.updateUserStatus);
 router.post('/users/:id/kyc-review', c.reviewKyc);
 router.post('/users/:id/balance-adjustment', c.adjustBalance);
+router.post('/users/:id/affiliate-bonus', c.creditAffiliateBonus);
+router.post('/users/:id/set-referrer', c.setReferrer);
+router.get('/users/:id/referral-diagnostic', c.referralDiagnostic);
+
+// Leverage management (admin → user override + audit)
+router.get   ('/users/:id/leverage',         c.getLeverage);
+router.put   ('/users/:id/leverage',         c.setLeverage);
+router.delete('/users/:id/leverage',         c.clearLeverage);
+router.get   ('/users/:id/leverage/history', c.getLeverageHistory);
+router.post  ('/leverage/bulk',              c.bulkSetLeverage);
 
 router.get('/withdrawals', c.listWithdrawals);
 router.post('/withdrawals/:id/approve', c.approveWithdrawal);

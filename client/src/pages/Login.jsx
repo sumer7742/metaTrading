@@ -2,6 +2,9 @@ import { useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { useAuthStore, errorMessage } from '../store/auth';
+import BrandMark from '../components/BrandMark';
+import PasswordInput from '../components/PasswordInput';
+import { v, sanitize } from '../utils/validation';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -11,16 +14,45 @@ export default function Login() {
   const [twoFactorMode, setTwoFactorMode] = useState('totp');
   const [showRecovery, setShowRecovery] = useState(false);
   const [loading, setLoading] = useState(false);
+  // Field-level errors keyed by field name. Cleared as the user types
+  // a valid value, set on blur / submit.
+  const [errors, setErrors] = useState({});
+  const [touched, setTouched] = useState({});
+
   const { login } = useAuthStore();
   const navigate = useNavigate();
   const location = useLocation();
   const from = location.state?.from?.pathname || '/explore';
 
+  const validate = () => {
+    const next = {
+      email:    v.email(email),
+      password: v.password(password),
+    };
+    if (show2FA) {
+      next.twoFactor = twoFactorMode === 'backup'
+        ? v.backupCode(twoFactorCode)
+        : v.totp(twoFactorCode);
+    }
+    const cleaned = Object.fromEntries(Object.entries(next).filter(([_, val]) => val));
+    setErrors(cleaned);
+    return Object.keys(cleaned).length === 0;
+  };
+
+  const onBlur = (field) => () => {
+    setTouched((t) => ({ ...t, [field]: true }));
+    validate();
+  };
+
+  const showError = (field) => touched[field] && errors[field];
+
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setTouched({ email: true, password: true, twoFactor: show2FA });
+    if (!validate()) return;
     setLoading(true);
     try {
-      await login(email, password, twoFactorCode || undefined);
+      await login(email.trim().toLowerCase(), password, twoFactorCode || undefined);
       toast.success('Welcome back');
       navigate(from, { replace: true });
     } catch (err) {
@@ -40,42 +72,52 @@ export default function Login() {
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="card p-8 w-full max-w-md">
         <div className="text-center mb-7">
-          <div className="inline-flex items-center gap-2.5 text-2xl font-extrabold text-white tracking-tight">
-            <span
-              className="w-11 h-11 rounded-md flex items-center justify-center font-extrabold text-bg-dark text-xl"
-              style={{ background: 'linear-gradient(135deg, #FFE74D 0%, #FCD535 100%)' }}
-            >
-              T
-            </span>
-            <span>TradePro</span>
-          </div>
+          <BrandMark />
           <p className="text-sm text-text-secondary mt-3">Sign in to your trading account</p>
         </div>
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} noValidate className="space-y-4">
+          {/* Email — strict format, auto-lowercase, trimmed */}
           <div>
             <label className="label">Email</label>
             <input
               type="email"
-              className="input"
+              className={`input ${showError('email') ? 'border-bear focus:border-bear' : ''}`}
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(e) => setEmail(sanitize.email(e.target.value))}
+              onBlur={onBlur('email')}
               required
+              autoFocus
+              autoComplete="email"
+              inputMode="email"
+              maxLength={254}
+              spellCheck={false}
               placeholder="trader@tradingplatform.local"
+              aria-invalid={!!showError('email')}
+              aria-describedby="email-err"
             />
+            <FieldError id="email-err" msg={showError('email')} />
           </div>
+
+          {/* Password */}
           <div>
             <label className="label">Password</label>
-            <input
-              type="password"
-              className="input"
+            <PasswordInput
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              onBlur={onBlur('password')}
               required
+              minLength={8}
+              maxLength={128}
+              autoComplete="current-password"
+              aria-invalid={!!showError('password')}
             />
+            <FieldError msg={showError('password')} />
             <div className="text-right mt-1">
               <Link to="/forgot-password" className="text-xs text-teal-accent hover:underline">Forgot password?</Link>
             </div>
           </div>
+
+          {/* 2FA — strict format depending on mode */}
           {show2FA && (
             <div>
               <label className="label">
@@ -83,15 +125,24 @@ export default function Login() {
               </label>
               <input
                 type="text"
-                className="input font-mono"
+                className={`input font-mono ${showError('twoFactor') ? 'border-bear focus:border-bear' : ''}`}
                 value={twoFactorCode}
-                onChange={(e) => setTwoFactorCode(e.target.value)}
-                placeholder={twoFactorMode === 'backup' ? 'XXXX-XXXX' : '6-digit code'}
+                onChange={(e) => setTwoFactorCode(
+                  twoFactorMode === 'backup'
+                    ? sanitize.backupCode(e.target.value)
+                    : sanitize.totp(e.target.value)
+                )}
+                onBlur={onBlur('twoFactor')}
+                placeholder={twoFactorMode === 'backup' ? 'XXXX-XXXX' : '000000'}
                 maxLength={twoFactorMode === 'backup' ? 9 : 6}
+                pattern={twoFactorMode === 'backup' ? '[A-Z0-9]{4}-?[A-Z0-9]{4}' : '[0-9]{6}'}
                 autoComplete="one-time-code"
                 inputMode={twoFactorMode === 'backup' ? 'text' : 'numeric'}
+                spellCheck={false}
                 required
+                aria-invalid={!!showError('twoFactor')}
               />
+              <FieldError msg={showError('twoFactor')} />
               <div className="text-xs text-gray-500 mt-1">
                 {twoFactorMode === 'backup'
                   ? 'Each backup code can only be used once.'
@@ -99,7 +150,7 @@ export default function Login() {
               </div>
               <button
                 type="button"
-                onClick={() => setShowRecovery((v) => !v)}
+                onClick={() => setShowRecovery((vv) => !vv)}
                 className="mt-3 text-xs text-teal-accent hover:underline"
               >
                 {showRecovery ? 'Hide options' : 'Try another way'}
@@ -111,6 +162,7 @@ export default function Login() {
                     onClick={() => {
                       setTwoFactorMode(twoFactorMode === 'backup' ? 'totp' : 'backup');
                       setTwoFactorCode('');
+                      setErrors((errs) => ({ ...errs, twoFactor: null }));
                     }}
                     className="block w-full text-left text-gray-300 hover:text-white"
                   >
@@ -139,6 +191,7 @@ export default function Login() {
               )}
             </div>
           )}
+
           <button type="submit" disabled={loading} className="btn-primary w-full">
             {loading ? 'Signing in...' : 'Sign In'}
           </button>
@@ -153,6 +206,26 @@ export default function Login() {
           Demo: trader@tradingplatform.local / Trader@12345
         </div>
       </div>
+    </div>
+  );
+}
+
+// Inline field-level error pill — kept its own component because three
+// fields need the same treatment.
+function FieldError({ id, msg }) {
+  if (!msg) return null;
+  return (
+    <div
+      id={id}
+      className="mt-1 text-[11px] text-bear font-semibold flex items-center gap-1"
+      role="alert"
+    >
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="10" />
+        <line x1="12" y1="8" x2="12" y2="12" />
+        <line x1="12" y1="16" x2="12.01" y2="16" />
+      </svg>
+      {msg}
     </div>
   );
 }

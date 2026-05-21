@@ -1,12 +1,25 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { useAuthStore } from '../store/auth';
 import PageHero from '../components/PageHero';
 
+const VALID_TABS = new Set(['profile', 'kyc', 'security', 'devices', 'whitelist']);
+
 export default function Profile() {
   const { user, refreshUser } = useAuthStore();
-  const [tab, setTab] = useState('profile');
+  const [params, setParams] = useSearchParams();
+  // Initial tab comes from ?tab=... so refresh / direct links land
+  // on the same view the user was on.
+  const initial = params.get('tab');
+  const [tab, _setTab] = useState(VALID_TABS.has(initial) ? initial : 'profile');
+  const setTab = (next) => {
+    _setTab(next);
+    const np = new URLSearchParams(params);
+    if (next === 'profile') np.delete('tab'); else np.set('tab', next);
+    setParams(np, { replace: true });
+  };
 
   return (
     <div className="space-y-6 max-w-[1100px]">
@@ -53,6 +66,14 @@ function ProfileTab({ user, onUpdate }) {
     phone: user?.phone || '',
   });
   const [saving, setSaving] = useState(false);
+  // Resend-verification cooldown: prevents spam-clicks. After a successful
+  // resend the button is disabled for 30 s + counts down visibly.
+  const [resendCooldown, setResendCooldown] = useState(0);
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const t = setInterval(() => setResendCooldown((s) => (s > 0 ? s - 1 : 0)), 1000);
+    return () => clearInterval(t);
+  }, [resendCooldown]);
 
   const save = async () => {
     setSaving(true);
@@ -65,8 +86,12 @@ function ProfileTab({ user, onUpdate }) {
   };
 
   const resendVerify = async () => {
-    try { await api.post('/auth/resend-verification'); toast.success('Verification email sent'); }
-    catch (e) { toast.error(errorMessage(e)); }
+    if (resendCooldown > 0) return;
+    try {
+      await api.post('/auth/resend-verification');
+      toast.success('Verification email sent');
+      setResendCooldown(30);
+    } catch (e) { toast.error(errorMessage(e)); }
   };
 
   return (
@@ -78,9 +103,49 @@ function ProfileTab({ user, onUpdate }) {
             <div className="text-white font-medium">{user?.email}</div>
           </div>
           {user?.isEmailVerified ? (
-            <span className="px-3 py-1 rounded-full bg-bull/15 text-bull text-xs font-semibold">✓ Verified</span>
+            <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-bull/15 text-bull text-xs font-semibold">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+              Verified
+            </span>
           ) : (
-            <button onClick={resendVerify} className="btn-secondary text-sm">Resend verification</button>
+            <button
+              onClick={resendVerify}
+              disabled={resendCooldown > 0}
+              className="btn-secondary text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {resendCooldown > 0 ? `Resend in ${resendCooldown}s` : 'Resend verification'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Referral attribution — shows who referred this user (or that
+          they signed up directly). Builds trust by making the affiliate
+          link visible after the fact. */}
+      <div className="card p-6">
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <div className="text-xs uppercase text-gray-500">Referred by</div>
+            {user?.referredBy ? (
+              <div className="text-white font-medium mt-0.5">
+                {(user.referredBy.firstName || user.referredBy.lastName)
+                  ? `${user.referredBy.firstName || ''} ${user.referredBy.lastName || ''}`.trim()
+                  : (user.referredBy.email || 'Anonymous referrer')}
+                {user.referredBy.referralCode && (
+                  <span className="ml-2 text-[11px] font-mono text-text-muted">
+                    (code <span className="text-text-secondary font-semibold">{user.referredBy.referralCode}</span>)
+                  </span>
+                )}
+              </div>
+            ) : (
+              <div className="text-text-secondary mt-0.5 text-sm">Signed up directly · no referrer</div>
+            )}
+          </div>
+          {user?.referralCode && (
+            <div className="text-right">
+              <div className="text-xs uppercase text-gray-500">Your code</div>
+              <div className="font-mono text-teal-accent font-bold mt-0.5 text-sm">{user.referralCode}</div>
+            </div>
           )}
         </div>
       </div>

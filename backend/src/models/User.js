@@ -11,7 +11,12 @@ const userSchema = new mongoose.Schema(
       trim: true,
       index: true,
     },
-    phone: { type: String, sparse: true, index: true },
+    // Stored as the normalised E.164-ish form ("+919876543210"). Sparse
+    // unique so multiple users can leave it blank, but no two filled-in
+    // phones can collide. App-level check in authController catches it
+    // earlier with a friendlier error; this index is the safety net for
+    // race conditions / direct DB writes.
+    phone: { type: String, sparse: true, unique: true, index: true },
     passwordHash: { type: String, required: true },
     firstName: { type: String, default: '' },
     lastName: { type: String, default: '' },
@@ -64,6 +69,22 @@ const userSchema = new mongoose.Schema(
     // Referrals
     referralCode: { type: String, unique: true, sparse: true },
     referredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+
+    // ─── Admin-controlled leverage override ─────────────────────────
+    // The effective leverage cap for this user follows this precedence:
+    //   1. customLeverage (set by admin) — overrides everything below
+    //   2. The user's active plan's `limits.defaultLeverage`
+    //   3. Hardcoded fallback (100×)
+    // When admin clears the override (customLeverage = null), the
+    // leverage automatically returns to the plan default.
+    customLeverage: { type: Number, default: null, min: 1, max: 1000 },
+    leverageOverride: {
+      by:     { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      at:     { type: Date, default: null },
+      reason: { type: String, default: null },
+      // Optional auto-expiry — for temporary overrides. Null = permanent.
+      expiresAt: { type: Date, default: null },
+    },
 
     // Sessions
     refreshTokens: [{ token: String, deviceInfo: String, createdAt: { type: Date, default: Date.now } }],

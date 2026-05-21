@@ -356,9 +356,9 @@ const seed = async () => {
       monthlyPrice: '0',
       yearlyPrice: '0',
       sortOrder: 1,
-      limits: { maxAccounts: 2, maxLeverageOverride: null, withdrawalDailyLimit: null },
+      limits: { maxAccounts: 2, defaultLeverage: 100, maxLeverageOverride: null, withdrawalDailyLimit: null },
       features: { feeDiscountPercent: '0', apiAccess: false, prioritySupport: false, copyTradingEnabled: false, affiliateBonus: '0' },
-      highlights: ['2 trading accounts', 'All instruments', 'Standard support'],
+      highlights: ['2 trading accounts', 'Up to 1:100 leverage', 'All instruments', 'Standard support'],
     },
     {
       code: 'PREMIUM',
@@ -368,9 +368,9 @@ const seed = async () => {
       yearlyPrice: '299.99',
       sortOrder: 2,
       badge: 'Most Popular',
-      limits: { maxAccounts: 5, maxLeverageOverride: null, withdrawalDailyLimit: null },
-      features: { feeDiscountPercent: '0.20', apiAccess: true, prioritySupport: true, copyTradingEnabled: true, affiliateBonus: '0.05' },
-      highlights: ['5 trading accounts', '20% fee discount', 'API access', 'Priority support', 'Copy trading'],
+      limits: { maxAccounts: 5, defaultLeverage: 200, maxLeverageOverride: null, withdrawalDailyLimit: null },
+      features: { feeDiscountPercent: '0.20', apiAccess: true, prioritySupport: true, copyTradingEnabled: false, affiliateBonus: '0.05' },
+      highlights: ['5 trading accounts', 'Up to 1:200 leverage', '20% fee discount', 'API access', 'Priority support'],
     },
     {
       code: 'VIP',
@@ -379,9 +379,9 @@ const seed = async () => {
       monthlyPrice: '99.99',
       yearlyPrice: '999.99',
       sortOrder: 3,
-      limits: { maxAccounts: 10, maxLeverageOverride: 500, withdrawalDailyLimit: null },
-      features: { feeDiscountPercent: '0.40', apiAccess: true, prioritySupport: true, copyTradingEnabled: true, affiliateBonus: '0.10', customSupport: true },
-      highlights: ['10 trading accounts', '40% fee discount', 'Up to 1:500 leverage', 'Dedicated account manager', 'White-glove onboarding'],
+      limits: { maxAccounts: 10, defaultLeverage: 500, maxLeverageOverride: 500, withdrawalDailyLimit: null },
+      features: { feeDiscountPercent: '0.40', apiAccess: true, prioritySupport: true, copyTradingEnabled: false, affiliateBonus: '0.10', customSupport: true },
+      highlights: ['10 trading accounts', 'Up to 1:500 leverage', '40% fee discount', 'Dedicated account manager', 'White-glove onboarding'],
     },
   ];
   for (const p of defaultPlans) {
@@ -389,6 +389,19 @@ const seed = async () => {
     if (!existing) {
       await Plan.create(p);
       console.log(`✓ Plan created: ${p.code} ($${p.monthlyPrice}/mo)`);
+    } else {
+      // Always sync `features` + `highlights` to the canonical seed —
+      // these are content, not user-tweakable pricing. Keeps the
+      // running app aligned with the codebase even when admins have
+      // already created plans manually (e.g. "Copy trading" removal
+      // rolls out automatically on next deploy).
+      existing.features   = p.features;
+      existing.highlights = p.highlights;
+      // Pick up new badges / descriptions on re-seed too.
+      if (p.badge !== undefined)       existing.badge = p.badge;
+      if (p.description !== undefined) existing.description = p.description;
+      await existing.save();
+      console.log(`✓ Plan synced:  ${p.code}`);
     }
   }
 

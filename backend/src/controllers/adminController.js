@@ -93,6 +93,10 @@ const listUsers = asyncHandler(async (req, res) => {
   const [users, total] = await Promise.all([
     User.find(filter)
       .select('-passwordHash -twoFactorSecret -refreshTokens')
+      // Surface the referrer's basic identity so the user list can
+      // show "Referred by John D." inline (admin needs to see referral
+      // attribution at a glance, not just on the detail page).
+      .populate('referredBy', 'firstName lastName email referralCode')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(Number(limit))
@@ -103,11 +107,36 @@ const listUsers = asyncHandler(async (req, res) => {
 });
 
 const getUser = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.params.id).select('-passwordHash -twoFactorSecret -refreshTokens');
+  const user = await User.findById(req.params.id)
+    .select('-passwordHash -twoFactorSecret -refreshTokens')
+    .populate('referredBy', 'firstName lastName email referralCode');
   if (!user) throw new AppError('User not found', 404);
   const accounts = await TradingAccount.find({ userId: user._id }).lean();
   const wallets = await Wallet.find({ userId: user._id }).lean();
-  sendSuccess(res, { user, accounts, wallets });
+  // Direct referrals (level-1 only) — anyone who signed up with this
+  // user's code. Surfaces the affiliate fan-out for compliance review.
+  const referees = await User.find({ referredBy: user._id })
+    .select('firstName lastName email createdAt kycStatus isActive')
+    .sort({ createdAt: -1 })
+    .limit(50)
+    .lean();
+
+  // Bonus quota: one bonus per referee, lifetime. The FE uses this to
+  // disable the "Add bonus" button when all slots are consumed and to
+  // show admin how many are left ("2 of 5 available").
+  const { Commission } = require('../models/Compliance');
+  const bonusesCredited = await Commission.countDocuments({
+    referrerId: user._id,
+    sourceType: 'ADJUSTMENT',
+    status: { $in: ['PENDING', 'PAID'] },
+  });
+  const bonusQuota = {
+    refereeCount: referees.length,
+    credited: bonusesCredited,
+    available: Math.max(0, referees.length - bonusesCredited),
+  };
+
+  sendSuccess(res, { user, accounts, wallets, referees, bonusQuota });
 });
 
 const updateUserStatus = asyncHandler(async (req, res) => {
@@ -176,6 +205,205 @@ const adjustBalance = asyncHandler(async (req, res) => {
       });
   await logAction(req, 'BALANCE_ADJUSTMENT', { type: 'WALLET', id: wallet._id }, { amount: amtNum, reason });
   sendSuccess(res, wallet);
+});
+
+// Manually credit an affiliate / referral bonus to a user. Creates a
+// Commission row (visible on the user's Affiliate page) AND credits the
+// wallet immediately. Different from `adjustBalance` because:
+//  • Audit trail labels it as affiliate income, not a generic adjustment
+//  • Shows up in the user's commission history with status PAID
+//  • Cannot go negative (bonuses are positive-only)
+const creditAffiliateBonus = asyncHandler(async (req, res) => {
+  const { amount, currency, note } = req.body;
+  const amtNum = Number(amount);
+  if (!Number.isFinite(amtNum) || amtNum <= 0) {
+    throw new AppError('Amount must be a positive number', 400);
+  }
+  const affiliateService = require('../services/affiliateService');
+  let result;
+  try {
+    result = await affiliateService.creditManual({
+      userId:   req.params.id,
+      amount:   amtNum,
+      currency: currency || undefined,
+      note:     note || undefined,
+      adminId:  req.userId,
+    });
+  } catch (e) {
+    throw new AppError(e.message, 400);
+  }
+  await logAction(
+    req,
+    'AFFILIATE_BONUS_CREDITED',
+    { type: 'USER', id: req.params.id },
+    { amount: amtNum, currency: result.currency, commissionId: result.commission._id, note }
+  );
+
+  // The wallet credit emits on the user's existing 'wallet' WS channel,
+  // and the Affiliate page polls/lists commissions — so no extra
+  // notification plumbing is needed. The user sees:
+  //   • +amount on their Wallet balance + transaction ledger row
+  //   • A new PAID commission row on the Affiliate page
+  sendSuccess(res, result.commission);
+});
+
+// Manually fix a user's referral attribution (e.g. for chains broken by
+// the historical case-sensitive bug, or for KYC-driven corrections).
+// Accepts a referral code OR a referrer userId. Pass `null`/empty to
+// clear the attribution.
+const setReferrer = asyncHandler(async (req, res) => {
+  const { referralCode, referrerId } = req.body;
+  const target = await User.findById(req.params.id);
+  if (!target) throw new AppError('User not found', 404);
+
+  let newReferrer = null;
+  if (referralCode) {
+    const code = String(referralCode).trim().toUpperCase();
+    newReferrer = await User.findOne({ referralCode: code }).select('_id');
+    if (!newReferrer) throw new AppError(`No user has referral code ${code}`, 404);
+  } else if (referrerId) {
+    newReferrer = await User.findById(referrerId).select('_id');
+    if (!newReferrer) throw new AppError('Referrer not found', 404);
+  }
+
+  // Prevent self-referral loops.
+  if (newReferrer && String(newReferrer._id) === String(target._id)) {
+    throw new AppError('A user cannot refer themselves', 400);
+  }
+
+  const prev = target.referredBy;
+  target.referredBy = newReferrer ? newReferrer._id : null;
+  await target.save();
+  await logAction(
+    req,
+    'USER_REFERRER_UPDATED',
+    { type: 'USER', id: target._id },
+    { previous: prev, next: target.referredBy }
+  );
+  sendSuccess(res, { referredBy: target.referredBy });
+});
+
+// ─── Leverage management ─────────────────────────────────────────────
+// Admin can read, override, clear, bulk-update, and audit a user's
+// effective leverage. The service layer enforces precedence
+// (admin → plan default) and persists every change to LeverageLog.
+const getLeverage = asyncHandler(async (req, res) => {
+  const leverageService = require('../services/leverageService');
+  const state = await leverageService.getEffective(req.params.id);
+  sendSuccess(res, state);
+});
+
+const setLeverage = asyncHandler(async (req, res) => {
+  const { value, reason, expiresAt } = req.body;
+  const lev = Number(value);
+  if (!Number.isFinite(lev) || lev < 1 || lev > 1000) {
+    throw new AppError('value must be between 1 and 1000', 400);
+  }
+  const leverageService = require('../services/leverageService');
+  let next;
+  try {
+    next = await leverageService.setOverride({
+      userId:    req.params.id,
+      value:     lev,
+      adminId:   req.userId,
+      reason,
+      expiresAt: expiresAt || null,
+    });
+  } catch (e) {
+    throw new AppError(e.message, 400);
+  }
+  await logAction(req, 'LEVERAGE_OVERRIDE_SET', { type: 'USER', id: req.params.id }, {
+    value: lev, reason,
+  });
+  // Real-time broadcast — push fresh state to the user's WS channel so
+  // their open trade terminal updates the cap without a refresh.
+  _broadcastLeverage(req.params.id, next);
+  sendSuccess(res, next);
+});
+
+const clearLeverage = asyncHandler(async (req, res) => {
+  const { reason } = req.body;
+  const leverageService = require('../services/leverageService');
+  const next = await leverageService.clearOverride({
+    userId:  req.params.id,
+    adminId: req.userId,
+    reason,
+  });
+  await logAction(req, 'LEVERAGE_OVERRIDE_CLEARED', { type: 'USER', id: req.params.id }, { reason });
+  _broadcastLeverage(req.params.id, next);
+  sendSuccess(res, next);
+});
+
+const bulkSetLeverage = asyncHandler(async (req, res) => {
+  const { userIds, value, reason } = req.body;
+  const lev = Number(value);
+  if (!Array.isArray(userIds) || userIds.length === 0) {
+    throw new AppError('userIds[] is required', 400);
+  }
+  if (!Number.isFinite(lev) || lev < 1 || lev > 1000) {
+    throw new AppError('value must be between 1 and 1000', 400);
+  }
+  const leverageService = require('../services/leverageService');
+  const result = await leverageService.bulkSetOverride({
+    userIds, value: lev, adminId: req.userId, reason,
+  });
+  await logAction(req, 'LEVERAGE_BULK_UPDATE', { type: 'SYSTEM', id: null }, {
+    batchId: result.batchId, count: result.succeeded, value: lev, reason,
+  });
+  // Broadcast to each successfully-updated user.
+  for (const r of result.results) {
+    if (!r.ok) continue;
+    const leverageService = require('../services/leverageService');
+    const fresh = await leverageService.getEffective(r.userId).catch(() => null);
+    if (fresh) _broadcastLeverage(r.userId, fresh);
+  }
+  sendSuccess(res, result);
+});
+
+const getLeverageHistory = asyncHandler(async (req, res) => {
+  const leverageService = require('../services/leverageService');
+  const logs = await leverageService.getHistory(req.params.id, { limit: 100 });
+  sendSuccess(res, logs);
+});
+
+// Helper — publish leverage update on the user's WS channel.
+// FE Trade page subscribes to `user:leverage:<id>` and re-bounds the
+// OrderForm slider the moment the message arrives — no refresh needed.
+function _broadcastLeverage(userId, state) {
+  try {
+    const wsServer = require('../websocket/server');
+    if (wsServer && typeof wsServer.notifyUser === 'function') {
+      wsServer.notifyUser(userId, 'leverage', state);
+    }
+  } catch (_) { /* WS not available — non-fatal */ }
+}
+
+// Diagnostic — dump everything we know about a user's referral state in
+// one shot, so admin can see at a glance whether signups are linking
+// properly (`referredBy` set + referees list populated). Helps debug
+// "I referred someone but they're not showing up" without grepping logs.
+const referralDiagnostic = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.params.id)
+    .select('email firstName lastName referralCode referredBy createdAt isActive')
+    .populate('referredBy', 'email firstName lastName referralCode')
+    .lean();
+  if (!user) throw new AppError('User not found', 404);
+  const referees = await User.find({ referredBy: user._id })
+    .select('email firstName lastName referralCode createdAt isActive kycStatus')
+    .sort({ createdAt: -1 })
+    .lean();
+  // Walk DOWN — find users referred by this user's referees (L2 indirect).
+  const refereeIds = referees.map((r) => r._id);
+  const indirectReferees = refereeIds.length
+    ? await User.find({ referredBy: { $in: refereeIds } })
+        .select('email firstName lastName referralCode referredBy createdAt')
+        .lean()
+    : [];
+  sendSuccess(res, {
+    user,
+    direct: { count: referees.length, list: referees },
+    indirect: { count: indirectReferees.length, list: indirectReferees },
+  });
 });
 
 // WITHDRAWALS
@@ -617,6 +845,14 @@ module.exports = {
   updateUserStatus,
   reviewKyc,
   adjustBalance,
+  creditAffiliateBonus,
+  setReferrer,
+  referralDiagnostic,
+  getLeverage,
+  setLeverage,
+  clearLeverage,
+  bulkSetLeverage,
+  getLeverageHistory,
   listWithdrawals,
   approveWithdrawal,
   rejectWithdrawal,

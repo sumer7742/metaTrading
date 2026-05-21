@@ -83,6 +83,11 @@ const subscribe = async ({ userId, planCode, billingCycle = 'MONTHLY', paymentRe
   if (billingCycle === 'MONTHLY') expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
   else if (billingCycle === 'YEARLY') expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
 
+  // Capture the previous plan so leverage audit row can show
+  // "BASIC → VIP" in the history.
+  const prevSub = await Subscription.findOne({ userId }).lean();
+  const beforePlanCode = prevSub?.planCode || 'FREE';
+
   const update = {
     planId: plan._id,
     planCode: plan.code,
@@ -97,6 +102,26 @@ const subscribe = async ({ userId, planCode, billingCycle = 'MONTHLY', paymentRe
 
   const sub = await Subscription.findOneAndUpdate({ userId }, update, { upsert: true, new: true });
   invalidateCache(userId);
+
+  // Plan change can shift the user's effective leverage (if they have
+  // no admin override). Notify the leverage service so it can record
+  // the transition AND push the new cap to the user's open WS sessions.
+  if (beforePlanCode !== plan.code) {
+    try {
+      const leverageService = require('./leverageService');
+      await leverageService.onPlanChange({
+        userId,
+        beforePlanCode,
+        afterPlanCode: plan.code,
+      });
+      const fresh = await leverageService.getEffective(userId);
+      try {
+        const wsServer = require('../websocket/server');
+        wsServer.notifyUser(userId, 'leverage', fresh);
+      } catch (_) { /* WS optional */ }
+    } catch (_) { /* leverage hook is non-fatal — sub still succeeds */ }
+  }
+
   return sub;
 };
 

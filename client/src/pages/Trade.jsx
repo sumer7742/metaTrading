@@ -14,30 +14,8 @@ import { Link } from 'react-router-dom';
 import { recordRecentlyViewed } from '../hooks/useRecentlyViewed';
 import AssetIcon from '../components/AssetIcon';
 import TradeSettingsPanel from '../components/settings/TradeSettingsPanel';
+import { useTradeSettings } from '../store/tradeSettings';
 import { getMarketSession } from '../utils/marketSession';
-
-// Drawing-tools rail — the icon row that sits to the left of the chart.
-// Selection state is tracked locally so the rail feels alive even though
-// the underlying lightweight-charts drawing primitives aren't wired yet.
-const ToolIcon = ({ d, ...p }) => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...p}>
-    {Array.isArray(d) ? d.map((path, i) => <path key={i} d={path} />) : <path d={d} />}
-  </svg>
-);
-const DRAW_TOOLS = [
-  { key: 'cursor',  label: 'Cursor',         icon: <ToolIcon d="M3 3l7 17 2-8 8-2z" /> },
-  { key: 'cross',   label: 'Crosshair',      icon: <ToolIcon d={['M12 2v20', 'M2 12h20']} /> },
-  { key: 'trend',   label: 'Trend line',     icon: <ToolIcon d="M4 20L20 4" /> },
-  { key: 'hline',   label: 'Horizontal',     icon: <ToolIcon d="M3 12h18" /> },
-  { key: 'vline',   label: 'Vertical',       icon: <ToolIcon d="M12 3v18" /> },
-  { key: 'fib',     label: 'Fibonacci',      icon: <ToolIcon d={['M3 5h18', 'M3 9h18', 'M3 13h18', 'M3 17h18']} /> },
-  { key: 'rect',    label: 'Rectangle',      icon: <ToolIcon d="M4 4h16v16H4z" /> },
-  { key: 'ellipse', label: 'Ellipse',        icon: <ToolIcon d="M12 5c5 0 9 3 9 7s-4 7-9 7-9-3-9-7 4-7 9-7z" /> },
-  { key: 'text',    label: 'Text',           icon: <ToolIcon d={['M5 5h14', 'M12 5v14']} /> },
-  { key: 'ruler',   label: 'Measure',        icon: <ToolIcon d={['M3 21L21 3', 'M9 15l-2 2', 'M13 11l-2 2', 'M17 7l-2 2']} /> },
-  { key: 'magnet',  label: 'Magnet',         icon: <ToolIcon d={['M5 9V4h4v8M15 4h4v5', 'M5 12a7 7 0 0 0 14 0']} /> },
-  { key: 'eraser',  label: 'Clear drawings', icon: <ToolIcon d={['M20 20H7L3 16l9-9 9 9z', 'M14 14L9 9']} /> },
-];
 
 export default function Trade() {
   const [params, setParams] = useSearchParams();
@@ -63,6 +41,16 @@ export default function Trade() {
   // Map of symbol -> latest live price (for ALL positions, not just selected chart)
   const [priceMap, setPriceMap] = useState({});
   const [livePrice, setLivePrice] = useState(null);
+  // Fine-grained Zustand selectors — each slice gets its own subscription
+  // so the chart re-renders the instant a toggle flips, without depending
+  // on top-level state reference equality.
+  const showOnChart      = useTradeSettings((s) => s.showOnChart);
+  const calendarFilters  = useTradeSettings((s) => s.calendarFilters);
+  const tradingPrefs     = useTradeSettings((s) => s.trading);
+  const setTradeSetting  = useTradeSettings((s) => s.set);
+  // Legacy alias — kept so existing references downstream still compile.
+  // (Re-built every render from the slices above, so reactivity is preserved.)
+  const tradeSettings = { showOnChart, calendarFilters, trading: tradingPrefs };
   // Captures the rich 24h fields from `ticker:<symbol>` WS frames (Binance
   // 24hrTicker) so panels like Performance + the OrderForm price strip
   // see fresh change24h / dayHigh / dayLow / volume / bid / ask even when
@@ -120,6 +108,10 @@ export default function Trade() {
     params.get('view') === 'terminal' ? 'fullscreen' : 'normal'
   );
   const [showInstruments, setShowInstruments] = useState(true);
+  // Whether the entire right sidebar (icon strip + content panel) is on
+  // screen. When `false`, we render a thin reopen tab on the right edge
+  // instead — drawer-style hide/show.
+  const [showRightSidebar, setShowRightSidebar] = useState(true);
   const [showOrderPanel, setShowOrderPanel] = useState(true);
   // Active panel tab in the left mini-sidebar — TradingView-style icon
   // strip on the far edge that switches what content the 280px panel
@@ -151,7 +143,6 @@ export default function Trade() {
   useEffect(() => {
     if (symbol) recordRecentlyViewed(symbol);
   }, [symbol]);
-  const [activeDrawTool, setActiveDrawTool] = useState('cursor');
   // Order side (BUY/SELL) is owned by the chart-top quick-trade chip so
   // the chip and the order form stay in sync.
   const [orderSide, setOrderSide] = useState('BUY');
@@ -166,6 +157,22 @@ export default function Trade() {
   // it doesn't reappear at a stale location.
   const [floatPos, setFloatPos] = useState({ x: 0, y: 0 });
   const floatDragRef = useRef({ dragging: false, startX: 0, startY: 0, startPosX: 0, startPosY: 0 });
+  // Resizable height for the fullscreen floating order modal. Persisted
+  // so the user's preferred size survives reloads. Clamped between 360
+  // (enough for the core form) and 900 (fits comfortably on most screens).
+  const FLOAT_H_KEY = 'tradepro:float-order-height';
+  const [floatHeight, setFloatHeight] = useState(() => {
+    if (typeof window === 'undefined') return 560;
+    try {
+      const raw = localStorage.getItem(FLOAT_H_KEY);
+      const n = raw ? Number(raw) : 560;
+      return Number.isFinite(n) ? Math.max(360, Math.min(900, n)) : 560;
+    } catch (_) { return 560; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(FLOAT_H_KEY, String(floatHeight)); } catch (_) {}
+  }, [floatHeight]);
+  const floatResizeRef = useRef({ resizing: false, startY: 0, startH: 0 });
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   // The account dropdown has two sub-views: 'metrics' (Exness-style
   // numbers + quick-actions) and 'switch' (account picker list).
@@ -420,9 +427,14 @@ export default function Trade() {
   }, []);
 
   const refresh = async () => {
-    const [o, p] = await Promise.all([api.get('/trading/orders/open'), api.get('/trading/positions')]);
-    setOpenOrders(o.data.data);
-    setPositions(p.data.data);
+    // Use allSettled so a single endpoint failure doesn't blank both
+    // tables. Each side keeps its prior data on transient errors.
+    const [o, p] = await Promise.allSettled([
+      api.get('/trading/orders/open'),
+      api.get('/trading/positions'),
+    ]);
+    if (o.status === 'fulfilled') setOpenOrders(o.value.data.data);
+    if (p.status === 'fulfilled') setPositions(p.value.data.data);
   };
 
   useEffect(() => {
@@ -535,9 +547,25 @@ export default function Trade() {
   // Compute live PnL for each position using latest price from priceMap.
   // `markPx` (not `livePrice`) is named explicitly to avoid shadowing the
   // chart's livePrice state — the two represent different things.
+  // Resolve the per-position "mark" price using the user's chosen
+  // Settings > Trading > Price Source. For positions on the active
+  // symbol we have full bid/ask context (via instrument); for other
+  // symbols we fall back to last-price (priceMap) since we don't track
+  // per-symbol bid/ask client-side.
+  const priceSource = tradeSettings.trading.priceSource;
   const positionsWithLivePnl = useMemo(() =>
     positions.map((p) => {
-      const markPx = priceMap[p.symbol] || p.markPrice || p.entryPrice;
+      const last = priceMap[p.symbol];
+      let markPx = last || p.markPrice || p.entryPrice;
+      // Apply price-source override only when we have explicit bid/ask
+      // for this symbol (i.e. it's the active symbol on the chart).
+      if (p.symbol === symbol && instrument) {
+        const b = Number(instrument.bid);
+        const a = Number(instrument.ask);
+        if (priceSource === 'bid' && Number.isFinite(b) && b > 0) markPx = b;
+        else if (priceSource === 'ask' && Number.isFinite(a) && a > 0) markPx = a;
+        else if (priceSource === 'mid' && Number.isFinite(a) && Number.isFinite(b) && a > 0 && b > 0) markPx = (a + b) / 2;
+      }
       const entry = Number(p.entryPrice);
       const qty = Number(p.quantity);
       const mark = Number(markPx);
@@ -547,7 +575,7 @@ export default function Trade() {
       const livePnl = p.side === 'BUY' ? (mark - entry) * qty : (entry - mark) * qty;
       return { ...p, markPrice: markPx, unrealizedPnl: String(livePnl) };
     }),
-    [positions, priceMap]
+    [positions, priceMap, priceSource, symbol, instrument]
   );
 
   // Whenever the chart's surrounding layout flips (side panels open/close,
@@ -676,6 +704,15 @@ export default function Trade() {
       });
   }, [instruments, priceMap]);
 
+  // Stable join-key for the movers effect — depending on `instrumentRows`
+  // directly would retrigger on every WS tick because the array gets a
+  // new reference each priceMap update, which would refetch watchlist +
+  // resubscribe to all tickers every tick (real perf leak).
+  const moverSymbolsKey = useMemo(
+    () => instrumentRows.map((r) => r.symbol).sort().join('|'),
+    [instrumentRows]
+  );
+
   // ── Movers — when the panel is open, subscribe to ticker frames for
   // every active instrument and capture change24h / dayHigh / dayLow
   // into a sparse overlay map. This drives the panel's live sort.
@@ -683,7 +720,8 @@ export default function Trade() {
   // cached `_cache` blobs from useInstruments get the fresh numbers.
   useEffect(() => {
     if (leftPanelTab !== 'hotlist') return;
-    if (!instrumentRows.length) return;
+    if (!moverSymbolsKey) return;
+    const symbols = moverSymbolsKey.split('|');
     // Best-effort refresh of the watchlist endpoint — patch the
     // module-level cache so all consumers (this row + nav etc.) see fresh numbers.
     api.get('/instruments/watchlist').then(({ data }) => {
@@ -706,13 +744,13 @@ export default function Trade() {
     // 24hrTicker now broadcasts change24h on the same ticker:<symbol>
     // channel, so even if the watchlist endpoint is stale the overlay
     // gets refreshed on every tick.
-    const unsubs = instrumentRows.map((r) =>
-      wsClient.subscribe(`ticker:${r.symbol}`, (tick) => {
+    const unsubs = symbols.map((sym) =>
+      wsClient.subscribe(`ticker:${sym}`, (tick) => {
         if (!tick) return;
         if (!Number.isFinite(Number(tick.change24h))) return;
         setMoverOverlay((prev) => ({
           ...prev,
-          [r.symbol]: {
+          [sym]: {
             change24h: Number(tick.change24h),
             dayHigh:   Number(tick.dayHigh),
             dayLow:    Number(tick.dayLow),
@@ -723,7 +761,7 @@ export default function Trade() {
       })
     );
     return () => unsubs.forEach((u) => u && u());
-  }, [leftPanelTab, instrumentRows]);
+  }, [leftPanelTab, moverSymbolsKey]);
 
   // Distinct categories present in the dataset — drives the dropdown
   // options so a freshly-added asset class (e.g. ETF) appears
@@ -802,7 +840,16 @@ export default function Trade() {
     if (isFullscreen && !currentFsEl) {
       const req = root.requestFullscreen || root.webkitRequestFullscreen;
       if (req) {
-        try { Promise.resolve(req.call(root)).catch(() => {}); } catch (_) {}
+        // If the API rejects (no user gesture, permissions, denied) we
+        // must NOT leave chartView stuck in 'fullscreen' — the UI would
+        // think it's in fullscreen forever. Revert state on failure.
+        try {
+          Promise.resolve(req.call(root)).catch(() => {
+            setChartView((v) => (v === 'fullscreen' ? 'normal' : v));
+          });
+        } catch (_) {
+          setChartView((v) => (v === 'fullscreen' ? 'normal' : v));
+        }
       }
     } else if (!isFullscreen && currentFsEl) {
       const ex = document.exitFullscreen || document.webkitExitFullscreen;
@@ -862,6 +909,39 @@ export default function Trade() {
   useEffect(() => {
     if (!showFloatingOrder) setFloatPos({ x: 0, y: 0 });
   }, [showFloatingOrder]);
+
+  // ── Floating order overlay — drag-to-RESIZE support ──────────────
+  // Bottom edge of the modal has a resize grip; dragging it adjusts the
+  // modal height. Clamped between 360 and 900 px so it stays usable.
+  useEffect(() => {
+    const onMove = (e) => {
+      const st = floatResizeRef.current;
+      if (!st.resizing) return;
+      const clientY = e.touches?.[0]?.clientY ?? e.clientY;
+      if (clientY == null) return;
+      const dy = clientY - st.startY;
+      const next = Math.max(360, Math.min(900, st.startH + dy));
+      setFloatHeight(next);
+    };
+    const onUp = () => { floatResizeRef.current.resizing = false; document.body.style.userSelect = ''; document.body.style.cursor = ''; };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('touchend', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onUp);
+    };
+  }, []);
+  const startFloatResize = (e) => {
+    const clientY = e.touches?.[0]?.clientY ?? e.clientY;
+    floatResizeRef.current = { resizing: true, startY: clientY, startH: floatHeight };
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'ns-resize';
+  };
+
   const startFloatDrag = (e) => {
     floatDragRef.current = {
       dragging: true,
@@ -874,14 +954,20 @@ export default function Trade() {
     // while the user drags across it.
     document.body.style.userSelect = 'none';
   };
-  // Wrap the side-change handler so clicking BUY/SELL on the chip in
-  // fullscreen pops the floating overlay (instead of just silently
-  // toggling state with no visible UI, which is what happened before
-  // because the side OrderForm aside is force-hidden in fullscreen).
+  // Wrap the side-change handler so clicking BUY/SELL on the chip
+  // always reveals an order form the user can act on:
+  //  • Fullscreen → pop the floating overlay (side panel is hidden)
+  //  • Normal     → expand the side OrderForm aside if collapsed
+  // Without this, clicking BUY/SELL on a collapsed-panel layout would
+  // silently change `orderSide` with no visible UI.
   const handleOrderSideChange = useCallback((side) => {
     setOrderSide(side);
-    if (isFullscreen) setShowFloatingOrder(true);
-  }, [isFullscreen]);
+    if (isFullscreen) {
+      setShowFloatingOrder(true);
+    } else if (!showOrderPanel) {
+      setShowOrderPanel(true);
+    }
+  }, [isFullscreen, showOrderPanel]);
   // "Expanded" = either side panel collapsed. The chart toolbar button
   // flips both at once; per-panel × buttons flip each side independently.
   const panelsCollapsed = !showInstruments && !showOrderPanel;
@@ -905,7 +991,7 @@ export default function Trade() {
       {/* ── Slim top bar — brand mark + instrument quick-pick + account.
           Since the global Layout header is hidden on /trade, this bar
           is the only way back to the rest of the app. */}
-      <div className={`${isFullscreen ? 'hidden' : 'flex'} items-center justify-between gap-4 bg-white border-b border-border-dark px-4 sm:px-6 h-16 shrink-0 -mx-1 -mt-1`}>
+      <div className={`${isFullscreen ? 'hidden' : 'flex'} items-center justify-between gap-2 bg-white border-b border-border-dark px-3 sm:px-4 h-[52px] shrink-0 -mx-1 -mt-1`}>
         {/* Brand mark — links back to /dashboard so the user always has
             a path out of the terminal even without the global nav. */}
         <Link
@@ -989,7 +1075,54 @@ export default function Trade() {
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
           </button>
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1 shrink-0">
+          {/* Quick-access Show-on-Chart toggles — same flags as the
+              Settings panel (mirrored), pinned here so the user can flip
+              positions / TP-SL / Stop-Limit overlays with one click. */}
+          <div className="hidden md:inline-flex items-center gap-0.5 p-0.5 rounded-lg border border-border-dark bg-bg-hover/30">
+            <HeaderToggle
+              active={showOnChart.positions}
+              onClick={() => setTradeSetting('showOnChart.positions', !showOnChart.positions)}
+              label="Positions"
+              title="Show open positions on chart"
+              accent="emerald"
+              icon={
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 3v18h18" /><rect x="6" y="13" width="3" height="5" /><rect x="11" y="9" width="3" height="9" /><rect x="16" y="6" width="3" height="12" />
+                </svg>
+              }
+            />
+            <HeaderToggle
+              active={showOnChart.tpsl}
+              onClick={() => setTradeSetting('showOnChart.tpsl', !showOnChart.tpsl)}
+              label="TP/SL"
+              title="Show TP / SL lines on open positions"
+              accent="indigo"
+              icon={
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="3" y1="8"  x2="21" y2="8"  strokeDasharray="3 3" />
+                  <line x1="3" y1="16" x2="21" y2="16" strokeDasharray="3 3" />
+                  <circle cx="8"  cy="8"  r="1.5" fill="currentColor" />
+                  <circle cx="16" cy="16" r="1.5" fill="currentColor" />
+                </svg>
+              }
+            />
+            <HeaderToggle
+              active={showOnChart.stopLimit}
+              onClick={() => setTradeSetting('showOnChart.stopLimit', !showOnChart.stopLimit)}
+              label="Stop/Limit"
+              title="Show pending Stop / Limit order lines"
+              accent="amber"
+              icon={
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="3" y1="6"  x2="21" y2="6" />
+                  <line x1="3" y1="18" x2="21" y2="18" strokeDasharray="3 3" />
+                  <polyline points="7 10 12 14 17 10" />
+                </svg>
+              }
+            />
+          </div>
+
           {/* Custom account picker — shows account name + balance, and
               persists the selection across refresh. */}
           <div className="relative" ref={accountMenuRef}>
@@ -1012,17 +1145,17 @@ export default function Trade() {
                 <button
                   type="button"
                   onClick={() => setAccountMenuOpen((o) => !o)}
-                  className="flex items-center gap-2.5 pl-3 pr-2 py-1.5 rounded-lg border border-border-dark bg-white hover:bg-bg-hover transition-colors text-left"
+                  className="h-9 flex items-center gap-2 pl-2.5 pr-1.5 border border-border-dark bg-white hover:bg-bg-hover transition-colors text-left"
                 >
-                  <div className="flex flex-col leading-tight min-w-0">
-                    <span className="text-sm font-extrabold text-text-primary truncate max-w-[180px] tracking-tight">
+                  <div className="flex flex-col leading-[1.05] min-w-0">
+                    <span className="text-[11px] font-extrabold text-text-primary truncate max-w-[160px] tracking-tight">
                       {name} <span className="text-text-muted font-semibold">· {acc?.accountType}</span>
                     </span>
-                    <span className="text-[13px] font-mono font-extrabold text-primary-600 mt-1 tabular-nums">
+                    <span className="text-[11px] font-mono font-extrabold text-primary-600 tabular-nums truncate">
                       {ccy} {hideBalance ? '••••' : fmtBal}
                     </span>
                   </div>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="text-text-muted shrink-0"><path d="M6 9l6 6 6-6" /></svg>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="text-text-muted shrink-0"><path d="M6 9l6 6 6-6" /></svg>
                 </button>
               );
             })()}
@@ -1213,7 +1346,7 @@ export default function Trade() {
           <Link
             to="/wallet"
             title="Deposit funds"
-            className="inline-flex items-center gap-1.5 px-2.5 sm:px-4 py-1.5 rounded-lg font-bold text-sm shadow-card hover:shadow-elevated transition-all shrink-0"
+            className="h-9 inline-flex items-center gap-1.5 px-2.5 sm:px-4 font-bold text-[13px] shadow-card hover:shadow-elevated transition-all shrink-0"
             style={{
               background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 55%, #1E3A8A 100%)',
               color: '#FFFFFF',
@@ -1231,18 +1364,32 @@ export default function Trade() {
           viewport height (no scroll). */}
       <div className="flex-1 flex flex-col lg:flex-row gap-1 min-h-0">
         {/* Mini icon strip — TradingView-style panel switcher.
-            Always visible on lg+ (hidden on mobile because the page
-            stacks vertically). Stays mounted even when the wider
-            Instruments panel is hidden — clicking an icon will both
-            re-open the panel and switch its content. */}
-        {(showInstruments || !isFullscreen) && (
-          <aside className={`${isFullscreen ? 'hidden' : 'hidden lg:flex'} w-16 shrink-0 flex-col gap-1 p-1 -mt-1 -ml-1 glass border-r border-border-dark overflow-y-auto`}>
+            Drawer-style: a × at the top hides the WHOLE sidebar (strip
+            + content panel). When hidden a thin reopen tab appears on
+            the far right edge so the user can bring it back. */}
+        {showRightSidebar && (
+          <aside className={`hidden lg:flex lg:order-3 w-16 shrink-0 flex-col gap-1 p-1 -mt-1 -mr-1 glass border-l border-border-dark overflow-y-auto ${isFullscreen ? 'z-20' : ''}`}>
+            {/* Close-drawer button — hides the whole right sidebar. */}
+            <button
+              type="button"
+              onClick={() => setShowRightSidebar(false)}
+              title="Close sidebar"
+              aria-label="Close sidebar"
+              className="w-full py-1.5 mb-0.5 rounded-md flex flex-col items-center justify-center gap-0.5 text-text-muted hover:bg-bg-hover hover:text-text-primary transition-colors"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M13 17l5-5-5-5" /><path d="M6 17l5-5-5-5" />
+              </svg>
+              <span className="text-[9px] font-semibold leading-none tracking-tight">Close</span>
+            </button>
+
             {[
               { id: 'watchlist',    label: 'Instruments',  icon: <SbWatchI /> },
               { id: 'details',      label: 'Details',      icon: <SbDetailsI /> },
               { id: 'about',        label: 'About',        icon: <SbAboutI /> },
               { id: 'performance',  label: 'Performance',  icon: <SbPerfI /> },
               { id: 'depth',        label: 'Depth',        icon: <SbDepthI /> },
+              { id: 'positions',    label: 'Positions',    icon: <SbPositionsI /> },
               { id: 'hotlist',      label: 'Movers',       icon: <SbHotI /> },
             ].map((t) => {
               const active = leftPanelTab === t.id && showInstruments;
@@ -1273,8 +1420,32 @@ export default function Trade() {
           </aside>
         )}
 
-        {/* Left — INSTRUMENTS panel (closes individually + via Expand) */}
-        <aside className={`${(!showInstruments || isFullscreen) ? 'hidden' : 'hidden lg:flex'} w-[280px] shrink-0 glass border border-border-dark rounded-xl flex-col overflow-hidden`}>
+        {/* Reopen tab — shown only when the right sidebar is fully closed.
+            Mirrors the "Place Order" reopen tab pattern used on the order
+            form: a slim vertical strip the user can grab to bring back
+            the sidebar. */}
+        {!showRightSidebar && !isFullscreen && (
+          <button
+            type="button"
+            onClick={() => setShowRightSidebar(true)}
+            title="Show sidebar"
+            className="hidden lg:flex lg:order-3 w-7 shrink-0 self-start flex-col items-center justify-center gap-2 py-3 glass border border-border-dark rounded-xl text-text-secondary hover:text-text-primary transition-colors"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M11 7l-5 5 5 5" /><path d="M18 7l-5 5 5 5" />
+            </svg>
+            <span className="text-[9px] uppercase tracking-[0.2em] font-bold whitespace-nowrap" style={{ writingMode: 'vertical-rl' }}>
+              Panels
+            </span>
+          </button>
+        )}
+
+        {/* Right — INSTRUMENTS panel (closes individually + via drawer ×).
+            In fullscreen the panel still renders but floats above the chart
+            (absolute + z-20) so it doesn't push the chart's bounds.
+            The whole-sidebar drawer (showRightSidebar=false) hides this
+            too — only the reopen tab stays. */}
+        <aside className={`${!showInstruments || !showRightSidebar ? 'hidden' : 'hidden lg:flex'} lg:order-2 w-[280px] shrink-0 glass border border-border-dark rounded-xl flex-col overflow-hidden ${isFullscreen ? 'z-20' : ''}`}>
           <div className="px-3 py-2.5 border-b border-border-dark flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span className="text-[11px] uppercase tracking-[0.15em] font-extrabold text-text-primary">
@@ -1283,11 +1454,15 @@ export default function Trade() {
                  : leftPanelTab === 'about' ? 'About'
                  : leftPanelTab === 'performance' ? 'Performance'
                  : leftPanelTab === 'depth' ? 'Market Depth'
+                 : leftPanelTab === 'positions' ? 'Open Positions'
                  : leftPanelTab === 'settings' ? 'Settings'
                  : 'Top Movers'}
               </span>
               {leftPanelTab === 'watchlist' && (
                 <span className="text-text-secondary text-xs font-semibold">{instrumentRows.length}</span>
+              )}
+              {leftPanelTab === 'positions' && positions.length > 0 && (
+                <span className="text-text-secondary text-xs font-semibold">{positions.length}</span>
               )}
             </div>
             <button
@@ -2071,15 +2246,26 @@ export default function Trade() {
             </div>
           )}
 
+          {/* ── Positions pane — compact list of open positions ────── */}
+          {leftPanelTab === 'positions' && (
+            <SidebarPositions
+              positions={positionsWithLivePnl}
+              activeSymbol={symbol}
+              onSelect={(sym) => setParams({ symbol: sym })}
+              onClose={closePosition}
+              instrumentsBySymbol={instrumentsBySymbol}
+            />
+          )}
+
           {/* ── Settings pane — same slot as the other tabs ─────── */}
           {leftPanelTab === 'settings' && <TradeSettingsPanel />}
 
         </aside>
 
         {/* Wrapper — vertical stack: [chart + order form row] then [equity bar].
-            Lets the equity bar span the full width of chart + order form
-            (i.e. everything to the right of the instruments panel). */}
-        <div className="flex-1 flex flex-col gap-1 min-w-0 min-h-0">
+            Lets the equity bar span the full width of chart + order form.
+            order-1 places this BEFORE the (now right-side) instruments sidebar. */}
+        <div className="flex-1 lg:order-1 flex flex-col gap-1 min-w-0 min-h-0">
           <div className="flex-1 flex gap-1 min-h-0 min-w-0">
 
         {/* Center — chart + bottom tabs (with draggable splitter) */}
@@ -2095,9 +2281,30 @@ export default function Trade() {
                   timeframe={timeframe}
                   onTimeframeChange={setTimeframe}
                   livePrice={livePrice || instrument.lastPrice}
-                  openOrders={openOrders}
-                  positions={positionsWithLivePnl}
-                  pendingPreview={pendingPreview}
+                  /* Apply user's Show-on-Chart toggles + Time Zone from Settings.
+                     - "Open positions" toggle:      entry line for each position
+                     - "TP / SL on positions":       SL/TP lines anchored to positions
+                     - "Stop / Limit orders":        pending LIMIT/STOP order lines + pendingPreview */
+                  openOrders={tradeSettings.showOnChart.stopLimit ? openOrders : []}
+                  positions={
+                    tradeSettings.showOnChart.positions
+                      ? (tradeSettings.showOnChart.tpsl
+                          ? positionsWithLivePnl
+                          : positionsWithLivePnl.map((p) => ({ ...p, stopLoss: null, takeProfit: null })))
+                      : []
+                  }
+                  pendingPreview={tradeSettings.showOnChart.stopLimit ? pendingPreview : null}
+                  showPositions={tradeSettings.showOnChart.positions}
+                  showTpSl={tradeSettings.showOnChart.tpsl}
+                  showStopLimit={tradeSettings.showOnChart.stopLimit}
+                  positionsCount={positionsWithLivePnl.filter((p) => p.symbol === symbol).length}
+                  ordersCount={openOrders.filter((o) => o.symbol === symbol).length}
+                  showAlerts={tradeSettings.showOnChart.alerts}
+                  showSignals={tradeSettings.showOnChart.signals}
+                  showHmr={tradeSettings.showOnChart.hmr}
+                  showCalendar={tradeSettings.showOnChart.calendar}
+                  calendarFilters={tradeSettings.calendarFilters}
+                  timeZone={tradeSettings.trading.timeZone}
                   pricePrecision={instrument.pricePrecision}
                   infoStrip={chartInfoStrip}
                   instrument={instrument}
@@ -2129,7 +2336,7 @@ export default function Trade() {
                   zooming, indicators) behind the panel. */}
               {isFullscreen && instrument && account && (
                 <div
-                  className={`absolute w-[340px] max-w-[calc(100vw-1.5rem)] max-h-[calc(100%-1.5rem)] z-30 transition-opacity duration-200 ease-out ${
+                  className={`absolute w-[340px] max-w-[calc(100vw-1.5rem)] z-30 transition-opacity duration-200 ease-out ${
                     showFloatingOrder
                       ? 'opacity-100 pointer-events-auto'
                       : 'opacity-0 pointer-events-none'
@@ -2138,34 +2345,59 @@ export default function Trade() {
                     top: `calc(50% + ${floatPos.y}px)`,
                     right: `calc(30% - ${floatPos.x}px)`,
                     transform: 'translateY(-50%)',
+                    height: Math.min(floatHeight, Math.max(360, (typeof window !== 'undefined' ? window.innerHeight : 800) - 40)),
+                    maxHeight: 'calc(100% - 1.5rem)',
                   }}
                   aria-hidden={!showFloatingOrder}
                   role="dialog"
                   aria-label="Place order"
                 >
-                  {/* Glass card wraps OrderForm. Tiny drag handle at top
-                      lets the user reposition the panel anywhere over the
-                      chart. */}
-                  <div className="glass border border-border-dark rounded-xl shadow-2xl overflow-hidden flex flex-col backdrop-blur-xl">
+                  {/* Glass card wraps OrderForm. Drag handle at top moves
+                      the panel; resize grip at bottom changes height. */}
+                  <div className="glass border border-border-dark rounded-xl shadow-2xl flex flex-col backdrop-blur-xl h-full overflow-hidden">
                     {/* Drag handle bar */}
                     <div
                       onMouseDown={startFloatDrag}
-                      className="cursor-move select-none flex items-center justify-center py-1.5 bg-bg-hover/40 hover:bg-bg-hover/60 border-b border-border-subtle transition-colors group"
+                      className="cursor-move select-none flex items-center justify-center py-1.5 bg-bg-hover/40 hover:bg-bg-hover/60 border-b border-border-subtle transition-colors group shrink-0"
                       title="Drag to move"
                       role="separator"
                       aria-label="Drag to reposition"
                     >
                       <span className="w-10 h-1 rounded-full bg-text-muted/50 group-hover:bg-text-muted transition-colors" />
                     </div>
-                    <OrderForm
-                      instrument={instrument}
-                      account={account}
-                      onPlaced={refresh}
-                      onPendingPriceChange={setPendingPreview}
-                      side={orderSide}
-                      onSideChange={setOrderSide}
-                      onClose={() => setShowFloatingOrder(false)}
-                    />
+                    {/* OrderForm gets the remaining space and scrolls if
+                        the user shrinks the panel below the form's
+                        natural height. */}
+                    <div className="flex-1 min-h-0 overflow-y-auto">
+                      <OrderForm
+                        instrument={instrument}
+                        account={account}
+                        onPlaced={refresh}
+                        onPendingPriceChange={setPendingPreview}
+                        side={orderSide}
+                        onSideChange={setOrderSide}
+                        onClose={() => setShowFloatingOrder(false)}
+                      />
+                    </div>
+                    {/* Bottom resize grip — drag vertically to change
+                        panel height. Double-click resets to default. */}
+                    <div
+                      onMouseDown={startFloatResize}
+                      onTouchStart={(e) => { e.preventDefault(); startFloatResize(e); }}
+                      onDoubleClick={() => setFloatHeight(560)}
+                      className="cursor-ns-resize select-none flex items-center justify-center py-1 bg-bg-hover/40 hover:bg-primary-500/15 border-t border-border-subtle transition-colors group shrink-0"
+                      title="Drag to resize · double-click to reset"
+                      role="separator"
+                      aria-orientation="horizontal"
+                      aria-label="Resize panel height"
+                    >
+                      <svg width="22" height="6" viewBox="0 0 22 6" className="text-text-muted/60 group-hover:text-primary-500 transition-colors">
+                        <circle cx="3"  cy="3" r="1.2" fill="currentColor" />
+                        <circle cx="8"  cy="3" r="1.2" fill="currentColor" />
+                        <circle cx="13" cy="3" r="1.2" fill="currentColor" />
+                        <circle cx="18" cy="3" r="1.2" fill="currentColor" />
+                      </svg>
+                    </div>
                   </div>
                 </div>
               )}
@@ -2316,7 +2548,7 @@ export default function Trade() {
                   <div className="text-sm text-text-secondary">No closed trades to show</div>
                   <div className="text-xs text-text-muted mt-1">
                     Your trade history will appear here.{' '}
-                    <a href="/reports" className="text-primary-500 hover:underline">View reports</a>
+                    <Link to="/reports" className="text-primary-500 hover:underline">View reports</Link>
                   </div>
                 </div>
               )}
@@ -2380,7 +2612,7 @@ export default function Trade() {
   );
 }
 
-// ─── Left mini-sidebar icons ─────────────────────────────────────────
+// ─── Mini-sidebar icons (sidebar lives on the right of the chart) ────
 const SbS = ({ children }) => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
     {children}
@@ -2392,6 +2624,7 @@ const SbHotI     = () => <SbS><polyline points="23 6 13.5 15.5 8.5 10.5 1 18" />
 const SbAboutI   = () => <SbS><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></SbS>;
 const SbPerfI    = () => <SbS><path d="M3 3v18h18" /><path d="M7 14l4-4 4 4 5-7" /><circle cx="11" cy="10" r="0.7" fill="currentColor" /></SbS>;
 const SbDepthI   = () => <SbS><line x1="3" y1="6"  x2="21" y2="6" /><line x1="6" y1="10" x2="18" y2="10" /><line x1="3" y1="14" x2="21" y2="14" /><line x1="6" y1="18" x2="18" y2="18" /></SbS>;
+const SbPositionsI = () => <SbS><path d="M3 3v18h18" /><rect x="6" y="13" width="3" height="5" /><rect x="11" y="9"  width="3" height="9" /><rect x="16" y="6"  width="3" height="12" /></SbS>;
 const SbGearI    = () => <SbS><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></SbS>;
 
 // Settings trigger button — opens the right-side drawer. Lives in the
@@ -2425,6 +2658,223 @@ function FooterStat({ label, value, color }) {
       <span className="font-mono font-bold text-text-primary" style={{ color: color || undefined }}>
         {value}
       </span>
+    </div>
+  );
+}
+
+// Premium open-positions panel — gradient summary header, glassy position
+// cards with a side-accent stripe, live P&L %, SL/TP chips, and inline
+// close button. Click a card to switch the chart to that position.
+function SidebarPositions({ positions, activeSymbol, onSelect, onClose, instrumentsBySymbol }) {
+  if (!positions || positions.length === 0) {
+    return (
+      <div className="px-4 py-12 text-center">
+        <div className="mx-auto w-14 h-14 rounded-full bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center mb-3">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M3 3v18h18" /><rect x="7" y="13" width="3" height="5" /><rect x="12" y="9"  width="3" height="9" /><rect x="17" y="6"  width="3" height="12" />
+          </svg>
+        </div>
+        <div className="text-[13px] text-text-primary font-bold">No open positions</div>
+        <div className="text-[11px] text-text-muted mt-1.5 px-2 leading-relaxed">
+          Place a market or limit order — your live positions will appear here with realtime P&amp;L.
+        </div>
+      </div>
+    );
+  }
+
+  const totalPnl     = positions.reduce((s, p) => s + Number(p.unrealizedPnl || 0), 0);
+  const totalNotional= positions.reduce((s, p) => s + Number(p.quantity || 0) * Number(p.entryPrice || 0), 0);
+  const winners      = positions.filter((p) => Number(p.unrealizedPnl || 0) >= 0).length;
+  const losers       = positions.length - winners;
+  const pnlPctTotal  = totalNotional > 0 ? (totalPnl / totalNotional) * 100 : 0;
+
+  return (
+    <div className="flex flex-col">
+      {/* ── Premium summary card ─────────────────────────────────── */}
+      <div className={`mx-2 mt-2 mb-1 rounded-xl border shadow-sm p-3 ${
+        totalPnl >= 0
+          ? 'bg-gradient-to-br from-emerald-50 via-white to-emerald-50/40 border-emerald-200/70'
+          : 'bg-gradient-to-br from-rose-50 via-white to-rose-50/40 border-rose-200/70'
+      }`}>
+        <div className="flex items-center justify-between">
+          <span className="text-[9.5px] uppercase tracking-[0.18em] font-extrabold text-text-muted">Net P&amp;L</span>
+          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${totalPnl >= 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+            {totalPnl >= 0 ? 'Profit' : 'Loss'}
+          </span>
+        </div>
+        <div className={`mt-1 text-[22px] font-mono font-extrabold leading-tight tracking-tight ${totalPnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+          {totalPnl >= 0 ? '+' : ''}{totalPnl.toFixed(2)}
+        </div>
+        <div className="flex items-center gap-2 mt-0.5">
+          <span className={`text-[10.5px] font-mono font-bold ${pnlPctTotal >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+            {pnlPctTotal >= 0 ? '+' : ''}{pnlPctTotal.toFixed(2)}%
+          </span>
+          <span className="text-[10px] text-text-muted">of notional</span>
+        </div>
+        <div className="mt-2 pt-2 border-t border-border-subtle/60 grid grid-cols-3 gap-1">
+          <Stat lbl="Open"     val={positions.length} accent="text-text-primary" />
+          <Stat lbl="Winners"  val={winners}          accent="text-emerald-600"  />
+          <Stat lbl="Losers"   val={losers}           accent="text-rose-600"     />
+        </div>
+      </div>
+
+      {/* ── Position cards ────────────────────────────────────────── */}
+      <div className="px-2 py-1 space-y-1.5">
+        {positions.map((p) => {
+          const inst   = instrumentsBySymbol?.[p.symbol];
+          const isBuy  = p.side === 'BUY';
+          const pnl    = Number(p.unrealizedPnl || 0);
+          const isActive = p.symbol === activeSymbol;
+          const prec   = inst?.pricePrecision ?? 4;
+          const notional = Number(p.quantity || 0) * Number(p.entryPrice || 0);
+          const pnlPct = notional > 0 ? (pnl / notional) * 100 : 0;
+          const sideStripe = isBuy ? 'bg-emerald-500' : 'bg-rose-500';
+          return (
+            <div
+              key={p._id}
+              role="button"
+              tabIndex={0}
+              onClick={() => onSelect && onSelect(p.symbol)}
+              onKeyDown={(e) => { if (e.key === 'Enter') onSelect && onSelect(p.symbol); }}
+              className={`group relative overflow-hidden rounded-lg border transition-all cursor-pointer ${
+                isActive
+                  ? 'border-primary-500/40 bg-primary-500/[0.04] shadow-[0_0_0_1px_rgba(99,102,241,0.15)]'
+                  : 'border-border-subtle bg-white hover:border-border-dark hover:shadow-sm'
+              }`}
+            >
+              {/* Side accent stripe */}
+              <div className={`absolute left-0 top-0 bottom-0 w-1 ${sideStripe}`} />
+
+              <div className="pl-2.5 pr-2 py-2">
+                {/* Top row: side chip + symbol + close button */}
+                <div className="flex items-center justify-between gap-1.5 mb-1.5">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded tracking-wide ${
+                      isBuy
+                        ? 'bg-emerald-500 text-white shadow-[0_1px_2px_rgba(16,185,129,0.4)]'
+                        : 'bg-rose-500 text-white shadow-[0_1px_2px_rgba(239,68,68,0.4)]'
+                    }`}>
+                      {isBuy ? '↑ BUY' : '↓ SELL'}
+                    </span>
+                    <span className="text-[12px] font-extrabold text-text-primary truncate tracking-tight">{p.symbol}</span>
+                    {isActive && (
+                      <span className="text-[8.5px] px-1 py-0.5 rounded bg-primary-500/15 text-primary-600 font-bold uppercase tracking-wider">Active</span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onClose && onClose(p._id); }}
+                    className="opacity-60 group-hover:opacity-100 text-text-muted hover:text-rose-600 transition-all p-1 rounded hover:bg-rose-50"
+                    title="Close position"
+                    aria-label="Close position"
+                  >
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
+                  </button>
+                </div>
+
+                {/* P&L hero */}
+                <div className="flex items-baseline justify-between gap-2 mb-1.5">
+                  <div className={`text-[15.5px] font-mono font-extrabold leading-none tracking-tight ${pnl >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                    {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}
+                  </div>
+                  <div className={`text-[10.5px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                    pnl >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'
+                  }`}>
+                    {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%
+                  </div>
+                </div>
+
+                {/* Stats row */}
+                <div className="grid grid-cols-2 gap-1 text-[10px] font-mono">
+                  <div className="flex items-baseline gap-1">
+                    <span className="text-text-muted text-[9px] uppercase tracking-wide">Qty</span>
+                    <span className="text-text-primary font-semibold">{Number(p.quantity).toLocaleString('en-US', { maximumFractionDigits: 4 })}</span>
+                  </div>
+                  <div className="flex items-baseline gap-1 justify-end">
+                    <span className="text-text-muted text-[9px] uppercase tracking-wide">Entry</span>
+                    <span className="text-text-primary font-semibold">{Number(p.entryPrice || 0).toFixed(prec)}</span>
+                  </div>
+                </div>
+
+                {/* SL / TP chips (only if set) */}
+                {(p.stopLoss || p.takeProfit) && (
+                  <div className="flex items-center gap-1 mt-1.5 pt-1.5 border-t border-border-subtle/60">
+                    {p.stopLoss && (
+                      <span className="inline-flex items-center gap-1 text-[9.5px] font-mono px-1.5 py-0.5 rounded bg-rose-50 border border-rose-200/70">
+                        <span className="text-rose-600 font-bold">SL</span>
+                        <span className="text-rose-700 font-semibold">{Number(p.stopLoss).toFixed(prec)}</span>
+                      </span>
+                    )}
+                    {p.takeProfit && (
+                      <span className="inline-flex items-center gap-1 text-[9.5px] font-mono px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-200/70">
+                        <span className="text-emerald-600 font-bold">TP</span>
+                        <span className="text-emerald-700 font-semibold">{Number(p.takeProfit).toFixed(prec)}</span>
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Compact header pill-toggle — used in the top bar for the quick-access
+// Show-on-Chart switches. Each button shows a small ON/OFF status dot
+// so the user can read state at a glance, plus a strong color when ON
+// and a clearly faded look when OFF.
+function HeaderToggle({ active, onClick, label, title, icon, accent = 'emerald' }) {
+  const accentMap = {
+    emerald: {
+      on:  'bg-emerald-500 text-white border-emerald-600 shadow-[0_1px_3px_rgba(16,185,129,0.5)]',
+      dot: 'bg-emerald-400 ring-emerald-200',
+    },
+    indigo: {
+      on:  'bg-indigo-500 text-white border-indigo-600 shadow-[0_1px_3px_rgba(99,102,241,0.5)]',
+      dot: 'bg-indigo-400 ring-indigo-200',
+    },
+    amber: {
+      on:  'bg-amber-500 text-white border-amber-600 shadow-[0_1px_3px_rgba(245,158,11,0.5)]',
+      dot: 'bg-amber-400 ring-amber-200',
+    },
+  };
+  const cfg = accentMap[accent] || accentMap.emerald;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={`${title} — ${active ? 'ON' : 'OFF'}`}
+      aria-pressed={active}
+      className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] font-bold transition-all border ${
+        active
+          ? cfg.on
+          : 'bg-white text-text-secondary border-border-dark hover:text-text-primary hover:bg-bg-hover'
+      }`}
+    >
+      {/* Status dot — solid when ON, hollow ring when OFF. */}
+      <span
+        className={`inline-block w-1.5 h-1.5 rounded-full transition-all ${
+          active
+            ? `${cfg.dot} ring-2`
+            : 'bg-transparent ring-1 ring-text-muted/60'
+        }`}
+        aria-hidden="true"
+      />
+      {icon}
+      <span className="leading-none">{label}</span>
+    </button>
+  );
+}
+
+// Tiny labeled stat used inside the positions summary card.
+function Stat({ lbl, val, accent }) {
+  return (
+    <div className="text-center">
+      <div className="text-[9px] uppercase tracking-[0.1em] font-bold text-text-muted">{lbl}</div>
+      <div className={`text-[13px] font-mono font-extrabold leading-tight ${accent}`}>{val}</div>
     </div>
   );
 }

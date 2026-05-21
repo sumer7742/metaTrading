@@ -64,7 +64,7 @@ export default function Reports() {
         <div className="card p-5 hover:border-border-accent/40 transition-colors">
           <div className="text-[10px] uppercase tracking-[0.15em] text-text-muted font-bold">Realized P&L</div>
           <div className={`text-2xl font-bold mt-2 font-mono ${totalPnl >= 0 ? 'text-bull' : 'text-bear'}`}>
-            {totalPnl >= 0 ? '+' : ''}${Number(totalPnl).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {totalPnl >= 0 ? '+' : ''}{Number(totalPnl).toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
         </div>
         <div className="card p-5 hover:border-border-accent/40 transition-colors">
@@ -135,7 +135,18 @@ export default function Reports() {
                 <tr><td colSpan={7} className="text-center py-6 text-gray-500">Loading…</td></tr>
               )}
               {!loading && trades.length === 0 && (
-                <tr><td colSpan={7} className="text-center py-6 text-gray-500">No trades yet</td></tr>
+                <tr>
+                  <td colSpan={7} className="text-center py-10">
+                    <div className="mx-auto w-12 h-12 rounded-full bg-bg-hover flex items-center justify-center mb-2 text-text-muted">
+                      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 3v18h18" />
+                        <path d="M7 14l4-4 4 4 5-7" />
+                      </svg>
+                    </div>
+                    <div className="text-sm text-text-secondary mb-1">No trades yet</div>
+                    <Link to="/trade" className="text-xs text-primary-500 hover:underline font-semibold">Start trading →</Link>
+                  </td>
+                </tr>
               )}
               {trades.slice(0, 50).map((t) => (
                 <tr key={t._id} className="table-row">

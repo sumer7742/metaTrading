@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
+import BrandMark from '../components/BrandMark';
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState('');
@@ -25,10 +26,7 @@ export default function ForgotPassword() {
     <div className="min-h-screen flex items-center justify-center p-4 bg-bg-dark">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <div className="inline-flex items-center gap-2 text-2xl font-bold text-white">
-            <span className="w-10 h-10 rounded-lg bg-teal-accent text-bg-dark flex items-center justify-center">▲</span>
-            TradePro
-          </div>
+          <BrandMark />
         </div>
 
         <div className="card p-8">
@@ -57,7 +55,11 @@ export default function ForgotPassword() {
             </>
           ) : (
             <div className="text-center py-4">
-              <div className="text-bull text-5xl mb-3">✓</div>
+              <div className="mx-auto w-14 h-14 rounded-full bg-bull/15 text-bull flex items-center justify-center mb-3">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              </div>
               <h2 className="text-lg font-bold text-white mb-2">Check your email</h2>
               <p className="text-sm text-gray-400">
                 If <b>{email}</b> is registered, a password reset link has been sent.

@@ -11,6 +11,17 @@ const instrumentSchema = new mongoose.Schema(
 
     // Trading config
     isActive: { type: Boolean, default: true },
+    // Per-instrument routing override — same semantics as the
+    // user-level RiskOverride.routingMode. INHERIT means "use the
+    // platform-wide Settings → Routing Mode". An explicit value
+    // (A_BOOK / B_BOOK / HYBRID) wins over the global for THIS symbol.
+    // Order of precedence at trade time: user override → instrument
+    // override → global setting.
+    routingOverride: {
+      type: String,
+      enum: ['INHERIT', 'A_BOOK', 'B_BOOK', 'HYBRID'],
+      default: 'INHERIT',
+    },
     // ─── @deprecated routing fields ──────────────────────────────────
     // Book-type / external routing is now a PER-ACCOUNT decision (see
     // TradingAccount.bookType + lpProvider). The instrument-level fields

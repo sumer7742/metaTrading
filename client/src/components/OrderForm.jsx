@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
+import { wsClient } from '../services/ws';
 import { fmtPriceDual, fmtMoneyDual } from '../utils/format';
 import { useFxRate } from '../hooks/useFxRate';
 import { useTradeSettings } from '../store/tradeSettings';
@@ -21,14 +22,52 @@ export default function OrderForm({
   onClose,
 }) {
   // ── Leverage cap ────────────────────────────────────────────────
-  // The user explicitly requested "unlimited" leverage on the UI side,
-  // so we ignore the per-instrument maxLeverage cap here and expose a
-  // very high ceiling instead. The slider goes 1× → MAX_LEVERAGE_UI,
-  // and the inline editor below it accepts any integer up to that ceiling.
-  // (Backend may still enforce its own validation depending on the
-  // instrument's risk settings — that's a separate guardrail.)
-  const MAX_LEVERAGE_UI = 9999;
-  const initialLev = Math.max(1, Number(account?.leverage) || 1);
+  // Pulled from /user/leverage which encapsulates the precedence:
+  //   1. customLeverage (admin override) — always wins
+  //   2. Active plan's defaultLeverage   — FREE=50, PREMIUM=200, VIP=500
+  //   3. Fallback (100)
+  // Also subscribed to a per-user WS channel so admin overrides land
+  // in real-time without a page refresh.
+  const [leverageState, setLeverageState] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    api.get('/user/leverage')
+      .then((r) => { if (!cancelled) setLeverageState(r.data?.data || null); })
+      .catch(() => { /* fall through to plan-less ceiling */ });
+    // Real-time updates from admin actions. Backend publishes to
+    // `user:leverage:<userId>` via notifyUser(). The wsClient's
+    // onmessage handler strips the userId suffix and looks up callbacks
+    // under the base `user:leverage`, so the FE must subscribe to that
+    // prefixed name — `'leverage'` alone won't match.
+    const unsub = wsClient.subscribe('user:leverage', (data) => {
+      if (!cancelled && data) setLeverageState(data);
+    });
+    // Belt-and-braces: also re-fetch when the window regains focus
+    // (covers cases where the WS was disconnected during a leverage
+    // change, e.g. brief network glitch / laptop wake).
+    const onFocus = () => {
+      api.get('/user/leverage')
+        .then((r) => { if (!cancelled) setLeverageState(r.data?.data || null); })
+        .catch(() => {});
+    };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      cancelled = true;
+      if (unsub) unsub();
+      window.removeEventListener('focus', onFocus);
+    };
+  }, []);
+
+  // Cap comes purely from the user's effectiveLeverage (admin override
+  // wins over plan default, plan wins over fallback). Per spec, this
+  // is the SINGLE source of truth — the instrument's own maxLeverage
+  // field is NOT applied here, so admin/plan changes always reflect
+  // immediately regardless of what's seeded on each instrument row.
+  const MAX_LEVERAGE_UI = leverageState?.effectiveLeverage || 100;
+  // Initial slider position = account's default leverage, clamped to
+  // the new ceiling. After the WS push arrives the re-clamp effect
+  // below will snap it back into range if admin lowered the cap.
+  const initialLev = Math.min(MAX_LEVERAGE_UI, Math.max(1, Number(account?.leverage) || 1));
   const fxRate = useFxRate();
 
   const [internalSide, setInternalSide] = useState('BUY');
@@ -47,7 +86,12 @@ export default function OrderForm({
   const openOrderMode = useTradeSettings((s) => s.trading.openOrderMode);
   const setOpenOrderMode = useTradeSettings((s) => s.set);
   const confirmBeforeOrder = useTradeSettings((s) => s.autoTrading.confirmOrder);
-  const isOneClick = openOrderMode === 'oneClick';
+  // Auto Trading > Enable one-click trading — separate toggle from
+  // openOrderMode that also forces one-click behavior. Either flag
+  // collapsing the form into one-click mode is enough.
+  const autoOneClick = useTradeSettings((s) => s.autoTrading.oneClick);
+  const autoTpSl = useTradeSettings((s) => s.autoTrading.autoTpSl);
+  const isOneClick = openOrderMode === 'oneClick' || autoOneClick;
   const isRiskCalc = openOrderMode === 'riskCalc';
   // The order panel only exposes MARKET and LIMIT to the user. The backend
   // auto-resolves a "LIMIT" mode order to either LIMIT or STOP depending
@@ -71,11 +115,36 @@ export default function OrderForm({
   const [accountFree, setAccountFree] = useState(null);
 
   useEffect(() => {
-    // Leverage is uncapped on the UI side — only re-clamp to the global
-    // MAX_LEVERAGE_UI ceiling if the previous value somehow exceeded it.
-    setLeverage((curr) => Math.min(Math.max(1, curr), MAX_LEVERAGE_UI));
+    // Re-clamp whenever the cap can move — switching account, instrument,
+    // or receiving a WS leverage update from admin. Snaps the slider
+    // down (never up) so the form never submits a value above the cap.
+    setLeverage((curr) => Math.min(MAX_LEVERAGE_UI, Math.max(1, curr)));
     setPrice(instrument?.lastPrice || '');
-  }, [instrument?._id, instrument?.lastPrice]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instrument?._id, instrument?.lastPrice, account?._id, account?.leverage, leverageState?.effectiveLeverage]);
+
+  // ── Auto TP / SL ──────────────────────────────────────────────────
+  // When the user enables Settings > Auto Trading > "Set TP/SL automatically",
+  // the form auto-populates Stop Loss + Take Profit with safe defaults
+  // (1% loss, 2% profit) the moment they enter a quantity. Manually edited
+  // values are never overwritten — we only fill when the field is empty.
+  useEffect(() => {
+    if (!autoTpSl) return;
+    const px = orderMode === 'MARKET'
+      ? Number(instrument?.lastPrice || 0)
+      : Number(price || 0);
+    if (!px || !quantity || Number(quantity) <= 0) return;
+    const prec = Math.min(instrument?.pricePrecision || 2, 5);
+    const slDist = px * 0.01;  // 1% stop
+    const tpDist = px * 0.02;  // 2% target (1:2 R/R)
+    if (side === 'BUY') {
+      if (!stopLoss)   setStopLoss((px - slDist).toFixed(prec));
+      if (!takeProfit) setTakeProfit((px + tpDist).toFixed(prec));
+    } else {
+      if (!stopLoss)   setStopLoss((px + slDist).toFixed(prec));
+      if (!takeProfit) setTakeProfit((px - tpDist).toFixed(prec));
+    }
+  }, [autoTpSl, side, quantity, price, orderMode, instrument?.lastPrice, instrument?.pricePrecision, stopLoss, takeProfit]);
 
   // Fetch free balance for the selected account so we can show an
   // "Available" line and compute % presets accurately.

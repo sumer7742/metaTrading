@@ -1,6 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { wsClient } from '../services/ws';
 import { api } from '../services/api';
+import { useTradeSettings } from '../store/tradeSettings';
+
+// Play a soft "ping" sound for notifications. We synthesize via Web Audio API
+// instead of bundling an mp3 — zero asset cost, zero CORS issues, instant.
+// Gated by the user's `sounds.alerts` Trade Settings toggle.
+const _playPing = () => {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(880, ctx.currentTime);          // A5 ping
+    osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.15);
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.2);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.25);
+    setTimeout(() => { try { ctx.close(); } catch (_) {} }, 400);
+  } catch (_) { /* ignore — audio context may be blocked pre-gesture */ }
+};
 
 const STORAGE_KEY = 'tradepro:notifications:v1';
 const PREFS_KEY = 'tradepro:notifications:prefs:v1';
@@ -116,6 +140,27 @@ export function useNotifications() {
       read: false,
     };
     setNotifications((prev) => [entry, ...prev].slice(0, MAX_NOTIFICATIONS));
+    // ── Sound effects ───────────────────────────────────────────────
+    // Two separate audible categories, each independently toggleable:
+    //   • PRICE_ALERT / VOLATILITY / SCREENER  → "Price alerts sound"
+    //   • Position-close events (status = closed/filled)  → "TP/SL closing sound"
+    try {
+      const ts = useTradeSettings.getState();
+      const alertTypes = ['PRICE_ALERT', 'VOLATILITY', 'SCREENER'];
+      if (ts?.sounds?.alerts && alertTypes.includes(n.type)) {
+        _playPing();
+        return;
+      }
+      // Position close detection — ORDER notifications with status
+      // 'closed' / 'filled' / 'liquidated' carry the position outcome.
+      // Also TRADING notifications with title mentioning "closed".
+      const isCloseEvent =
+        (n.type === 'ORDER' && /closed|filled|liquidat/i.test(n.title || n.message || '')) ||
+        (n.type === 'TRADING' && /closed|tp hit|sl hit|stop[\s-]?out/i.test(n.title || n.message || ''));
+      if (ts?.sounds?.tpsl && isCloseEvent) {
+        _playPing();
+      }
+    } catch (_) { /* settings store not ready */ }
   }, [prefs]);
 
   const markRead = useCallback((id) => {

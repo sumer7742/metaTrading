@@ -57,7 +57,7 @@ const writePersisted = (symbol, drawings) => {
   try { localStorage.setItem(storeKey(symbol), JSON.stringify(slim)); } catch (_) {}
 };
 
-export function useChartDrawings({ chartRef, candleSeriesRef, containerRef, symbol }) {
+export function useChartDrawings({ chartRef, candleSeriesRef, containerRef, symbol, externalMarkers = [] }) {
   const [activeTool, setActiveTool] = useState('crosshair');
   const [drawings, setDrawings] = useState(() => readPersisted(symbol));
   const [locked, setLocked] = useState(false);
@@ -278,8 +278,14 @@ export function useChartDrawings({ chartRef, candleSeriesRef, containerRef, symb
         } catch (_) {}
       }
     }
-    try { series.setMarkers(markers); } catch (_) {}
-  }, [drawings, hidden, symbol, chartRef, candleSeriesRef]);
+    // Merge in external markers (Signals / HMR / Economic Calendar
+    // overlays from Trade Settings). Sort by time so lightweight-charts
+    // gets a monotonic series — out-of-order markers get rejected.
+    const merged = [...markers, ...(externalMarkers || [])]
+      .filter((m) => m && Number.isFinite(Number(m.time)))
+      .sort((a, b) => Number(a.time) - Number(b.time));
+    try { series.setMarkers(merged); } catch (_) {}
+  }, [drawings, hidden, symbol, chartRef, candleSeriesRef, externalMarkers]);
 
   // ── Chart click handler — collects points for active tool ─────────
   useEffect(() => {

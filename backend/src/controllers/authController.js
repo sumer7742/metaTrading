@@ -15,9 +15,34 @@ const register = asyncHandler(async (req, res) => {
   if (password.length < 8) throw new AppError('Password must be at least 8 characters', 400);
 
   const normalizedEmail = email.toLowerCase().trim();
+  // Normalise phone the same way the frontend sanitiser does — keep the
+  // leading + if present, strip every other non-digit. Matters because
+  // the duplicate check has to compare apples to apples (a number like
+  // "+91 98765 43210" must collide with "+919876543210" stored from an
+  // earlier signup).
+  const rawPhone = (phone || '').trim();
+  const normalizedPhone = rawPhone
+    ? (rawPhone.startsWith('+')
+        ? '+' + rawPhone.slice(1).replace(/[^0-9]/g, '')
+        : rawPhone.replace(/[^0-9]/g, ''))
+    : '';
 
-  const existing = await User.findOne({ email: normalizedEmail });
-  if (existing) throw new AppError('Email already registered', 409, 'DUPLICATE_EMAIL');
+  const existingEmail = await User.findOne({ email: normalizedEmail });
+  if (existingEmail) throw new AppError('Email already registered', 409, 'DUPLICATE_EMAIL');
+
+  // Phone-uniqueness guard. Stops one person from creating multiple
+  // accounts under different emails but the same phone — common abuse
+  // vector for self-referrals and bonus farming.
+  if (normalizedPhone) {
+    const existingPhone = await User.findOne({ phone: normalizedPhone });
+    if (existingPhone) {
+      throw new AppError(
+        'This phone number is already registered with another account.',
+        409,
+        'DUPLICATE_PHONE'
+      );
+    }
+  }
 
   // AML screening on registration (doc §12.4)
   const aml = require('../services/amlService').screenPerson({ firstName, lastName, country });
@@ -30,8 +55,44 @@ const register = asyncHandler(async (req, res) => {
 
   let referredBy = null;
   if (referralCode) {
-    const referrer = await User.findOne({ referralCode });
-    if (referrer) referredBy = referrer._id;
+    // Normalise the typed code — stored codes are always uppercase
+    // (see `myReferralCode` generation above). Doing a case-sensitive
+    // lookup against lowercase user input silently failed in the past,
+    // which broke L2/L3 chain attribution (the referee's `referredBy`
+    // ended up null, so future trades from L1 never reached L2 referrers).
+    const normalized = String(referralCode).trim().toUpperCase();
+    if (normalized) {
+      const referrer = await User.findOne({ referralCode: normalized });
+      // Server-side breadcrumb so failed attribution is visible in logs.
+      // Looking at "[REFERRAL] code=ABC123 referrer=... newUser=..." in
+      // the server console immediately tells you whether a signup that
+      // claimed a referral actually linked, or got dropped.
+      console.log(
+        `[REFERRAL] signup attempt — code="${normalized}" found=${!!referrer} ` +
+        `${referrer ? `referrer=${referrer._id} active=${referrer.isActive}` : ''} ` +
+        `newEmail="${normalizedEmail}"`
+      );
+      if (!referrer) {
+        // Be LOUD about a bad code — silently dropping it left both the
+        // signing-up user and the would-be referrer confused: signup
+        // succeeded but no attribution, no error, no clue why.
+        throw new AppError(
+          `Invalid referral code "${normalized}". Double-check the code or leave the field blank.`,
+          400,
+          'INVALID_REFERRAL_CODE'
+        );
+      }
+      if (referrer.isActive === false) {
+        throw new AppError(
+          'This referral code belongs to a blocked account.',
+          400,
+          'REFERRER_BLOCKED'
+        );
+      }
+      referredBy = referrer._id;
+    }
+  } else {
+    console.log(`[REFERRAL] signup with NO referralCode field — email="${normalizedEmail}"`);
   }
 
   // Build all initial fields in a single create — including the email
@@ -45,7 +106,7 @@ const register = asyncHandler(async (req, res) => {
     passwordHash,
     firstName,
     lastName,
-    phone,
+    phone: normalizedPhone,
     referralCode: myReferralCode,
     referredBy,
     emailVerificationToken: verifyToken,
@@ -53,6 +114,12 @@ const register = asyncHandler(async (req, res) => {
     lastLoginAt: new Date(),
     lastLoginIp: req.ip,
   });
+  // Persisted-state breadcrumb — pair this with the earlier [REFERRAL]
+  // log to confirm the chain actually saved (not just looked up OK).
+  console.log(
+    `[REFERRAL] user created — _id=${user._id} email="${user.email}" ` +
+    `referralCode=${user.referralCode} referredBy=${user.referredBy || 'NULL'}`
+  );
 
   // Create a default DEMO trading account with ₹1,00,000 virtual funds
   const demoAccountNumber = 'TA' + Date.now().toString().slice(-9);
@@ -287,7 +354,12 @@ const logout = asyncHandler(async (req, res) => {
 });
 
 const me = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.userId);
+  const user = await User.findById(req.userId)
+    // Surface the referrer's display info so the FE can render
+    // "Referred by John Doe" on Profile + Affiliate without an extra
+    // round-trip. `passwordHash` and other secrets stay redacted by
+    // toSafeJSON below.
+    .populate('referredBy', 'firstName lastName email referralCode');
   // Defend against the user being deleted between the auth-middleware check
   // and this query — without this, .toSafeJSON() throws on null.
   if (!user) throw new AppError('User not found', 404);

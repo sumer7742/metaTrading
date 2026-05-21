@@ -14,6 +14,17 @@ router.get('/kyc/status', c.getKycStatus);
 router.get('/accounts', c.listAccounts);
 router.post('/accounts', c.createAccount);
 
+// Leverage — effective cap + source ("VIP Plan" / "Admin Override").
+// FE OrderForm reads this to bound the leverage slider and show the
+// source chip.
+router.get('/leverage', async (req, res, next) => {
+  try {
+    const leverageService = require('../services/leverageService');
+    const state = await leverageService.getEffective(req.userId);
+    res.json({ success: true, data: state });
+  } catch (e) { next(e); }
+});
+
 // Feedback
 router.post('/feedback', c.submitFeedback);
 router.get('/feedback', c.listMyFeedback);

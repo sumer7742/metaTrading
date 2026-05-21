@@ -12,7 +12,8 @@ const DEFAULTS = {
     hmr:            false,
     alerts:         true,   // price alerts are most-used → default on
     positions:      true,
-    tpsl:           true,   // TP / SL / Stop / Limit overlay
+    tpsl:           true,   // TP / SL lines on open positions
+    stopLimit:      true,   // pending STOP / LIMIT order lines
     calendar:       false,
   },
   calendarFilters: {

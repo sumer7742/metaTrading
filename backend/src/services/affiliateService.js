@@ -120,4 +120,99 @@ const getReferrerSummary = async (referrerId) => {
   return { pending, paid, total: pending + paid, byLevel, refereeCount: referees };
 };
 
-module.exports = { distributeCommissions, runPayoutBatch, getReferrerSummary, DEFAULT_RATES };
+/**
+ * Manually credit a referral bonus to a user (admin action).
+ * Creates a Commission row with sourceType='ADJUSTMENT' AND immediately
+ * pays it to the user's REAL trading wallet, so the user sees the credit
+ * both on the Affiliate page (commission history) and in their wallet
+ * (real balance / transaction ledger).
+ *
+ * @param {object} ctx
+ * @param {ObjectId} ctx.userId    — the user RECEIVING the bonus
+ * @param {string|number} ctx.amount
+ * @param {string} ctx.currency    — defaults to the user's primary account currency
+ * @param {string} ctx.note        — visible in the user's commission row
+ * @param {ObjectId} ctx.adminId   — who triggered it (req.userId from the admin route)
+ * @returns {Promise<{commission, walletTx?}>}
+ */
+const creditManual = async ({ userId, amount, currency, note, adminId }) => {
+  if (!userId) throw new Error('userId is required');
+  if (!amount || !gt(amount, '0')) throw new Error('amount must be > 0');
+
+  const User = require('../models/User');
+  const TradingAccount = require('../models/TradingAccount');
+
+  const user = await User.findById(userId).select('_id isActive');
+  if (!user) throw new Error('User not found');
+  if (user.isActive === false) throw new Error('User is blocked');
+
+  // Affiliate bonus is for REFERRERS only AND it's gated to ONE bonus
+  // per referee. After admin credits a bonus, the slot is "consumed"
+  // until a new referee arrives. This prevents the admin from
+  // accidentally double-paying a referrer and turns each new signup
+  // into a discrete reward event.
+  const refereeCount = await User.countDocuments({ referredBy: userId });
+  if (refereeCount === 0) {
+    throw new Error('User has not referred anyone yet — affiliate bonus is only for referrers');
+  }
+  const adjustmentCount = await Commission.countDocuments({
+    referrerId: userId,
+    sourceType: 'ADJUSTMENT',
+    status: { $in: ['PENDING', 'PAID'] }, // reversed bonuses free up a slot again
+  });
+  if (adjustmentCount >= refereeCount) {
+    throw new Error(
+      `All available bonuses are already credited (${adjustmentCount}/${refereeCount}). ` +
+      `Wait for a new referee to sign up.`
+    );
+  }
+
+  // Pick the user's primary REAL account so the credit lands somewhere
+  // real-money; if they have none, fall back to whatever active account
+  // exists. We never silently credit to demo (would be misleading).
+  let account = await TradingAccount.findOne({ userId, accountType: 'REAL', isActive: true });
+  if (!account) account = await TradingAccount.findOne({ userId, isActive: true });
+  if (!account) throw new Error('User has no active trading account to credit');
+
+  const ccy = currency || account.baseCurrency || 'USD';
+
+  // 1. Record the commission row first so the affiliate page can show it
+  //    even if the wallet credit fails (status will be PENDING in that case).
+  const commission = await Commission.create({
+    referrerId: userId,        // the user RECEIVING the bonus
+    refereeId:  null,          // n/a for admin-credited adjustments
+    level:      0,             // 0 = manual / admin adjustment
+    sourceType: 'ADJUSTMENT',
+    currency:   ccy,
+    amount:     String(amount),
+    rate:       null,
+    status:     'PENDING',
+    adjustedBy: adminId || null,
+    note:       note || 'Admin-credited referral bonus',
+  });
+
+  // 2. Credit the wallet immediately — this is the actual money movement.
+  try {
+    await walletService.credit({
+      userId,
+      accountId:     account._id,
+      currency:      ccy,
+      amount:        String(amount),
+      type:          WALLET_TX_TYPE.ADJUSTMENT,
+      referenceType: 'commission',
+      referenceId:   commission._id,
+      note:          note || 'Referral bonus (admin)',
+    });
+    commission.status = 'PAID';
+    commission.paidAt = new Date();
+    await commission.save();
+  } catch (e) {
+    // Leave the commission row in PENDING state so an admin retry / cron
+    // can sweep it; surface the error to the caller so they see it failed.
+    throw new Error(`Wallet credit failed: ${e.message}`);
+  }
+
+  return { commission, accountId: account._id, currency: ccy };
+};
+
+module.exports = { distributeCommissions, runPayoutBatch, getReferrerSummary, creditManual, DEFAULT_RATES };
