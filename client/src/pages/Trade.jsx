@@ -112,7 +112,14 @@ export default function Trade() {
   // screen. When `false`, we render a thin reopen tab on the right edge
   // instead — drawer-style hide/show.
   const [showRightSidebar, setShowRightSidebar] = useState(true);
-  const [showOrderPanel, setShowOrderPanel] = useState(true);
+  // Order panel defaults open on desktop, closed on mobile (chart fills
+  // the viewport; user taps the floating "+ Order" FAB or BUY/SELL chip
+  // to open the bottom sheet). The matchMedia check has to happen at
+  // initial render — toggling later would clobber the user's choice.
+  const [showOrderPanel, setShowOrderPanel] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    return window.matchMedia('(min-width: 1024px)').matches;
+  });
   // Active panel tab in the left mini-sidebar — TradingView-style icon
   // strip on the far edge that switches what content the 280px panel
   // shows. 'watchlist' is the default (= the existing instruments list).
@@ -1070,7 +1077,7 @@ export default function Trade() {
               }, 60);
             }}
             title="Add symbol tab"
-            className="shrink-0 inline-flex items-center justify-center w-7 h-7 rounded-lg border border-border-dark text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
+            className="hidden sm:inline-flex shrink-0 items-center justify-center w-7 h-7 rounded-lg border border-border-dark text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
           </button>
@@ -1110,7 +1117,7 @@ export default function Trade() {
             <HeaderToggle
               active={showOnChart.stopLimit}
               onClick={() => setTradeSetting('showOnChart.stopLimit', !showOnChart.stopLimit)}
-              label="Stop/Limit"
+              label="Pending"
               title="Show pending Stop / Limit order lines"
               accent="amber"
               icon={
@@ -1148,8 +1155,8 @@ export default function Trade() {
                   className="h-9 flex items-center gap-2 pl-2.5 pr-1.5 border border-border-dark bg-white hover:bg-bg-hover transition-colors text-left"
                 >
                   <div className="flex flex-col leading-[1.05] min-w-0">
-                    <span className="text-[11px] font-extrabold text-text-primary truncate max-w-[160px] tracking-tight">
-                      {name} <span className="text-text-muted font-semibold">· {acc?.accountType}</span>
+                    <span className="text-[11px] font-extrabold text-text-primary truncate max-w-[110px] sm:max-w-[160px] tracking-tight">
+                      {name} <span className="hidden sm:inline text-text-muted font-semibold">· {acc?.accountType}</span>
                     </span>
                     <span className="text-[11px] font-mono font-extrabold text-primary-600 tabular-nums truncate">
                       {ccy} {hideBalance ? '••••' : fmtBal}
@@ -2287,10 +2294,18 @@ export default function Trade() {
                      - "Stop / Limit orders":        pending LIMIT/STOP order lines + pendingPreview */
                   openOrders={tradeSettings.showOnChart.stopLimit ? openOrders : []}
                   positions={
-                    tradeSettings.showOnChart.positions
-                      ? (tradeSettings.showOnChart.tpsl
-                          ? positionsWithLivePnl
-                          : positionsWithLivePnl.map((p) => ({ ...p, stopLoss: null, takeProfit: null })))
+                    // Two independent toggles share the same position array:
+                    //   positions toggle → entry-price line
+                    //   tpsl toggle      → SL/TP lines
+                    // Strip the corresponding fields per-toggle so each works
+                    // on its own (previously, positions off killed both).
+                    (tradeSettings.showOnChart.positions || tradeSettings.showOnChart.tpsl)
+                      ? positionsWithLivePnl.map((p) => ({
+                          ...p,
+                          entryPrice: tradeSettings.showOnChart.positions ? p.entryPrice : null,
+                          stopLoss:   tradeSettings.showOnChart.tpsl      ? p.stopLoss   : null,
+                          takeProfit: tradeSettings.showOnChart.tpsl      ? p.takeProfit : null,
+                        }))
                       : []
                   }
                   pendingPreview={tradeSettings.showOnChart.stopLimit ? pendingPreview : null}
@@ -2447,7 +2462,7 @@ export default function Trade() {
                       // If user clicks a tab while collapsed, expand back.
                       if (bottomState.collapsed) setBottomState((s) => ({ ...s, collapsed: false }));
                     }}
-                    className={`relative px-4 py-3 text-sm font-semibold flex items-center gap-2 transition-colors ${
+                    className={`relative px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-semibold flex items-center gap-1.5 sm:gap-2 transition-colors ${
                       tab === t.k ? 'text-text-primary' : 'text-text-secondary hover:text-text-primary'
                     }`}
                   >
@@ -2557,10 +2572,43 @@ export default function Trade() {
 
         </div>
 
-        {/* Right — order form panel (closes individually + via Expand).
-            The × is now rendered inline inside the OrderForm header (same
-            row as the asset name) via the `onClose` prop. */}
-        <aside className={`${(!showOrderPanel || isFullscreen) ? 'hidden' : 'flex'} w-full lg:w-[340px] shrink-0 flex-col gap-1 min-h-0`}>
+        {/* Mobile-only backdrop — dims the chart when the order sheet is
+            open, so a tap outside closes the sheet. Hidden on lg+ where
+            the order form sits inline. */}
+        {showOrderPanel && !isFullscreen && (
+          <div
+            className="lg:hidden fixed inset-0 z-30 bg-black/50 backdrop-blur-[2px] transition-opacity"
+            onClick={() => setShowOrderPanel(false)}
+            aria-hidden="true"
+          />
+        )}
+
+        {/* Right — order form panel.
+            • lg+: inline aside taking 340px of the row width
+            • mobile: fixed bottom-sheet overlay with rounded top corners,
+              swipe-grip, and a 90vh max-height so the chart underneath
+              is still partially visible (broker-app pattern). */}
+        <aside
+          className={`${(!showOrderPanel || isFullscreen) ? 'hidden' : 'flex'}
+            fixed lg:relative inset-x-0 bottom-0 lg:inset-auto
+            z-40 lg:z-auto
+            max-h-[90vh] lg:max-h-none
+            w-full lg:w-[340px] shrink-0
+            flex-col gap-1 min-h-0
+            rounded-t-2xl lg:rounded-none
+            shadow-[0_-8px_30px_rgba(0,0,0,0.18)] lg:shadow-none
+            bg-white lg:bg-transparent
+            overflow-y-auto lg:overflow-visible`}
+        >
+          {/* Mobile drag-handle bar — tap or swipe-down to close. */}
+          <div className="lg:hidden shrink-0 flex items-center justify-center pt-2 pb-1">
+            <button
+              type="button"
+              onClick={() => setShowOrderPanel(false)}
+              aria-label="Close order panel"
+              className="w-10 h-1 rounded-full bg-text-muted/40 hover:bg-text-muted/60 transition-colors"
+            />
+          </div>
           {instrument && account && (
             <OrderForm
               instrument={instrument}
@@ -2574,7 +2622,8 @@ export default function Trade() {
           )}
         </aside>
 
-        {/* Right re-open tab — shown only when Order panel is collapsed */}
+        {/* Right re-open tab (desktop) — vertical pill on the right edge.
+            Mobile uses a separate floating FAB rendered below. */}
         {!showOrderPanel && !isFullscreen && (
           <button
             type="button"
@@ -2589,20 +2638,50 @@ export default function Trade() {
           </button>
         )}
 
+        {/* Mobile-only FAB — anchored above the equity bar so it never
+            overlaps content. Positioned right edge with safe-area-inset
+            for devices with home indicator. Hidden on lg+ (inline aside
+            always visible) and in fullscreen (floating overlay takes over). */}
+        {!showOrderPanel && !isFullscreen && (
+          <button
+            type="button"
+            onClick={() => setShowOrderPanel(true)}
+            className="lg:hidden fixed right-3 z-30 inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-full font-extrabold text-[13px] text-white shadow-elevated active:scale-95 transition-transform"
+            style={{
+              bottom: 'calc(env(safe-area-inset-bottom, 0px) + 88px)',
+              background: orderSide === 'SELL'
+                ? 'linear-gradient(180deg, #EF4444 0%, #DC2626 100%)'
+                : 'linear-gradient(180deg, #10B981 0%, #059669 100%)',
+              boxShadow: orderSide === 'SELL'
+                ? '0 6px 20px rgba(239,68,68,0.45)'
+                : '0 6px 20px rgba(16,185,129,0.45)',
+            }}
+            aria-label="Open order panel"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14" /><path d="M5 12h14" /></svg>
+            <span>Place Order</span>
+          </button>
+        )}
+
           </div>{/* end flex-row: chart + order form */}
 
-          {/* ── Equity bar — spans the full width of chart + order form. */}
+          {/* ── Equity bar — desktop shows all 5 stats in one row;
+              mobile uses an even 2-column grid (Equity / Balance,
+              Free Margin / Margin Used, Margin Level spans both
+              columns). Reads cleanly without orphan rows. */}
           {equityNums && !isFullscreen && (
-            <div className="glass border border-border-dark rounded-xl px-4 py-2.5 flex items-center justify-between flex-wrap gap-x-6 gap-y-1 text-xs shrink-0">
+            <div className="glass border border-border-dark rounded-xl px-3 sm:px-4 py-2 sm:py-2.5 grid grid-cols-2 sm:flex sm:items-center sm:justify-between gap-x-3 sm:gap-x-6 gap-y-2 text-[11px] sm:text-xs shrink-0">
               <FooterStat label="Equity"       value={fmtMoney(equityNums.equity, equityNums.base)} />
-              <FooterStat label="Free Margin"  value={fmtMoney(equityNums.free, equityNums.base)} />
               <FooterStat label="Balance"      value={fmtMoney(equityNums.balance, equityNums.base)} />
+              <FooterStat label="Free Margin"  value={fmtMoney(equityNums.free, equityNums.base)} />
               <FooterStat label="Margin"       value={fmtMoney(equityNums.used, equityNums.base)} />
-              <FooterStat
-                label="Margin Level"
-                value={equityNums.marginLevel != null ? `${equityNums.marginLevel.toFixed(2)}%` : '—'}
-                color={equityNums.marginLevel != null && equityNums.marginLevel < 100 ? '#DC2626' : undefined}
-              />
+              <div className="col-span-2 sm:col-auto">
+                <FooterStat
+                  label="Margin Level"
+                  value={equityNums.marginLevel != null ? `${equityNums.marginLevel.toFixed(2)}%` : '—'}
+                  color={equityNums.marginLevel != null && equityNums.marginLevel < 100 ? '#DC2626' : undefined}
+                />
+              </div>
             </div>
           )}
         </div>{/* end wrapper flex-col */}
@@ -2653,9 +2732,12 @@ function SettingsTabBtn({ active, onClick }) {
 
 function FooterStat({ label, value, color }) {
   return (
-    <div className="flex items-baseline gap-2">
-      <span className="text-text-secondary font-semibold">{label}:</span>
-      <span className="font-mono font-bold text-text-primary" style={{ color: color || undefined }}>
+    <div className="flex flex-col sm:flex-row sm:items-baseline sm:gap-2 min-w-0">
+      <span className="text-text-secondary font-semibold text-[10px] sm:text-xs uppercase sm:normal-case tracking-wider sm:tracking-normal leading-none sm:leading-normal">
+        <span className="hidden sm:inline">{label}:</span>
+        <span className="sm:hidden">{label}</span>
+      </span>
+      <span className="font-mono font-bold text-text-primary truncate" style={{ color: color || undefined }}>
         {value}
       </span>
     </div>

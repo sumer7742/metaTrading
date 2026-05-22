@@ -2174,7 +2174,7 @@ export default function PriceChart({
           </div>
         )}
         {infoStrip && (
-          <div className="pointer-events-none absolute top-1 left-11 z-10 flex items-center gap-3 px-3 py-1.5 rounded-md bg-white/85 backdrop-blur-sm border border-border-dark text-[11px] font-medium tracking-wide shadow-card">
+          <div className="pointer-events-none hidden md:flex absolute top-1 left-11 z-10 items-center gap-3 px-3 py-1.5 rounded-md bg-white/85 backdrop-blur-sm border border-border-dark text-[11px] font-medium tracking-wide shadow-card">
             {infoStrip.margin != null && (
               <span className="text-text-muted">
                 Margin <span className="text-bull font-semibold">{infoStrip.margin}</span>
@@ -2192,19 +2192,6 @@ export default function PriceChart({
             )}
           </div>
         )}
-        {/* Show-on-Chart status pill — ALWAYS visible so the user can verify
-            instantly that a toggle click landed, even with no data. Each
-            chip = ON (filled color) or OFF (faded outline). Number badges
-            show how many items of that type exist on the current symbol. */}
-        <div className="pointer-events-none absolute top-1 right-2 z-10 flex items-center gap-1 px-2 py-1 rounded-md bg-white/90 backdrop-blur-sm border border-border-dark text-[9.5px] font-bold tracking-wide shadow-card">
-          <StatusChip on={showPositions}  label="POS"     count={positionsCount} colorOn="emerald" />
-          <StatusChip on={showTpSl}       label="TP/SL"                          colorOn="indigo"  />
-          <StatusChip on={showStopLimit}  label="STP/LIM" count={ordersCount}    colorOn="amber"   />
-          <StatusChip on={showAlerts}     label="ALERTS"                          colorOn="pink"    />
-          <StatusChip on={showSignals}    label="SIG"                             colorOn="blue"    />
-          <StatusChip on={showHmr}        label="HMR"                             colorOn="violet"  />
-          <StatusChip on={showCalendar}   label="CAL"                             colorOn="sky"     />
-        </div>
       </div>
 
       {/* RSI sub-panel */}
@@ -2267,35 +2254,6 @@ export default function PriceChart({
         </div>
       )}
     </div>
-  );
-}
-
-// Chart status pill chip — solid colored when ON, faded outline when OFF.
-// Optional count badge on the right (e.g. "POS 3").
-function StatusChip({ on, label, count, colorOn = 'emerald' }) {
-  const onMap = {
-    emerald: 'bg-emerald-500 text-white border-emerald-600',
-    indigo:  'bg-indigo-500  text-white border-indigo-600',
-    amber:   'bg-amber-500   text-white border-amber-600',
-    pink:    'bg-pink-500    text-white border-pink-600',
-    blue:    'bg-blue-500    text-white border-blue-600',
-    violet:  'bg-violet-500  text-white border-violet-600',
-    sky:     'bg-sky-500     text-white border-sky-600',
-  };
-  return (
-    <span
-      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border transition-all ${
-        on
-          ? (onMap[colorOn] || onMap.emerald)
-          : 'bg-transparent text-text-muted/60 border-border-subtle'
-      }`}
-      title={`${label} — ${on ? 'ON' : 'OFF'}${count ? ` · ${count}` : ''}`}
-    >
-      <span className="leading-none">{label}</span>
-      {on && count > 0 && (
-        <span className="leading-none text-[9px] px-1 rounded bg-white/25">{count}</span>
-      )}
-    </span>
   );
 }
 

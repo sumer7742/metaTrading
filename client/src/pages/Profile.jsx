@@ -29,7 +29,7 @@ export default function Profile() {
         subtitle="Manage your account details, KYC verification, password, 2FA, and active sessions."
       />
 
-      <div className="flex border-b border-border-dark">
+      <div className="flex border-b border-border-dark overflow-x-auto no-scrollbar">
         {[
           { id: 'profile', label: 'Profile' },
           { id: 'kyc', label: 'KYC Verification' },
@@ -40,7 +40,7 @@ export default function Profile() {
           <button
             key={t.id}
             onClick={() => setTab(t.id)}
-            className={`px-4 py-2 text-sm font-medium ${
+            className={`px-3 sm:px-4 py-2 text-sm font-medium whitespace-nowrap ${
               tab === t.id ? 'text-teal-accent border-b-2 border-teal-accent' : 'text-gray-400 hover:text-white'
             }`}
           >

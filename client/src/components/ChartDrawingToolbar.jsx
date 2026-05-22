@@ -41,7 +41,7 @@ export default function ChartDrawingToolbar({ controls }) {
 
   return (
     <div
-      className="chart-drawing-toolbar absolute top-0 left-0 bottom-0 z-20 flex flex-col items-center gap-1 p-1 rounded-br-xl border border-l-0 border-t-0 border-border-dark bg-white/90 backdrop-blur-sm shadow-card overflow-y-auto overflow-x-visible"
+      className="chart-drawing-toolbar hidden md:flex absolute top-0 left-0 bottom-0 z-20 flex-col items-center gap-1 p-1 rounded-br-xl border border-l-0 border-t-0 border-border-dark bg-white/90 backdrop-blur-sm shadow-card overflow-y-auto overflow-x-visible"
       style={{ scrollbarWidth: 'thin', scrollbarColor: '#cbd5e1 transparent' }}
     >
       <Btn label="Crosshair" active={isActive('crosshair')} onClick={() => setActiveTool('crosshair')}>

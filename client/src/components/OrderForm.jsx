@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { wsClient } from '../services/ws';
@@ -126,14 +126,33 @@ export default function OrderForm({
   // ── Auto TP / SL ──────────────────────────────────────────────────
   // When the user enables Settings > Auto Trading > "Set TP/SL automatically",
   // the form auto-populates Stop Loss + Take Profit with safe defaults
-  // (1% loss, 2% profit) the moment they enter a quantity. Manually edited
-  // values are never overwritten — we only fill when the field is empty.
+  // (1% loss, 2% profit) the moment they enter a quantity. The ref guard
+  // is what makes the × clear button stick — without it, the effect would
+  // re-run after `setStopLoss('')` (because stopLoss/takeProfit used to
+  // sit in the deps array) and immediately re-fill the field.
+  const autoFillDoneRef = useRef(false);
+  const prevSideRef = useRef(side);
   useEffect(() => {
-    if (!autoTpSl) return;
+    // Side flip resets the "done" flag so the new side gets correctly
+    // signed defaults. Empty fields get re-filled; existing values stay
+    // because the inner !stopLoss / !takeProfit checks still gate writes.
+    if (prevSideRef.current !== side) {
+      autoFillDoneRef.current = false;
+      prevSideRef.current = side;
+    }
+    if (!autoTpSl) {
+      autoFillDoneRef.current = false;
+      return;
+    }
+    if (!quantity || Number(quantity) <= 0) {
+      autoFillDoneRef.current = false;
+      return;
+    }
+    if (autoFillDoneRef.current) return;
     const px = orderMode === 'MARKET'
       ? Number(instrument?.lastPrice || 0)
       : Number(price || 0);
-    if (!px || !quantity || Number(quantity) <= 0) return;
+    if (!px) return;
     const prec = Math.min(instrument?.pricePrecision || 2, 5);
     const slDist = px * 0.01;  // 1% stop
     const tpDist = px * 0.02;  // 2% target (1:2 R/R)
@@ -144,7 +163,10 @@ export default function OrderForm({
       if (!stopLoss)   setStopLoss((px + slDist).toFixed(prec));
       if (!takeProfit) setTakeProfit((px - tpDist).toFixed(prec));
     }
-  }, [autoTpSl, side, quantity, price, orderMode, instrument?.lastPrice, instrument?.pricePrecision, stopLoss, takeProfit]);
+    autoFillDoneRef.current = true;
+    // stopLoss / takeProfit deliberately omitted — see comment above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoTpSl, side, quantity, price, orderMode, instrument?.lastPrice, instrument?.pricePrecision]);
 
   // Fetch free balance for the selected account so we can show an
   // "Available" line and compute % presets accurately.
@@ -206,13 +228,19 @@ export default function OrderForm({
         idempotencyKey: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       };
       if (orderMode === 'LIMIT') payload.price = price;
-      if (stopLoss) payload.stopLoss = stopLoss;
-      if (takeProfit) payload.takeProfit = takeProfit;
+      // Skip 0 / negative / non-numeric — the truthy-string check used to
+      // accept "0" and send a never-triggering threshold to the backend.
+      if (Number(stopLoss) > 0)   payload.stopLoss = stopLoss;
+      if (Number(takeProfit) > 0) payload.takeProfit = takeProfit;
 
       const { data } = await api.post('/trading/orders', payload);
       toast.success(`Order ${data.data.status}`);
       onPlaced?.(data.data);
+      // Reset form for the next entry — keep instrument/leverage/side
+      // (sticky UX), clear amount + SL/TP so they don't bleed across orders.
       setQuantity('');
+      setStopLoss('');
+      setTakeProfit('');
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {

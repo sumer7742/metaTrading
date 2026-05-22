@@ -180,7 +180,7 @@ class MatchingEngine {
         // sides so each derives its own dedupeKey of "TRADE_SETTLE:<tradeId>".
         // (Idempotency is per (wallet, dedupeKey) so taker and maker each
         // get one settle on their own wallet.)
-        await this._updatePosition(order.accountId, order.userId, order.instrumentId, order.symbol, order.side, f.qty, f.price, order.leverage, newTrade._id, order.closeOnly);
+        await this._updatePosition(order.accountId, order.userId, order.instrumentId, order.symbol, order.side, f.qty, f.price, order.leverage, newTrade._id, order.closeOnly, order.stopLoss, order.takeProfit);
 
         // Maker side: skip the position update if we couldn't load the maker
         // doc (deleted out from under us, etc.). Defaulting leverage to 1
@@ -197,7 +197,9 @@ class MatchingEngine {
             f.price,
             maker.leverage || 1,
             newTrade._id,
-            maker.closeOnly
+            maker.closeOnly,
+            maker.stopLoss,
+            maker.takeProfit
           );
         } else {
           console.error(
@@ -296,7 +298,9 @@ class MatchingEngine {
           fillPx,
           order.leverage,
           fbTrade._id,
-          order.closeOnly
+          order.closeOnly,
+          order.stopLoss,
+          order.takeProfit
         );
 
         order.filledQuantity = add(order.filledQuantity, remainingQty);
@@ -465,7 +469,9 @@ class MatchingEngine {
       finalPrice,
       order.leverage,
       bbookTrade._id,
-      order.closeOnly
+      order.closeOnly,
+      order.stopLoss,
+      order.takeProfit
     );
 
     order.status = ORDER_STATUS.FILLED;
@@ -598,7 +604,9 @@ class MatchingEngine {
       finalPrice,
       order.leverage,
       externalTrade._id,
-      order.closeOnly
+      order.closeOnly,
+      order.stopLoss,
+      order.takeProfit
     );
 
     order.status = ORDER_STATUS.FILLED;
@@ -660,7 +668,7 @@ class MatchingEngine {
    * doc.save) for the CLOSED transition so concurrent SL+TP+manual
    * closes can't double-settle.
    */
-  async _updatePosition(accountId, userId, instrumentId, symbol, side, qty, price, leverage, tradeId, closeOnly = false) {
+  async _updatePosition(accountId, userId, instrumentId, symbol, side, qty, price, leverage, tradeId, closeOnly = false, stopLoss = null, takeProfit = null) {
     // Accept both OPEN and CLOSING — controller may have stamped the
     // position to CLOSING as an atomic claim, but the engine still needs
     // to settle it.
@@ -703,6 +711,12 @@ class MatchingEngine {
         entryPrice: price,
         leverage: leverage || 1,
         margin,
+        // Carry SL/TP from the opening order onto the new position. Without
+        // this, the order-time inputs were stored on the Order doc but
+        // never on Position, so backgroundWorker never tripped them — the
+        // user had to re-enter them via the modify endpoint after fill.
+        ...(stopLoss   ? { stopLoss:   String(stopLoss)   } : {}),
+        ...(takeProfit ? { takeProfit: String(takeProfit) } : {}),
       });
       return pos;
     }
