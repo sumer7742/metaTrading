@@ -2,9 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { wsClient } from '../services/ws';
-import { fmtPriceDual, fmtMoneyDual } from '../utils/format';
-import { useFxRate } from '../hooks/useFxRate';
 import { useTradeSettings } from '../store/tradeSettings';
+import { useThemeStore } from '../store/theme';
 import AssetIcon from './AssetIcon';
 
 export default function OrderForm({
@@ -68,7 +67,6 @@ export default function OrderForm({
   // the new ceiling. After the WS push arrives the re-clamp effect
   // below will snap it back into range if admin lowered the cap.
   const initialLev = Math.min(MAX_LEVERAGE_UI, Math.max(1, Number(account?.leverage) || 1));
-  const fxRate = useFxRate();
 
   const [internalSide, setInternalSide] = useState('BUY');
   const sideControlled = controlledSide === 'BUY' || controlledSide === 'SELL';
@@ -367,512 +365,711 @@ export default function OrderForm({
     return Number.isFinite(v) ? v : null;
   }, [takeProfit, refPrice]);
 
-  // Live price formatter — INR primary + USD secondary if instrument is USD-quoted.
-  const livePxDual = instrument
-    ? fmtPriceDual(
-        instrument.lastPrice || '0',
-        instrument.quoteCurrency || 'USD',
-        fxRate,
-        instrument.pricePrecision || 2
-      )
-    : null;
-
   const acctSym = account?.baseCurrency === 'INR' ? '₹'
     : account?.baseCurrency === 'USD' ? '$'
     : (account?.baseCurrency + ' ');
   const fmtAcct = (v) =>
     `${acctSym}${Number(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+  // ── Bid / Ask / Spread derived for the Sell / Buy side cards ───
+  // Prefer the instrument's live bid/ask when present; otherwise fall back
+  // to the derived bid/ask from `lastPrice ± spread/2` (`currentBidAsk`).
+  // This stops the cards from showing "—" when only one of bid/ask is missing
+  // — the user always sees a real price as long as lastPrice exists.
+  const rawBid = Number(instrument?.bid);
+  const rawAsk = Number(instrument?.ask);
+  const bid = Number.isFinite(rawBid) && rawBid > 0 ? rawBid : currentBidAsk.bid;
+  const ask = Number.isFinite(rawAsk) && rawAsk > 0 ? rawAsk : currentBidAsk.ask;
+  const hasQuotes = Number.isFinite(bid) && Number.isFinite(ask) && bid > 0;
+  const prec = Math.min(instrument?.pricePrecision || 2, 5);
+  const spreadAbs = hasQuotes ? Math.max(0, ask - bid) : 0;
+  // Sentiment split — derived from how close last is to ask vs bid.
+  // No order-book depth in this build; this gives a deterministic value
+  // that moves with price so the bar isn't visually frozen.
+  const last = Number(instrument?.lastPrice || 0);
+  const buyPct = hasQuotes && (ask - bid) > 0
+    ? Math.max(15, Math.min(85, ((last - bid) / (ask - bid)) * 100))
+    : 50;
+  const sellPct = 100 - buyPct;
+
+  // Quantity +/- step uses the instrument's minOrderSize so a tap nudges
+  // by one minimum lot. Falls back to 0.01.
+  const qtyStep = Number(instrument?.minOrderSize) || 0.01;
+  const nudgeQty = (sign) => {
+    const next = Math.max(0, (Number(quantity) || 0) + sign * qtyStep);
+    setQuantity(next ? next.toFixed(4).replace(/\.?0+$/, '') : '');
+  };
+  // SL/TP +/- nudge by 1 unit of pricePrecision (0.01 for 2-dp, etc.).
+  const pxStep = 1 / Math.pow(10, prec);
+  const nudgePx = (setter, getter, sign) => {
+    const curr = Number(getter) || Number(refPrice) || 0;
+    const next = Math.max(0, curr + sign * pxStep);
+    setter(next ? next.toFixed(prec) : '');
+  };
+
+  // Real fee estimate — flat commission + percent commission + spread cost.
+  // Denominated in the instrument's quote currency (USD for BTCUSD, etc.).
+  const commFlat = Number(instrument?.commissionPerTrade || 0);
+  const commPct  = Number(instrument?.commissionPercent  || 0);
+  const spreadCost = hasQuotes && qtyNum > 0 ? spreadAbs * qtyNum : 0;
+  const feeEstimate = qtyNum > 0 && notional > 0
+    ? commFlat + (notional * commPct / 100) + spreadCost
+    : 0;
+  const quoteCcy = instrument?.quoteCurrency || 'USD';
+  const fmtQuote = (v) => `${Number(v).toFixed(2)} ${quoteCcy}`;
+
+  const sideIsBuy = side === 'BUY';
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  // Theme-aware palette — flips to dark tokens when the user toggles theme
+  // via the sun/moon button in the header (or the Settings > Appearance
+  // dropdown). Accent colors (sell coral, buy blue) stay the same so brand
+  // identity is consistent across modes.
+  const theme = useThemeStore((s) => s.theme);
+  const isDark = theme === 'dark';
+  const C = isDark
+    ? {
+        pageBg:  '#131A29',
+        cardBg:  '#1A2235',
+        cardBg2: '#1F2A40',
+        border:  '#2A3548',
+        text:    '#F8FAFC',
+        dim:     '#94A3B8',
+        muted:   '#64748B',
+        sell:    '#E56655',
+        sellHi:  '#E5715B',
+        buy:     '#2563EB',
+        buyHi:   '#3B82F6',
+      }
+    : {
+        pageBg:  '#F8FAFC',
+        cardBg:  '#FFFFFF',
+        cardBg2: '#F1F5F9',
+        border:  '#E5E7EB',
+        text:    '#0F172A',
+        dim:     '#64748B',
+        muted:   '#94A3B8',
+        sell:    '#E56655',
+        sellHi:  '#E5715B',
+        buy:     '#2563EB',
+        buyHi:   '#3B82F6',
+      };
+
+  // Toggle handler — flips intent in tradeSettings (persisted), which then
+  // pushes the new effective theme to the theme store via applyAppearance.
+  const toggleTheme = () => {
+    const setAppearance = useTradeSettings.getState().set;
+    setAppearance('trading.appearance', isDark ? 'light' : 'dark');
+  };
+
   return (
-    // Card hugs its content (no `flex-1` — that left a tall blank
-    // strip below the CTA after the cost-summary card was removed).
-    // `max-h-full` + `overflow-y-auto` still let it scroll internally
-    // if the form ever grows taller than the surrounding aside.
-    <div className="card p-4 max-h-full overflow-y-auto">
-      {/* Premium header — asset icon in a tinted halo, big symbol on
-          left, vertically-centered live price + % chip on right, sharp
-          close-X. The thin gradient divider below acts as a section
-          separator without taking extra vertical space. */}
-      <div className="flex items-center justify-between gap-3 pb-3 mb-3 border-b border-border-subtle">
+    <div
+      className="op-shell relative max-h-full overflow-x-hidden overflow-y-auto rounded-md p-3"
+      style={{ background: C.pageBg, border: `1px solid ${C.border}` }}
+    >
+      {/* ── Top header: icon + symbol + close ───────────────────── */}
+      <div className="flex items-center justify-between gap-3 mb-3">
         <div className="flex items-center gap-2.5 min-w-0">
-          <div className="relative shrink-0">
-            <div className="absolute inset-0 rounded-full bg-primary-500/10 blur-md scale-110" aria-hidden="true" />
-            <div className="relative">
-              <AssetIcon row={instrument} size={28} round />
-            </div>
-          </div>
-          <div className="min-w-0">
-            <div className="text-[15px] font-extrabold text-text-primary tracking-tight truncate leading-tight">
-              {instrument?.symbol}
-            </div>
-            {Number.isFinite(Number(instrument?.lastPrice)) && (
-              <div className="flex items-center gap-1.5 text-[11px] font-mono tabular-nums mt-0.5">
-                <span className="text-text-secondary font-semibold">
-                  {Number(instrument.lastPrice).toFixed(Math.min(instrument?.pricePrecision || 2, 5))}
-                </span>
-                {Number.isFinite(Number(instrument?.change24h)) && (
-                  <span
-                    className="inline-flex items-center gap-0.5 font-bold text-[10px] px-1.5 py-0.5 rounded-full"
-                    style={{
-                      color: Number(instrument.change24h) >= 0 ? '#16A34A' : '#DC2626',
-                      background: Number(instrument.change24h) >= 0 ? 'rgba(22,163,74,0.12)' : 'rgba(220,38,38,0.12)',
-                    }}
-                  >
-                    {Number(instrument.change24h) >= 0 ? '▲' : '▼'} {Math.abs(Number(instrument.change24h)).toFixed(2)}%
-                  </span>
-                )}
-              </div>
-            )}
+          <AssetIcon row={instrument} size={24} round />
+          <div className="text-[16px] font-bold tracking-tight truncate" style={{ color: C.text }}>
+            {instrument?.baseCurrency || instrument?.symbol}
           </div>
         </div>
         {onClose && (
           <button
             type="button"
             onClick={onClose}
-            title="Close panel"
             aria-label="Close order panel"
-            className="shrink-0 w-7 h-7 rounded-md hover:bg-bg-hover flex items-center justify-center text-text-muted hover:text-text-primary transition-all"
+            className="shrink-0 w-7 h-7 flex items-center justify-center transition-opacity hover:opacity-100"
+            style={{ color: C.dim, opacity: 0.85 }}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
           </button>
         )}
       </div>
 
-      {/* Bid / Spread / Ask — three-column inline strip with clear labels
-          above the values. Sharp corners + plain white background — less
-          visual noise against the surrounding card. */}
-      {(() => {
-        const bid = Number(instrument?.bid);
-        const ask = Number(instrument?.ask);
-        if (!Number.isFinite(bid) || !Number.isFinite(ask) || bid <= 0) return null;
-        const prec = Math.min(instrument?.pricePrecision || 2, 5);
-        const mid = (bid + ask) / 2;
-        const spread = ask - bid;
-        const spreadBps = mid > 0 ? (spread / mid) * 10000 : 0;
-        return (
-          <div className="grid grid-cols-3 mb-3 rounded border border-border-subtle overflow-hidden">
-            <div className="text-center py-2 border-r border-border-subtle bg-gradient-to-b from-bull/5 to-transparent">
-              <div className="text-[9px] uppercase tracking-[0.15em] font-bold text-text-muted leading-none">Bid</div>
-              <div className="font-mono font-extrabold text-[13px] text-bull tabular-nums mt-1 leading-none">{bid.toFixed(prec)}</div>
-            </div>
-            <div className="text-center py-2 border-r border-border-subtle bg-white">
-              <div className="text-[9px] uppercase tracking-[0.15em] font-bold text-text-muted leading-none">Spread</div>
-              <div className="font-mono font-extrabold text-[13px] text-text-primary tabular-nums mt-1 leading-none">
-                {spreadBps.toFixed(1)}<span className="text-[9px] text-text-muted ml-0.5 font-bold">bps</span>
-              </div>
-            </div>
-            <div className="text-center py-2 bg-gradient-to-b from-bear/5 to-transparent">
-              <div className="text-[9px] uppercase tracking-[0.15em] font-bold text-text-muted leading-none">Ask</div>
-              <div className="font-mono font-extrabold text-[13px] text-bear tabular-nums mt-1 leading-none">{ask.toFixed(prec)}</div>
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* Order Mode dropdown — slim version (no big icon padding). */}
-      <div className="mb-2 relative">
+      {/* ── Order entry mode dropdown ────────────────────────────── */}
+      <div className="relative mb-2.5">
         <select
           value={openOrderMode}
           onChange={(e) => setOpenOrderMode('trading.openOrderMode', e.target.value)}
           aria-label="Order entry mode"
-          className="appearance-none cursor-pointer w-full pl-2.5 pr-7 py-1.5 rounded border border-border-subtle bg-white text-[11px] font-bold text-text-secondary hover:border-primary-500/40 focus:outline-none focus:border-primary-500 transition-all"
+          className="appearance-none cursor-pointer w-full pl-3 pr-9 py-2 rounded text-[13px] font-medium focus:outline-none transition-colors"
+          style={{ background: C.cardBg, border: `1px solid ${C.border}`, color: C.text }}
         >
           <option value="regular">Regular form</option>
-          <option value="oneClick">⚡ One-click</option>
+          <option value="oneClick">One-click form</option>
           <option value="riskCalc">Risk calculator</option>
         </select>
         <svg
-          width="11" height="11" viewBox="0 0 24 24"
-          fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-          className="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
+          width="14" height="14" viewBox="0 0 24 24"
+          fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+          className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none"
+          style={{ color: C.dim }}
         >
           <polyline points="6 9 12 15 18 9" />
         </svg>
       </div>
 
-      {/* BUY / SELL — two prominent buttons. Each gets bold treatment
-          on the active side (full color fill + glow) while the inactive
-          side stays neutral but readable. */}
-      {/* BUY / SELL — premium gradient-active buttons. Two-line content
-          (label + subtitle) gives back the broker feel without bloating
-          height too much. Active side uses a vertical gradient + crisp
-          drop-shadow; inactive stays clean with a subtle hover hint. */}
-      <div className="grid grid-cols-2 gap-2 mb-3">
-        <button
-          type="button"
-          onClick={() => setSide('BUY')}
-          className={`relative py-3 rounded font-extrabold tracking-wide transition-all overflow-hidden border ${
-            side === 'BUY'
-              ? 'text-white border-bull/0 shadow-[0_3px_10px_rgba(16,185,129,0.30)]'
-              : 'bg-white border-border-subtle text-text-secondary hover:border-bull/50 hover:text-bull hover:bg-bull/[0.03]'
-          }`}
-          style={side === 'BUY' ? { background: 'linear-gradient(180deg, #10B981 0%, #059669 100%)' } : undefined}
-        >
-          <div className="flex flex-col items-center leading-tight">
-            <span className="text-[13px]">↑ BUY</span>
-            <span className={`text-[9px] font-medium tracking-normal ${side === 'BUY' ? 'text-white/80' : 'text-text-muted'} mt-0.5`}>
-              Long position
-            </span>
-          </div>
-        </button>
-        <button
-          type="button"
+      {/* ── Side-by-side Sell / Buy price cards ─────────────────── */}
+      <div className="grid grid-cols-2 gap-2 mb-2">
+        <SidePriceCard
+          label="Sell"
+          price={hasQuotes ? bid : null}
+          prec={prec}
+          active={!sideIsBuy}
+          tone="sell"
+          C={C}
           onClick={() => setSide('SELL')}
-          className={`relative py-3 rounded font-extrabold tracking-wide transition-all overflow-hidden border ${
-            side === 'SELL'
-              ? 'text-white border-bear/0 shadow-[0_3px_10px_rgba(239,68,68,0.30)]'
-              : 'bg-white border-border-subtle text-text-secondary hover:border-bear/50 hover:text-bear hover:bg-bear/[0.03]'
-          }`}
-          style={side === 'SELL' ? { background: 'linear-gradient(180deg, #EF4444 0%, #DC2626 100%)' } : undefined}
-        >
-          <div className="flex flex-col items-center leading-tight">
-            <span className="text-[13px]">↓ SELL</span>
-            <span className={`text-[9px] font-medium tracking-normal ${side === 'SELL' ? 'text-white/80' : 'text-text-muted'} mt-0.5`}>
-              Short position
-            </span>
-          </div>
-        </button>
+        />
+        <SidePriceCard
+          label="Buy"
+          price={hasQuotes ? ask : null}
+          prec={prec}
+          active={sideIsBuy}
+          tone="buy"
+          C={C}
+          onClick={() => setSide('BUY')}
+        />
       </div>
 
-      {/* MARKET / LIMIT — premium segmented control inside a soft track.
-          Active mode rides as a colored pill with a subtle inner glow. */}
-      {!isOneClick && (
-        <div className="relative flex p-0.5 mb-3 rounded border border-border-subtle bg-bg-hover/40">
-          {['MARKET', 'LIMIT'].map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => {
-                setOrderMode(m);
-                if (m === 'LIMIT' && !price && instrument?.lastPrice) setPrice(instrument.lastPrice);
-              }}
-              className={`flex-1 text-[11px] font-extrabold py-1.5 rounded-[3px] tracking-[0.1em] transition-all ${
-                orderMode === m
-                  ? 'bg-white text-text-primary shadow-[0_1px_3px_rgba(0,0,0,0.10)]'
-                  : 'text-text-muted hover:text-text-primary'
-              }`}
+      {/* ── Sentiment bar with centered spread chip ─────────────── */}
+      {/* Exness-style: spread pill sits dead-center between the Sell/Buy
+          cards, overlapping the gap. Negative top-margin pulls it up so it
+          tucks into the gap between the cards (which sit above this row),
+          z-10 keeps it above the sentiment bar. */}
+      {hasQuotes && (
+        <div className="relative mb-3">
+          {/* Centered spread chip — overlaps gap between Sell/Buy cards */}
+          <div className="absolute left-1/2 -translate-x-1/2 -top-4 z-10">
+            <div
+              className="px-2.5 py-1 rounded-md text-[11px] font-semibold whitespace-nowrap tabular-nums shadow-sm"
+              style={{ background: C.cardBg, color: C.text, border: `1px solid ${C.border}` }}
             >
-              {m}
-            </button>
-          ))}
+              {spreadAbs.toFixed(prec)} {instrument?.quoteCurrency || ''}
+            </div>
+          </div>
+          <div className="flex items-center justify-between text-[12px] font-medium mb-1.5">
+            <span style={{ color: C.sell }}>{sellPct.toFixed(0)}%</span>
+            <span style={{ color: C.buy }}>{buyPct.toFixed(0)}%</span>
+          </div>
+          <div className="relative h-[3px] rounded-full overflow-hidden" style={{ background: C.cardBg }}>
+            <div className="absolute inset-y-0 left-0 transition-all duration-500" style={{ width: `${sellPct}%`, background: C.sell }} />
+            <div className="absolute inset-y-0 right-0 transition-all duration-500" style={{ width: `${buyPct}%`, background: C.buy }} />
+          </div>
         </div>
       )}
 
-      {/* ── Risk calculator panel — appears above the form fields when
-          riskCalc mode is active. Auto-derives a recommended quantity
-          from: free margin × risk% / stop distance. */}
+      {/* ── Market / Pending tabs ────────────────────────────────── */}
+      {!isOneClick && (
+        <div className="grid grid-cols-2 gap-0 mb-3 rounded overflow-hidden" style={{ background: C.cardBg, border: `1px solid ${C.border}` }}>
+          {[
+            { id: 'MARKET', label: 'Market'  },
+            { id: 'LIMIT',  label: 'Pending' },
+          ].map((m) => {
+            const active = orderMode === m.id;
+            return (
+              <button
+                key={m.id}
+                type="button"
+                onClick={() => {
+                  setOrderMode(m.id);
+                  if (m.id === 'LIMIT' && !price && instrument?.lastPrice) setPrice(instrument.lastPrice);
+                }}
+                className="text-[13px] font-medium py-1.5 transition-colors"
+                style={{
+                  background: active ? C.cardBg2 : 'transparent',
+                  color: active ? C.text : C.dim,
+                  border: active ? `1px solid ${C.border}` : 'none',
+                  margin: active ? '-1px' : 0,
+                  borderRadius: active ? '6px' : 0,
+                }}
+              >
+                {m.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Risk-calculator collapse (only when riskCalc mode) ──── */}
       {isRiskCalc && (() => {
         const free = Number(accountFree || 0);
-        const px = Number(price || instrument?.lastPrice || 0);
         const riskAmt = free * (Number(riskPct) || 0) / 100;
         const dist = Number(stopDistance) || 0;
         const recommendedQty = dist > 0 ? (riskAmt / dist) : 0;
         return (
-          <div className="mb-5 rounded-xl border border-primary-500/30 bg-primary-500/5 p-3 space-y-2.5">
-            <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-wider font-bold text-primary-600">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M12 8v4" /><path d="M12 16h.01" /></svg>
-              Risk Calculator
-            </div>
+          <div className="mb-4 rounded p-3 space-y-2" style={{ background: C.cardBg, border: `1px solid ${C.border}` }}>
+            <div className="text-[12px] font-medium" style={{ color: C.dim }}>Risk Calculator</div>
             <div className="grid grid-cols-2 gap-2">
-              <label className="text-[11px] font-semibold text-text-secondary">
-                Risk %
-                <div className="relative mt-1">
-                  <input
-                    type="number"
-                    step="any"
-                    value={riskPct}
-                    onChange={(e) => setRiskPct(e.target.value)}
-                    className="w-full px-2 py-1.5 rounded-md border border-border-dark bg-white text-xs font-mono"
-                  />
-                </div>
-              </label>
-              <label className="text-[11px] font-semibold text-text-secondary">
-                Stop distance ({instrument?.quoteCurrency})
-                <input
-                  type="number"
-                  step="any"
-                  value={stopDistance}
-                  onChange={(e) => setStopDistance(e.target.value)}
-                  placeholder="0.00"
-                  className="w-full mt-1 px-2 py-1.5 rounded-md border border-border-dark bg-white text-xs font-mono"
-                />
-              </label>
+              <input
+                type="number" step="any"
+                value={riskPct}
+                onChange={(e) => setRiskPct(e.target.value)}
+                placeholder="Risk %"
+                className="w-full px-2 py-2 rounded-sm text-[13px] focus:outline-none"
+                style={{ background: C.pageBg, border: `1px solid ${C.border}`, color: C.text }}
+              />
+              <input
+                type="number" step="any"
+                value={stopDistance}
+                onChange={(e) => setStopDistance(e.target.value)}
+                placeholder="Stop dist"
+                className="w-full px-2 py-2 rounded-sm text-[13px] focus:outline-none"
+                style={{ background: C.pageBg, border: `1px solid ${C.border}`, color: C.text }}
+              />
             </div>
-            <div className="grid grid-cols-2 gap-2 text-[10px] pt-1">
-              <div>
-                <div className="text-text-muted uppercase tracking-wider font-bold">Risk amount</div>
-                <div className="font-mono font-bold text-bear">{fmtAcct(riskAmt)}</div>
-              </div>
-              <div className="text-right">
-                <div className="text-text-muted uppercase tracking-wider font-bold">Suggested qty</div>
-                <button
-                  type="button"
-                  onClick={() => recommendedQty > 0 && setQuantity(recommendedQty.toFixed(4))}
-                  disabled={!recommendedQty}
-                  className="font-mono font-bold text-primary-600 hover:underline disabled:no-underline disabled:opacity-50"
-                  title={recommendedQty > 0 ? 'Click to apply' : 'Enter stop distance'}
-                >
-                  {recommendedQty > 0 ? recommendedQty.toFixed(4) : '—'}
-                </button>
-              </div>
+            <div className="flex items-center justify-between text-[12px]">
+              <span style={{ color: C.dim }}>Risk · {fmtAcct(riskAmt)}</span>
+              <button
+                type="button"
+                onClick={() => recommendedQty > 0 && setQuantity(recommendedQty.toFixed(4))}
+                disabled={!recommendedQty}
+                className="font-medium hover:underline disabled:no-underline disabled:opacity-50"
+                style={{ color: C.buy }}
+              >
+                Use {recommendedQty > 0 ? recommendedQty.toFixed(4) : '—'} lots
+              </button>
             </div>
           </div>
         );
       })()}
 
-      <form onSubmit={submit} className="space-y-3">
-        {/* Limit price input — only when LIMIT mode is selected. The
-            "current ask/bid" hint shows the side-relevant quote, and the
-            helper line below explains in plain English what the order
-            will do (drop-to-buy, breakout-buy, rise-to-sell, breakdown-
-            sell). Border tints red when the price equals current market. */}
+      <form onSubmit={submit} className="space-y-2.5">
+        {/* ── Limit price (Pending only) ──────────────────────────── */}
         {orderMode === 'LIMIT' && (
-          <div>
-            <label className="label flex items-center justify-between">
-              <span>Limit Price</span>
-              {currentBidAsk.ask > 0 && (
-                <span className="text-text-muted normal-case font-mono text-[10px] tracking-normal">
-                  {side === 'BUY'
-                    ? `ask ${currentBidAsk.ask.toFixed(instrument?.pricePrecision || 2)}`
-                    : `bid ${currentBidAsk.bid.toFixed(instrument?.pricePrecision || 2)}`}
-                </span>
-              )}
-            </label>
-            <input
-              type="number"
-              step="any"
-              className={`input font-mono ${limitInvalidReason ? 'border-bear/50 focus:border-bear' : ''}`}
+          <FieldCard
+            label="Limit Price"
+            error={limitInvalidReason}
+            subtext={!limitInvalidReason ? limitResolution.hint : null}
+            C={C}
+          >
+            <NumericRow
+              C={C}
               value={price}
-              onChange={(e) => setPrice(e.target.value)}
+              onChange={setPrice}
+              onMinus={() => nudgePx(setPrice, price, -1)}
+              onPlus={()  => nudgePx(setPrice, price,  1)}
+              placeholder={instrument?.lastPrice ? Number(instrument.lastPrice).toFixed(prec) : '0.00'}
+              pill="Limit"
+              unified
               required
+              error={!!limitInvalidReason}
             />
-            {limitInvalidReason ? (
-              <div className="mt-1.5 text-[11px] text-bear flex items-start gap-1.5 leading-snug">
-                <span className="shrink-0">⚠</span>
-                <span>{limitInvalidReason}</span>
-              </div>
-            ) : limitResolution.hint ? (
-              <div className="mt-1.5 text-[11px] text-text-secondary leading-snug">
-                {limitResolution.hint}
-              </div>
-            ) : null}
-          </div>
+          </FieldCard>
         )}
 
-        {/* Quantity — compact: label inline with the unit, presets as
-            tiny pills above the input. Reduces vertical stack vs the
-            previous separate row layout. */}
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label className="label !mb-0 flex items-baseline gap-1.5">
-              <span>Quantity</span>
-              <span className="font-mono text-[10px] text-text-muted normal-case tracking-normal">({instrument?.baseCurrency})</span>
-            </label>
-            <div className="flex gap-0.5">
-              {[25, 50, 75, 100].map((pct) => (
-                <button
-                  key={pct}
-                  type="button"
-                  onClick={() => setPresetPct(pct)}
-                  disabled={!refPrice || !free}
-                  className="text-[9.5px] font-bold px-1.5 py-0.5 rounded text-text-muted hover:text-white hover:bg-primary-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                  title={`Use ${pct}% of free margin`}
-                >
-                  {pct === 100 ? 'MAX' : `${pct}%`}
-                </button>
-              ))}
-            </div>
-          </div>
-          <input
-            type="number"
-            step="any"
-            className="input font-mono"
+        {/* ── Volume (Lots) — unified segmented bar ──────────────── */}
+        <FieldCard label="Volume" C={C}>
+          <NumericRow
+            C={C}
             value={quantity}
-            onChange={(e) => setQuantity(e.target.value)}
-            placeholder={`min ${instrument?.minOrderSize || '0.001'}`}
+            onChange={setQuantity}
+            onMinus={() => nudgeQty(-1)}
+            onPlus={() => nudgeQty(1)}
+            placeholder={instrument?.minOrderSize ? String(instrument.minOrderSize) : '0.01'}
+            suffix="Lots"
+            unified
             required
           />
-        </div>
+        </FieldCard>
 
-        {/* SL / TP with % distance hint — hidden in one-click mode */}
+        {/* ── Take Profit ─────────────────────────────────────────── */}
         {!isOneClick && (
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="label flex items-center justify-between">
-              <span>Stop Loss</span>
-              {slPct !== null && (
-                <span className={`font-mono normal-case tracking-normal text-[10px] ${slPct < 0 ? 'text-bear' : 'text-text-muted'}`}>
-                  {slPct >= 0 ? '+' : ''}{slPct.toFixed(2)}%
-                </span>
-              )}
-            </label>
-            <input
-              type="number"
-              step="any"
-              className="input font-mono"
-              value={stopLoss}
-              onChange={(e) => setStopLoss(e.target.value)}
-              placeholder="Optional"
-            />
-          </div>
-          <div>
-            <label className="label flex items-center justify-between">
-              <span>Take Profit</span>
-              {tpPct !== null && (
-                <span className={`font-mono normal-case tracking-normal text-[10px] ${tpPct > 0 ? 'text-bull' : 'text-text-muted'}`}>
-                  {tpPct >= 0 ? '+' : ''}{tpPct.toFixed(2)}%
-                </span>
-              )}
-            </label>
-            <input
-              type="number"
-              step="any"
-              className="input font-mono"
+          <FieldCard
+            label="Take Profit"
+            help="Auto-closes the position in profit when price reaches this level."
+            C={C}
+          >
+            <NumericRow
+              C={C}
               value={takeProfit}
-              onChange={(e) => setTakeProfit(e.target.value)}
-              placeholder="Optional"
+              onChange={setTakeProfit}
+              onMinus={() => nudgePx(setTakeProfit, takeProfit, -1)}
+              onPlus={()  => nudgePx(setTakeProfit, takeProfit,  1)}
+              placeholder="Not set"
+              priceLabel
+              unified
             />
-          </div>
-        </div>
+          </FieldCard>
         )}
 
-        {/* Leverage — premium block. Top row: label + editable pill on
-            the right. Slider below it with min/mid/max ticks underneath
-            for clear range awareness. */}
-        <div className="rounded border border-border-subtle bg-white p-2.5">
-          <div className="flex items-center justify-between mb-2">
-            <label className="label !mb-0 flex items-baseline gap-1.5">
-              <span>Leverage</span>
-              <span className="text-[9px] text-text-muted normal-case tracking-normal font-mono">max 1:{MAX_LEVERAGE_UI}</span>
-            </label>
-            <span className="inline-flex items-center gap-0.5 text-[12px] font-mono font-extrabold px-2 py-0.5 rounded bg-primary-500/10 text-primary-600 border border-primary-500/30 focus-within:border-primary-500 focus-within:ring-1 focus-within:ring-primary-500/25">
-              <span className="opacity-70">1:</span>
-              <input
-                type="number"
-                min={1}
-                max={MAX_LEVERAGE_UI}
-                step={1}
-                value={leverage}
-                onChange={(e) => {
-                  const v = Number(e.target.value);
-                  if (Number.isFinite(v)) setLeverage(Math.max(1, Math.min(MAX_LEVERAGE_UI, Math.round(v))));
-                }}
-                onBlur={() => { if (!leverage || leverage < 1) setLeverage(1); }}
-                className="w-12 bg-transparent text-right outline-none font-mono font-extrabold text-primary-600 tabular-nums"
-                aria-label="Leverage multiplier"
-              />
-              <span className="opacity-70">×</span>
-            </span>
-          </div>
-          <input
-            type="range"
-            min={1}
-            max={MAX_LEVERAGE_UI}
-            value={leverage}
-            onChange={(e) => setLeverage(Number(e.target.value))}
-            className="w-full accent-primary-500 h-1.5"
-          />
-          <div className="flex justify-between text-[10px] text-text-muted mt-1.5 font-mono font-semibold">
-            <span>1×</span>
-            <span>{Math.round(MAX_LEVERAGE_UI / 2)}×</span>
-            <span>{MAX_LEVERAGE_UI}×</span>
-          </div>
-        </div>
-
-        {/* ── Trade summary card — concise readout of cost + remaining
-            balance + estimated SL/TP PnL. Surfaces the impact of the
-            order before the user commits. Only renders when there's
-            a meaningful preview (qty + price both set). */}
-        {qtyNum > 0 && refPrice > 0 && (
-          <div className="rounded border border-border-subtle bg-gradient-to-b from-bg-hover/30 to-white px-3 py-2.5 space-y-1.5 text-[11.5px]">
-            <div className="text-[9px] uppercase tracking-[0.18em] font-bold text-text-muted mb-1">Order summary</div>
-            <div className="flex items-center justify-between">
-              <span className="text-text-muted font-medium">Notional</span>
-              <span className="font-mono font-bold text-text-primary tabular-nums">{fmtAcct(notional)}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-text-muted font-medium">Margin required</span>
-              <span className="font-mono font-bold text-text-primary tabular-nums">{fmtAcct(requiredMargin)}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-text-muted font-medium">Free after</span>
-              <span
-                className="font-mono font-extrabold tabular-nums"
-                style={{ color: overBudget ? '#DC2626' : '#16A34A' }}
-              >
-                {fmtAcct(remainingAfter)}
-              </span>
-            </div>
-            {/* SL / TP estimated outcomes — pinned together at the
-                bottom of the summary card with a thin top border. */}
-            {((Number(stopLoss) > 0) || (Number(takeProfit) > 0)) && (
-              <div className="flex items-center justify-between pt-1 mt-1 border-t border-border-subtle gap-3">
-                {Number(stopLoss) > 0 && (() => {
-                  const sl = Number(stopLoss);
-                  const slPnl = side === 'BUY' ? (sl - refPrice) * qtyNum : (refPrice - sl) * qtyNum;
-                  return (
-                    <span className="flex items-center gap-1 font-mono font-bold text-bear tabular-nums">
-                      <span className="text-[9px] text-text-muted font-sans font-medium">SL</span>
-                      {slPnl >= 0 ? '+' : ''}{fmtAcct(slPnl)}
-                    </span>
-                  );
-                })()}
-                {Number(takeProfit) > 0 && (() => {
-                  const tp = Number(takeProfit);
-                  const tpPnl = side === 'BUY' ? (tp - refPrice) * qtyNum : (refPrice - tp) * qtyNum;
-                  return (
-                    <span className="flex items-center gap-1 font-mono font-bold text-bull tabular-nums ml-auto">
-                      <span className="text-[9px] text-text-muted font-sans font-medium">TP</span>
-                      {tpPnl >= 0 ? '+' : ''}{fmtAcct(tpPnl)}
-                    </span>
-                  );
-                })()}
-              </div>
-            )}
-          </div>
+        {/* ── Stop Loss ──────────────────────────────────────────── */}
+        {!isOneClick && (
+          <FieldCard
+            label="Stop Loss"
+            help="Caps the loss by auto-closing the position when price hits this level."
+            C={C}
+          >
+            <NumericRow
+              C={C}
+              value={stopLoss}
+              onChange={setStopLoss}
+              onMinus={() => nudgePx(setStopLoss, stopLoss, -1)}
+              onPlus={()  => nudgePx(setStopLoss, stopLoss,  1)}
+              placeholder="Not set"
+              priceLabel
+              unified
+            />
+          </FieldCard>
         )}
 
-        {/* Insufficient-margin warning */}
+        {/* ── Insufficient margin warning ─────────────────────────── */}
         {overBudget && (
-          <div className="rounded bg-bear/10 border border-bear/30 px-3 py-2 text-[11px] text-bear font-bold flex items-center gap-1.5">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><circle cx="12" cy="12" r="10" /><path d="M12 8v5" /><path d="M12 16h.01" /></svg>
+          <div className="rounded px-3 py-2.5 text-[12px] font-medium flex items-center gap-2" style={{ background: 'rgba(229,102,85,0.08)', border: `1px solid ${C.sell}`, color: C.sell }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0"><circle cx="12" cy="12" r="10" /><path d="M12 8v5" /><path d="M12 16h.01" /></svg>
             Insufficient free margin
           </div>
         )}
 
+        {/* ── Primary CTA: Confirm Sell/Buy <qty> lots ───────────── */}
         <button
           type="submit"
           disabled={loading || overBudget || !!limitInvalidReason}
-          className={`w-full py-3 rounded font-extrabold text-[14px] tracking-wide transition-all text-white disabled:opacity-50 disabled:shadow-none disabled:cursor-not-allowed`}
-          style={
-            loading || overBudget || !!limitInvalidReason
-              ? { background: side === 'BUY' ? '#10B981' : '#EF4444' }
-              : side === 'BUY'
-                ? { background: 'linear-gradient(180deg, #10B981 0%, #059669 100%)', boxShadow: '0 4px 14px rgba(16,185,129,0.35)' }
-                : { background: 'linear-gradient(180deg, #EF4444 0%, #DC2626 100%)', boxShadow: '0 4px 14px rgba(239,68,68,0.35)' }
-          }
+          className="w-full py-2.5 rounded font-medium text-[14px] text-white transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ background: sideIsBuy ? C.buy : C.sell }}
         >
           {loading
             ? 'Placing…'
             : isOneClick
-              ? `⚡ Quick ${side === 'BUY' ? 'Buy' : 'Sell'}`
-              : `Place ${side === 'BUY' ? 'Buy' : 'Sell'} Order`}
+              ? `Quick ${sideIsBuy ? 'Buy' : 'Sell'}${quantity ? ` ${quantity} lots` : ''}`
+              : `Confirm ${sideIsBuy ? 'Buy' : 'Sell'}${quantity ? ` ${quantity} lots` : ''}`}
         </button>
+
+        {/* ── Cancel button ──────────────────────────────────────── */}
+        {onClose && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-full py-2 rounded font-medium text-[13px] transition-colors"
+            style={{ background: C.cardBg, color: C.text, border: `1px solid ${C.border}` }}
+          >
+            Cancel
+          </button>
+        )}
+
+        {/* ── Bottom info: Fees · Leverage · Margin · More ───────── */}
+        <div className="pt-1 text-[13px] space-y-1.5">
+          <InfoRow
+            C={C}
+            label="Fees"
+            value={feeEstimate > 0 ? `≈ ${fmtQuote(feeEstimate)}` : '—'}
+            help={`Commission ${commFlat} + ${commPct}% · spread ${spreadAbs.toFixed(prec)} ${quoteCcy}/unit`}
+          />
+          <InfoRow
+            C={C}
+            label="Leverage"
+            value={`1:${leverage}`}
+            help={`Max for your plan: 1:${MAX_LEVERAGE_UI}.`}
+          />
+          <InfoRow
+            C={C}
+            label="Margin"
+            value={requiredMargin > 0 ? fmtQuote(requiredMargin) : '—'}
+            help="Locked while the position is open."
+          />
+          <button
+            type="button"
+            onClick={() => setMoreOpen((v) => !v)}
+            className="inline-flex items-center gap-1 text-[13px] underline underline-offset-2 hover:no-underline pt-1 transition-opacity hover:opacity-80"
+            style={{ color: C.dim }}
+          >
+            {moreOpen ? 'Less' : 'More'}
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`transition-transform ${moreOpen ? 'rotate-180' : ''}`}>
+              <polyline points="6 9 12 15 18 9" />
+            </svg>
+          </button>
+          {moreOpen && (
+            <div className="pt-3 mt-1 space-y-3" style={{ borderTop: `1px solid ${C.border}` }}>
+              {/* Leverage slider */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[12px]" style={{ color: C.dim }}>Leverage</span>
+                  <span className="inline-flex items-center gap-0.5 text-[12px] font-medium px-2 py-0.5 rounded-sm" style={{ background: C.cardBg, color: C.buy, border: `1px solid ${C.border}` }}>
+                    <span className="opacity-70">1:</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={MAX_LEVERAGE_UI}
+                      step={1}
+                      value={leverage}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        if (Number.isFinite(v)) setLeverage(Math.max(1, Math.min(MAX_LEVERAGE_UI, Math.round(v))));
+                      }}
+                      onBlur={() => { if (!leverage || leverage < 1) setLeverage(1); }}
+                      className="w-12 bg-transparent text-right outline-none tabular-nums"
+                      style={{ color: C.buy }}
+                      aria-label="Leverage multiplier"
+                    />
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={1}
+                  max={MAX_LEVERAGE_UI}
+                  value={leverage}
+                  onChange={(e) => setLeverage(Number(e.target.value))}
+                  className="w-full h-1.5"
+                  style={{ accentColor: C.buy }}
+                />
+                <div className="flex justify-between text-[11px] mt-1" style={{ color: C.muted }}>
+                  <span>1×</span><span>{Math.round(MAX_LEVERAGE_UI / 2)}×</span><span>{MAX_LEVERAGE_UI}×</span>
+                </div>
+              </div>
+
+              {qtyNum > 0 && refPrice > 0 && (
+                <div className="space-y-1">
+                  <InfoRow C={C} label="Notional" value={fmtAcct(notional)} />
+                  <InfoRow
+                    C={C}
+                    label="Free after"
+                    value={fmtAcct(remainingAfter)}
+                    valueColor={overBudget ? C.sell : C.buy}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         {isOneClick && (
-          <div className="text-[10px] text-text-muted text-center mt-1">
+          <div className="text-[11px] text-center" style={{ color: C.muted }}>
             One-click mode · order fires immediately at market price
           </div>
         )}
       </form>
+
+      <style>{`
+        .op-shell { scrollbar-width: thin; scrollbar-color: rgba(148,163,184,0.3) transparent; }
+        .op-shell::-webkit-scrollbar { width: 5px; }
+        .op-shell::-webkit-scrollbar-track { background: transparent; }
+        .op-shell::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.3); border-radius: 9999px; }
+        .op-shell::-webkit-scrollbar-thumb:hover { background: rgba(148,163,184,0.5); }
+      `}</style>
     </div>
   );
 }
 
-function Row({ label, value, mono, bold, valueClass = 'text-text-primary' }) {
+// ──────────────────────────────────────────────────────────────────
+// Presentational sub-components
+// ──────────────────────────────────────────────────────────────────
+
+function SidePriceCard({ label, price, prec, active, tone, C, onClick }) {
+  const isBuy = tone === 'buy';
+  const accent = isBuy ? C.buy : C.sell;
   return (
-    <div className="flex justify-between items-center text-xs">
-      <span className="text-text-muted uppercase tracking-wider text-[10px] font-bold">{label}</span>
-      <span className={`${mono ? 'font-mono' : ''} ${bold ? 'font-bold' : ''} ${valueClass}`}>{value}</span>
+    <button
+      type="button"
+      onClick={onClick}
+      className="relative overflow-hidden rounded px-2.5 py-2 text-left transition-all duration-150"
+      style={{
+        background: active ? accent : C.cardBg,
+        border: `1px solid ${accent}`,
+        height: '62px',
+      }}
+    >
+      <div className="text-[12px] font-normal mb-0.5" style={{ color: active ? 'rgba(255,255,255,0.85)' : C.dim }}>
+        {label}
+      </div>
+      <div
+        className="text-right text-[16px] font-medium tabular-nums leading-tight"
+        style={{ color: active ? '#FFFFFF' : (isBuy ? C.buy : C.text) }}
+      >
+        {price !== null && Number.isFinite(price)
+          ? price.toLocaleString('en-US', { minimumFractionDigits: prec, maximumFractionDigits: prec })
+          : '—'}
+      </div>
+    </button>
+  );
+}
+
+function FieldCard({ label, help, error, subtext, C, children }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-[12px] font-normal" style={{ color: C.text }}>{label}</span>
+        {help && (
+          <span
+            title={help}
+            aria-label={help}
+            className="w-4 h-4 rounded-full inline-flex items-center justify-center text-[10px] cursor-help transition-opacity hover:opacity-100"
+            style={{ border: `1px solid ${C.muted}`, color: C.muted, opacity: 0.75 }}
+          >
+            ?
+          </span>
+        )}
+      </div>
+      {children}
+      {error && (
+        <div className="mt-1.5 text-[12px] flex items-start gap-1.5 leading-snug" style={{ color: C.sell }}>
+          <span className="shrink-0">⚠</span>
+          <span>{error}</span>
+        </div>
+      )}
+      {!error && subtext && (
+        <div className="mt-1.5 text-[12px] leading-snug" style={{ color: C.dim }}>{subtext}</div>
+      )}
+    </div>
+  );
+}
+
+function NumericRow({ value, onChange, onMinus, onPlus, placeholder, suffix, priceLabel, pill, unified, required, error, C }) {
+  // Unified variant — single bordered bar with internal vertical dividers
+  // between the input, suffix, minus, and plus segments (Exness-style
+  // volume selector). Used when `unified` is true, typically with a suffix
+  // like "Lots".
+  if (unified) {
+    return (
+      <div
+        className="flex items-stretch rounded-md overflow-hidden transition-all focus-within:ring-2 focus-within:ring-primary-500/15"
+        style={{
+          background: C.cardBg,
+          border: `1px solid ${error ? C.sell : C.border}`,
+          height: '42px',
+          boxShadow: '0 1px 2px rgba(15,23,42,0.04)',
+        }}
+      >
+        {/* Input segment — pr-2 leaves breathing room so trailing digits
+            don't visually merge into the next segment. */}
+        <div className="flex-1 min-w-0 flex items-center pl-3 pr-2">
+          <input
+            type="number"
+            step="any"
+            inputMode="decimal"
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            placeholder={placeholder}
+            required={required}
+            className="flex-1 min-w-0 bg-transparent border-0 outline-none text-[15px] font-semibold tabular-nums"
+            style={{ color: error ? C.sell : C.text }}
+          />
+        </div>
+        {/* Pill segment — e.g. "Limit". No left divider; the only internal
+            divider is the one before the minus button. */}
+        {pill && (
+          <div className="shrink-0 flex items-center px-2 text-[13px] font-medium" style={{ color: C.dim }}>
+            {pill}
+          </div>
+        )}
+        {/* Price segment — e.g. TP/SL "Price" label */}
+        {priceLabel && (
+          <div className="shrink-0 flex items-center px-2 text-[13px] font-medium" style={{ color: C.dim }}>
+            Price
+          </div>
+        )}
+        {/* Suffix segment — e.g. "Lots" */}
+        {suffix && (
+          <div className="shrink-0 flex items-center px-2 text-[13px] font-medium" style={{ color: C.dim }}>
+            {suffix}
+          </div>
+        )}
+        {/* Minus segment */}
+        <button
+          type="button"
+          onClick={onMinus}
+          aria-label="Decrease"
+          className="shrink-0 w-11 flex items-center justify-center transition-colors hover:bg-black/[0.03] active:bg-black/[0.06]"
+          style={{ borderLeft: `1px solid ${C.border}`, color: C.text }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="5" y1="12" x2="19" y2="12" /></svg>
+        </button>
+        {/* Plus segment */}
+        <button
+          type="button"
+          onClick={onPlus}
+          aria-label="Increase"
+          className="shrink-0 w-11 flex items-center justify-center transition-colors hover:bg-black/[0.03] active:bg-black/[0.06]"
+          style={{ borderLeft: `1px solid ${C.border}`, color: C.text }}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="5" y1="12" x2="19" y2="12" /><line x1="12" y1="5" x2="12" y2="19" /></svg>
+        </button>
+      </div>
+    );
+  }
+
+  // Default variant — separated input + standalone -/+ buttons
+  return (
+    <div className="flex items-stretch gap-1.5">
+      <div
+        className="flex-1 min-w-0 flex items-center px-2.5 rounded transition-colors"
+        style={{ background: C.cardBg, border: `1px solid ${error ? C.sell : C.border}`, height: '36px' }}
+      >
+        <input
+          type="number"
+          step="any"
+          inputMode="decimal"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          required={required}
+          className="flex-1 min-w-0 bg-transparent border-0 outline-none text-[14px] tabular-nums"
+          style={{ color: error ? C.sell : C.text }}
+        />
+        {pill && (
+          <span
+            className="shrink-0 inline-flex items-center text-[12px] font-medium ml-1.5 px-2 py-0.5 rounded-sm"
+            style={{ background: C.cardBg2, color: C.text, border: `1px solid ${C.border}` }}
+          >
+            {pill}
+          </span>
+        )}
+        {priceLabel && (
+          <span
+            className="shrink-0 inline-flex items-center gap-1 text-[12px] font-medium ml-1.5 px-2 py-0.5 rounded-sm"
+            style={{ background: C.cardBg2, color: C.text, border: `1px solid ${C.border}` }}
+          >
+            Price
+            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
+          </span>
+        )}
+        {suffix && (
+          <span className="shrink-0 text-[13px] ml-2" style={{ color: C.dim }}>{suffix}</span>
+        )}
+      </div>
+      <NudgeButton onClick={onMinus} aria-label="Decrease" C={C}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="5" y1="12" x2="19" y2="12" /></svg>
+      </NudgeButton>
+      <NudgeButton onClick={onPlus} aria-label="Increase" C={C}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="5" y1="12" x2="19" y2="12" /><line x1="12" y1="5" x2="12" y2="19" /></svg>
+      </NudgeButton>
+    </div>
+  );
+}
+
+function NudgeButton({ children, onClick, C, ...rest }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      {...rest}
+      className="shrink-0 rounded transition-colors flex items-center justify-center hover:opacity-100"
+      style={{ background: C.cardBg, border: `1px solid ${C.border}`, color: C.text, width: '36px', height: '36px', opacity: 0.95 }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function InfoRow({ label, value, help, C, valueColor }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="inline-flex items-center gap-1" style={{ color: C.dim }}>
+        {label}:
+      </span>
+      <span className="inline-flex items-center gap-1.5 tabular-nums" style={{ color: valueColor || C.text }}>
+        {value}
+        {help && (
+          <span
+            title={help}
+            aria-label={help}
+            className="w-4 h-4 rounded-full inline-flex items-center justify-center text-[10px] cursor-help"
+            style={{ border: `1px solid ${C.muted}`, color: C.muted, opacity: 0.7 }}
+          >
+            ?
+          </span>
+        )}
+      </span>
     </div>
   );
 }

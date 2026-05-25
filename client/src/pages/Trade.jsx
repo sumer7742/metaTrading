@@ -372,6 +372,31 @@ export default function Trade() {
     return () => { cancelled = true; unsub && unsub(); };
   }, [account?._id, account?.baseCurrency]);
 
+  // Effective leverage from /user/leverage — same source OrderForm uses
+  // (admin override → plan default → fallback 100). Without this the
+  // account dropdown was showing a stale `account.leverage` value (e.g.
+  // 101) that didn't match the leverage actually applied to new orders.
+  // WS subscription keeps it in sync if admin changes the cap mid-session.
+  const [leverageState, setLeverageState] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    const fetchLev = () => {
+      api.get('/user/leverage')
+        .then((r) => { if (!cancelled) setLeverageState(r.data?.data || null); })
+        .catch(() => {});
+    };
+    fetchLev();
+    const unsub = wsClient.subscribe('user:leverage', (data) => {
+      if (!cancelled && data) setLeverageState(data);
+    });
+    window.addEventListener('focus', fetchLev);
+    return () => {
+      cancelled = true;
+      if (unsub) unsub();
+      window.removeEventListener('focus', fetchLev);
+    };
+  }, []);
+
   // Per-account free balance map — populated once when accounts load
   // (and refreshed on any 'wallet' WS event). `/user/accounts` returns a
   // possibly-stale `balance` field, so the dropdown was showing 0 for
@@ -801,19 +826,21 @@ export default function Trade() {
   // footer reflects real wallet free + unrealized PnL on every tick.
   const equityNums = useMemo(() => {
     if (!account) return null;
-    const free = Number(walletFree || 0);
+    const walletAvail = Number(walletFree || 0); // wallet free = balance − locked
     const upnl = positionsWithLivePnl.reduce((acc, p) => acc + Number(p.unrealizedPnl || 0), 0);
     const usedMargin = positions.reduce((acc, p) => {
       const px = Number(p.entryPrice || 0) * Number(p.quantity || 0);
       const lev = Math.max(Number(p.leverage || 1), 1);
       return acc + px / lev;
     }, 0);
-    const equity = free + upnl + usedMargin;
+    const balance = walletAvail + usedMargin;          // realized cash in wallet
+    const equity = balance + upnl;                     // balance + uPnL
+    const freeMargin = equity - usedMargin;            // broker free-margin formula
     const marginLevel = usedMargin > 0 ? (equity / usedMargin) * 100 : null;
     return {
       equity,
-      free,
-      balance: free + usedMargin,
+      free: freeMargin,
+      balance,
       used: usedMargin,
       marginLevel,
       base: account.baseCurrency || 'USD',
@@ -1152,17 +1179,20 @@ export default function Trade() {
                 <button
                   type="button"
                   onClick={() => setAccountMenuOpen((o) => !o)}
-                  className="h-9 flex items-center gap-2 pl-2.5 pr-1.5 border border-border-dark bg-white hover:bg-bg-hover transition-colors text-left"
+                  className="h-11 flex items-center gap-2 pl-2.5 pr-1.5 border border-border-dark bg-white hover:bg-bg-hover transition-colors text-left"
                 >
-                  <div className="flex flex-col leading-[1.05] min-w-0">
-                    <span className="text-[11px] font-extrabold text-text-primary truncate max-w-[110px] sm:max-w-[160px] tracking-tight">
-                      {name} <span className="hidden sm:inline text-text-muted font-semibold">· {acc?.accountType}</span>
+                  <div className="flex flex-col leading-[1.15] min-w-0">
+                    <span className="text-[11px] font-semibold text-text-primary truncate max-w-[110px] sm:max-w-[160px]">
+                      {name}
+                      {acc?.accountType && (
+                        <span className="hidden sm:inline text-text-muted font-normal ml-1">· {acc.accountType}</span>
+                      )}
                     </span>
-                    <span className="text-[11px] font-mono font-extrabold text-primary-600 tabular-nums truncate">
-                      {ccy} {hideBalance ? '••••' : fmtBal}
+                    <span className="text-[11px] font-semibold text-text-primary tabular-nums truncate">
+                      {hideBalance ? '••••' : fmtBal} <span className="text-[10px] text-text-muted font-medium">{ccy}</span>
                     </span>
                   </div>
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" className="text-text-muted shrink-0"><path d="M6 9l6 6 6-6" /></svg>
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" className="text-text-muted shrink-0" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
                 </button>
               );
             })()}
@@ -1179,7 +1209,14 @@ export default function Trade() {
               const marginUsedN = equityNums?.used ?? 0;
               const freeMarginN = equityNums?.free ?? balanceN;
               const marginLvl = equityNums?.marginLevel;
-              const accLeverage = account?.leverage || account?.maxLeverage || 200;
+              // Prefer the global effective leverage (admin override → plan
+              // default → fallback) so this matches what OrderForm enforces
+              // when placing orders. Falls back to the per-account field
+              // only if the endpoint hasn't responded yet.
+              const accLeverage = leverageState?.effectiveLeverage
+                || account?.leverage
+                || account?.maxLeverage
+                || 100;
               const fmt = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
               const mask = (s) => (hideBalance ? '••••' : s);
               return (
@@ -1397,6 +1434,7 @@ export default function Trade() {
               { id: 'performance',  label: 'Performance',  icon: <SbPerfI /> },
               { id: 'depth',        label: 'Depth',        icon: <SbDepthI /> },
               { id: 'positions',    label: 'Positions',    icon: <SbPositionsI /> },
+              { id: 'pending',      label: 'Pending',      icon: <SbPendingI /> },
               { id: 'hotlist',      label: 'Movers',       icon: <SbHotI /> },
             ].map((t) => {
               const active = leftPanelTab === t.id && showInstruments;
@@ -1462,6 +1500,7 @@ export default function Trade() {
                  : leftPanelTab === 'performance' ? 'Performance'
                  : leftPanelTab === 'depth' ? 'Market Depth'
                  : leftPanelTab === 'positions' ? 'Open Positions'
+                 : leftPanelTab === 'pending' ? 'Pending Orders'
                  : leftPanelTab === 'settings' ? 'Settings'
                  : 'Top Movers'}
               </span>
@@ -1470,6 +1509,9 @@ export default function Trade() {
               )}
               {leftPanelTab === 'positions' && positions.length > 0 && (
                 <span className="text-text-secondary text-xs font-semibold">{positions.length}</span>
+              )}
+              {leftPanelTab === 'pending' && openOrders.length > 0 && (
+                <span className="text-text-secondary text-xs font-semibold">{openOrders.length}</span>
               )}
             </div>
             <button
@@ -1791,194 +1833,10 @@ export default function Trade() {
             </div>
           )}
 
-          {/* ── Performance pane — 24h stats + range visualisation ───── */}
-          {leftPanelTab === 'performance' && instrument && (() => {
-            const session = getMarketSession(instrument.category);
-            const change = Number(instrument.change24h);
-            const pos = Number.isFinite(change) ? change >= 0 : null;
-            // Prefer the live WS price so the readout ticks in real time —
-            // fall back to the snapshot field if the stream is silent.
-            const last = Number(livePrice ?? instrument.lastPrice);
-            const hi = Number(instrument.dayHigh);
-            const lo = Number(instrument.dayLow);
-            const hasRange = Number.isFinite(hi) && Number.isFinite(lo) && hi > lo;
-            const pctOfRange = hasRange ? ((last - lo) / (hi - lo)) * 100 : null;
-            const prec = Math.min(instrument.pricePrecision || 2, 5);
-            const tone = pos == null ? '#9CA3AF' : pos ? '#16A34A' : '#DC2626';
-            // Derived metrics — all from instrument fields:
-            //  - 24h open: reverse-engineered from last + change%
-            //  - mid:      (bid + ask) / 2
-            //  - spread%:  spread relative to mid (basis points)
-            //  - range%:   intraday volatility = (hi - lo) / lo
-            const open24h = Number.isFinite(last) && Number.isFinite(change) && change !== -100
-              ? last / (1 + change / 100)
-              : null;
-            const bid = Number(instrument.bid);
-            const ask = Number(instrument.ask);
-            const haveBA = Number.isFinite(bid) && Number.isFinite(ask) && ask > 0;
-            const mid = haveBA ? (bid + ask) / 2 : null;
-            const spreadAbs = haveBA ? ask - bid : null;
-            const spreadBps = mid && spreadAbs != null ? (spreadAbs / mid) * 10000 : null;
-            const rangePct = hasRange ? ((hi - lo) / lo) * 100 : null;
-            const volNum = Number(instrument.volume24h);
-            const turnover = Number.isFinite(volNum) && Number.isFinite(last) ? volNum * last : null;
-            const fmtCompact = (n) => {
-              if (!Number.isFinite(n) || n <= 0) return '—';
-              if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
-              if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
-              if (n >= 1e3) return (n / 1e3).toFixed(2) + 'K';
-              return n.toFixed(0);
-            };
-            return (
-              <div className="flex-1 overflow-y-auto p-3 space-y-4 text-xs">
-                {/* Market session banner (closed only) */}
-                {!session.isOpen && (
-                  <div className="rounded-xl border border-warn/30 bg-warn/10 px-3 py-2 flex items-center gap-2">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-warn shrink-0"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[11px] font-bold text-text-primary">{session.label}</div>
-                      {session.detail && <div className="text-[10px] text-text-muted truncate">{session.detail}</div>}
-                    </div>
-                  </div>
-                )}
-
-                {/* Headline 24h change */}
-                <div className="rounded-xl border border-border-subtle bg-bg-hover/40 p-3">
-                  <div className="flex items-center justify-between">
-                    <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted">24h Change</div>
-                    {session.isOpen ? (
-                      <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-bull">
-                        <span className="relative flex w-1.5 h-1.5">
-                          <span className="absolute inline-flex h-full w-full rounded-full bg-bull opacity-70 animate-ping" />
-                          <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-bull" />
-                        </span>
-                        Live
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-text-muted">
-                        <span className="w-1.5 h-1.5 rounded-full bg-text-muted" />
-                        Closed
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1 text-2xl font-bold font-mono tabular-nums" style={{ color: tone }}>
-                    {pos == null ? '—' : `${pos ? '+' : ''}${change.toFixed(2)}%`}
-                  </div>
-                  <div className="mt-1 text-[10px] font-mono text-text-muted">
-                    Last · <span className="text-text-primary font-bold">{fmtNum(last, prec)}</span> {instrument.quoteCurrency}
-                    {open24h != null && (
-                      <span className="ml-2">Open · <span className="text-text-secondary">{fmtNum(open24h, prec)}</span></span>
-                    )}
-                  </div>
-                </div>
-
-                {/* 24h range visualisation */}
-                {hasRange && (
-                  <div>
-                    <div className="flex items-center justify-between mb-1.5 text-[10px] uppercase tracking-wider font-bold text-text-muted">
-                      <span>24h Low</span>
-                      <span>24h High</span>
-                    </div>
-                    <div className="relative h-1.5 rounded-full bg-bg-hover overflow-hidden">
-                      <div className="absolute inset-y-0 left-0 right-0 bg-gradient-to-r from-bear/30 via-text-muted/20 to-bull/30 rounded-full" />
-                      <div
-                        className="absolute top-1/2 -translate-y-1/2 w-2 h-2 rounded-full ring-2 ring-white"
-                        style={{ left: `calc(${Math.max(0, Math.min(100, pctOfRange))}% - 4px)`, background: tone }}
-                      />
-                    </div>
-                    <div className="mt-1.5 flex items-center justify-between text-[11px] font-mono tabular-nums">
-                      <span className="text-bear">{fmtNum(lo, prec)}</span>
-                      <span className="text-bull">{fmtNum(hi, prec)}</span>
-                    </div>
-                  </div>
-                )}
-
-                {/* Section: Price & Quote — only rows with real values */}
-                {(() => {
-                  const rows = [
-                    { l: 'Last',     v: Number.isFinite(last) ? fmtNum(last, prec) : null,   tone: 'normal' },
-                    { l: 'Open',     v: open24h != null ? fmtNum(open24h, prec) : null,      tone: 'normal' },
-                    { l: 'Mid',      v: mid != null    ? fmtNum(mid, prec)    : null,        tone: 'normal' },
-                    { l: 'Bid',      v: Number.isFinite(bid) && bid > 0 ? fmtNum(bid, prec) : null, tone: 'bull' },
-                    { l: 'Ask',      v: Number.isFinite(ask) && ask > 0 ? fmtNum(ask, prec) : null, tone: 'bear' },
-                    { l: 'Spread',   v: spreadAbs != null && spreadAbs > 0 ? fmtNum(spreadAbs, prec) : null },
-                    { l: 'Spread (bps)', v: spreadBps != null && spreadBps > 0 ? spreadBps.toFixed(2) : null },
-                  ].filter((r) => r.v != null);
-                  if (!rows.length) return null;
-                  return (
-                    <div className="space-y-2 pt-2 border-t border-border-subtle">
-                      <div className="text-[9px] uppercase tracking-[0.18em] font-bold text-text-muted">Price · Quote</div>
-                      {rows.map((r) => (
-                        <div key={r.l} className="flex items-center justify-between gap-2 text-[11px]">
-                          <span className="text-text-muted">{r.l}</span>
-                          <span
-                            className="font-mono tabular-nums font-semibold"
-                            style={r.tone === 'bull' ? { color: '#16A34A' } : r.tone === 'bear' ? { color: '#DC2626' } : { color: 'inherit' }}
-                          >
-                            {r.v}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })()}
-
-                {/* Section: Range & Volume — only rows with real values */}
-                {(() => {
-                  const rows = [
-                    { l: '24h High',  v: hasRange ? fmtNum(hi, prec) : null, tone: 'bull' },
-                    { l: '24h Low',   v: hasRange ? fmtNum(lo, prec) : null, tone: 'bear' },
-                    { l: 'Range',     v: hasRange ? fmtNum(hi - lo, prec) : null },
-                    { l: 'Range (%)', v: rangePct != null ? rangePct.toFixed(2) + '%' : null },
-                    { l: 'Volume',    v: Number.isFinite(volNum) && volNum > 0 ? fmtCompact(volNum) : null },
-                    { l: 'Turnover',  v: turnover != null && turnover > 0 ? `${currencySymbol(instrument.quoteCurrency || 'USD')}${fmtCompact(turnover)}` : null },
-                  ].filter((r) => r.v != null);
-                  if (!rows.length) return null;
-                  return (
-                    <div className="space-y-2 pt-2 border-t border-border-subtle">
-                      <div className="text-[9px] uppercase tracking-[0.18em] font-bold text-text-muted">Range · Volume</div>
-                      {rows.map((r) => (
-                        <div key={r.l} className="flex items-center justify-between gap-2 text-[11px]">
-                          <span className="text-text-muted">{r.l}</span>
-                          <span
-                            className="font-mono tabular-nums font-semibold"
-                            style={r.tone === 'bull' ? { color: '#16A34A' } : r.tone === 'bear' ? { color: '#DC2626' } : { color: 'inherit' }}
-                          >
-                            {r.v}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })()}
-
-                {/* Section: Symbol info + Trading — only rows with real values */}
-                {(() => {
-                  const rows = [
-                    { l: 'Symbol',       v: instrument.symbol || null },
-                    { l: 'Category',     v: instrument.category ? instrument.category.charAt(0) + instrument.category.slice(1).toLowerCase() : null },
-                    { l: 'Base / Quote', v: instrument.baseCurrency && instrument.quoteCurrency ? `${instrument.baseCurrency} / ${instrument.quoteCurrency}` : null },
-                    { l: 'Precision',    v: instrument.pricePrecision ? `${instrument.pricePrecision} digits` : null },
-                    { l: 'Min Order',    v: instrument.minOrderSize || null },
-                    { l: 'Max Leverage', v: instrument.maxLeverage ? `1:${instrument.maxLeverage}` : null },
-                    { l: 'Commission',   v: instrument.commissionPercent && Number(instrument.commissionPercent) > 0 ? `${(Number(instrument.commissionPercent) * 100).toFixed(3)}%` : null },
-                  ].filter((r) => r.v != null);
-                  if (!rows.length) return null;
-                  return (
-                    <div className="space-y-2 pt-2 border-t border-border-subtle">
-                      <div className="text-[9px] uppercase tracking-[0.18em] font-bold text-text-muted">Symbol · Trading</div>
-                      {rows.map((r) => (
-                        <div key={r.l} className="flex items-center justify-between gap-2 text-[11px]">
-                          <span className="text-text-muted">{r.l}</span>
-                          <span className="font-mono tabular-nums font-semibold text-right truncate">{r.v}</span>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })()}
-              </div>
-            );
-          })()}
+          {/* ── Performance pane — 24h stats, sparkline, range viz ───── */}
+          {leftPanelTab === 'performance' && instrument && (
+            <SidebarPerformance instrument={instrument} livePrice={livePrice} />
+          )}
           {leftPanelTab === 'performance' && !instrument && (
             <div className="flex-1 flex items-center justify-center text-xs text-text-muted px-4 text-center">
               Pick an instrument to see performance stats here.
@@ -2260,6 +2118,17 @@ export default function Trade() {
               activeSymbol={symbol}
               onSelect={(sym) => setParams({ symbol: sym })}
               onClose={closePosition}
+              instrumentsBySymbol={instrumentsBySymbol}
+            />
+          )}
+
+          {/* ── Pending orders pane — open LIMIT/STOP orders awaiting fill ── */}
+          {leftPanelTab === 'pending' && (
+            <SidebarPendingOrders
+              orders={openOrders}
+              activeSymbol={symbol}
+              onSelect={(sym) => setParams({ symbol: sym })}
+              onCancel={cancelOrder}
               instrumentsBySymbol={instrumentsBySymbol}
             />
           )}
@@ -2593,7 +2462,7 @@ export default function Trade() {
             fixed lg:relative inset-x-0 bottom-0 lg:inset-auto
             z-40 lg:z-auto
             max-h-[90vh] lg:max-h-none
-            w-full lg:w-[340px] shrink-0
+            w-full lg:w-[280px] shrink-0
             flex-col gap-1 min-h-0
             rounded-t-2xl lg:rounded-none
             shadow-[0_-8px_30px_rgba(0,0,0,0.18)] lg:shadow-none
@@ -2704,6 +2573,7 @@ const SbAboutI   = () => <SbS><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path 
 const SbPerfI    = () => <SbS><path d="M3 3v18h18" /><path d="M7 14l4-4 4 4 5-7" /><circle cx="11" cy="10" r="0.7" fill="currentColor" /></SbS>;
 const SbDepthI   = () => <SbS><line x1="3" y1="6"  x2="21" y2="6" /><line x1="6" y1="10" x2="18" y2="10" /><line x1="3" y1="14" x2="21" y2="14" /><line x1="6" y1="18" x2="18" y2="18" /></SbS>;
 const SbPositionsI = () => <SbS><path d="M3 3v18h18" /><rect x="6" y="13" width="3" height="5" /><rect x="11" y="9"  width="3" height="9" /><rect x="16" y="6"  width="3" height="12" /></SbS>;
+const SbPendingI   = () => <SbS><circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 15 14" /></SbS>;
 const SbGearI    = () => <SbS><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" /></SbS>;
 
 // Settings trigger button — opens the right-side drawer. Lives in the
@@ -2948,6 +2818,447 @@ function HeaderToggle({ active, onClick, label, title, icon, accent = 'emerald' 
       {icon}
       <span className="leading-none">{label}</span>
     </button>
+  );
+}
+
+// SidebarPendingOrders — compact list of open LIMIT/STOP orders awaiting
+// fill. Mirrors SidebarPositions visually but trades the live-PnL summary
+// for a "distance from market" hint and a cancel button instead of close.
+function SidebarPendingOrders({ orders, activeSymbol, onSelect, onCancel, instrumentsBySymbol }) {
+  if (!orders || orders.length === 0) {
+    return (
+      <div className="px-4 py-12 text-center">
+        <div className="mx-auto w-14 h-14 rounded-full bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center mb-3">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#94A3B8" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 15 14" />
+          </svg>
+        </div>
+        <div className="text-[13px] text-text-primary font-bold">No pending orders</div>
+        <div className="text-[11px] text-text-muted mt-1.5 px-2 leading-relaxed">
+          Place a limit or stop order — it&apos;ll wait here until the market hits your price.
+        </div>
+      </div>
+    );
+  }
+
+  const buyCnt  = orders.filter((o) => o.side === 'BUY').length;
+  const sellCnt = orders.length - buyCnt;
+  const limitCnt = orders.filter((o) => o.type === 'LIMIT').length;
+  const stopCnt  = orders.length - limitCnt;
+
+  return (
+    <div className="flex flex-col">
+      {/* ── Summary card ───────────────────────────────────────────── */}
+      <div className="mx-2 mt-2 mb-1 rounded-xl border border-border-subtle bg-gradient-to-br from-slate-50 via-white to-slate-50/40 shadow-sm p-3">
+        <div className="flex items-center justify-between">
+          <span className="text-[9.5px] uppercase tracking-[0.18em] font-extrabold text-text-muted">Pending</span>
+          <span className="text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider bg-slate-100 text-slate-700">Awaiting fill</span>
+        </div>
+        <div className="mt-1 text-[22px] font-mono font-extrabold leading-tight tracking-tight text-text-primary">{orders.length}</div>
+        <div className="text-[10px] text-text-muted">order{orders.length === 1 ? '' : 's'} in queue</div>
+        <div className="mt-2 pt-2 border-t border-border-subtle/60 grid grid-cols-4 gap-1">
+          <Stat lbl="Buy"   val={buyCnt}   accent="text-emerald-600" />
+          <Stat lbl="Sell"  val={sellCnt}  accent="text-rose-600" />
+          <Stat lbl="Limit" val={limitCnt} accent="text-text-primary" />
+          <Stat lbl="Stop"  val={stopCnt}  accent="text-text-primary" />
+        </div>
+      </div>
+
+      {/* ── Order cards ────────────────────────────────────────────── */}
+      <div className="px-2 py-1 space-y-1.5">
+        {orders.map((o) => {
+          const inst       = instrumentsBySymbol?.[o.symbol];
+          const isBuy      = o.side === 'BUY';
+          const isStop     = o.type === 'STOP';
+          const isActive   = o.symbol === activeSymbol;
+          const prec       = inst?.pricePrecision ?? 4;
+          const triggerPx  = Number(isStop ? o.stopPrice : o.price) || 0;
+          const lastPx     = Number(inst?.lastPrice || 0);
+          const distPct    = (triggerPx > 0 && lastPx > 0)
+            ? ((triggerPx - lastPx) / lastPx) * 100
+            : null;
+          const sideStripe = isBuy ? 'bg-emerald-500' : 'bg-rose-500';
+          const created    = o.createdAt ? new Date(o.createdAt) : null;
+          const ageMin     = created ? Math.max(0, Math.floor((Date.now() - created.getTime()) / 60000)) : null;
+          const ageLabel   = ageMin === null ? null
+                           : ageMin < 1     ? 'just now'
+                           : ageMin < 60    ? `${ageMin}m ago`
+                           : ageMin < 1440  ? `${Math.floor(ageMin / 60)}h ago`
+                           : `${Math.floor(ageMin / 1440)}d ago`;
+
+          return (
+            <div
+              key={o._id}
+              role="button"
+              tabIndex={0}
+              onClick={() => onSelect && onSelect(o.symbol)}
+              onKeyDown={(e) => { if (e.key === 'Enter') onSelect && onSelect(o.symbol); }}
+              className={`group relative overflow-hidden rounded-lg border transition-all cursor-pointer ${
+                isActive
+                  ? 'border-primary-500/40 bg-primary-500/[0.04] shadow-[0_0_0_1px_rgba(99,102,241,0.15)]'
+                  : 'border-border-subtle bg-white hover:border-border-dark hover:shadow-sm'
+              }`}
+            >
+              {/* Side accent stripe */}
+              <div className={`absolute left-0 top-0 bottom-0 w-1 ${sideStripe}`} />
+
+              <div className="pl-2.5 pr-2 py-2">
+                {/* Top row: side chip + type pill + symbol + cancel */}
+                <div className="flex items-center justify-between gap-1.5 mb-1.5">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded tracking-wide ${
+                      isBuy
+                        ? 'bg-emerald-500 text-white shadow-[0_1px_2px_rgba(16,185,129,0.4)]'
+                        : 'bg-rose-500 text-white shadow-[0_1px_2px_rgba(239,68,68,0.4)]'
+                    }`}>
+                      {isBuy ? '↑ BUY' : '↓ SELL'}
+                    </span>
+                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 tracking-wide">
+                      {isStop ? 'STOP' : 'LIMIT'}
+                    </span>
+                    <span className="text-[12px] font-extrabold text-text-primary truncate tracking-tight">
+                      {o.symbol}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onCancel && onCancel(o._id); }}
+                    title="Cancel order"
+                    aria-label="Cancel order"
+                    className="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded text-text-muted hover:text-rose-600 hover:bg-rose-50 transition-colors opacity-60 group-hover:opacity-100"
+                  >
+                    Cancel
+                  </button>
+                </div>
+
+                {/* Body — trigger price + distance hint */}
+                <div className="flex items-end justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-[9.5px] uppercase tracking-wider font-bold text-text-muted">
+                      {isStop ? 'Trigger' : 'Limit'} @
+                    </div>
+                    <div className="font-mono text-[13px] font-extrabold text-text-primary tabular-nums leading-tight">
+                      {triggerPx ? triggerPx.toFixed(prec) : '—'}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[9.5px] uppercase tracking-wider font-bold text-text-muted">Qty</div>
+                    <div className="font-mono text-[12px] font-bold text-text-secondary tabular-nums">
+                      {Number(o.quantity || 0).toLocaleString('en-US', { maximumFractionDigits: 4 })}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Footer — distance from market + age */}
+                {(distPct !== null || ageLabel) && (
+                  <div className="mt-1.5 pt-1.5 border-t border-border-subtle/60 flex items-center justify-between text-[10px]">
+                    {distPct !== null ? (
+                      <span className={`font-mono font-bold tabular-nums ${
+                        Math.abs(distPct) < 0.1 ? 'text-amber-600' : 'text-text-muted'
+                      }`}>
+                        {distPct >= 0 ? '+' : ''}{distPct.toFixed(2)}% from market
+                      </span>
+                    ) : <span />}
+                    {ageLabel && <span className="text-text-muted font-medium">{ageLabel}</span>}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// SidebarPerformance — pulls 48 × 1h candles for the active instrument so
+// the panel renders real numbers (change %, high, low, sparkline) even when
+// the instrument document's snapshot fields (change24h, dayHigh, dayLow)
+// are stale or unset — which happens on freshly seeded forex pairs over the
+// weekend. Instrument fields are preferred; candles fill the gaps.
+function SidebarPerformance({ instrument, livePrice }) {
+  const [candles, setCandles] = useState([]);
+  const [loadingCandles, setLoadingCandles] = useState(false);
+
+  useEffect(() => {
+    if (!instrument?.symbol) { setCandles([]); return; }
+    let cancelled = false;
+    setLoadingCandles(true);
+    api.get(`/instruments/${instrument.symbol}/candles`, {
+      params: { timeframe: '1h', limit: 48 },
+    })
+      .then((r) => {
+        if (cancelled) return;
+        const raw = Array.isArray(r.data?.data) ? r.data.data : [];
+        setCandles(raw);
+      })
+      .catch(() => { if (!cancelled) setCandles([]); })
+      .finally(() => { if (!cancelled) setLoadingCandles(false); });
+    return () => { cancelled = true; };
+  }, [instrument?.symbol]);
+
+  const session = getMarketSession(instrument.category);
+  const prec = Math.min(instrument.pricePrecision || 2, 5);
+
+  // ── Live last price (prefer WS tick) ────────────────────────────
+  const last = Number(livePrice ?? instrument.lastPrice);
+
+  // ── 24h change (instrument field → candle-derived fallback) ────
+  let change = Number(instrument.change24h);
+  if (!Number.isFinite(change) && candles.length >= 2) {
+    const firstClose = Number(candles[0]?.close);
+    const lastClose  = Number(candles[candles.length - 1]?.close);
+    if (Number.isFinite(firstClose) && firstClose > 0 && Number.isFinite(lastClose)) {
+      change = ((lastClose - firstClose) / firstClose) * 100;
+    }
+  }
+  const pos = Number.isFinite(change) ? change >= 0 : null;
+  const tone = pos == null ? '#9CA3AF' : pos ? '#16A34A' : '#DC2626';
+
+  // ── 24h high / low (instrument field → candle-derived fallback) ─
+  let hi = Number(instrument.dayHigh);
+  let lo = Number(instrument.dayLow);
+  if ((!Number.isFinite(hi) || !Number.isFinite(lo) || hi <= lo) && candles.length > 0) {
+    const highs = candles.map((c) => Number(c.high)).filter(Number.isFinite);
+    const lows  = candles.map((c) => Number(c.low)).filter(Number.isFinite);
+    if (highs.length && lows.length) {
+      hi = Math.max(...highs);
+      lo = Math.min(...lows);
+    }
+  }
+  const hasRange = Number.isFinite(hi) && Number.isFinite(lo) && hi > lo;
+  const pctOfRange = hasRange ? ((last - lo) / (hi - lo)) * 100 : null;
+
+  // ── Derived: open / mid / spread / range% / volume / turnover ──
+  const open24h = Number.isFinite(last) && Number.isFinite(change) && change !== -100
+    ? last / (1 + change / 100)
+    : null;
+  const bid = Number(instrument.bid);
+  const ask = Number(instrument.ask);
+  const haveBA = Number.isFinite(bid) && Number.isFinite(ask) && ask > 0;
+  const mid = haveBA ? (bid + ask) / 2 : null;
+  const spreadAbs = haveBA ? ask - bid : null;
+  const spreadBps = mid && spreadAbs != null ? (spreadAbs / mid) * 10000 : null;
+  const rangePct = hasRange ? ((hi - lo) / lo) * 100 : null;
+  const volNum = Number(instrument.volume24h);
+  const turnover = Number.isFinite(volNum) && Number.isFinite(last) ? volNum * last : null;
+  const fmtCompact = (n) => {
+    if (!Number.isFinite(n) || n <= 0) return '—';
+    if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(2) + 'K';
+    return n.toFixed(0);
+  };
+
+  return (
+    <div className="flex-1 overflow-y-auto p-3 space-y-4 text-xs">
+      {/* Market session banner (closed only) */}
+      {!session.isOpen && (
+        <div className="rounded-xl border border-warn/30 bg-warn/10 px-3 py-2 flex items-center gap-2">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-warn shrink-0"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] font-bold text-text-primary">{session.label}</div>
+            {session.detail && <div className="text-[10px] text-text-muted truncate">{session.detail}</div>}
+          </div>
+        </div>
+      )}
+
+      {/* Headline 24h change + sparkline */}
+      <div className="rounded-xl border border-border-subtle bg-bg-hover/40 p-3">
+        <div className="flex items-center justify-between">
+          <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted">24h Change</div>
+          {session.isOpen ? (
+            <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-bull">
+              <span className="relative flex w-1.5 h-1.5">
+                <span className="absolute inline-flex h-full w-full rounded-full bg-bull opacity-70 animate-ping" />
+                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-bull" />
+              </span>
+              Live
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-text-muted">
+              <span className="w-1.5 h-1.5 rounded-full bg-text-muted" />
+              Closed
+            </span>
+          )}
+        </div>
+        <div className="mt-1 text-2xl font-bold font-mono tabular-nums" style={{ color: tone }}>
+          {pos == null ? '—' : `${pos ? '+' : ''}${change.toFixed(2)}%`}
+        </div>
+
+        {/* Sparkline — 48 × 1h candles, color matches change direction */}
+        <div className="mt-2 -mx-1">
+          <Sparkline
+            candles={candles}
+            color={tone}
+            height={48}
+            loading={loadingCandles}
+          />
+        </div>
+
+        <div className="mt-2 text-[10px] font-mono text-text-muted">
+          Last · <span className="text-text-primary font-bold">{fmtNum(last, prec)}</span> {instrument.quoteCurrency}
+          {open24h != null && (
+            <span className="ml-2">Open · <span className="text-text-secondary">{fmtNum(open24h, prec)}</span></span>
+          )}
+        </div>
+      </div>
+
+      {/* 24h range visualisation */}
+      {hasRange && (
+        <div>
+          <div className="flex items-center justify-between mb-1.5 text-[10px] uppercase tracking-wider font-bold text-text-muted">
+            <span>24h Low</span>
+            <span>24h High</span>
+          </div>
+          <div className="relative h-1.5 rounded-full bg-bg-hover overflow-hidden">
+            <div className="absolute inset-y-0 left-0 right-0 bg-gradient-to-r from-bear/30 via-text-muted/20 to-bull/30 rounded-full" />
+            <div
+              className="absolute top-1/2 -translate-y-1/2 w-2 h-2 rounded-full ring-2 ring-white"
+              style={{ left: `calc(${Math.max(0, Math.min(100, pctOfRange))}% - 4px)`, background: tone }}
+            />
+          </div>
+          <div className="mt-1.5 flex items-center justify-between text-[11px] font-mono tabular-nums">
+            <span className="text-bear">{fmtNum(lo, prec)}</span>
+            <span className="text-bull">{fmtNum(hi, prec)}</span>
+          </div>
+        </div>
+      )}
+
+      {/* Section: Price & Quote */}
+      {(() => {
+        const rows = [
+          { l: 'Last',     v: Number.isFinite(last) ? fmtNum(last, prec) : null,   tone: 'normal' },
+          { l: 'Open',     v: open24h != null ? fmtNum(open24h, prec) : null,      tone: 'normal' },
+          { l: 'Mid',      v: mid != null    ? fmtNum(mid, prec)    : null,        tone: 'normal' },
+          { l: 'Bid',      v: Number.isFinite(bid) && bid > 0 ? fmtNum(bid, prec) : null, tone: 'bull' },
+          { l: 'Ask',      v: Number.isFinite(ask) && ask > 0 ? fmtNum(ask, prec) : null, tone: 'bear' },
+          { l: 'Spread',   v: spreadAbs != null && spreadAbs > 0 ? fmtNum(spreadAbs, prec) : null },
+          { l: 'Spread (bps)', v: spreadBps != null && spreadBps > 0 ? spreadBps.toFixed(2) : null },
+        ].filter((r) => r.v != null);
+        if (!rows.length) return null;
+        return (
+          <div className="space-y-2 pt-2 border-t border-border-subtle">
+            <div className="text-[9px] uppercase tracking-[0.18em] font-bold text-text-muted">Price · Quote</div>
+            {rows.map((r) => (
+              <div key={r.l} className="flex items-center justify-between gap-2 text-[11px]">
+                <span className="text-text-muted">{r.l}</span>
+                <span
+                  className="font-mono tabular-nums font-semibold"
+                  style={r.tone === 'bull' ? { color: '#16A34A' } : r.tone === 'bear' ? { color: '#DC2626' } : { color: 'inherit' }}
+                >
+                  {r.v}
+                </span>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
+      {/* Section: Range & Volume */}
+      {(() => {
+        const rows = [
+          { l: '24h High',  v: hasRange ? fmtNum(hi, prec) : null, tone: 'bull' },
+          { l: '24h Low',   v: hasRange ? fmtNum(lo, prec) : null, tone: 'bear' },
+          { l: 'Range',     v: hasRange ? fmtNum(hi - lo, prec) : null },
+          { l: 'Range (%)', v: rangePct != null ? rangePct.toFixed(2) + '%' : null },
+          { l: 'Volume',    v: Number.isFinite(volNum) && volNum > 0 ? fmtCompact(volNum) : null },
+          { l: 'Turnover',  v: turnover != null && turnover > 0 ? `${currencySymbol(instrument.quoteCurrency || 'USD')}${fmtCompact(turnover)}` : null },
+        ].filter((r) => r.v != null);
+        if (!rows.length) return null;
+        return (
+          <div className="space-y-2 pt-2 border-t border-border-subtle">
+            <div className="text-[9px] uppercase tracking-[0.18em] font-bold text-text-muted">Range · Volume</div>
+            {rows.map((r) => (
+              <div key={r.l} className="flex items-center justify-between gap-2 text-[11px]">
+                <span className="text-text-muted">{r.l}</span>
+                <span
+                  className="font-mono tabular-nums font-semibold"
+                  style={r.tone === 'bull' ? { color: '#16A34A' } : r.tone === 'bear' ? { color: '#DC2626' } : { color: 'inherit' }}
+                >
+                  {r.v}
+                </span>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
+      {/* Section: Symbol & Trading */}
+      {(() => {
+        const rows = [
+          { l: 'Symbol',       v: instrument.symbol || null },
+          { l: 'Category',     v: instrument.category ? instrument.category.charAt(0) + instrument.category.slice(1).toLowerCase() : null },
+          { l: 'Base / Quote', v: instrument.baseCurrency && instrument.quoteCurrency ? `${instrument.baseCurrency} / ${instrument.quoteCurrency}` : null },
+          { l: 'Precision',    v: instrument.pricePrecision ? `${instrument.pricePrecision} digits` : null },
+          { l: 'Min Order',    v: instrument.minOrderSize || null },
+          { l: 'Max Leverage', v: instrument.maxLeverage ? `1:${instrument.maxLeverage}` : null },
+          { l: 'Commission',   v: instrument.commissionPercent && Number(instrument.commissionPercent) > 0 ? `${(Number(instrument.commissionPercent) * 100).toFixed(3)}%` : null },
+        ].filter((r) => r.v != null);
+        if (!rows.length) return null;
+        return (
+          <div className="space-y-2 pt-2 border-t border-border-subtle">
+            <div className="text-[9px] uppercase tracking-[0.18em] font-bold text-text-muted">Symbol · Trading</div>
+            {rows.map((r) => (
+              <div key={r.l} className="flex items-center justify-between gap-2 text-[11px]">
+                <span className="text-text-muted">{r.l}</span>
+                <span className="font-mono tabular-nums font-semibold text-right truncate">{r.v}</span>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+// Tiny SVG sparkline used inside the Performance panel's 24h-change card.
+// Renders an area-filled polyline from candle closes; auto-scales to its
+// container width via viewBox + preserveAspectRatio.
+function Sparkline({ candles, color, height = 48, loading }) {
+  const closes = (candles || [])
+    .map((c) => Number(c?.close))
+    .filter((n) => Number.isFinite(n));
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center" style={{ height }}>
+        <div className="h-px w-12 bg-text-muted/30 animate-pulse" />
+      </div>
+    );
+  }
+  if (closes.length < 2) {
+    return (
+      <div className="flex items-center justify-center text-[10px] text-text-muted" style={{ height }}>
+        No chart data
+      </div>
+    );
+  }
+
+  const W = 240;
+  const H = height;
+  const padY = 2;
+  const min = Math.min(...closes);
+  const max = Math.max(...closes);
+  const range = max - min || 1;
+  const stepX = W / (closes.length - 1);
+  const y = (v) => H - padY - ((v - min) / range) * (H - padY * 2);
+  const pts = closes.map((v, i) => `${(i * stepX).toFixed(2)},${y(v).toFixed(2)}`);
+  const line = pts.join(' ');
+  const area = `0,${H} ${line} ${W},${H}`;
+
+  const gradId = `spark-grad-${color.replace('#', '')}`;
+  return (
+    <svg width="100%" height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="overflow-visible">
+      <defs>
+        <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%"  stopColor={color} stopOpacity="0.25" />
+          <stop offset="100%" stopColor={color} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <polygon points={area} fill={`url(#${gradId})`} />
+      <polyline points={line} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
   );
 }
 
