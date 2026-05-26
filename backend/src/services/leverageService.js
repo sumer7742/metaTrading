@@ -3,9 +3,9 @@
  * applies to a user's trading.
  *
  * Precedence (highest → lowest):
- *   1. User.customLeverage     (admin override)
+ *   1. User.customLeverage          (admin override)
  *   2. Plan.limits.defaultLeverage  (their subscription tier)
- *   3. SYSTEM_FALLBACK         (100)
+ *   3. SYSTEM_FALLBACK              (100)
  *
  * Trading engine (`OrderForm` on FE, order placement on BE) MUST call
  * `getEffective()` and clamp the user's chosen leverage to it.
@@ -16,8 +16,13 @@ const LeverageLog = require('../models/LeverageLog');
 const subscriptionService = require('./subscriptionService');
 
 // ── Constraints ──────────────────────────────────────────────────────
+// Platform-wide rule: leverage range is 1:1 → 1:Unlimited. SYSTEM_MAX
+// encodes "unlimited" as a very large finite integer so margin math
+// (notional / leverage) stays positive and finite at every level.
+// 999_999 is well above any practical leverage and still fits in
+// safe JS integer arithmetic without losing precision.
 const SYSTEM_MIN = 1;
-const SYSTEM_MAX = 1000;
+const SYSTEM_MAX = 999999;
 const SYSTEM_FALLBACK = 100;
 
 const _clamp = (n) => Math.max(SYSTEM_MIN, Math.min(SYSTEM_MAX, Math.round(Number(n))));
@@ -38,11 +43,33 @@ const _clamp = (n) => Math.max(SYSTEM_MIN, Math.min(SYSTEM_MAX, Math.round(Numbe
  *   overrideMeta: { by, at, reason, expiresAt } | null,
  * }>}
  */
-const getEffective = async (userId) => {
+const getEffective = async (userId, opts = {}) => {
   const user = await User.findById(userId)
     .select('customLeverage leverageOverride isActive')
     .lean();
   if (!user) throw new Error('User not found');
+
+  // DEMO / VIRTUAL accounts always run at 1:Unlimited — practice money
+  // is not subject to plan caps or admin overrides. Caller passes
+  // `{ accountType: 'DEMO' }` (or 'VIRTUAL') to bypass the normal
+  // precedence chain. Audit-log writes still go through setOverride()
+  // so admin actions remain visible — they just don't apply at runtime.
+  if (opts.accountType === 'DEMO' || opts.accountType === 'VIRTUAL') {
+    return {
+      effectiveLeverage: SYSTEM_MAX,
+      customLeverage:    null,
+      planDefault:       SYSTEM_MAX,
+      planCode:          'DEMO',
+      planName:          'Demo',
+      source:            'DEMO',
+      sourceLabel:       'Demo account · unlimited',
+      isOverridden:      false,
+      overrideMeta:      null,
+      systemMin:         SYSTEM_MIN,
+      systemMax:         SYSTEM_MAX,
+      isDemo:            true,
+    };
+  }
 
   const plan = await subscriptionService.getEffectivePlan(userId);
   const planDefault = Number(plan?.limits?.defaultLeverage) || SYSTEM_FALLBACK;

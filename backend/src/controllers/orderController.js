@@ -12,6 +12,51 @@ const { ORDER_TYPE, ORDER_SIDE, ORDER_STATUS, POSITION_STATUS } = require('../co
 const { gt, lt, mul, div, sub, eq, add } = require('../utils/decimal');
 
 /**
+ * Apply the 3-month history clip to a Mongo filter for any of the user's
+ * plan-suspended accounts. Returns the augmented filter.
+ *
+ *   - Non-suspended accounts: full history (unchanged).
+ *   - Suspended accounts: only docs where `dateField` is within the last 3
+ *     months are returned.
+ *
+ * Implementation: rewrite the filter as a $or so the two cohorts can be
+ * unioned in a single query. If the caller already passed an accountId
+ * that is suspended, we just stamp the date floor on the existing filter.
+ */
+const SUSPENDED_HISTORY_WINDOW_MS = 3 * 30 * 24 * 60 * 60 * 1000; // ~3 months
+const applySuspendedHistoryClip = async (userId, filter, dateField) => {
+  const suspendedAccounts = await TradingAccount.find({
+    userId,
+    planSuspendedAt: { $ne: null },
+  })
+    .select('_id')
+    .lean();
+  if (!suspendedAccounts.length) return filter;
+
+  const suspendedIds = suspendedAccounts.map((a) => a._id);
+  const cutoff = new Date(Date.now() - SUSPENDED_HISTORY_WINDOW_MS);
+
+  // Caller filtered to a specific account already.
+  if (filter.accountId) {
+    const isSuspended = suspendedIds.some((id) => String(id) === String(filter.accountId));
+    if (!isSuspended) return filter;
+    const existing = filter[dateField] || {};
+    const existingGte = existing.$gte ? new Date(existing.$gte) : null;
+    const effectiveGte = existingGte && existingGte > cutoff ? existingGte : cutoff;
+    return { ...filter, [dateField]: { ...existing, $gte: effectiveGte } };
+  }
+
+  // No specific account: split into two cohorts via $or so non-suspended
+  // accounts keep full history and suspended ones get clipped.
+  const suspendedClause = {
+    accountId: { $in: suspendedIds },
+    [dateField]: { $gte: cutoff },
+  };
+  const otherClause = { accountId: { $nin: suspendedIds } };
+  return { ...filter, $or: [otherClause, suspendedClause] };
+};
+
+/**
  * Compute the margin that *this* order would lock, accounting for an existing
  * open position. If the order side is opposite to the position, the overlapping
  * qty is just closing — no new margin needed for that portion.
@@ -147,6 +192,47 @@ const placeOrder = asyncHandler(async (req, res) => {
   const instrument = await Instrument.findOne({ symbol: symbol.toUpperCase(), isActive: true });
   if (!instrument) throw new AppError('Instrument not active', 404);
 
+  // ─── Account-tier guards ────────────────────────────────────────────
+  // 1. Leverage cap — STANDARD = 1:100, all others unlimited. When the
+  //    tier returns null, no cap applies.
+  // 2. Buy-close-only — IC tiers (STANDARD_IC / PRO_IC / FREE_IC) can
+  //    open BUY only. SELL is permitted only as a close (reduceOnly or
+  //    closeOnly) and only when an open LONG exists to reduce.
+  const accountFeeService = require('../services/accountFeeService');
+  const tierMaxLeverage = await accountFeeService.getAccountMaxLeverage(account);
+  if (tierMaxLeverage != null && Number(req.body.leverage) > tierMaxLeverage) {
+    throw new AppError(
+      `Your account tier (${account.accountType}) caps leverage at 1:${tierMaxLeverage}.`,
+      400,
+      'LEVERAGE_OVER_TIER_CAP'
+    );
+  }
+  if ((await accountFeeService.isBuyCloseOnly(account)) && side === 'SELL') {
+    const isClose = req.body.closeOnly === true || req.body.reduceOnly === true;
+    if (!isClose) {
+      throw new AppError(
+        `Your account tier (${account.accountType}) is buy-only. SELL is allowed only to close an existing long position.`,
+        400,
+        'SELL_NOT_ALLOWED_ON_IC_TIER'
+      );
+    }
+    // Sanity check — a "close" SELL needs an actual LONG to reduce.
+    const Position = require('../models/Position');
+    const longOpen = await Position.findOne({
+      accountId: account._id,
+      symbol: instrument.symbol,
+      positionSide: 'LONG',
+      status: { $in: ['OPEN', 'CLOSING'] },
+    }).lean();
+    if (!longOpen) {
+      throw new AppError(
+        'No open long position on this symbol to close.',
+        400,
+        'NO_LONG_TO_CLOSE'
+      );
+    }
+  }
+
   // ─── orderMode → engine type resolution ────────────────────────────
   // New unified path: frontend sends orderMode='MARKET' | 'LIMIT' (no STOP
   // tab in the UI). For LIMIT we look at the user's price relative to the
@@ -256,23 +342,30 @@ const placeOrder = asyncHandler(async (req, res) => {
     }
   }
 
-  // Resolve leverage:
-  //   - If user explicitly sent a leverage value: must respect instrument's max (reject if exceeded)
-  //   - If not specified: auto-use min(account default, instrument max) so the order isn't rejected
-  //     just because the account default happens to exceed this instrument's cap.
+  // Resolve leverage. Platform-wide rule: 1:1 → 1:Unlimited.
+  //   - Account-tier cap (checked above as tierMaxLeverage) is the
+  //     authoritative ceiling. null = unlimited.
+  //   - Instrument's own maxLeverage is honoured ONLY as an upper bound
+  //     when the field is a positive finite number — leaves room for
+  //     exchange-rule caps on specific instruments (crypto, etc.). When
+  //     missing / zero / null, leverage is uncapped at the instrument
+  //     level and only the tier ceiling applies.
+  const instMax = Number(instrument.maxLeverage);
+  const hasInstCap = Number.isFinite(instMax) && instMax > 0;
   let orderLeverage;
   if (leverage != null) {
     orderLeverage = Number(leverage);
-    if (orderLeverage > instrument.maxLeverage) {
+    if (hasInstCap && orderLeverage > instMax) {
       throw new AppError(
-        `Leverage 1:${orderLeverage} exceeds max for ${instrument.symbol} (1:${instrument.maxLeverage})`,
+        `Leverage 1:${orderLeverage} exceeds the per-instrument cap for ${instrument.symbol} (1:${instMax})`,
         400
       );
     }
   } else {
-    orderLeverage = Math.min(Number(account.leverage || 1), instrument.maxLeverage);
+    const acctLev = Number(account.leverage || 1);
+    orderLeverage = hasInstCap ? Math.min(acctLev, instMax) : acctLev;
   }
-  if (orderLeverage < 1) orderLeverage = 1;
+  if (!Number.isFinite(orderLeverage) || orderLeverage < 1) orderLeverage = 1;
 
   // Margin lock: compute how much new exposure this order opens (closing-leg
   // is netted out against existing position), and lock that from free balance.
@@ -294,12 +387,21 @@ const placeOrder = asyncHandler(async (req, res) => {
   // because the router needs an Order doc to stamp executionSource onto.
   // Order is created with default routing/executionSource which the router
   // overwrites before submitting to the engine/LP.
+  // Hedge mode — opening orders are explicitly tagged with their target
+  // positionSide so the matching engine routes the fill to the correct
+  // (LONG/SHORT) bucket. BUY opens/adds to LONG, SELL opens/adds to SHORT.
+  // Legacy callers that don't send positionSide get this default; explicit
+  // close orders (closePosition controller) override with the source
+  // position's side so SELL-close-of-LONG hits LONG, not SHORT.
+  const orderPositionSide = side === 'BUY' ? 'LONG' : 'SHORT';
+
   const order = await Order.create({
     userId: req.userId,
     accountId,
     instrumentId: instrument._id,
     symbol: instrument.symbol,
     side,
+    positionSide: orderPositionSide,
     type,
     quantity: String(quantity),
     price: price ? String(price) : undefined,
@@ -419,13 +521,14 @@ const listOpen = asyncHandler(async (req, res) => {
 });
 
 const listHistory = asyncHandler(async (req, res) => {
-  const orders = await Order.find({
+  const baseFilter = {
     userId: req.userId,
     status: { $in: [ORDER_STATUS.FILLED, ORDER_STATUS.CANCELLED, ORDER_STATUS.REJECTED] },
-  })
-    .sort({ createdAt: -1 })
-    .limit(200)
-    .lean();
+  };
+  // Suspended accounts only show the last 3 months of history (plan rule).
+  // Non-suspended accounts keep full history.
+  const filter = await applySuspendedHistoryClip(req.userId, baseFilter, 'createdAt');
+  const orders = await Order.find(filter).sort({ createdAt: -1 }).limit(200).lean();
   sendSuccess(res, orders);
 });
 
@@ -455,15 +558,17 @@ const positionHistory = asyncHandler(async (req, res) => {
     limit: limitRaw = '30',
   } = req.query;
 
-  const filter = { userId: req.userId, status: POSITION_STATUS.CLOSED };
-  if (accountId) filter.accountId = accountId;
-  if (symbol) filter.symbol = String(symbol).toUpperCase();
-  if (side && (side === 'BUY' || side === 'SELL')) filter.side = side;
+  const baseFilter = { userId: req.userId, status: POSITION_STATUS.CLOSED };
+  if (accountId) baseFilter.accountId = accountId;
+  if (symbol) baseFilter.symbol = String(symbol).toUpperCase();
+  if (side && (side === 'BUY' || side === 'SELL')) baseFilter.side = side;
   if (from || to) {
-    filter.closedAt = {};
-    if (from) filter.closedAt.$gte = new Date(from);
-    if (to) filter.closedAt.$lte = new Date(to);
+    baseFilter.closedAt = {};
+    if (from) baseFilter.closedAt.$gte = new Date(from);
+    if (to) baseFilter.closedAt.$lte = new Date(to);
   }
+  // Plan-suspended accounts: clip history to last 3 months.
+  const filter = await applySuspendedHistoryClip(req.userId, baseFilter, 'closedAt');
 
   const page = Math.max(1, parseInt(pageRaw, 10) || 1);
   const limit = Math.min(200, Math.max(1, parseInt(limitRaw, 10) || 30));
@@ -553,18 +658,26 @@ const closePosition = asyncHandler(async (req, res) => {
   // Place opposite-side market order. Route via orderRouter so the close
   // fills through whichever execution path (B/A/LP) the account is
   // configured for. closeOnly caps qty at remaining position size.
+  //
+  // Hedge mode: positionSide is inherited from the source position so the
+  // engine knows which bucket to reduce. A SELL close-order against a LONG
+  // position is stamped positionSide=LONG so the engine doesn't accidentally
+  // hit the user's SHORT position on the same symbol.
   const oppositeSide = position.side === 'BUY' ? 'SELL' : 'BUY';
+  const sourcePositionSide = position.positionSide || (position.side === 'BUY' ? 'LONG' : 'SHORT');
   const order = await Order.create({
     userId: req.userId,
     accountId: position.accountId,
     instrumentId: position.instrumentId,
     symbol: position.symbol,
     side: oppositeSide,
+    positionSide: sourcePositionSide,
     type: ORDER_TYPE.MARKET,
     quantity: position.quantity,
     leverage: position.leverage,
     status: ORDER_STATUS.PENDING,
     closeOnly: true,
+    reduceOnly: true,
   });
 
   // Router throws → roll CLOSING back to OPEN so the user can retry.
@@ -819,17 +932,20 @@ const partialClose = asyncHandler(async (req, res) => {
 
   try {
     const oppositeSide = position.side === 'BUY' ? 'SELL' : 'BUY';
+    const sourcePositionSide = position.positionSide || (position.side === 'BUY' ? 'LONG' : 'SHORT');
     const order = await Order.create({
       userId: req.userId,
       accountId: position.accountId,
       instrumentId: position.instrumentId,
       symbol: position.symbol,
       side: oppositeSide,
+      positionSide: sourcePositionSide,
       type: ORDER_TYPE.MARKET,
       quantity: String(quantity),
       leverage: position.leverage,
       status: ORDER_STATUS.PENDING,
       closeOnly: true,
+      reduceOnly: true,
     });
     const { settledOrder, executionSource } = await orderRouter.routeOrder({
       order,
@@ -890,8 +1006,14 @@ const placeOcoOrder = asyncHandler(async (req, res) => {
     );
   }
 
-  let cappedLeverage = Math.min(Number(leverage || account.leverage || 1), instrument.maxLeverage);
-  if (cappedLeverage < 1) cappedLeverage = 1;
+  // Apply instrument-level leverage ceiling only when the instrument has
+  // a positive finite cap; otherwise the user's chosen value passes
+  // through unchanged (subject to tier/effective-leverage gates elsewhere).
+  const _instMaxOco = Number(instrument.maxLeverage);
+  const _hasInstCapOco = Number.isFinite(_instMaxOco) && _instMaxOco > 0;
+  let cappedLeverage = Number(leverage || account.leverage || 1);
+  if (_hasInstCapOco) cappedLeverage = Math.min(cappedLeverage, _instMaxOco);
+  if (!Number.isFinite(cappedLeverage) || cappedLeverage < 1) cappedLeverage = 1;
 
   // Margin: only ONE of the two legs ever fills (the other is cancelled by
   // the OCO worker), so we lock margin once at the worst-case price across
@@ -1027,17 +1149,20 @@ const closeAllPositions = asyncHandler(async (req, res) => {
     );
     if (!claimed) continue; // already being closed
     const oppositeSide = pos.side === 'BUY' ? 'SELL' : 'BUY';
+    const sourcePositionSide = pos.positionSide || (pos.side === 'BUY' ? 'LONG' : 'SHORT');
     const closingOrder = await Order.create({
       userId: req.userId,
       accountId: pos.accountId,
       instrumentId: pos.instrumentId,
       symbol: pos.symbol,
       side: oppositeSide,
+      positionSide: sourcePositionSide,
       type: ORDER_TYPE.MARKET,
       quantity: pos.quantity,
       leverage: pos.leverage,
       status: ORDER_STATUS.PENDING,
       closeOnly: true,
+      reduceOnly: true,
     });
     try {
       await orderRouter.routeOrder({ order: closingOrder, userId: req.userId });

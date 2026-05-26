@@ -180,7 +180,7 @@ class MatchingEngine {
         // sides so each derives its own dedupeKey of "TRADE_SETTLE:<tradeId>".
         // (Idempotency is per (wallet, dedupeKey) so taker and maker each
         // get one settle on their own wallet.)
-        await this._updatePosition(order.accountId, order.userId, order.instrumentId, order.symbol, order.side, f.qty, f.price, order.leverage, newTrade._id, order.closeOnly, order.stopLoss, order.takeProfit);
+        await this._updatePosition(order.accountId, order.userId, order.instrumentId, order.symbol, order.side, f.qty, f.price, order.leverage, newTrade._id, order.closeOnly, order.stopLoss, order.takeProfit, order.positionSide);
 
         // Maker side: skip the position update if we couldn't load the maker
         // doc (deleted out from under us, etc.). Defaulting leverage to 1
@@ -199,7 +199,8 @@ class MatchingEngine {
             newTrade._id,
             maker.closeOnly,
             maker.stopLoss,
-            maker.takeProfit
+            maker.takeProfit,
+            maker.positionSide
           );
         } else {
           console.error(
@@ -300,7 +301,8 @@ class MatchingEngine {
           fbTrade._id,
           order.closeOnly,
           order.stopLoss,
-          order.takeProfit
+          order.takeProfit,
+          order.positionSide
         );
 
         order.filledQuantity = add(order.filledQuantity, remainingQty);
@@ -471,7 +473,8 @@ class MatchingEngine {
       bbookTrade._id,
       order.closeOnly,
       order.stopLoss,
-      order.takeProfit
+      order.takeProfit,
+      order.positionSide
     );
 
     order.status = ORDER_STATUS.FILLED;
@@ -606,7 +609,8 @@ class MatchingEngine {
       externalTrade._id,
       order.closeOnly,
       order.stopLoss,
-      order.takeProfit
+      order.takeProfit,
+      order.positionSide
     );
 
     order.status = ORDER_STATUS.FILLED;
@@ -668,31 +672,69 @@ class MatchingEngine {
    * doc.save) for the CLOSED transition so concurrent SL+TP+manual
    * closes can't double-settle.
    */
-  async _updatePosition(accountId, userId, instrumentId, symbol, side, qty, price, leverage, tradeId, closeOnly = false, stopLoss = null, takeProfit = null) {
+  async _updatePosition(accountId, userId, instrumentId, symbol, side, qty, price, leverage, tradeId, closeOnly = false, stopLoss = null, takeProfit = null, positionSide = null) {
+    // HEDGE MODE — LONG and SHORT positions on the same instrument coexist.
+    // Position identity is (accountId, symbol, positionSide), so a BUY fill
+    // never auto-closes a SHORT position and vice versa.
+    //
+    // For OPENING fills (closeOnly=false): the position side comes from the
+    // order's `side` — BUY opens/grows the LONG bucket, SELL opens/grows the
+    // SHORT bucket. The opposite-side bucket is untouched.
+    //
+    // For CLOSE fills (closeOnly=true): the controller stamps the order's
+    // `positionSide` from the source position so the engine targets the
+    // correct bucket. The order's `side` is the opposite of the position
+    // (a SELL closes the LONG, a BUY closes the SHORT) but its
+    // `positionSide` still points at the bucket being reduced.
+    const targetPositionSide = positionSide
+      || (closeOnly
+        ? (side === 'SELL' ? 'LONG' : 'SHORT')  // legacy fallback: opposite of close side
+        : (side === 'BUY'  ? 'LONG' : 'SHORT'));
+
     // Accept both OPEN and CLOSING — controller may have stamped the
     // position to CLOSING as an atomic claim, but the engine still needs
     // to settle it.
     let pos = await Position.findOne({
       accountId,
       symbol,
+      positionSide: targetPositionSide,
       status: { $in: [POSITION_STATUS.OPEN, POSITION_STATUS.CLOSING] },
     });
 
-    // closeOnly orders must NOT open a new position or a flip leg. They were
-    // generated for the express purpose of closing existing exposure (manual
-    // close, partial close, SL/TP, stop-out, trailing). Cap qty against
-    // current pos.quantity if smaller, and refuse to do anything when no
-    // position exists.
+    // Legacy fallback — if no position matches by positionSide (old docs
+    // written before the field existed), fall back to a side-only lookup
+    // and on-the-fly attach the derived positionSide before we update it.
+    if (!pos) {
+      const legacy = await Position.findOne({
+        accountId,
+        symbol,
+        positionSide: { $exists: false },
+        status: { $in: [POSITION_STATUS.OPEN, POSITION_STATUS.CLOSING] },
+      });
+      if (legacy) {
+        const derived = legacy.side === 'BUY' ? 'LONG' : 'SHORT';
+        if (derived === targetPositionSide) {
+          legacy.positionSide = derived;
+          await legacy.save();
+          pos = legacy;
+        }
+      }
+    }
+
+    // closeOnly orders must NOT open a new position. They were generated
+    // for the express purpose of closing existing exposure (manual close,
+    // partial close, SL/TP, stop-out, trailing). If no matching-side
+    // position exists, skip.
     if (closeOnly) {
       if (!pos) {
         console.warn(
-          `[ME] closeOnly order arrived but no open position exists for ${symbol} acc=${accountId} — skipping`
+          `[ME] closeOnly order arrived but no open ${targetPositionSide} position exists for ${symbol} acc=${accountId} — skipping`
         );
         return null;
       }
       if (gt(qty, pos.quantity)) {
         console.log(
-          `[ME] closeOnly capping qty: requested ${qty}, position has ${pos.quantity} (${symbol})`
+          `[ME] closeOnly capping qty: requested ${qty}, position has ${pos.quantity} (${symbol} ${targetPositionSide})`
         );
         qty = pos.quantity;
       }
@@ -701,12 +743,17 @@ class MatchingEngine {
     const margin = div(mul(qty, price), leverage || 1);
 
     if (!pos) {
+      // Open a new position on the target side. Side is the order's side
+      // (BUY for LONG, SELL for SHORT) — never the opposite, because we
+      // arrived here only if no matching-side position existed AND this is
+      // not a closeOnly order.
       pos = await Position.create({
         userId,
         accountId,
         instrumentId,
         symbol,
         side,
+        positionSide: targetPositionSide,
         quantity: qty,
         entryPrice: price,
         leverage: leverage || 1,
@@ -721,9 +768,11 @@ class MatchingEngine {
       return pos;
     }
 
-    if (pos.side === side) {
-      // Add to position - weighted average entry. No settlement (just locks more margin —
-      // already locked at the placeOrder step for the new order).
+    // SAME-SIDE OPENING FILL — grow the existing position (weighted-avg
+    // entry). In hedge mode this happens when the new order's side matches
+    // the position's open side (e.g. another BUY adds to LONG). No
+    // settlement; just lock more margin (already locked at placeOrder).
+    if (!closeOnly && pos.side === side) {
       const newQty = add(pos.quantity, qty);
       const newEntry = div(add(mul(pos.entryPrice, pos.quantity), mul(price, qty)), newQty);
       pos.quantity = newQty;
@@ -733,8 +782,14 @@ class MatchingEngine {
       return pos;
     }
 
-    // Opposite side: reduce / close / flip. All three settle the closing leg
-    // (release proportional margin, book PnL, charge commission) via the wallet.
+    // From here on we're either:
+    //   (a) a closeOnly fill against the target-side position, OR
+    //   (b) (legacy) an opposite-side fill that found a same-positionSide
+    //       position via the fallback lookup above
+    // Both cases reduce the position. In hedge mode we no longer "flip" —
+    // an opposite-side opening order opens a separate position on the
+    // other positionSide, which is handled by the targetPositionSide
+    // calculation at the top.
     const Instrument = require('../models/Instrument');
     const TradingAccount = require('../models/TradingAccount');
     const walletService = require('../services/walletService');
@@ -744,15 +799,28 @@ class MatchingEngine {
     const account = await TradingAccount.findById(accountId).lean();
     const currency = account?.baseCurrency || 'USD';
 
-    // Quantity actually closing on this fill. Anything beyond this is the flip leg.
+    // Reduce qty caps at remaining size — no flip leg in hedge mode.
     const closeQty = (gt(pos.quantity, qty) || eq(pos.quantity, qty)) ? qty : pos.quantity;
     const closePnl = pos.side === 'BUY'
       ? mul(sub(price, pos.entryPrice), closeQty)
       : mul(sub(pos.entryPrice, price), closeQty);
 
-    // Commission: charged on closing notional, with subscription discount applied.
-    const feeRate = instrument?.commissionPercent || '0.0005';
-    let fee = mul(mul(closeQty, price), feeRate);
+    // Commission: account-tier driven (STANDARD/PRO/FREE + IC variants).
+    // accountFeeService dispatches on the tier's fee model:
+    //   STANDARD/_IC  → 0.005% of closing notional
+    //   PRO/_IC       → flat $0.10 per close
+    //   FREE/_IC      → 1% of profit, $0 on losing closes (lossWaive)
+    // Legacy accounts (REAL/DEMO/VIRTUAL) fall through to STANDARD via
+    // getAccountTypeDef. Subscription discount was removed when the
+    // app subscription tier system was retired.
+    const accountFeeService = require('../services/accountFeeService');
+    let fee = await accountFeeService.computeCloseFee({
+      account,
+      instrument,
+      closeQty,
+      closePrice: price,
+      closePnl,
+    });
     try { fee = await subscriptionService.applyFeeDiscount(userId, fee); } catch (_) { /* keep raw fee */ }
 
     // Profit-share fee (doc §5): only charged when this close leg is in
@@ -763,17 +831,6 @@ class MatchingEngine {
     if (gt(profitShareRate, '0') && gt(closePnl, '0')) {
       const shareFee = mul(closePnl, div(profitShareRate, '100'));
       fee = add(fee, shareFee);
-    }
-
-    // ── Losing-trade fee waiver ──────────────────────────────────────
-    // Policy decision (platform-level): commission is waived on closes
-    // that book a loss. The user already pays for the bad trade in the
-    // PnL line itself — charging an extra commission on top adds salt
-    // to the wound. Only profitable closes incur the base commission +
-    // any profit-share fee (already conditional above).
-    //   gt('0', closePnl) === true  ⇔  closePnl < 0
-    if (gt('0', closePnl)) {
-      fee = '0';
     }
 
     // dedupeKey scopes the settle to (this fill, this user) — both sides of
@@ -861,9 +918,12 @@ class MatchingEngine {
       return updated;
     }
 
-    // Flip: close existing fully (settle), then open a new position for the remainder.
-    // The flip-leg margin was already locked at placeOrder when openQty > 0.
-    const flipQty = sub(qty, pos.quantity);
+    // HEDGE MODE — no flip leg. If a closeOnly fill exceeds the position
+    // size, the engine has already capped qty above. If a (legacy) opening
+    // fill from the wrong side somehow reached here, fully close the
+    // existing position and stop — do NOT open a new opposite-side bucket
+    // here, because the hedge-mode lookup at the top routes opposite-side
+    // opens to their own positionSide bucket already.
     const marginToRelease = pos.margin;
     const newRealizedPnl = add(pos.realizedPnl, closePnl);
     const newCommission = add(pos.commission || '0', fee);
@@ -888,7 +948,6 @@ class MatchingEngine {
       { new: true }
     );
     if (updated) {
-      // Only settle if WE were the one to flip the settled flag.
       await walletService.settleTradeClose({
         userId, accountId, currency,
         marginToRelease, pnl: closePnl, fee,
@@ -896,19 +955,7 @@ class MatchingEngine {
         dedupeKey,
       });
     }
-
-    const newPos = await Position.create({
-      userId,
-      accountId,
-      instrumentId,
-      symbol,
-      side,
-      quantity: flipQty,
-      entryPrice: price,
-      leverage: leverage || 1,
-      margin: div(mul(flipQty, price), leverage || 1),
-    });
-    return newPos;
+    return updated || pos;
   }
 
   /** Cancel an order from the book. Routed through the per-symbol queue so we

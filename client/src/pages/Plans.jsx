@@ -8,13 +8,15 @@ export default function Plans() {
   const [plans, setPlans] = useState([]);
   const [mySub, setMySub] = useState(null);
   const [effective, setEffective] = useState(null);
-  const [wallet, setWallet] = useState(null);
+  const [subWallet, setSubWallet] = useState(null);
   const [loading, setLoading] = useState(true);
   const [billing, setBilling] = useState('MONTHLY');
   // Confirmation modal state — gates the wallet-debit so the user sees
   // exactly what they'll be charged before money moves.
   const [confirmPlan, setConfirmPlan] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  // Recharge modal triggered on INSUFFICIENT_SUBSCRIPTION_BALANCE.
+  const [rechargePrompt, setRechargePrompt] = useState(null);
 
   const refresh = async () => {
     try {
@@ -25,7 +27,7 @@ export default function Plans() {
       setPlans(p.data.data);
       setMySub(m.data.data.subscription);
       setEffective(m.data.data.effectivePlan);
-      setWallet(m.data.data.wallet || null);
+      setSubWallet(m.data.data.subscriptionWallet || null);
     } catch (e) {
       toast.error(errorMessage(e));
     } finally {
@@ -35,15 +37,20 @@ export default function Plans() {
 
   useEffect(() => { refresh(); }, []);
 
-  // Free-plan switch — no payment, no confirmation modal needed.
+  // Free / Post-Paid switch — no upfront payment, no confirmation modal.
+  // Post-Paid is billed per-trade, so activation is just a plan flip.
   const switchToFree = async (plan) => {
-    if (!window.confirm(`Switch to ${plan.name}? Your paid features will end immediately.`)) return;
+    const isPostPaid = plan.code === 'POSTPAID' || plan.features?.postPaid;
+    const prompt = isPostPaid
+      ? `Activate ${plan.name}? You'll be billed per trade plus a monthly maintenance fee.`
+      : `Switch to ${plan.name}? Your paid features will end immediately.`;
+    if (!window.confirm(prompt)) return;
     try {
       await api.post('/subscriptions/subscribe', {
         planCode: plan.code,
         billingCycle: billing,
       });
-      toast.success(`Switched to ${plan.name}`);
+      toast.success(isPostPaid ? `${plan.name} activated` : `Switched to ${plan.name}`);
       refresh();
     } catch (e) {
       toast.error(errorMessage(e));
@@ -53,7 +60,10 @@ export default function Plans() {
   // Paid plan — open confirmation modal with wallet balance + price.
   const openConfirm = (plan) => setConfirmPlan(plan);
 
-  // Submit handler — actually debits the wallet and creates the sub.
+  // Submit handler — debits the Subscription Wallet and creates the sub.
+  // On insufficient balance the backend returns a structured 402 with the
+  // shortfall — we surface a recharge popup that deep-links to the
+  // standalone Subscription Wallet page.
   const confirmAndPay = async () => {
     if (!confirmPlan) return;
     setSubmitting(true);
@@ -61,18 +71,25 @@ export default function Plans() {
       await api.post('/subscriptions/subscribe', {
         planCode: confirmPlan.code,
         billingCycle: billing,
-        paymentMethod: 'wallet',
+        paymentMethod: 'subscription_wallet',
       });
       const price = billing === 'YEARLY' ? confirmPlan.yearlyPrice : confirmPlan.monthlyPrice;
-      toast.success(`Subscribed to ${confirmPlan.name} · ${Number(price).toFixed(2)} deducted from wallet`);
+      toast.success(`Subscribed to ${confirmPlan.name} · ${Number(price).toFixed(2)} deducted from Subscription Wallet`);
       setConfirmPlan(null);
       refresh();
     } catch (e) {
       const code = e.response?.data?.error?.code;
-      if (code === 'INSUFFICIENT_FUNDS') {
-        toast.error('Not enough wallet balance. Top up first.', { duration: 5000 });
-      } else if (code === 'NO_REAL_ACCOUNT') {
-        toast.error('You need a real trading account to pay from wallet.', { duration: 5000 });
+      const details = e.response?.data?.error?.details;
+      if (code === 'INSUFFICIENT_SUBSCRIPTION_BALANCE') {
+        setConfirmPlan(null);
+        setRechargePrompt({
+          plan: confirmPlan,
+          billing,
+          balance: details?.balance ?? subWallet?.balance ?? '0',
+          needed: details?.needed ?? String(billing === 'YEARLY' ? confirmPlan.yearlyPrice : confirmPlan.monthlyPrice),
+          shortfall: details?.shortfall ?? '0',
+          currency: details?.currency ?? subWallet?.currency ?? 'USD',
+        });
       } else {
         toast.error(errorMessage(e));
       }
@@ -95,7 +112,9 @@ export default function Plans() {
   if (loading) return <div className="text-gray-400 p-4">Loading…</div>;
 
   const isCurrent = (plan) => effective?.code === plan.code;
-  const balanceNum = Number(wallet?.free || wallet?.balance || 0);
+  const balanceNum = Number(subWallet?.balance || 0);
+  const walletCcy = subWallet?.currency || 'USD';
+  const walletSym = walletCcy === 'USD' ? '$' : `${walletCcy} `;
   const fmt = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   return (
@@ -127,18 +146,21 @@ export default function Plans() {
           </div>
         )}
         <div className="card p-5">
-          <div className="text-xs uppercase text-gray-500 tracking-wider">Wallet · paying account</div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="text-xs uppercase text-gray-500 tracking-wider">Subscription wallet</div>
+            {subWallet?.isLowBalance && (
+              <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-warn/15 text-warn">Low</span>
+            )}
+          </div>
           <div className="mt-1 flex items-center justify-between gap-3">
             <div className="text-xl font-bold text-text-primary font-mono tabular-nums">
-              {wallet ? `${wallet.currency} ${fmt(balanceNum)}` : 'No real account'}
+              {walletSym}{fmt(balanceNum)}
             </div>
-            <Link to="/wallet" className="text-sm text-primary-500 hover:underline font-semibold">Top up →</Link>
+            <Link to="/subscription-wallet" className="text-sm text-primary-500 hover:underline font-semibold">Top up →</Link>
           </div>
-          {wallet && (
-            <div className="text-[11px] text-text-muted mt-1">
-              Upgrades are deducted from this balance instantly.
-            </div>
-          )}
+          <div className="text-[11px] text-text-muted mt-1">
+            Plan charges debit this wallet only — trading balance is never touched.
+          </div>
         </div>
       </div>
 
@@ -157,40 +179,49 @@ export default function Plans() {
       </div>
 
       {/* Pricing cards */}
-      <div className="grid gap-5 md:grid-cols-3">
+      <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-4">
         {plans.map((plan) => {
+          const isPostPaid = plan.code === 'POSTPAID' || plan.features?.postPaid;
           const price = billing === 'YEARLY' ? plan.yearlyPrice : plan.monthlyPrice;
           const priceNum = Number(price || 0);
-          const isFree = priceNum === 0;
+          const isFree = priceNum === 0 && !isPostPaid;
           const popular = plan.badge === 'Most Popular';
           const current = isCurrent(plan);
-          const canAfford = isFree || balanceNum >= priceNum;
+          const canAfford = isFree || isPostPaid || balanceNum >= priceNum;
           return (
             <div
               key={plan._id}
-              className={`card p-6 relative transition-all ${popular ? 'border-primary-500 shadow-elevated' : ''} ${current ? 'ring-2 ring-bull/40' : ''}`}
+              className={`card p-6 relative transition-all ${popular ? 'border-primary-500 shadow-elevated' : ''} ${isPostPaid ? 'border-warn/40' : ''} ${current ? 'ring-2 ring-bull/40' : ''}`}
             >
               {popular && (
                 <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-primary-500 text-white text-xs px-3 py-1 rounded-full font-semibold shadow">
                   {plan.badge}
                 </div>
               )}
+              {isPostPaid && !popular && (
+                <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-warn text-white text-xs px-3 py-1 rounded-full font-semibold shadow">
+                  Pay as you trade
+                </div>
+              )}
               <div className="text-xs uppercase text-text-muted tracking-wider">{plan.code}</div>
               <h3 className="text-2xl font-bold text-text-primary mt-1">{plan.name}</h3>
               <p className="text-sm text-text-secondary mt-1 min-h-[40px]">{plan.description}</p>
 
-              <div className="my-5">
-                <span className="text-4xl font-bold text-text-primary">
-                  ${Number(price).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
-                </span>
-                <span className="text-sm text-text-muted ml-2">/ {billing === 'YEARLY' ? 'year' : 'month'}</span>
+              <div className="my-5 min-h-[60px]">
+                {isPostPaid ? (
+                  <PostPaidRateBlock plan={plan} />
+                ) : (
+                  <>
+                    <span className="text-4xl font-bold text-text-primary">
+                      ${Number(price).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+                    </span>
+                    <span className="text-sm text-text-muted ml-2">/ {billing === 'YEARLY' ? 'year' : 'month'}</span>
+                  </>
+                )}
               </div>
 
               <ul className="space-y-2 mb-6">
                 {(plan.highlights || [])
-                  // Strip the removed "Copy trading" feature. Leverage
-                  // IS plan-tied (see backend leverageService) so it
-                  // stays in the highlights.
                   .filter((h) => !/copy[\s-]*trading/i.test(h))
                   .map((h, i) => (
                     <li key={i} className="flex items-start gap-2 text-sm text-text-secondary">
@@ -209,6 +240,10 @@ export default function Plans() {
               ) : isFree ? (
                 <button onClick={() => switchToFree(plan)} className="btn-secondary w-full">
                   Switch to Free
+                </button>
+              ) : isPostPaid ? (
+                <button onClick={() => switchToFree(plan)} className="btn-primary w-full">
+                  Activate Post Paid
                 </button>
               ) : (
                 <div className="space-y-2">
@@ -245,13 +280,14 @@ export default function Plans() {
               </tr>
             </thead>
             <tbody>
-              <FeatureRow label="Trading accounts" plans={plans} value={(p) => p.limits?.maxAccounts} />
-              <FeatureRow label="Max leverage" plans={plans} value={(p) => `1:${p.limits?.defaultLeverage || 100}`} />
-              <FeatureRow label="Fee discount" plans={plans} value={(p) => `${(Number(p.features?.feeDiscountPercent || 0) * 100).toFixed(0)}%`} />
+              <FeatureRow label="Maintenance fee" plans={plans} value={(p) => p.features?.maintenanceFee ? 'Applies' : 'Zero'} />
+              <FeatureRow label="Trading accounts" plans={plans} value={(p) => p.limits?.maxAccounts == null ? 'Unlimited' : p.limits.maxAccounts} />
+              <FeatureRow label="All instruments" plans={plans} value={() => '✓'} />
+              <FeatureRow label="24/7 access" plans={plans} value={() => '✓'} />
               <FeatureRow label="API access" plans={plans} value={(p) => p.features?.apiAccess ? '✓' : '—'} />
-              <FeatureRow label="Priority support" plans={plans} value={(p) => p.features?.prioritySupport ? '✓' : '—'} />
-              <FeatureRow label="Affiliate bonus" plans={plans} value={(p) => `+${(Number(p.features?.affiliateBonus || 0) * 100).toFixed(0)}%`} />
-              <FeatureRow label="Dedicated manager" plans={plans} value={(p) => p.features?.customSupport ? '✓' : '—'} />
+              <FeatureRow label="Devices login" plans={plans} value={(p) => p.limits?.maxDevices == null ? 'Unlimited' : p.limits.maxDevices} />
+              <FeatureRow label="Support" plans={plans} value={(p) => (p.features?.customSupport || p.features?.postPaid) ? 'Dedicated' : 'Standard'} />
+              <FeatureRow label="Max leverage" plans={plans} value={(p) => `1:${p.limits?.defaultLeverage || 100}`} />
             </tbody>
           </table>
         </div>
@@ -262,12 +298,70 @@ export default function Plans() {
         <ConfirmPayModal
           plan={confirmPlan}
           billing={billing}
-          wallet={wallet}
+          wallet={subWallet}
           submitting={submitting}
           onConfirm={confirmAndPay}
           onClose={() => !submitting && setConfirmPlan(null)}
         />
       )}
+
+      {/* Recharge popup — triggered when the Subscription Wallet doesn't
+          have enough to cover the plan. Renewal stays disabled until the
+          shortfall is funded. */}
+      {rechargePrompt && (
+        <RechargePromptModal
+          {...rechargePrompt}
+          onClose={() => setRechargePrompt(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function RechargePromptModal({ plan, billing, balance, needed, shortfall, currency, onClose }) {
+  const sym = currency === 'USD' ? '$' : `${currency} `;
+  const fmt = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return (
+    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl border border-border-dark max-w-sm w-full" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-3 border-b border-border-subtle flex items-center justify-between">
+          <h3 className="text-base font-bold text-text-primary">Recharge required</h3>
+          <button onClick={onClose} className="text-text-muted hover:text-text-primary text-xl leading-none">×</button>
+        </div>
+        <div className="p-5 space-y-3 text-sm">
+          <div className="bg-bear/10 border border-bear/30 rounded-lg p-3 text-bear text-[13px] font-semibold">
+            Not enough balance in your Subscription Wallet to renew {plan?.name}.
+          </div>
+          <div className="grid grid-cols-3 gap-3 text-center">
+            <Stat label="Balance" value={`${sym}${fmt(balance)}`} tone="muted" />
+            <Stat label="Plan price" value={`${sym}${fmt(needed)}`} tone="primary" />
+            <Stat label="Top up by" value={`${sym}${fmt(shortfall)}`} tone="bear" />
+          </div>
+          <p className="text-[11px] text-text-muted leading-snug">
+            Renewals can only be paid from the Subscription Wallet. Trading wallet funds cannot be moved here.
+          </p>
+        </div>
+        <div className="px-5 py-3 border-t border-border-subtle flex justify-end gap-2">
+          <button onClick={onClose} className="btn-ghost text-sm">Maybe later</button>
+          <Link to="/subscription-wallet" onClick={onClose} className="btn-primary text-sm">
+            Add funds →
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value, tone }) {
+  const cls = {
+    bear:    'text-bear',
+    primary: 'text-text-primary',
+    muted:   'text-text-secondary',
+  }[tone] || 'text-text-primary';
+  return (
+    <div className="rounded-lg border border-border-subtle p-2">
+      <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted">{label}</div>
+      <div className={`mt-1 font-mono tabular-nums font-bold ${cls}`}>{value}</div>
     </div>
   );
 }
@@ -314,9 +408,7 @@ function ConfirmPayModal({ plan, billing, wallet, submitting, onConfirm, onClose
           )}
 
           <p className="text-[11px] text-text-muted leading-snug">
-            Funds are deducted from your primary real trading account
-            ({ccy}) immediately. Subscription activates the moment the
-            payment clears — there's no refund window for partial use.
+            Funds are deducted from your Subscription Wallet ({ccy}) immediately. Your trading wallet is never touched. Subscription activates the moment the payment clears — there's no refund window for partial use.
           </p>
         </div>
         <div className="px-5 py-3 border-t border-border-dark flex justify-end gap-2">
@@ -345,6 +437,30 @@ function Row({ label, value, tone }) {
     <div className="flex items-center justify-between gap-2">
       <span className="text-text-muted">{label}</span>
       <span className={toneCls}>{value}</span>
+    </div>
+  );
+}
+
+function PostPaidRateBlock({ plan }) {
+  const rates = plan.postPaidRates || {};
+  const perDevice = Number(rates.perDevicePerMonth || 0);
+  const perAccount = Number(rates.perAccountPerMonth || 0);
+  const minFee = Number(rates.minimumMonthlyFee || 0);
+  const ccy = rates.currency || 'USD';
+  const sym = ccy === 'USD' ? '$' : `${ccy} `;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-baseline gap-2">
+        <span className="text-2xl font-bold text-text-primary leading-tight">{sym}{perDevice}</span>
+        <span className="text-xs text-text-muted">per device / month</span>
+      </div>
+      <div className="flex items-baseline gap-2">
+        <span className="text-2xl font-bold text-text-primary leading-tight">{sym}{perAccount}</span>
+        <span className="text-xs text-text-muted">per account / month</span>
+      </div>
+      <div className="text-[11px] text-text-muted pt-1 leading-snug">
+        Minimum <span className="font-semibold text-text-secondary">{sym}{minFee}/month</span> maintenance fee — whichever is higher.
+      </div>
     </div>
   );
 }

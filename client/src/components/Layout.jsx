@@ -49,7 +49,6 @@ export default function Layout({ children }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [profileOpen, setProfileOpen] = useState(false);
-  const [mobileOpen, setMobileOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const profileRef = useRef(null);
   const theme = useThemeStore((s) => s.theme);
@@ -71,7 +70,6 @@ export default function Layout({ children }) {
   // Collapse menus on route change so the menu doesn't linger after nav.
   useEffect(() => {
     setProfileOpen(false);
-    setMobileOpen(false);
   }, [location.pathname]);
 
   const handleLogout = async () => {
@@ -119,7 +117,13 @@ export default function Layout({ children }) {
     const load = async () => {
       try {
         const { data: ad } = await api.get('/user/accounts');
-        const accounts = (ad?.data || []).filter((a) => String(a.accountType).toUpperCase() === 'REAL');
+        // Live accounts = anything that's not a legacy DEMO/VIRTUAL.
+        // Includes the new 6-tier catalogue (STANDARD / STANDARD_IC /
+        // PRO / PRO_IC / FREE / FREE_IC) plus legacy REAL.
+        const accounts = (ad?.data || []).filter((a) => {
+          const t = String(a.accountType || '').toUpperCase();
+          return t !== 'DEMO' && t !== 'VIRTUAL';
+        });
         if (!accounts.length) {
           if (!cancelled) { setRealBalance(0); setRealCurrency('USD'); }
           return;
@@ -169,16 +173,6 @@ export default function Layout({ children }) {
           Hidden entirely on /trade so the terminal owns the full viewport. */}
       <header className={`${location.pathname === '/trade' ? 'hidden' : 'sticky top-0 z-40 bg-white border-b border-border-dark'}`}>
         <div className="max-w-[1400px] mx-auto px-4 sm:px-6 h-16 flex items-center gap-4">
-          {/* Mobile menu toggle */}
-          <button
-            type="button"
-            onClick={() => setMobileOpen((o) => !o)}
-            className="md:hidden p-2 -ml-2 text-text-secondary hover:text-text-primary"
-            aria-label="Toggle navigation"
-          >
-            {mobileOpen ? I.close : I.menu}
-          </button>
-
           {/* Brand — rounded gradient "T" icon with a corner PRO badge.
               IMPORTANT: the global light-mode override turns `text-white`
               into dark text. We bypass it by setting `color` inline on
@@ -217,13 +211,17 @@ export default function Layout({ children }) {
             </span>
           </Link>
 
-          {/* Primary nav */}
-          <nav className="hidden md:flex items-center ml-4">
+          {/* Primary nav — pill-style highlight (matches mobile flyout) */}
+          <nav className="hidden md:flex items-center gap-1 ml-4">
             {PRIMARY_NAV.map((item) => (
               <NavLink
                 key={item.label}
                 to={item.to}
-                className={`topnav-link ${isActive(item.to) ? 'topnav-link-active' : ''}`}
+                className={({ isActive: a }) =>
+                  `px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                    a ? 'bg-primary-500/10 text-primary-600' : 'text-text-secondary hover:text-text-primary hover:bg-bg-hover'
+                  }`
+                }
               >
                 {item.label}
               </NavLink>
@@ -404,24 +402,26 @@ export default function Layout({ children }) {
         )}
       </header>
 
-      {/* ── Mobile flyout — combined primary + secondary in a single list ─ */}
-      {mobileOpen && (
-        <div className="md:hidden border-b border-border-dark bg-white">
-          <div className="px-4 py-3 space-y-1">
+      {/* ── Mobile nav strip — always visible, horizontal scroll if it
+          overflows. Same pill-style active state as the desktop nav so
+          users get consistent visual feedback across viewports. */}
+      {location.pathname !== '/trade' && (
+        <div className="md:hidden sticky top-16 z-30 border-b border-border-dark bg-white">
+          <nav className="flex items-center gap-1 px-3 py-2 overflow-x-auto no-scrollbar">
             {[...PRIMARY_NAV, ...SECONDARY_NAV].map((item, idx) => (
               <NavLink
                 key={`${item.to}-${idx}`}
                 to={item.to}
                 className={({ isActive: a }) =>
-                  `block px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                    a ? 'bg-primary-500/10 text-primary-600' : 'text-text-primary hover:bg-bg-hover'
+                  `shrink-0 px-3 py-1.5 rounded-lg text-sm font-semibold transition-colors ${
+                    a ? 'bg-primary-500/10 text-primary-600' : 'text-text-secondary hover:text-text-primary hover:bg-bg-hover'
                   }`
                 }
               >
                 {item.label}
               </NavLink>
             ))}
-          </div>
+          </nav>
         </div>
       )}
 

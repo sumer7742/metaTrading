@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useSearchParams, Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { wsClient } from '../services/ws';
@@ -258,10 +258,11 @@ export default function Wallet() {
     { id: 'grow',     label: 'Deposit Funds',     icon: <NIDeposit />, active: true },
     { id: 'withdraw', label: 'Withdraw Funds',    icon: <NIWithdraw /> },
     { id: 'transfer', label: 'Internal Transfer', icon: <NITransfer /> },
+    // Subscription Wallet lives on its own page — items with `to`
+    // navigate via Link instead of switching the local view.
+    { id: 'subscription', label: 'Subscription Wallet', icon: <NISubscription />, to: '/subscription-wallet', badge: 'NEW' },
     { id: 'history',  label: 'Transaction History', icon: <NIHistory /> },
-    { id: 'methods',  label: 'Payment Methods',   icon: <NIMethods /> },
     { id: 'details',  label: 'Account Details',   icon: <NIDetails /> },
-    { id: 'bonuses',  label: 'Bonuses & Offers',  icon: <NIBonus /> },
   ];
 
   return (
@@ -279,22 +280,32 @@ export default function Wallet() {
         <nav className="bg-white border border-border-dark rounded-2xl p-2 flex flex-col gap-0.5">
           {NAV_ITEMS.map((n) => {
             const isActive = view === n.id;
-            return (
-              <button
-                key={n.id}
-                type="button"
-                onClick={() => setView(n.id)}
-                className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-left transition-colors ${
-                  isActive ? 'bg-primary-500/10 text-primary-600' : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
-                }`}
-              >
+            const className = `flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-left transition-colors ${
+              isActive ? 'bg-primary-500/10 text-primary-600' : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+            }`;
+            const content = (
+              <>
                 <span className={`shrink-0 ${isActive ? 'text-primary-600' : 'text-text-muted'}`}>
                   {n.icon}
                 </span>
                 <span className={`text-[13px] truncate ${isActive ? 'font-bold' : 'font-medium'}`}>{n.label}</span>
-                {n.id === 'grow' && (
-                  <span className="ml-auto text-[9px] font-bold uppercase tracking-wider text-primary-600 bg-primary-500/15 px-1.5 py-0.5 rounded">New</span>
+                {(n.id === 'grow' || n.badge) && (
+                  <span className="ml-auto text-[9px] font-bold uppercase tracking-wider text-primary-600 bg-primary-500/15 px-1.5 py-0.5 rounded">
+                    {n.badge || 'New'}
+                  </span>
                 )}
+              </>
+            );
+            if (n.to) {
+              return (
+                <Link key={n.id} to={n.to} className={className}>
+                  {content}
+                </Link>
+              );
+            }
+            return (
+              <button key={n.id} type="button" onClick={() => setView(n.id)} className={className}>
+                {content}
               </button>
             );
           })}
@@ -345,12 +356,10 @@ export default function Wallet() {
           <TransferView accounts={accounts} balances={balances} onDone={load} />
         ) : view === 'history' ? (
           <FullHistoryView deposits={deposits} withdrawals={withdrawals} ledger={ledger} loading={loading} tab={tab} setTab={setTab} />
-        ) : view === 'methods' ? (
-          <MethodsView onAdd={() => setView('grow')} />
         ) : view === 'details' ? (
           <AccountDetailsView user={user} accounts={accounts} balances={balances} fxRate={fxRate} onRefresh={load} setView={setView} />
         ) : (
-          <BonusesView />
+          <AccountOverviewView totals={totals} usd={usd} usdSub={usdSub} usdSubSigned={usdSubSigned} realBalances={realBalances} accounts={accounts} recentTx={recentTx} positions={openPositions} setView={setView} />
         )}
 
         {/* Recent Transactions — always visible at the bottom (matches screenshot footer) */}
@@ -524,6 +533,7 @@ const NIHistory  = () => <NS><circle cx="12" cy="12" r="9" /><path d="M12 6v6l4 
 const NIMethods  = () => <NS><rect x="2" y="6" width="20" height="14" rx="2" /><path d="M2 10h20" /></NS>;
 const NIDetails  = () => <NS><circle cx="12" cy="8" r="4" /><path d="M4 21v-2a4 4 0 0 1 4-4h8a4 4 0 0 1 4 4v2" /></NS>;
 const NIBonus    = () => <NS><rect x="3" y="8" width="18" height="13" rx="2" /><path d="M3 12h18" /><path d="M12 8v13" /><path d="M12 8s-3-5-5-3 1 3 5 3z" /><path d="M12 8s3-5 5-3-1 3-5 3z" /></NS>;
+const NISubscription = () => <NS><rect x="2" y="6" width="20" height="14" rx="2" /><path d="M2 10h20" /><path d="M6 16h4" /><circle cx="17" cy="16" r="1.2" /></NS>;
 
 // ─── UI primitives for the premium wallet layout ──────────────────────
 
@@ -752,7 +762,7 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
   const onClose = onCancel || (() => {});
   // Prefer a REAL account by default — it's the user's actual money flow.
   // Falls back to the first account if no real one exists yet.
-  const realAccount = accounts.find((a) => a.accountType === 'REAL');
+  const realAccount = accounts.find((a) => a.accountType !== 'DEMO' && a.accountType !== 'VIRTUAL');
   const [accountId, setAccountId] = useState(realAccount?._id || accounts[0]?._id || '');
   // The user enters amounts in INR (Indian payment rails); on submit
   // we convert into USD via the live `fxRate` so the backend wallet —
@@ -771,7 +781,7 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
   const [loading, setLoading] = useState(false);
 
   const selectedAccount = accounts.find((a) => a._id === accountId);
-  const isReal = selectedAccount?.accountType === 'REAL';
+  const isReal = selectedAccount && selectedAccount.accountType !== 'DEMO' && selectedAccount.accountType !== 'VIRTUAL';
   const isDemo = selectedAccount?.accountType === 'DEMO';
 
   const handleFileChange = (e) => {
@@ -1055,7 +1065,7 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 {accounts.map((a) => {
                   const sel = a._id === accountId;
-                  const isR = a.accountType === 'REAL';
+                  const isR = a.accountType !== 'DEMO' && a.accountType !== 'VIRTUAL';
                   const accCcy = a.baseCurrency || 'USD';
                   // Per-account balance in its native currency.
                   const w = (typeof balances !== 'undefined' && Array.isArray(balances))
@@ -1450,7 +1460,7 @@ const MRazor = () => MIcon('#3B82F618', '#3B82F6',
 );
 
 function WithdrawModal({ balances, accounts, onClose, onDone }) {
-  const realAccounts = accounts.filter((a) => a.accountType === 'REAL');
+  const realAccounts = accounts.filter((a) => a.accountType !== 'DEMO' && a.accountType !== 'VIRTUAL');
   const [accountId, setAccountId] = useState(realAccounts[0]?._id || accounts[0]?._id || '');
   const [currency, setCurrency] = useState('INR');
   const [amount, setAmount] = useState('');
@@ -1905,7 +1915,7 @@ function AccountOverviewView({ totals, usd, usdSub, usdSubSigned, realBalances, 
 }
 
 function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCancel }) {
-  const realAccounts = accounts.filter((a) => a.accountType === 'REAL');
+  const realAccounts = accounts.filter((a) => a.accountType !== 'DEMO' && a.accountType !== 'VIRTUAL');
   const [step, setStep] = useState(0);
   const [accountId, setAccountId] = useState(realAccounts[0]?._id || accounts[0]?._id || '');
   // INR-first input: the user enters an INR amount; on submit the
@@ -2128,7 +2138,7 @@ function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCance
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 {accounts.map((a) => {
                   const sel = a._id === accountId;
-                  const isR = a.accountType === 'REAL';
+                  const isR = a.accountType !== 'DEMO' && a.accountType !== 'VIRTUAL';
                   const inrWallet = balances.find((b) => b.accountId === a._id && b.currency === 'INR');
                   const usdWallet = balances.find((b) => b.accountId === a._id && b.currency === 'USD');
                   const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
@@ -2780,7 +2790,10 @@ function AccountDetailsView({ user, accounts, balances, fxRate, onRefresh, setVi
     : kyc === 'PENDING' ? { tint: '#3B82F6', label: 'Under Review' }
     : { tint: '#DC2626', label: 'Not verified' };
 
-  const [showCreate, setShowCreate] = useState(false);
+  // Account creation moved to dedicated pages (/accounts/new → tier
+  // picker → /accounts/new/:tierCode configure). The legacy
+  // CreateAccountInlineModal below is left in the file unused as
+  // dead code that can be removed in a follow-up cleanup.
   const balanceFor = (accId, currency) => {
     const w = balances?.find((x) => x.accountId === accId && x.currency === currency);
     return w ? Number(w.balance) || 0 : 0;
@@ -2793,14 +2806,13 @@ function AccountDetailsView({ user, accounts, balances, fxRate, onRefresh, setVi
           <h1 className="text-2xl sm:text-3xl font-bold text-text-primary">Account Details</h1>
           <p className="text-sm text-text-secondary mt-1">Profile, trading accounts, KYC status, and security settings.</p>
         </div>
-        <button
-          type="button"
-          onClick={() => setShowCreate(true)}
+        <Link
+          to="/accounts/new"
           className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-sm shadow-card hover:shadow-elevated transition-all"
           style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)', color: '#FFFFFF' }}
         >
           <span className="keep-white" style={{ color: '#FFFFFF' }}>+ New Account</span>
-        </button>
+        </Link>
       </div>
 
       {/* Profile hero */}
@@ -2832,26 +2844,29 @@ function AccountDetailsView({ user, accounts, balances, fxRate, onRefresh, setVi
           <div className="py-8 text-center">
             <div className="text-sm font-semibold text-text-primary">No accounts yet</div>
             <div className="text-xs text-text-muted mt-1">Create your first trading account to start.</div>
-            <button onClick={() => setShowCreate(true)} className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold shadow-card hover:shadow-elevated transition-all" style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)', color: '#FFFFFF' }}>
+            <Link to="/accounts/new" className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold shadow-card hover:shadow-elevated transition-all" style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)', color: '#FFFFFF' }}>
               <span className="keep-white" style={{ color: '#FFFFFF' }}>+ Create Account</span>
-            </button>
+            </Link>
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
             {accounts.map((a) => {
-              const isR = a.accountType === 'REAL';
+              const isR = a.accountType !== 'DEMO' && a.accountType !== 'VIRTUAL';
               const tint = isR ? '#1D4ED8' : '#3B82F6';
               const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
-              // Show balance in both INR and USD. The native balance
-              // lives in `a.baseCurrency`; the alt is converted via
-              // fxRate so the user always sees the dual figure.
+              const isSuspended = !!a.planSuspendedAt;
               const native = balanceFor(a._id, a.baseCurrency);
               let inr = 0, usd = 0;
               if (a.baseCurrency === 'INR') { inr = native; usd = native / rate; }
               else if (a.baseCurrency === 'USD') { usd = native; inr = native * rate; }
               else { inr = native; usd = native / rate; }
               return (
-                <div key={a._id} className="rounded-2xl border-2 border-border-dark p-4 hover:shadow-card hover:-translate-y-0.5 transition-all bg-white">
+                <div key={a._id} className={`rounded-2xl border-2 p-4 hover:shadow-card hover:-translate-y-0.5 transition-all bg-white relative ${isSuspended ? 'border-amber-400 bg-amber-50/40' : 'border-border-dark'}`}>
+                  {isSuspended && (
+                    <div className="absolute -top-2 right-3 bg-amber-500 text-white text-[9px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full shadow">
+                      Suspended
+                    </div>
+                  )}
                   <div className="flex items-start justify-between gap-2">
                     <span className="w-11 h-11 rounded-xl flex items-center justify-center text-sm font-extrabold shrink-0 shadow-sm" style={{ background: `linear-gradient(135deg, ${tint}22 0%, ${tint}11 100%)`, color: tint }}>
                       {(a.nickname || a.accountNumber || 'A').slice(0, 2).toUpperCase()}
@@ -2862,6 +2877,13 @@ function AccountDetailsView({ user, accounts, balances, fxRate, onRefresh, setVi
                   </div>
                   <div className="mt-3 text-sm font-bold text-text-primary truncate">{a.nickname || a.accountNumber}</div>
                   <div className="text-[11px] text-text-muted font-mono truncate">{a.accountNumber}</div>
+                  {isSuspended && (
+                    <div className="mt-2 text-[11px] text-amber-700 leading-snug">
+                      Over plan limit. Trading paused; you can still withdraw funds and view the last 3 months of history.
+                      {' '}
+                      <Link to="/plans" className="font-bold underline">Upgrade plan</Link>
+                    </div>
+                  )}
 
                   {/* Dual-currency balance — primary in native, INR & USD shown side-by-side. */}
                   <div className="mt-3 grid grid-cols-2 gap-2 bg-bg-hover rounded-xl p-2.5">
@@ -2875,15 +2897,9 @@ function AccountDetailsView({ user, accounts, balances, fxRate, onRefresh, setVi
                     </div>
                   </div>
 
-                  <div className="mt-2.5 grid grid-cols-2 gap-2 text-[11px]">
-                    <div>
-                      <div className="text-text-muted uppercase tracking-wider font-semibold">Leverage</div>
-                      <div className="text-sm font-mono font-bold text-text-primary">1:{a.leverage}</div>
-                    </div>
-                    <div>
-                      <div className="text-text-muted uppercase tracking-wider font-semibold">Mode</div>
-                      <div className="text-sm font-mono font-bold text-text-primary truncate">{a.mode || '—'}</div>
-                    </div>
+                  <div className="mt-2.5 text-[11px]">
+                    <div className="text-text-muted uppercase tracking-wider font-semibold">Leverage</div>
+                    <div className="text-sm font-mono font-bold text-text-primary">1:{a.leverage}</div>
                   </div>
                 </div>
               );
@@ -2891,6 +2907,31 @@ function AccountDetailsView({ user, accounts, balances, fxRate, onRefresh, setVi
           </div>
         )}
       </div>
+
+      {/* Subscription Wallet entry-point card — separate wallet system,
+          lives at /subscription-wallet. Trading balance is never touched
+          by plan charges. */}
+      <Link
+        to="/subscription-wallet"
+        className="block bg-white border-2 border-border-dark rounded-2xl p-5 hover:border-primary-500 hover:shadow-card transition-all"
+      >
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-3">
+            <span className="w-11 h-11 rounded-xl flex items-center justify-center text-primary-600"
+                  style={{ background: 'linear-gradient(135deg, #3B82F622, #3B82F611)' }}>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="6" width="20" height="14" rx="2" /><path d="M2 10h20" /><path d="M6 16h4" /></svg>
+            </span>
+            <div>
+              <div className="text-base font-bold text-text-primary">Subscription Wallet</div>
+              <div className="text-[12px] text-text-muted mt-0.5">Separate balance for plan purchases & renewals — trading funds are never touched.</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 text-primary-600 font-semibold text-sm">
+            Open
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 5l7 7-7 7" /></svg>
+          </div>
+        </div>
+      </Link>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-white border border-border-dark rounded-2xl p-5">
@@ -2932,12 +2973,6 @@ function AccountDetailsView({ user, accounts, balances, fxRate, onRefresh, setVi
         </div>
       </div>
 
-      {showCreate && (
-        <CreateAccountInlineModal
-          onClose={() => setShowCreate(false)}
-          onCreated={() => { setShowCreate(false); onRefresh && onRefresh(); }}
-        />
-      )}
     </>
   );
 }

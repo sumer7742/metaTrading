@@ -51,10 +51,14 @@ const canCreateAccount = async (userId) => {
   const TradingAccount = require('../models/TradingAccount');
   const plan = await getEffectivePlan(userId);
   const count = await TradingAccount.countDocuments({ userId, isActive: true });
+  const rawMax = plan.limits?.maxAccounts;
+  // null / negative = unlimited (POSTPAID). 0 stays as 0 (blocked).
+  const unlimited = rawMax == null || rawMax < 0;
+  const max = unlimited ? Infinity : rawMax;
   return {
-    allowed: count < (plan.limits?.maxAccounts || 2),
+    allowed: unlimited || count < max,
     current: count,
-    max: plan.limits?.maxAccounts || 2,
+    max: unlimited ? null : max,
     planCode: plan.code,
   };
 };
@@ -120,6 +124,26 @@ const subscribe = async ({ userId, planCode, billingCycle = 'MONTHLY', paymentRe
         wsServer.notifyUser(userId, 'leverage', fresh);
       } catch (_) { /* WS optional */ }
     } catch (_) { /* leverage hook is non-fatal — sub still succeeds */ }
+
+    // Apply maxAccounts cap — suspends excess accounts on downgrade,
+    // lifts previously-suspended ones on upgrade. Non-fatal: if it
+    // fails the subscription itself still stands and ops can re-run
+    // enforcement manually.
+    try {
+      const planEnforcement = require('./planEnforcementService');
+      const result = await planEnforcement.enforce(userId, plan, 'Plan change');
+      if (result.suspended || result.lifted) {
+        console.log(
+          `[subscriptions] enforce userId=${userId} plan=${plan.code} suspended=${result.suspended} lifted=${result.lifted}`
+        );
+      }
+      try {
+        const wsServer = require('../websocket/server');
+        wsServer.notifyUser(userId, 'accounts', { event: 'PLAN_ENFORCED', ...result });
+      } catch (_) { /* WS optional */ }
+    } catch (e) {
+      console.error('[subscriptions] enforce failed:', e.message);
+    }
   }
 
   return sub;

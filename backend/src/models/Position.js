@@ -9,6 +9,18 @@ const positionSchema = new mongoose.Schema(
     symbol: { type: String, required: true, index: true },
 
     side: { type: String, enum: Object.values(ORDER_SIDE), required: true },
+    // Hedge-mode identity. LONG = built from BUY fills, SHORT = built from
+    // SELL fills. Position lookup is (accountId, symbol, positionSide) so a
+    // BUY and a SELL on the same instrument coexist as two open positions
+    // instead of netting into one. Legacy docs without this field fall back
+    // to side-derived values at the application layer (BUY→LONG, SELL→SHORT)
+    // and get backfilled the next time the position is updated.
+    positionSide: {
+      type: String,
+      enum: ['LONG', 'SHORT'],
+      default: function () { return this.side === 'BUY' ? 'LONG' : 'SHORT'; },
+      index: true,
+    },
     quantity: { type: String, required: true },
     entryPrice: { type: String, required: true },
     leverage: { type: Number, default: 1 },
@@ -73,6 +85,10 @@ const positionSchema = new mongoose.Schema(
 );
 
 positionSchema.index({ accountId: 1, status: 1 });
+// Hedge-mode lookup — the matching engine finds the side-specific position
+// for a given (account, symbol) by querying on this triple. Status is
+// included because we filter to OPEN / CLOSING when grouping.
+positionSchema.index({ accountId: 1, symbol: 1, positionSide: 1, status: 1 });
 
 // Optimization indexes — speed up common query patterns
 positionSchema.index({ userId: 1, status: 1 });           // user's open positions

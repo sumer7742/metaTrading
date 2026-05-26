@@ -809,6 +809,14 @@ function LeverageCard({ state, userActive, onEdit, onReset, onHistory }) {
   );
 }
 
+// Platform-wide sentinel — encodes "1:Unlimited" as a finite integer so
+// margin math stays positive. Must match leverageService.SYSTEM_MAX.
+const UNLIMITED_LEVERAGE = 999999;
+// Slider only renders up to a usable visual ceiling — going to 999999
+// would make every preset look like 0% of the bar. The "Unlimited"
+// preset bypasses the slider entirely.
+const SLIDER_VISUAL_MAX = 1000;
+
 function LeverageEditModal({ current, onClose, onSave }) {
   const [value, setValue] = useState(current.effectiveLeverage);
   const [reason, setReason] = useState('');
@@ -821,9 +829,14 @@ function LeverageEditModal({ current, onClose, onSave }) {
   const [saving, setSaving] = useState(false);
   const presets = [10, 50, 100, 200, 500, 1000];
 
+  const isUnlimited = Number(value) >= UNLIMITED_LEVERAGE;
+  const displayValue = isUnlimited ? 'Unlimited' : `1:${Math.round(Number(value) || 1)}`;
+
   const submit = async (e) => {
     e?.preventDefault?.();
-    const v = Math.max(1, Math.min(1000, Math.round(Number(value) || 1)));
+    let v = Math.round(Number(value) || 1);
+    if (v >= UNLIMITED_LEVERAGE) v = UNLIMITED_LEVERAGE;
+    else v = Math.max(1, Math.min(SLIDER_VISUAL_MAX, v));
     setSaving(true);
     try {
       await onSave({
@@ -852,23 +865,37 @@ function LeverageEditModal({ current, onClose, onSave }) {
             </label>
             <div className="flex items-center gap-2">
               <span className="text-text-secondary font-mono">1 :</span>
-              <input
-                type="number"
-                min="1"
-                max="1000"
-                value={value}
-                onChange={(e) => setValue(e.target.value)}
-                autoFocus
-                className="flex-1 bg-bg-card border border-border-dark rounded px-3 py-2 text-lg font-mono font-bold text-white focus:outline-none focus:border-primary-500"
-              />
+              {isUnlimited ? (
+                <div className="flex-1 bg-bg-card border border-primary-500 rounded px-3 py-2 text-lg font-bold text-primary-500 flex items-center justify-between">
+                  <span>Unlimited</span>
+                  <button
+                    type="button"
+                    onClick={() => setValue(current.effectiveLeverage >= UNLIMITED_LEVERAGE ? 100 : current.effectiveLeverage)}
+                    className="text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded bg-bg-hover text-text-secondary hover:text-white"
+                  >
+                    Set custom
+                  </button>
+                </div>
+              ) : (
+                <input
+                  type="number"
+                  min="1"
+                  max={UNLIMITED_LEVERAGE}
+                  value={value}
+                  onChange={(e) => setValue(e.target.value)}
+                  autoFocus
+                  className="flex-1 bg-bg-card border border-border-dark rounded px-3 py-2 text-lg font-mono font-bold text-white focus:outline-none focus:border-primary-500"
+                />
+              )}
             </div>
             <input
               type="range"
               min="1"
-              max="1000"
-              value={value}
+              max={SLIDER_VISUAL_MAX}
+              value={isUnlimited ? SLIDER_VISUAL_MAX : value}
               onChange={(e) => setValue(Number(e.target.value))}
-              className="w-full mt-3 accent-primary-500"
+              disabled={isUnlimited}
+              className="w-full mt-3 accent-primary-500 disabled:opacity-40"
             />
             <div className="flex flex-wrap gap-1.5 mt-3">
               {presets.map((p) => (
@@ -877,7 +904,7 @@ function LeverageEditModal({ current, onClose, onSave }) {
                   type="button"
                   onClick={() => setValue(p)}
                   className={`text-xs px-2.5 py-1 rounded font-bold transition-colors ${
-                    Number(value) === p
+                    !isUnlimited && Number(value) === p
                       ? 'bg-primary-500 text-white'
                       : 'bg-bg-card border border-border-dark text-text-secondary hover:text-white hover:border-primary-500'
                   }`}
@@ -885,6 +912,18 @@ function LeverageEditModal({ current, onClose, onSave }) {
                   1:{p}
                 </button>
               ))}
+              {/* Unlimited preset — sets the sentinel value */}
+              <button
+                type="button"
+                onClick={() => setValue(UNLIMITED_LEVERAGE)}
+                className={`text-xs px-2.5 py-1 rounded font-bold transition-colors ${
+                  isUnlimited
+                    ? 'bg-primary-500 text-white'
+                    : 'bg-bg-card border border-border-dark text-text-secondary hover:text-white hover:border-primary-500'
+                }`}
+              >
+                1:Unlimited
+              </button>
             </div>
           </div>
 
@@ -930,7 +969,7 @@ function LeverageEditModal({ current, onClose, onSave }) {
         <div className="px-5 py-3 border-t border-border-dark flex justify-end gap-2">
           <button type="button" onClick={onClose} className="btn-ghost text-sm">Cancel</button>
           <button type="submit" disabled={saving} className="btn-primary text-sm">
-            {saving ? 'Saving…' : `Set 1:${Math.round(Number(value) || 1)}`}
+            {saving ? 'Saving…' : `Set ${displayValue}`}
           </button>
         </div>
       </form>

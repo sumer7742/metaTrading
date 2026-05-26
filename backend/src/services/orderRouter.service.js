@@ -70,6 +70,16 @@ const _validate = (account, instrument, order) => {
   if (!isClose && account.isTradingEnabled === false) {
     throw new AppError('Trading is disabled on this account', 403, 'TRADING_DISABLED');
   }
+  // Plan-driven suspension (over plan cap after a downgrade or payment
+  // failure). Closes are still allowed so the user can liquidate to
+  // withdraw funds — that's an explicit promise in the plan spec.
+  if (!isClose && account.planSuspendedAt) {
+    throw new AppError(
+      'This account is suspended because it exceeds your current plan limit. Upgrade your plan to resume trading. You can still withdraw funds.',
+      403,
+      'ACCOUNT_PLAN_SUSPENDED'
+    );
+  }
   if (!instrument.isActive && !isClose) {
     throw new AppError(`Instrument ${instrument.symbol} is inactive`, 400, 'INSTRUMENT_INACTIVE');
   }

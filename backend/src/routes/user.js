@@ -13,6 +13,13 @@ router.post('/kyc', c.submitKYC);
 router.get('/kyc/status', c.getKycStatus);
 router.get('/accounts', c.listAccounts);
 router.post('/accounts', c.createAccount);
+// Account-type catalogue — public to authenticated users. The FE picker
+// reads this so a new tier (added in config/accountTypes.js) shows up
+// without any frontend deploy.
+router.get('/account-types', (req, res) => {
+  const { listPublicAccountTypes } = require('../config/accountTypes');
+  res.json({ success: true, data: listPublicAccountTypes() });
+});
 
 // Leverage — effective cap + source ("VIP Plan" / "Admin Override").
 // FE OrderForm reads this to bound the leverage slider and show the
@@ -20,7 +27,20 @@ router.post('/accounts', c.createAccount);
 router.get('/leverage', async (req, res, next) => {
   try {
     const leverageService = require('../services/leverageService');
-    const state = await leverageService.getEffective(req.userId);
+    // Optional ?accountId=... — when provided, demo/virtual accounts
+    // bypass admin overrides and return 1:Unlimited. Without it, the
+    // call returns the user-level effective state (used by legacy
+    // callers / global UI badges).
+    let accountType = null;
+    if (req.query.accountId) {
+      const TradingAccount = require('../models/TradingAccount');
+      const acc = await TradingAccount.findOne({
+        _id: req.query.accountId,
+        userId: req.userId,
+      }).select('accountType').lean();
+      if (acc) accountType = acc.accountType;
+    }
+    const state = await leverageService.getEffective(req.userId, { accountType });
     res.json({ success: true, data: state });
   } catch (e) { next(e); }
 });

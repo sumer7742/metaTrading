@@ -24,13 +24,10 @@ const planSchema = new mongoose.Schema(
     sortOrder: { type: Number, default: 0 },
 
     limits: {
+      // null = unlimited (POSTPAID).
       maxAccounts: { type: Number, default: 2 },
+      maxDevices: { type: Number, default: 3 }, // concurrent logged-in devices
       maxLeverageOverride: { type: Number, default: null }, // @deprecated, kept for back-compat
-      // Default max leverage granted by this plan. The trading engine
-      // uses this as a CAP unless an admin override is set on the user.
-      //   FREE    →  50
-      //   PREMIUM → 200
-      //   VIP     → 500
       defaultLeverage: { type: Number, default: 100 },
       withdrawalDailyLimit: { type: String, default: null },
     },
@@ -39,8 +36,23 @@ const planSchema = new mongoose.Schema(
       apiAccess: { type: Boolean, default: false },
       prioritySupport: { type: Boolean, default: false },
       copyTradingEnabled: { type: Boolean, default: false },
-      affiliateBonus: { type: String, default: '0' }, // extra % on commissions
+      affiliateBonus: { type: String, default: '0' },
       customSupport: { type: Boolean, default: false }, // dedicated account manager
+      // POSTPAID-only — usage-based billing + monthly maintenance.
+      postPaid: { type: Boolean, default: false },
+      maintenanceFee: { type: Boolean, default: false },
+    },
+
+    // POSTPAID billing rules (only used when features.postPaid = true).
+    // Monthly bill = max(minimumMonthlyFee,
+    //                    perDevicePerMonth * devices_used
+    //                  + perAccountPerMonth * accounts_used)
+    // Stored as strings for decimal precision.
+    postPaidRates: {
+      perDevicePerMonth: { type: String, default: '0' },
+      perAccountPerMonth: { type: String, default: '0' },
+      minimumMonthlyFee: { type: String, default: '0' },
+      currency: { type: String, default: 'USD' },
     },
 
     // Display in pricing page UI

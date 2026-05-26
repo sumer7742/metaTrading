@@ -300,7 +300,9 @@ const seedProd = async () => {
       limits: { maxAccounts: 2, maxLeverageOverride: null, withdrawalDailyLimit: null }, isActive: true },
     { code: 'PREMIUM', name: 'Premium', monthlyPrice: '19',  yearlyPrice: '190',  sortOrder: 2,
       limits: { maxAccounts: 5, maxLeverageOverride: null, withdrawalDailyLimit: null }, isActive: true },
-    { code: 'VIP',     name: 'VIP',     monthlyPrice: '99',  yearlyPrice: '990',  sortOrder: 3,
+    { code: 'GOLD',    name: 'Gold',    monthlyPrice: '49',  yearlyPrice: '490',  sortOrder: 3,
+      limits: { maxAccounts: 7, maxLeverageOverride: null, withdrawalDailyLimit: null }, isActive: true },
+    { code: 'VIP',     name: 'VIP',     monthlyPrice: '99',  yearlyPrice: '990',  sortOrder: 4,
       limits: { maxAccounts: 20, maxLeverageOverride: null, withdrawalDailyLimit: null }, isActive: true },
   ];
   for (const p of plans) {

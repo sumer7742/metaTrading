@@ -373,12 +373,24 @@ const seed = async () => {
       highlights: ['5 trading accounts', 'Up to 1:200 leverage', '20% fee discount', 'API access', 'Priority support'],
     },
     {
+      code: 'GOLD',
+      name: 'Gold',
+      description: 'Power traders. Higher leverage, lower fees, bigger affiliate cut.',
+      monthlyPrice: '49.99',
+      yearlyPrice: '499.99',
+      sortOrder: 3,
+      badge: 'Best Value',
+      limits: { maxAccounts: 7, defaultLeverage: 300, maxLeverageOverride: null, withdrawalDailyLimit: null },
+      features: { feeDiscountPercent: '0.30', apiAccess: true, prioritySupport: true, copyTradingEnabled: false, affiliateBonus: '0.07' },
+      highlights: ['7 trading accounts', 'Up to 1:300 leverage', '30% fee discount', 'API access', 'Priority support', '7% affiliate bonus'],
+    },
+    {
       code: 'VIP',
       name: 'VIP',
       description: 'Elite traders. Lowest fees, dedicated manager.',
       monthlyPrice: '99.99',
       yearlyPrice: '999.99',
-      sortOrder: 3,
+      sortOrder: 4,
       limits: { maxAccounts: 10, defaultLeverage: 500, maxLeverageOverride: 500, withdrawalDailyLimit: null },
       features: { feeDiscountPercent: '0.40', apiAccess: true, prioritySupport: true, copyTradingEnabled: false, affiliateBonus: '0.10', customSupport: true },
       highlights: ['10 trading accounts', 'Up to 1:500 leverage', '40% fee discount', 'Dedicated account manager', 'White-glove onboarding'],
@@ -390,14 +402,8 @@ const seed = async () => {
       await Plan.create(p);
       console.log(`✓ Plan created: ${p.code} ($${p.monthlyPrice}/mo)`);
     } else {
-      // Always sync `features` + `highlights` to the canonical seed —
-      // these are content, not user-tweakable pricing. Keeps the
-      // running app aligned with the codebase even when admins have
-      // already created plans manually (e.g. "Copy trading" removal
-      // rolls out automatically on next deploy).
       existing.features   = p.features;
       existing.highlights = p.highlights;
-      // Pick up new badges / descriptions on re-seed too.
       if (p.badge !== undefined)       existing.badge = p.badge;
       if (p.description !== undefined) existing.description = p.description;
       await existing.save();

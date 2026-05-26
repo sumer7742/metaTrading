@@ -35,17 +35,29 @@ const listAccounts = asyncHandler(async (req, res) => {
 
 const createAccount = asyncHandler(async (req, res) => {
   const { accountType, baseCurrency, leverage, mode, nickname, initialBalance } = req.body;
-  if (!Object.values(ACCOUNT_TYPES).includes(accountType) && accountType !== 'CUSTOM') {
-    throw new AppError('Invalid account type', 400);
+
+  // Resolve the requested tier against the live AccountPlan catalogue.
+  // Legacy DEMO/VIRTUAL types skip the catalogue check (kept for the
+  // "Demo Account" mode in the new-account wizard which provisions a
+  // practice account with a seed balance, no real money rules).
+  const accountPlansService = require('../services/accountPlansService');
+  const isLegacyVirtual = accountType === 'DEMO' || accountType === 'VIRTUAL';
+  let plan = null;
+  if (!isLegacyVirtual) {
+    plan = await accountPlansService.getByCode(accountType);
+    if (!plan) {
+      throw new AppError(`Unknown account plan "${accountType}"`, 400, 'UNKNOWN_PLAN');
+    }
+    if (!plan.isActive) {
+      throw new AppError(`Plan "${plan.name}" is currently disabled`, 400, 'PLAN_DISABLED');
+    }
   }
 
-  // Validate initialBalance for demo/virtual seeds: must be a positive finite
-  // number under a sane ceiling. Without this, a user could self-fund with
-  // any amount, distort the trader profile, and inflate routing analytics.
-  const DEMO_SEED_CAP = 1000000; // 10 lakh INR max for demo/virtual seed
+  // Self-funding only allowed on legacy DEMO/VIRTUAL. Live tiers must
+  // come through deposit — keeps the trader profile honest.
+  const DEMO_SEED_CAP = 1000000;
   let seed = '0';
-  const isVirtual = accountType === ACCOUNT_TYPES.DEMO || accountType === ACCOUNT_TYPES.VIRTUAL;
-  if (isVirtual) {
+  if (isLegacyVirtual) {
     const requested = initialBalance == null ? 10000 : Number(initialBalance);
     if (!Number.isFinite(requested) || requested < 0) {
       throw new AppError('initialBalance must be a non-negative number', 400);
@@ -55,11 +67,10 @@ const createAccount = asyncHandler(async (req, res) => {
     }
     seed = String(requested);
   } else if (initialBalance != null) {
-    // REAL accounts can never be self-funded — must come through deposit.
-    throw new AppError('initialBalance not allowed for non-demo accounts', 400);
+    throw new AppError('initialBalance not allowed for live accounts — use a deposit instead', 400);
   }
 
-  // Plan-based limit (doc §7.16)
+  // Subscription-plan account-count limit (doc §7.16).
   const subscriptionService = require('../services/subscriptionService');
   const check = await subscriptionService.canCreateAccount(req.userId);
   if (!check.allowed) {
@@ -70,8 +81,22 @@ const createAccount = asyncHandler(async (req, res) => {
     );
   }
 
-  // UUID-style account number: a high-entropy suffix avoids collisions on
-  // rapid creation (Date.now().slice(-9) repeats once per ~16 mins).
+  // Leverage selection:
+  //   - DEMO / VIRTUAL: permanently 1:Unlimited (999999) — no caps on
+  //     practice money, regardless of what the FE sent.
+  //   - Real tier with a cap: clamp client input down to the cap.
+  //   - Real tier without a cap: honour client input.
+  const UNLIMITED = 999999;
+  let acctLeverage;
+  if (isLegacyVirtual) {
+    acctLeverage = UNLIMITED;
+  } else {
+    acctLeverage = Number(leverage) || 100;
+    if (plan && plan.maxLeverage != null && acctLeverage > plan.maxLeverage) {
+      acctLeverage = plan.maxLeverage;
+    }
+  }
+
   const { v4: uuidv4 } = require('uuid');
   const accountNumber = 'TA' + uuidv4().replace(/-/g, '').slice(0, 12).toUpperCase();
   const account = await TradingAccount.create({
@@ -79,9 +104,9 @@ const createAccount = asyncHandler(async (req, res) => {
     accountNumber,
     accountType,
     baseCurrency: baseCurrency || 'INR',
-    leverage: Number(leverage) || 100,
+    leverage: acctLeverage,
     mode: mode || TRADING_MODE.HYBRID,
-    nickname,
+    nickname: nickname || plan?.name || accountType,
   });
   await Wallet.create({
     userId: req.userId,
@@ -89,7 +114,15 @@ const createAccount = asyncHandler(async (req, res) => {
     currency: baseCurrency || 'INR',
     balance: seed,
   });
-  sendSuccess(res, account, 201);
+
+  // Min-deposit hint — surfaced in the response so the FE can prompt
+  // the user to fund the account. Not a hard gate (account exists at
+  // $0; the user just can't trade until they fund the minimum).
+  const minDepositHint = plan && plan.minDeposit > 0
+    ? { minDeposit: plan.minDeposit, currency: 'USD', needsFunding: true }
+    : null;
+
+  sendSuccess(res, { ...account.toObject(), minDepositHint }, 201);
 });
 
 // ───────── Feedback ─────────

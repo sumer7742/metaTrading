@@ -733,6 +733,10 @@ export default function PriceChart({
   showStopLimit = true,   // header toggle state — drives STP/LIM chip in status pill
   positionsCount = 0,     // total positions on this symbol (for the chip badge)
   ordersCount = 0,        // total pending orders on this symbol (for the chip badge)
+  // Close-all — when provided + count > 0, renders a red "Close All" pill
+  // in the chart's right toolbar that fires onCloseAll() with confirmation.
+  openPositionsCount = 0,
+  onCloseAll = null,
   calendarFilters = { high: true, medium: true, low: false, lowest: false },
   timeZone = 'local',     // 'local' | 'utc' | 'gmt'
 }) {
@@ -2119,6 +2123,26 @@ export default function PriceChart({
               </div>
             );
           })()}
+
+          {/* Close-All — flat-everything panic button in the chart toolbar.
+              Only renders when the parent provides onCloseAll and there's
+              at least one open position. Confirms before firing. */}
+          {onCloseAll && openPositionsCount > 0 && (
+            <button
+              type="button"
+              onClick={onCloseAll}
+              title={`Close all ${openPositionsCount} open position(s)`}
+              className="inline-flex items-center gap-1 h-8 px-2.5 rounded-md bg-bear/10 text-bear border border-bear/30 hover:bg-bear/20 text-[11px] font-bold tracking-wide transition-colors"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 6L6 18" /><path d="M6 6l12 12" />
+              </svg>
+              Close All
+              <span className="ml-0.5 inline-flex items-center justify-center min-w-[16px] h-4 px-1 rounded bg-bear/20 text-bear text-[10px] font-extrabold tabular-nums">
+                {openPositionsCount}
+              </span>
+            </button>
+          )}
 
           {/* Expand / Fullscreen controls — moved into the toolbar from
               the floating overlay so they don't overlap the Sell/Buy chip. */}

@@ -8,7 +8,11 @@ const tradingAccountSchema = new mongoose.Schema(
     accountType: {
       type: String,
       enum: [...Object.values(ACCOUNT_TYPES), 'CUSTOM'],
-      default: ACCOUNT_TYPES.DEMO,
+      // Default new accounts to STANDARD — the lowest-friction tier that
+      // still has the classic Buy/Sell + capped leverage. Tier metadata
+      // (fees, leverage cap, buy-close-only) lives in config/accountTypes.js
+      // and is derived from this field at runtime.
+      default: ACCOUNT_TYPES.STANDARD,
     },
     customTypeName: String, // when accountType === 'CUSTOM'
     baseCurrency: { type: String, default: 'USD' },
@@ -52,6 +56,18 @@ const tradingAccountSchema = new mongoose.Schema(
     // Cap on total open notional exposure across all positions on this account.
     // null = no limit. Stored as string-decimal in base currency.
     maxPositionSize: { type: String, default: null },
+
+    // Plan-driven suspension (separate from isTradingEnabled which is the
+    // ops/fraud freeze). When set, the account is over the user's current
+    // plan's maxAccounts cap — e.g. they downgraded from VIP (10 accounts)
+    // to FREE (2). Suspended accounts:
+    //   - cannot open new positions (close-only still allowed so positions
+    //     can be liquidated to free up withdrawable funds)
+    //   - can still receive withdrawals
+    //   - history is clipped to the last 3 months in reports
+    // Auto-lifted by planEnforcementService when the user upgrades back.
+    planSuspendedAt: { type: Date, default: null, index: true },
+    planSuspendedReason: { type: String, default: null },
   },
   { timestamps: true }
 );

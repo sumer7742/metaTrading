@@ -14,6 +14,9 @@ import Reports from './pages/Reports';
 import DataFeeds from './pages/DataFeeds';
 import Settings from './pages/Settings';
 import Security from './pages/Security';
+import Plans from './pages/Plans';
+import AccountPlans from './pages/AccountPlans';
+import SubscriptionWallets from './pages/SubscriptionWallets';
 
 const wrap = (el) => (
   <ProtectedRoute>
@@ -37,6 +40,9 @@ export default function App() {
       <Route path="/audit" element={wrap(<AuditLog />)} />
       <Route path="/reports" element={wrap(<Reports />)} />
       <Route path="/data-feeds" element={wrap(<DataFeeds />)} />
+      <Route path="/plans" element={wrap(<Plans />)} />
+      <Route path="/account-plans" element={wrap(<AccountPlans />)} />
+      <Route path="/subscription-wallets" element={wrap(<SubscriptionWallets />)} />
       <Route path="/settings" element={wrap(<Settings />)} />
       <Route path="/security" element={wrap(<Security />)} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

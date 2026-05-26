@@ -13,10 +13,22 @@ module.exports = {
     REJECTED: 'REJECTED',
   },
 
+  // Canonical 6-tier catalogue lives in config/accountTypes.js. These
+  // constants are kept here because models/services/log strings still
+  // reference the strings as enum values. Legacy types (REAL/VIRTUAL/
+  // DEMO) stay in the enum so old TradingAccount docs continue to load —
+  // they're mapped to STANDARD at the fee/leverage service layer.
   ACCOUNT_TYPES: {
-    REAL: 'REAL',
-    VIRTUAL: 'VIRTUAL',
-    DEMO: 'DEMO',
+    STANDARD:    'STANDARD',
+    STANDARD_IC: 'STANDARD_IC',
+    PRO:         'PRO',
+    PRO_IC:      'PRO_IC',
+    FREE:        'FREE',
+    FREE_IC:     'FREE_IC',
+    // Legacy — preserved for backward compatibility only.
+    REAL:        'REAL',
+    VIRTUAL:     'VIRTUAL',
+    DEMO:        'DEMO',
   },
 
   ORDER_SIDE: {

@@ -9,6 +9,20 @@ const orderSchema = new mongoose.Schema(
     symbol: { type: String, required: true, index: true },
 
     side: { type: String, enum: Object.values(ORDER_SIDE), required: true },
+    // Hedge-mode target. Tells the matching engine which side of the book
+    // the resulting fill should land on (LONG vs SHORT). For opening orders
+    // it's derived from `side` (BUY→LONG, SELL→SHORT). For close orders the
+    // controller stamps it from the source Position so a SELL close-order
+    // doesn't accidentally hit the SHORT position (which is the user's open
+    // exposure on the same instrument).
+    positionSide: { type: String, enum: ['LONG', 'SHORT'], default: null, index: true },
+    // True means "this order can only reduce/close an existing position on
+    // the matching positionSide — never open a new one". Used by the engine
+    // to refuse opening a phantom position when the target side has nothing
+    // to close (e.g. user cancels a SELL while the system queues a SELL
+    // close-order). Distinct from `closeOnly` (legacy) only in semantics:
+    // we still honour closeOnly for backward compatibility.
+    reduceOnly: { type: Boolean, default: false },
     type: { type: String, enum: Object.values(ORDER_TYPE), required: true },
 
     quantity: { type: String, required: true }, // decimal as string

@@ -1,5 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
+
+const COLLAPSE_KEY = 'chartDrawingToolbar.collapsed';
 
 /**
  * Vertical drawing toolbar that sits at the left edge of the chart.
@@ -22,6 +24,14 @@ export default function ChartDrawingToolbar({ controls }) {
     zoomIn, zoomOut, resetZoom,
   } = controls;
   const [emojiOpen, setEmojiOpen] = useState(false);
+  // Collapse state persists across reloads so a user who prefers the
+  // chart full-width doesn't have to hide the toolbar every time.
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem(COLLAPSE_KEY) === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0'); } catch {}
+  }, [collapsed]);
 
   const pick = (id) => {
     if (locked) {
@@ -39,11 +49,44 @@ export default function ChartDrawingToolbar({ controls }) {
   const isActive = (id) => activeTool === id;
   const hintFor = (id, need) => (pending.length === need - 1 && isActive(id) ? `Click point ${need}` : pending.length === 1 && need === 3 && isActive(id) ? 'Click point 2' : pending.length === 2 && need === 3 && isActive(id) ? 'Click point 3' : null);
 
+  // Collapsed state — primary-tinted "show toolbar" pill on the left edge.
+  if (collapsed) {
+    return (
+      <button
+        type="button"
+        onClick={() => setCollapsed(false)}
+        title="Show drawing tools"
+        aria-label="Show drawing tools"
+        className="keep-white hidden md:flex absolute top-3 left-0 z-20 w-7 h-10 items-center justify-center rounded-r-lg border border-l-0 border-primary-600 bg-primary-600 hover:bg-primary-700 shadow-elevated transition-colors"
+        style={{ color: '#FFFFFF' }}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="9 18 15 12 9 6" />
+        </svg>
+      </button>
+    );
+  }
+
   return (
     <div
       className="chart-drawing-toolbar hidden md:flex absolute top-0 left-0 bottom-0 z-20 flex-col items-center gap-1 p-1 rounded-br-xl border border-l-0 border-t-0 border-border-dark bg-white/90 backdrop-blur-sm shadow-card overflow-y-auto overflow-x-visible"
       style={{ scrollbarWidth: 'thin', scrollbarColor: '#cbd5e1 transparent' }}
     >
+      {/* Collapse toggle — highlighted at the top so it's easy to spot */}
+      <button
+        type="button"
+        onClick={() => setCollapsed(true)}
+        title="Hide drawing tools"
+        aria-label="Hide drawing tools"
+        className="keep-white w-8 h-7 rounded-md flex items-center justify-center bg-primary-600 hover:bg-primary-700 shadow-sm ring-1 ring-primary-700/30 transition-colors"
+        style={{ color: '#FFFFFF' }}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="15 18 9 12 15 6" />
+        </svg>
+      </button>
+      <Divider />
+
       <Btn label="Crosshair" active={isActive('crosshair')} onClick={() => setActiveTool('crosshair')}>
         <CrosshairI />
       </Btn>

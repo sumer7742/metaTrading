@@ -29,7 +29,12 @@ const errorHandler = (err, req, res, next) => {
 
   res.status(statusCode).json({
     success: false,
-    error: { message, code, ...(process.env.NODE_ENV !== 'production' && { stack: err.stack }) },
+    error: {
+      message,
+      code,
+      ...(err.details && { details: err.details }),
+      ...(process.env.NODE_ENV !== 'production' && { stack: err.stack }),
+    },
   });
 };
 

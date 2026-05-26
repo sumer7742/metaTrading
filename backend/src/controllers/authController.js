@@ -121,32 +121,21 @@ const register = asyncHandler(async (req, res) => {
     `referralCode=${user.referralCode} referredBy=${user.referredBy || 'NULL'}`
   );
 
-  // Create a default DEMO trading account with ₹1,00,000 virtual funds
-  const demoAccountNumber = 'TA' + Date.now().toString().slice(-9);
-  const demoAccount = await TradingAccount.create({
+  // Default account on signup: DEMO with a ₹1,00,000 virtual seed so
+  // the user can try the platform before depositing real money. To open
+  // a live trading account (STANDARD / STANDARD_IC / PRO / PRO_IC /
+  // FREE / FREE_IC) they use the /accounts/new tier picker after login.
+  const practiceAccountNumber = 'TA' + Date.now().toString().slice(-9);
+  const practiceAccount = await TradingAccount.create({
     userId: user._id,
-    accountNumber: demoAccountNumber,
+    accountNumber: practiceAccountNumber,
     accountType: ACCOUNT_TYPES.DEMO,
     baseCurrency: 'INR',
     leverage: 100,
     mode: TRADING_MODE.HYBRID,
-    nickname: 'Practice Account',
+    nickname: 'Demo Account',
   });
-  await Wallet.create({ userId: user._id, accountId: demoAccount._id, currency: 'INR', balance: '100000' });
-
-  // Also create an empty REAL (live) trading account.
-  // Balance starts at ₹0 - user funds it via deposit. KYC must be approved before live trading.
-  const liveAccountNumber = 'TA' + (Date.now() + 1).toString().slice(-9);
-  const liveAccount = await TradingAccount.create({
-    userId: user._id,
-    accountNumber: liveAccountNumber,
-    accountType: ACCOUNT_TYPES.REAL,
-    baseCurrency: 'INR',
-    leverage: 100,
-    mode: TRADING_MODE.HYBRID,
-    nickname: 'Live Account',
-  });
-  await Wallet.create({ userId: user._id, accountId: liveAccount._id, currency: 'INR', balance: '0' });
+  await Wallet.create({ userId: user._id, accountId: practiceAccount._id, currency: 'INR', balance: '100000' });
 
   // Issue real tokens. Push the refresh token via atomic $push so a
   // concurrent login doesn't blow away the array.

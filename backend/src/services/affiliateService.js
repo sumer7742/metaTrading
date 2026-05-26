@@ -81,7 +81,7 @@ const runPayoutBatch = async () => {
   for (const c of pending) {
     // Find the referrer's primary (REAL) account wallet to credit
     const TradingAccount = require('../models/TradingAccount');
-    const acct = await TradingAccount.findOne({ userId: c.referrerId, accountType: 'REAL', isActive: true });
+    const acct = await TradingAccount.findOne({ userId: c.referrerId, accountType: { $nin: ['DEMO', 'VIRTUAL'] }, isActive: true });
     if (!acct) continue;
 
     try {
@@ -170,7 +170,7 @@ const creditManual = async ({ userId, amount, currency, note, adminId }) => {
   // Pick the user's primary REAL account so the credit lands somewhere
   // real-money; if they have none, fall back to whatever active account
   // exists. We never silently credit to demo (would be misleading).
-  let account = await TradingAccount.findOne({ userId, accountType: 'REAL', isActive: true });
+  let account = await TradingAccount.findOne({ userId, accountType: { $nin: ['DEMO', 'VIRTUAL'] }, isActive: true });
   if (!account) account = await TradingAccount.findOne({ userId, isActive: true });
   if (!account) throw new Error('User has no active trading account to credit');
 

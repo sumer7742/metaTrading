@@ -380,14 +380,20 @@ export default function Trade() {
   const [leverageState, setLeverageState] = useState(null);
   useEffect(() => {
     let cancelled = false;
+    // Refetch whenever the active account changes so demo accounts get
+    // their unlimited cap instead of inheriting admin overrides that
+    // only apply to real accounts.
     const fetchLev = () => {
-      api.get('/user/leverage')
+      const params = account?._id ? { accountId: account._id } : {};
+      api.get('/user/leverage', { params })
         .then((r) => { if (!cancelled) setLeverageState(r.data?.data || null); })
         .catch(() => {});
     };
     fetchLev();
     const unsub = wsClient.subscribe('user:leverage', (data) => {
-      if (!cancelled && data) setLeverageState(data);
+      // WS push is user-wide (admin override change). Re-fetch with the
+      // current account context so demo accounts stay at unlimited.
+      if (!cancelled) fetchLev();
     });
     window.addEventListener('focus', fetchLev);
     return () => {
@@ -395,7 +401,7 @@ export default function Trade() {
       if (unsub) unsub();
       window.removeEventListener('focus', fetchLev);
     };
-  }, []);
+  }, [account?._id]);
 
   // Per-account free balance map — populated once when accounts load
   // (and refreshed on any 'wallet' WS event). `/user/accounts` returns a
@@ -598,14 +604,20 @@ export default function Trade() {
         else if (priceSource === 'ask' && Number.isFinite(a) && a > 0) markPx = a;
         else if (priceSource === 'mid' && Number.isFinite(a) && Number.isFinite(b) && a > 0 && b > 0) markPx = (a + b) / 2;
       }
+      // Hedge mode — derive positionSide for legacy positions that don't
+      // carry the field yet (BUY → LONG, SELL → SHORT). The UI keys cards
+      // off this so a BUY and a SELL on the same symbol render as two
+      // independent rows instead of being treated as one.
+      const positionSide = p.positionSide || (p.side === 'BUY' ? 'LONG' : 'SHORT');
       const entry = Number(p.entryPrice);
       const qty = Number(p.quantity);
       const mark = Number(markPx);
       if (!Number.isFinite(entry) || !Number.isFinite(qty) || !Number.isFinite(mark)) {
-        return { ...p, markPrice: markPx, unrealizedPnl: '0' };
+        return { ...p, positionSide, markPrice: markPx, unrealizedPnl: '0' };
       }
-      const livePnl = p.side === 'BUY' ? (mark - entry) * qty : (entry - mark) * qty;
-      return { ...p, markPrice: markPx, unrealizedPnl: String(livePnl) };
+      // LONG profits when mark > entry; SHORT profits when mark < entry.
+      const livePnl = positionSide === 'LONG' ? (mark - entry) * qty : (entry - mark) * qty;
+      return { ...p, positionSide, markPrice: markPx, unrealizedPnl: String(livePnl) };
     }),
     [positions, priceMap, priceSource, symbol, instrument]
   );
@@ -1179,20 +1191,34 @@ export default function Trade() {
                 <button
                   type="button"
                   onClick={() => setAccountMenuOpen((o) => !o)}
-                  className="h-11 flex items-center gap-2 pl-2.5 pr-1.5 border border-border-dark bg-white hover:bg-bg-hover transition-colors text-left"
+                  className="h-11 flex items-center gap-2.5 pl-1.5 pr-2.5 rounded-lg border border-border-dark bg-white hover:bg-bg-hover transition-all shadow-sm text-left"
                 >
-                  <div className="flex flex-col leading-[1.15] min-w-0">
-                    <span className="text-[11px] font-semibold text-text-primary truncate max-w-[110px] sm:max-w-[160px]">
-                      {name}
-                      {acc?.accountType && (
-                        <span className="hidden sm:inline text-text-muted font-normal ml-1">· {acc.accountType}</span>
-                      )}
-                    </span>
-                    <span className="text-[11px] font-semibold text-text-primary tabular-nums truncate">
-                      {hideBalance ? '••••' : fmtBal} <span className="text-[10px] text-text-muted font-medium">{ccy}</span>
-                    </span>
+                  {/* Wallet icon in tinted rounded square */}
+                  <div className="shrink-0 w-8 h-8 rounded-md flex items-center justify-center bg-primary-500/10 text-primary-600">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 12V7H5a2 2 0 0 1 0-4h14v4" />
+                      <path d="M3 5v14a2 2 0 0 0 2 2h16v-5" />
+                      <path d="M18 12a2 2 0 0 0 0 4h4v-4z" />
+                    </svg>
                   </div>
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" className="text-text-muted shrink-0" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
+                  <div className="flex flex-col leading-[1.15] min-w-0">
+                    {/* Top row — name + DEMO/LIVE pill */}
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[12px] font-semibold text-text-primary truncate max-w-[110px] sm:max-w-[140px]">
+                        {name}
+                      </span>
+                      {acc?.accountType && (
+                        <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded bg-primary-500/10 text-primary-600 tracking-wider">
+                          {acc.accountType}
+                        </span>
+                      )}
+                    </div>
+                    {/* Bottom row — balance + currency */}
+                    <div className="text-[13px] font-bold text-text-primary tabular-nums truncate">
+                      {hideBalance ? '••••' : fmtBal} <span className="text-[10px] text-text-muted font-medium ml-0.5">{ccy}</span>
+                    </div>
+                  </div>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" className="text-text-muted shrink-0 ml-0.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 9l6 6 6-6" /></svg>
                 </button>
               );
             })()}
@@ -2021,7 +2047,6 @@ export default function Trade() {
                   <div className="text-center">
                     <div className="text-text-muted uppercase tracking-wider text-[8px] font-bold">Mid</div>
                     <div className="font-mono font-bold text-text-primary tabular-nums mt-0.5">{midPrice != null ? fmtNum(midPrice, prec) : '—'}</div>
-                    <div className="font-mono text-[9px] text-text-muted tabular-nums">{spreadBps != null ? `${spreadBps.toFixed(1)} bps` : '—'}</div>
                   </div>
                   <div className="text-right">
                     <div className="text-text-muted uppercase tracking-wider text-[8px] font-bold">Asks · {asks.length}</div>
@@ -2067,14 +2092,6 @@ export default function Trade() {
                       </div>
                     );
                   })}
-                </div>
-
-                {/* Mid spread */}
-                <div className="my-2 px-3 py-2 bg-bg-hover/60 border-y border-border-subtle flex items-center justify-between font-mono">
-                  <span className="text-[10px] uppercase tracking-wider font-bold text-text-muted">Spread</span>
-                  <span className="text-text-primary font-bold tabular-nums">
-                    {spread != null && spread > 0 ? `${fmtNum(spread, prec)} · ${spreadBps != null ? spreadBps.toFixed(1) + ' bps' : '—'}` : '—'}
-                  </span>
                 </div>
 
                 {/* Bids (green, bottom half) */}
@@ -2183,6 +2200,24 @@ export default function Trade() {
                   showStopLimit={tradeSettings.showOnChart.stopLimit}
                   positionsCount={positionsWithLivePnl.filter((p) => p.symbol === symbol).length}
                   ordersCount={openOrders.filter((o) => o.symbol === symbol).length}
+                  openPositionsCount={positions.length}
+                  onCloseAll={async () => {
+                    if (!window.confirm(`Close all ${positions.length} open position(s)?`)) return;
+                    try {
+                      const { data } = await api.post('/trading/positions/close-all', {
+                        accountId: account?._id,
+                      });
+                      const r = data.data;
+                      if (r.failed?.length) {
+                        toast.error(`Closed ${r.closed}/${r.total}. ${r.failed.length} failed.`);
+                      } else {
+                        toast.success(`Closed ${r.closed} position(s)`);
+                      }
+                      refresh();
+                    } catch (e) {
+                      toast.error(errorMessage(e));
+                    }
+                  }}
                   showAlerts={tradeSettings.showOnChart.alerts}
                   showSignals={tradeSettings.showOnChart.signals}
                   showHmr={tradeSettings.showOnChart.hmr}

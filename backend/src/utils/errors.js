@@ -1,8 +1,9 @@
 class AppError extends Error {
-  constructor(message, statusCode = 400, code = 'BAD_REQUEST') {
+  constructor(message, statusCode = 400, code = 'BAD_REQUEST', details = null) {
     super(message);
     this.statusCode = statusCode;
     this.code = code;
+    this.details = details; // optional structured payload for the FE
     this.isOperational = true;
   }
 }

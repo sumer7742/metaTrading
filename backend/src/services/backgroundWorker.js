@@ -251,18 +251,24 @@ const checkSlTp = async () => {
       if (!claimed) continue; // Another tick / manual close beat us — skip.
 
       // routing + executionSource stamped by orderRouter inside _submit().
+      // Hedge mode: positionSide echoes the source so the close targets
+      // the right bucket (LONG/SHORT) and doesn't accidentally hit the
+      // user's opposite-side position on the same symbol.
       const oppositeSide = pos.side === 'BUY' ? 'SELL' : 'BUY';
+      const sourcePositionSide = pos.positionSide || (pos.side === 'BUY' ? 'LONG' : 'SHORT');
       const closingOrder = await Order.create({
         userId: pos.userId,
         accountId: pos.accountId,
         instrumentId: pos.instrumentId,
         symbol: pos.symbol,
         side: oppositeSide,
+        positionSide: sourcePositionSide,
         type: 'MARKET',
         quantity: pos.quantity,
         leverage: pos.leverage,
         status: 'PENDING',
         closeOnly: true,
+        reduceOnly: true,
       });
       try {
         await _submit(closingOrder);
@@ -400,18 +406,23 @@ const checkMarginAndStopOut = async () => {
           }
 
           // routing + executionSource stamped by orderRouter inside _submit().
+          // Hedge mode: stamp positionSide so margin-stopout closes hit
+          // the specific LONG/SHORT bucket and leave the opposite side alone.
           const oppositeSide = worst.side === 'BUY' ? 'SELL' : 'BUY';
+          const sourcePositionSide = worst.positionSide || (worst.side === 'BUY' ? 'LONG' : 'SHORT');
           const closingOrder = await Order.create({
             userId: worst.userId,
             accountId: worst.accountId,
             instrumentId: worst.instrumentId,
             symbol: worst.symbol,
             side: oppositeSide,
+            positionSide: sourcePositionSide,
             type: 'MARKET',
             quantity: worst.quantity,
             leverage: worst.leverage,
             status: 'PENDING',
             closeOnly: true,
+            reduceOnly: true,
           });
           try {
             await _submit(closingOrder);
@@ -745,18 +756,24 @@ const updateTrailingStops = async () => {
       if (!claimed) continue;
 
       // routing + executionSource stamped by orderRouter inside _submit().
+      // Hedge mode: positionSide echoes the source so the close targets
+      // the right bucket (LONG/SHORT) and doesn't accidentally hit the
+      // user's opposite-side position on the same symbol.
       const oppositeSide = pos.side === 'BUY' ? 'SELL' : 'BUY';
+      const sourcePositionSide = pos.positionSide || (pos.side === 'BUY' ? 'LONG' : 'SHORT');
       const closingOrder = await Order.create({
         userId: pos.userId,
         accountId: pos.accountId,
         instrumentId: pos.instrumentId,
         symbol: pos.symbol,
         side: oppositeSide,
+        positionSide: sourcePositionSide,
         type: 'MARKET',
         quantity: pos.quantity,
         leverage: pos.leverage,
         status: 'PENDING',
         closeOnly: true,
+        reduceOnly: true,
       });
       try {
         await _submit(closingOrder);
@@ -855,11 +872,98 @@ const tick = async () => {
   }
 };
 
+/**
+ * Subscription expiry sweep (low-cadence — runs hourly).
+ *
+ * A subscription whose `expiresAt` is in the past is treated as a
+ * payment failure: the user is moved to the FREE plan and their
+ * trading accounts are re-enforced (excess accounts get suspended).
+ *
+ * Suspended accounts can still WITHDRAW and view 3 months of history —
+ * those rules live in the orderRouter and history endpoints, not here.
+ */
+const sweepExpiredSubscriptions = async () => {
+  const { Subscription, Plan } = require('../models/Subscription');
+  const subscriptionService = require('./subscriptionService');
+
+  const now = new Date();
+  // Only act on subs that are ACTIVE/TRIAL on a paid plan with a past
+  // expiry. CANCELLED rows already had their downgrade applied on cancel.
+  const expired = await Subscription.find({
+    status: { $in: ['ACTIVE', 'TRIAL'] },
+    expiresAt: { $ne: null, $lt: now },
+    planCode: { $ne: 'FREE' },
+  }).limit(200);
+
+  if (!expired.length) return;
+  console.log(`[Worker] subscription expiry sweep: ${expired.length} subscription(s) to downgrade`);
+
+  for (const sub of expired) {
+    try {
+      // Mark the failed sub EXPIRED so we don't re-process it. The
+      // subsequent subscribe() to FREE will overwrite the same row.
+      sub.status = 'EXPIRED';
+      sub.cancelledAt = now;
+      sub.cancelReason = 'Payment failed / subscription expired — auto-downgraded to FREE';
+      await sub.save();
+
+      // Re-subscribe to FREE. This triggers leverage + plan-enforcement
+      // hooks inside subscriptionService.subscribe (suspends excess).
+      await subscriptionService.subscribe({
+        userId: sub.userId,
+        planCode: 'FREE',
+        billingCycle: 'MONTHLY',
+        paymentRef: {
+          provider: 'AUTO',
+          transactionId: `auto-downgrade-${sub._id}`,
+          amount: '0',
+          paidAt: now,
+        },
+      });
+
+      // Notify the user (best-effort).
+      try {
+        const { Notification } = require('../models/index');
+        await Notification.create({
+          userId: sub.userId,
+          type: 'SUBSCRIPTION_DOWNGRADED',
+          title: 'Subscription downgraded to Free',
+          message: 'Your paid subscription has expired or payment failed. You are now on the Free plan. Some accounts may be suspended until you re-subscribe — you can still withdraw funds and view 3 months of history.',
+          channels: ['IN_APP', 'EMAIL'],
+        });
+      } catch (_) { /* notifications are best-effort */ }
+
+      notifyUser(String(sub.userId), 'subscription', {
+        event: 'AUTO_DOWNGRADED',
+        from: sub.planCode,
+        to: 'FREE',
+        reason: 'expired',
+      });
+    } catch (e) {
+      console.error(`[Worker] subscription downgrade failed for sub ${sub._id}:`, e.message);
+    }
+  }
+};
+
 let _tickHandle = null;
+let _slowTickHandle = null;
 const start = (intervalMs = 5000) => {
   if (_tickHandle) return; // already running — idempotent for hot-reload safety
   console.log('[Worker] Background worker started (STOP, LIMIT, SL/TP, trailing, OCO, margin, neg-balance, alerts, auto-switch every 5s)');
   _tickHandle = setInterval(tick, intervalMs);
+
+  // Hourly low-cadence sweep for subscription expiry. Runs once on boot
+  // (5s delay so DB is ready) then every hour. Separate handle so a
+  // long-running expiry sweep can't starve the fast tick.
+  const slowTick = async () => {
+    try {
+      await sweepExpiredSubscriptions();
+    } catch (e) {
+      console.error('[Worker] slow-tick error:', e.message);
+    }
+  };
+  setTimeout(slowTick, 5000);
+  _slowTickHandle = setInterval(slowTick, 60 * 60 * 1000);
 };
 
 // Called from server.js on graceful shutdown — stops scheduling new ticks.
@@ -870,6 +974,10 @@ const stop = () => {
     clearInterval(_tickHandle);
     _tickHandle = null;
     console.log('[Worker] Background worker stopped');
+  }
+  if (_slowTickHandle) {
+    clearInterval(_slowTickHandle);
+    _slowTickHandle = null;
   }
 };
 

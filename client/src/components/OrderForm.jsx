@@ -62,7 +62,25 @@ export default function OrderForm({
   // is the SINGLE source of truth — the instrument's own maxLeverage
   // field is NOT applied here, so admin/plan changes always reflect
   // immediately regardless of what's seeded on each instrument row.
-  const MAX_LEVERAGE_UI = leverageState?.effectiveLeverage || 100;
+  //
+  // Exception — DEMO / VIRTUAL accounts ALWAYS run at 1:Unlimited.
+  // Practice money is not subject to admin overrides; the trader can
+  // experiment with any leverage they like.
+  //
+  // Platform now supports 1:1 → 1:Unlimited (encoded as 999999). The
+  // numeric input accepts the full range; the visual slider caps at
+  // SLIDER_VISUAL_MAX so it stays usable. UNLIMITED_THRESHOLD is the
+  // value at/above which the UI displays "Unlimited" instead of a number.
+  const UNLIMITED_THRESHOLD = 999999;
+  const isDemoAccount = account?.accountType === 'DEMO' || account?.accountType === 'VIRTUAL';
+  const MAX_LEVERAGE_UI = isDemoAccount
+    ? UNLIMITED_THRESHOLD
+    : (leverageState?.effectiveLeverage || 100);
+  const SLIDER_VISUAL_MAX = Math.min(MAX_LEVERAGE_UI, 2000);
+  // NOTE: `isUnlimited` (derived from the leverage state) is computed
+  // AFTER the `leverage` useState declaration below — putting it here
+  // hit a TDZ ReferenceError because `leverage` hadn't been initialized
+  // yet at this point in the component body.
   // Initial slider position = account's default leverage, clamped to
   // the new ceiling. After the WS push arrives the re-clamp effect
   // below will snap it back into range if admin lowered the cap.
@@ -94,12 +112,10 @@ export default function OrderForm({
   // The order panel only exposes MARKET and LIMIT to the user. The backend
   // auto-resolves a "LIMIT" mode order to either LIMIT or STOP depending
   // on the price's relationship to the current bid/ask. STOP-tab is gone.
-  // One-click mode forces MARKET — no limit price selection.
-  const [orderMode, setOrderMode] = useState(isOneClick ? 'MARKET' : 'LIMIT');
-  // Auto-force MARKET when user flips into oneClick mode
-  useEffect(() => {
-    if (isOneClick && orderMode !== 'MARKET') setOrderMode('MARKET');
-  }, [isOneClick, orderMode]);
+  // Both regular and one-click modes expose Market + Pending tabs so users
+  // can queue limit orders even in one-click mode (the "one-click" part
+  // just refers to skipping the confirm-dialog, not restricting to market).
+  const [orderMode, setOrderMode] = useState('LIMIT');
 
   // Risk-calculator inputs — only shown when riskCalc mode is active.
   const [riskPct, setRiskPct] = useState('1');     // % of free margin to risk
@@ -112,6 +128,11 @@ export default function OrderForm({
   const [loading, setLoading] = useState(false);
   const [accountFree, setAccountFree] = useState(null);
 
+  // Derived flag — true when the user has set leverage to (or above)
+  // the platform's "unlimited" sentinel. Must be declared AFTER
+  // useState(leverage) to avoid a TDZ ReferenceError.
+  const isUnlimited = leverage >= UNLIMITED_THRESHOLD;
+
   useEffect(() => {
     // Re-clamp whenever the cap can move — switching account, instrument,
     // or receiving a WS leverage update from admin. Snaps the slider
@@ -120,6 +141,13 @@ export default function OrderForm({
     setPrice(instrument?.lastPrice || '');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instrument?._id, instrument?.lastPrice, account?._id, account?.leverage, leverageState?.effectiveLeverage]);
+
+  // Hard guarantee — if leverage somehow exceeds the cap (e.g. an old
+  // selection from before the cap arrived), snap it down. Only fires
+  // when it's actually out-of-range so it can't loop.
+  useEffect(() => {
+    if (leverage > MAX_LEVERAGE_UI) setLeverage(MAX_LEVERAGE_UI);
+  }, [leverage, MAX_LEVERAGE_UI]);
 
   // ── Auto TP / SL ──────────────────────────────────────────────────
   // When the user enables Settings > Auto Trading > "Set TP/SL automatically",
@@ -436,8 +464,8 @@ export default function OrderForm({
         text:    '#F8FAFC',
         dim:     '#94A3B8',
         muted:   '#64748B',
-        sell:    '#E56655',
-        sellHi:  '#E5715B',
+        sell:    '#DC2626',
+        sellHi:  '#EF4444',
         buy:     '#2563EB',
         buyHi:   '#3B82F6',
       }
@@ -449,8 +477,8 @@ export default function OrderForm({
         text:    '#0F172A',
         dim:     '#64748B',
         muted:   '#94A3B8',
-        sell:    '#E56655',
-        sellHi:  '#E5715B',
+        sell:    '#DC2626',
+        sellHi:  '#EF4444',
         buy:     '#2563EB',
         buyHi:   '#3B82F6',
       };
@@ -560,37 +588,35 @@ export default function OrderForm({
         </div>
       )}
 
-      {/* ── Market / Pending tabs ────────────────────────────────── */}
-      {!isOneClick && (
-        <div className="grid grid-cols-2 gap-0 mb-3 rounded overflow-hidden" style={{ background: C.cardBg, border: `1px solid ${C.border}` }}>
-          {[
-            { id: 'MARKET', label: 'Market'  },
-            { id: 'LIMIT',  label: 'Pending' },
-          ].map((m) => {
-            const active = orderMode === m.id;
-            return (
-              <button
-                key={m.id}
-                type="button"
-                onClick={() => {
-                  setOrderMode(m.id);
-                  if (m.id === 'LIMIT' && !price && instrument?.lastPrice) setPrice(instrument.lastPrice);
-                }}
-                className="text-[13px] font-medium py-1.5 transition-colors"
-                style={{
-                  background: active ? C.cardBg2 : 'transparent',
-                  color: active ? C.text : C.dim,
-                  border: active ? `1px solid ${C.border}` : 'none',
-                  margin: active ? '-1px' : 0,
-                  borderRadius: active ? '6px' : 0,
-                }}
-              >
-                {m.label}
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {/* ── Market / Pending tabs — visible in both regular & one-click ── */}
+      <div className="grid grid-cols-2 gap-0 mb-3 rounded overflow-hidden" style={{ background: C.cardBg, border: `1px solid ${C.border}` }}>
+        {[
+          { id: 'MARKET', label: 'Market'  },
+          { id: 'LIMIT',  label: 'Pending' },
+        ].map((m) => {
+          const active = orderMode === m.id;
+          return (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => {
+                setOrderMode(m.id);
+                if (m.id === 'LIMIT' && !price && instrument?.lastPrice) setPrice(instrument.lastPrice);
+              }}
+              className="text-[13px] font-medium py-1.5 transition-colors"
+              style={{
+                background: active ? C.cardBg2 : 'transparent',
+                color: active ? C.text : C.dim,
+                border: active ? `1px solid ${C.border}` : 'none',
+                margin: active ? '-1px' : 0,
+                borderRadius: active ? '6px' : 0,
+              }}
+            >
+              {m.label}
+            </button>
+          );
+        })}
+      </div>
 
       {/* ── Risk-calculator collapse (only when riskCalc mode) ──── */}
       {isRiskCalc && (() => {
@@ -781,40 +807,99 @@ export default function OrderForm({
           </button>
           {moreOpen && (
             <div className="pt-3 mt-1 space-y-3" style={{ borderTop: `1px solid ${C.border}` }}>
-              {/* Leverage slider */}
+              {/* Leverage — full 1:1 → 1:Unlimited range. Slider stays
+                  capped at SLIDER_VISUAL_MAX (≤2000) so it's draggable;
+                  the numeric input and "Unlimited" chip cover the rest.
+                  Effective leverage cap from /user/leverage still
+                  applies — values above it are clamped on input. */}
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-[12px]" style={{ color: C.dim }}>Leverage</span>
-                  <span className="inline-flex items-center gap-0.5 text-[12px] font-medium px-2 py-0.5 rounded-sm" style={{ background: C.cardBg, color: C.buy, border: `1px solid ${C.border}` }}>
+                  <span className="inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-sm" style={{ background: C.cardBg, color: C.buy, border: `1px solid ${C.border}` }}>
                     <span className="opacity-70">1:</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={MAX_LEVERAGE_UI}
-                      step={1}
-                      value={leverage}
-                      onChange={(e) => {
-                        const v = Number(e.target.value);
-                        if (Number.isFinite(v)) setLeverage(Math.max(1, Math.min(MAX_LEVERAGE_UI, Math.round(v))));
-                      }}
-                      onBlur={() => { if (!leverage || leverage < 1) setLeverage(1); }}
-                      className="w-12 bg-transparent text-right outline-none tabular-nums"
-                      style={{ color: C.buy }}
-                      aria-label="Leverage multiplier"
-                    />
+                    {isUnlimited ? (
+                      <span className="font-bold tracking-wide">Unlimited</span>
+                    ) : (
+                      <input
+                        type="number"
+                        min={1}
+                        max={MAX_LEVERAGE_UI}
+                        step={1}
+                        value={leverage}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          if (Number.isFinite(v)) setLeverage(Math.max(1, Math.min(MAX_LEVERAGE_UI, Math.round(v))));
+                        }}
+                        onBlur={() => { if (!leverage || leverage < 1) setLeverage(1); }}
+                        className="w-14 bg-transparent text-right outline-none tabular-nums"
+                        style={{ color: C.buy }}
+                        aria-label="Leverage multiplier"
+                      />
+                    )}
                   </span>
                 </div>
                 <input
                   type="range"
                   min={1}
-                  max={MAX_LEVERAGE_UI}
-                  value={leverage}
+                  max={SLIDER_VISUAL_MAX}
+                  value={Math.min(leverage, SLIDER_VISUAL_MAX)}
                   onChange={(e) => setLeverage(Number(e.target.value))}
                   className="w-full h-1.5"
                   style={{ accentColor: C.buy }}
+                  disabled={isUnlimited}
                 />
                 <div className="flex justify-between text-[11px] mt-1" style={{ color: C.muted }}>
-                  <span>1×</span><span>{Math.round(MAX_LEVERAGE_UI / 2)}×</span><span>{MAX_LEVERAGE_UI}×</span>
+                  <span>1×</span><span>{Math.round(SLIDER_VISUAL_MAX / 2)}×</span><span>{SLIDER_VISUAL_MAX}×</span>
+                </div>
+                {/* Quick-pick chips — 1 / 10 / 100 / 500 / 1000 / Unlimited */}
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {[1, 10, 100, 500, 1000].map((v) => {
+                    const locked = v > MAX_LEVERAGE_UI;
+                    const active = leverage === v;
+                    return (
+                      <button
+                        key={v}
+                        type="button"
+                        disabled={locked}
+                        onClick={() => setLeverage(v)}
+                        className="text-[11px] font-bold px-2 py-0.5 rounded transition-colors"
+                        style={{
+                          background: active ? C.buy : C.cardBg,
+                          color: locked ? C.muted : (active ? '#FFFFFF' : C.text),
+                          border: `1px solid ${active ? C.buy : C.border}`,
+                          opacity: locked ? 0.4 : 1,
+                          cursor: locked ? 'not-allowed' : 'pointer',
+                        }}
+                      >
+                        1:{v}
+                      </button>
+                    );
+                  })}
+                  {/* Unlimited toggle — sets leverage to the system max.
+                      Locked when the effective cap is below unlimited
+                      (plan/admin cap forces a finite leverage). */}
+                  {(() => {
+                    const unlockedUnlimited = MAX_LEVERAGE_UI >= UNLIMITED_THRESHOLD;
+                    const locked = !unlockedUnlimited;
+                    return (
+                      <button
+                        type="button"
+                        disabled={locked}
+                        onClick={() => !locked && setLeverage(isUnlimited ? 100 : UNLIMITED_THRESHOLD)}
+                        className="text-[11px] font-bold px-2 py-0.5 rounded transition-colors"
+                        style={{
+                          background: isUnlimited ? C.buy : C.cardBg,
+                          color: locked ? C.muted : (isUnlimited ? '#FFFFFF' : C.text),
+                          border: `1px solid ${isUnlimited ? C.buy : C.border}`,
+                          opacity: locked ? 0.4 : 1,
+                          cursor: locked ? 'not-allowed' : 'pointer',
+                        }}
+                        title={locked ? `Capped at 1:${MAX_LEVERAGE_UI} by your plan` : undefined}
+                      >
+                        1:Unlimited
+                      </button>
+                    );
+                  })()}
                 </div>
               </div>
 

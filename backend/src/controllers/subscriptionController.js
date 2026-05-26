@@ -1,5 +1,6 @@
 const { Plan, Subscription } = require('../models/Subscription');
 const subscriptionService = require('../services/subscriptionService');
+const subscriptionWalletService = require('../services/subscriptionWalletService');
 const walletService = require('../services/walletService');
 const TradingAccount = require('../models/TradingAccount');
 const { Wallet } = require('../models/Wallet');
@@ -15,12 +16,15 @@ const mySubscription = asyncHandler(async (req, res) => {
   const sub = await Subscription.findOne({ userId: req.userId }).populate('planId').lean();
   const plan = await subscriptionService.getEffectivePlan(req.userId);
 
-  // Wallet snapshot so the FE can show "available: $X · plan costs $Y"
-  // and decide if the user can afford the upgrade. Picks the primary
-  // REAL trading account (oldest = primary).
+  // Surface BOTH the Subscription Wallet (the authoritative source for
+  // plan charges) AND the primary trading wallet snapshot (kept for
+  // back-compat with older FE bundles that still read `wallet`).
+  const subWallet = await subscriptionWalletService.getOrCreate(req.userId);
+
+  // "Real" for billing = anything that isn't a practice/demo bucket.
   const account = await TradingAccount.findOne({
     userId: req.userId,
-    accountType: 'REAL',
+    accountType: { $nin: ['DEMO', 'VIRTUAL'] },
     isActive: true,
   }).sort({ createdAt: 1 }).lean();
   let wallet = null;
@@ -38,7 +42,20 @@ const mySubscription = asyncHandler(async (req, res) => {
     };
   }
 
-  sendSuccess(res, { subscription: sub, effectivePlan: plan, wallet });
+  sendSuccess(res, {
+    subscription: sub,
+    effectivePlan: plan,
+    wallet,
+    subscriptionWallet: {
+      _id: subWallet._id,
+      balance: subWallet.balance,
+      currency: subWallet.currency,
+      autoRenew: subWallet.autoRenew,
+      gracePeriodDays: subWallet.gracePeriodDays,
+      lowBalanceThreshold: subWallet.lowBalanceThreshold,
+      isLowBalance: subscriptionWalletService.isLowBalance(subWallet),
+    },
+  });
 });
 
 /**
@@ -65,49 +82,48 @@ const subscribe = asyncHandler(async (req, res) => {
 
   let effectivePaymentRef = paymentRef || null;
 
-  // ── Wallet-debit path ──────────────────────────────────────────────
-  // Used when the user clicks "Pay from wallet" in the FE. Picks their
-  // primary REAL account and debits the plan price atomically. If they
-  // don't have enough, walletService throws INSUFFICIENT_FUNDS and
-  // nothing is created — the user stays on their current plan.
-  if (paymentMethod === 'wallet' && price > 0) {
-    const account = await TradingAccount.findOne({
-      userId: req.userId,
-      accountType: 'REAL',
-      isActive: true,
-    }).sort({ createdAt: 1 });
-    if (!account) {
-      throw new AppError(
-        'You need a real trading account to pay from your wallet. Open one first.',
-        400,
-        'NO_REAL_ACCOUNT'
-      );
+  // ── Subscription Wallet debit (default + only in-app path) ─────────
+  // Plan charges are isolated to the Subscription Wallet. Trading
+  // wallets are NEVER touched. Older `paymentMethod === 'wallet'`
+  // calls are silently redirected here so the FE doesn't break.
+  const wantsWalletDebit =
+    paymentMethod === 'wallet' ||
+    paymentMethod === 'subscription_wallet' ||
+    (!paymentMethod && !effectivePaymentRef && price > 0);
+
+  if (wantsWalletDebit && price > 0) {
+    try {
+      const { tx } = await subscriptionWalletService.debit({
+        userId: req.userId,
+        amount: String(price),
+        reason: 'SUBSCRIPTION_CHARGE',
+        planCode: plan.code,
+        billingCycle,
+        note: `Subscription · ${plan.name} (${billingCycle.toLowerCase()})`,
+      });
+      effectivePaymentRef = {
+        provider:      'SUB_WALLET',
+        transactionId: String(tx._id),
+        amount:        String(price),
+        currency:      tx.currency,
+        paidAt:        new Date(),
+      };
+    } catch (err) {
+      // Surface a structured 402 so the FE can pop the recharge modal.
+      if (err.code === 'INSUFFICIENT_SUBSCRIPTION_BALANCE') {
+        const snap = await subscriptionWalletService.canAfford(req.userId, String(price));
+        throw new AppError(
+          err.message,
+          402,
+          'INSUFFICIENT_SUBSCRIPTION_BALANCE',
+          { balance: snap.balance, needed: snap.needed, shortfall: snap.shortfall, currency: snap.currency }
+        );
+      }
+      throw err;
     }
-    const ccy = account.baseCurrency || 'USD';
-    // Plans are USD-priced; if the user's account is INR we let it
-    // through 1:1 for now (FE shows the same number). Real FX wiring
-    // would convert here using `useFxRate`. Acceptable for v1 since
-    // most accounts on this platform use a single base currency anyway.
-    const ledger = await walletService.debit({
-      userId:        req.userId,
-      accountId:     account._id,
-      currency:      ccy,
-      amount:        String(price),
-      type:          WALLET_TX_TYPE.ADJUSTMENT,
-      referenceType: 'subscription',
-      note:          `Subscription · ${plan.name} (${billingCycle.toLowerCase()})`,
-    });
-    effectivePaymentRef = {
-      provider:      'WALLET',
-      transactionId: String(ledger._id),
-      amount:        String(price),
-      currency:      ccy,
-      paidAt:        new Date(),
-    };
   } else if (price > 0 && !effectivePaymentRef) {
-    // Non-wallet paid path still requires a payment reference (card webhook).
     throw new AppError(
-      'Paid plans require a payment method. Pass paymentMethod: "wallet" or a paymentRef from your payment provider.',
+      'Paid plans require a payment method. Use the Subscription Wallet or pass a paymentRef from your payment provider.',
       402,
       'PAYMENT_REQUIRED'
     );

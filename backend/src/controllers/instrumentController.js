@@ -244,17 +244,20 @@ const update = asyncHandler(async (req, res) => {
       const orderRouter = require('../services/orderRouter.service');
       for (const pos of affected) {
         const oppositeSide = pos.side === 'BUY' ? 'SELL' : 'BUY';
+        const sourcePositionSide = pos.positionSide || (pos.side === 'BUY' ? 'LONG' : 'SHORT');
         const closingOrder = await Order.create({
           userId: pos.userId,
           accountId: pos.accountId,
           instrumentId: pos.instrumentId,
           symbol: pos.symbol,
           side: oppositeSide,
+          positionSide: sourcePositionSide,
           type: 'MARKET',
           quantity: pos.quantity,
           leverage: pos.leverage,
           status: 'PENDING',
           closeOnly: true,
+          reduceOnly: true,
         });
         try {
           await orderRouter.routeOrder({ order: closingOrder, userId: pos.userId });

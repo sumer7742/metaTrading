@@ -40,6 +40,8 @@ const adminRoutes = require('./routes/admin');
 const complianceRoutes = require('./routes/compliance');
 const reportsRoutes = require('./routes/reports');
 const subscriptionRoutes = require('./routes/subscription');
+const subscriptionWalletRoutes = require('./routes/subscriptionWallet');
+const accountPlansRoutes = require('./routes/accountPlans');
 const fxRoutes = require('./routes/fx');
 
 const app = express();
@@ -189,6 +191,8 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/compliance', complianceRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
+app.use('/api/subscription-wallet', subscriptionWalletRoutes);
+app.use('/api/account-plans', accountPlansRoutes);
 app.use('/api/fx', fxRoutes);
 
 // ─── Serve frontend SPAs out of backend/public ─────────────────────
@@ -252,6 +256,25 @@ const start = async () => {
   const systemSettings = require('./services/systemSettings.service');
   await systemSettings.warmCache();
   logger.info('System settings cache warmed', { settings: await systemSettings.getAllSettings() });
+
+  // Ensure canonical subscription plans exist (idempotent). Adds any
+  // plan that's missing from the DB without touching existing rows.
+  try {
+    const { ensureDefaultPlans } = require('./services/planBootstrap');
+    await ensureDefaultPlans();
+  } catch (e) {
+    logger.error('Plan bootstrap failed', { err: e });
+  }
+
+  // Ensure canonical trading-account tiers (Standard / IC / Pro / etc)
+  // exist in the AccountPlan collection. Idempotent — admin edits to
+  // existing tiers survive restarts; only missing codes are inserted.
+  try {
+    const accountPlansService = require('./services/accountPlansService');
+    await accountPlansService.ensureDefaultPlans();
+  } catch (e) {
+    logger.error('AccountPlan bootstrap failed', { err: e });
+  }
 
   const server = http.createServer(app);
   // Attach WebSocket and wire the engine's broadcaster BEFORE hydrating from
