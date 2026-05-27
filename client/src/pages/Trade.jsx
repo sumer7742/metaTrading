@@ -165,16 +165,16 @@ export default function Trade() {
   const [floatPos, setFloatPos] = useState({ x: 0, y: 0 });
   const floatDragRef = useRef({ dragging: false, startX: 0, startY: 0, startPosX: 0, startPosY: 0 });
   // Resizable height for the fullscreen floating order modal. Persisted
-  // so the user's preferred size survives reloads. Clamped between 360
-  // (enough for the core form) and 900 (fits comfortably on most screens).
+  // so the user's preferred size survives reloads. Clamped between 320
+  // (enough for the core form) and 820 (fits comfortably on most screens).
   const FLOAT_H_KEY = 'tradepro:float-order-height';
   const [floatHeight, setFloatHeight] = useState(() => {
-    if (typeof window === 'undefined') return 560;
+    if (typeof window === 'undefined') return 460;
     try {
       const raw = localStorage.getItem(FLOAT_H_KEY);
-      const n = raw ? Number(raw) : 560;
-      return Number.isFinite(n) ? Math.max(360, Math.min(900, n)) : 560;
-    } catch (_) { return 560; }
+      const n = raw ? Number(raw) : 460;
+      return Number.isFinite(n) ? Math.max(320, Math.min(820, n)) : 460;
+    } catch (_) { return 460; }
   });
   useEffect(() => {
     try { localStorage.setItem(FLOAT_H_KEY, String(floatHeight)); } catch (_) {}
@@ -717,17 +717,16 @@ export default function Trade() {
     }
   };
 
-  const modifyPositionSlTp = async (position) => {
-    const sl = window.prompt(`Stop Loss for ${position.symbol} (blank to remove)`, position.stopLoss || '');
-    if (sl === null) return; // user cancelled
-    const tp = window.prompt(`Take Profit for ${position.symbol} (blank to remove)`, position.takeProfit || '');
-    if (tp === null) return;
+  // Position-modify modal. Replaces the old window.prompt pair with a
+  // proper popup (TP/SL fields + tabs for partial close / close-by).
+  const [slTpModalPosition, setSlTpModalPosition] = useState(null);
+  const modifyPositionSlTp = (position) => setSlTpModalPosition(position);
+
+  const submitSlTpModify = async (positionId, payload) => {
     try {
-      await api.put(`/trading/positions/${position._id}`, {
-        stopLoss: sl === '' ? null : sl,
-        takeProfit: tp === '' ? null : tp,
-      });
-      toast.success('SL/TP updated');
+      await api.put(`/trading/positions/${positionId}`, payload);
+      toast.success('Position updated');
+      setSlTpModalPosition(null);
       refresh();
     } catch (err) {
       toast.error(errorMessage(err));
@@ -966,7 +965,7 @@ export default function Trade() {
       const clientY = e.touches?.[0]?.clientY ?? e.clientY;
       if (clientY == null) return;
       const dy = clientY - st.startY;
-      const next = Math.max(360, Math.min(900, st.startH + dy));
+      const next = Math.max(320, Math.min(820, st.startH + dy));
       setFloatHeight(next);
     };
     const onUp = () => { floatResizeRef.current.resizing = false; document.body.style.userSelect = ''; document.body.style.cursor = ''; };
@@ -2227,6 +2226,16 @@ export default function Trade() {
                   pricePrecision={instrument.pricePrecision}
                   infoStrip={chartInfoStrip}
                   instrument={instrument}
+                  /* Position pill actions on the chart — × closes / modifies */
+                  /* Click anywhere on the pill body (not the × button) opens
+                     the rich Edit TP/SL modal. */
+                  onPositionEdit={(p) => setSlTpModalPosition(p)}
+                  onPositionClose={(p) => closePosition(p._id)}
+                  onPositionRemoveSl={(p) => api.put(`/trading/positions/${p._id}`, { stopLoss: null }).then(() => { toast.success('SL removed'); refresh(); }).catch((e) => toast.error(errorMessage(e)))}
+                  onPositionRemoveTp={(p) => api.put(`/trading/positions/${p._id}`, { takeProfit: null }).then(() => { toast.success('TP removed'); refresh(); }).catch((e) => toast.error(errorMessage(e)))}
+                  /* Drag-to-update — fires on drop with the snapped price. */
+                  onPositionUpdateSl={(p, price) => api.put(`/trading/positions/${p._id}`, { stopLoss: price }).then(() => { toast.success(`SL updated to ${price}`); refresh(); }).catch((e) => toast.error(errorMessage(e)))}
+                  onPositionUpdateTp={(p, price) => api.put(`/trading/positions/${p._id}`, { takeProfit: price }).then(() => { toast.success(`TP updated to ${price}`); refresh(); }).catch((e) => toast.error(errorMessage(e)))}
                   orderSide={orderSide}
                   onOrderSideChange={handleOrderSideChange}
                   hideQuickTrade={(showOrderPanel && !isFullscreen) || (isFullscreen && showFloatingOrder)}
@@ -2255,7 +2264,7 @@ export default function Trade() {
                   zooming, indicators) behind the panel. */}
               {isFullscreen && instrument && account && (
                 <div
-                  className={`absolute w-[340px] max-w-[calc(100vw-1.5rem)] z-30 transition-opacity duration-200 ease-out ${
+                  className={`absolute w-[280px] max-w-[calc(100vw-1.5rem)] z-30 transition-opacity duration-200 ease-out ${
                     showFloatingOrder
                       ? 'opacity-100 pointer-events-auto'
                       : 'opacity-0 pointer-events-none'
@@ -2264,7 +2273,7 @@ export default function Trade() {
                     top: `calc(50% + ${floatPos.y}px)`,
                     right: `calc(30% - ${floatPos.x}px)`,
                     transform: 'translateY(-50%)',
-                    height: Math.min(floatHeight, Math.max(360, (typeof window !== 'undefined' ? window.innerHeight : 800) - 40)),
+                    height: Math.min(floatHeight, Math.max(320, (typeof window !== 'undefined' ? window.innerHeight : 800) - 40)),
                     maxHeight: 'calc(100% - 1.5rem)',
                   }}
                   aria-hidden={!showFloatingOrder}
@@ -2590,6 +2599,33 @@ export default function Trade() {
           )}
         </div>{/* end wrapper flex-col */}
       </div>
+
+      {/* Position SL/TP modify modal */}
+      {slTpModalPosition && (
+        <PositionSlTpModal
+          position={slTpModalPosition}
+          instrument={instrumentsBySymbol?.[slTpModalPosition.symbol]}
+          onClose={() => setSlTpModalPosition(null)}
+          onSubmit={(payload) => submitSlTpModify(slTpModalPosition._id, payload)}
+          onPartialClose={async (closeQty) => {
+            // Partial close uses the dedicated endpoint. Full close
+            // (closeQty >= position.quantity) falls back to /close.
+            const fullQty = Number(slTpModalPosition.quantity);
+            const qty = Math.min(fullQty, Math.max(0, Number(closeQty)));
+            if (!qty) return;
+            try {
+              if (qty >= fullQty) {
+                await api.post(`/trading/positions/${slTpModalPosition._id}/close`);
+              } else {
+                await api.post(`/trading/positions/${slTpModalPosition._id}/partial-close`, { quantity: qty });
+              }
+              toast.success(qty >= fullQty ? 'Position closing' : `Closing ${qty} lots`);
+              setSlTpModalPosition(null);
+              refresh();
+            } catch (e) { toast.error(errorMessage(e)); }
+          }}
+        />
+      )}
 
     </div>
   );
@@ -3467,5 +3503,284 @@ function OrdersTable({ orders, onCancel, fxRate, instrumentsBySymbol }) {
         })}
       </tbody>
     </table>
+  );
+}
+
+// ─── Position SL/TP / partial-close modal ──────────────────────────────
+//
+// Triggered by the "SL/TP" button on each open position. Three tabs:
+//   • Modify       — edit Take Profit / Stop Loss with numeric ± steppers
+//   • Partial close — close a fraction of the position by lots
+//   • Close by     — full close at market
+//
+// Pip math: pipSize = 10^-precision. So for BTC with precision=2 the pip
+// is 0.01. The pip / USD / % readout below each price field shows the
+// delta between the entered price and the position's entry, which is
+// how MT5 / cTrader render this control.
+function PositionSlTpModal({ position, instrument, onClose, onSubmit, onPartialClose }) {
+  const [tab, setTab] = useState('modify');
+  const [tp, setTp] = useState(position.takeProfit ? String(position.takeProfit) : '');
+  const [sl, setSl] = useState(position.stopLoss ? String(position.stopLoss) : '');
+  const [partialQty, setPartialQty] = useState(String((Number(position.quantity) || 0) / 2));
+  const [saving, setSaving] = useState(false);
+
+  const precision = Math.max(0, Math.min(8, Number(instrument?.pricePrecision) || 2));
+  const pipSize = Math.pow(10, -precision);
+  const entry = Number(position.entryPrice) || 0;
+  const lastPx = Number(instrument?.lastPrice) || 0;
+  const qty = Number(position.quantity) || 0;
+  const isBuy = position.side === 'BUY';
+
+  const livePnl = (isBuy ? (lastPx - entry) : (entry - lastPx)) * qty;
+  const livePnlClass = livePnl >= 0 ? 'text-emerald-400' : 'text-rose-400';
+
+  const delta = (priceStr) => {
+    const p = Number(priceStr);
+    if (!Number.isFinite(p) || !entry) return { pips: 0, usd: 0, pct: 0 };
+    const raw = isBuy ? (p - entry) : (entry - p);
+    return {
+      pips: raw / pipSize,
+      usd:  raw * qty,
+      pct:  (raw / entry) * 100,
+    };
+  };
+  const tpDelta = delta(tp);
+  const slDelta = delta(sl);
+
+  const fmt = (n, d = 2) =>
+    Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const stepFmt = (n) => Number(n).toFixed(precision);
+  const stepPrice = (curr, dir) => {
+    const base = Number(curr) || entry || lastPx || 0;
+    return stepFmt(base + dir * pipSize);
+  };
+
+  const submitModify = async () => {
+    setSaving(true);
+    try {
+      await onSubmit({
+        takeProfit: tp.trim() === '' ? null : Number(tp),
+        stopLoss:   sl.trim() === '' ? null : Number(sl),
+      });
+    } finally { setSaving(false); }
+  };
+  const submitPartialClose = async () => {
+    setSaving(true);
+    try { await onPartialClose(Number(partialQty)); }
+    finally { setSaving(false); }
+  };
+  const submitFullClose = async () => {
+    setSaving(true);
+    try { await onPartialClose(qty); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        className="card max-w-md w-full overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header — symbol, side, qty, P&L, close × */}
+        <div className="px-5 py-4 border-b border-border-subtle">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                {instrument?.icon && <span className="text-lg">{instrument.icon}</span>}
+                <span className="font-bold text-base text-text-primary">{position.symbol}</span>
+                <span className="text-sm text-text-muted tabular-nums">{fmt(qty, 2)} lots</span>
+              </div>
+              <div className="mt-1 text-[13px] tabular-nums">
+                <span className={isBuy ? 'text-primary-600 font-semibold' : 'text-bear font-semibold'}>
+                  {isBuy ? 'Buy' : 'Sell'}
+                </span>{' '}
+                <span className="text-text-muted">at</span>{' '}
+                <span className="text-text-primary font-mono">{stepFmt(entry)}</span>
+              </div>
+            </div>
+            <div className="text-right">
+              <button onClick={onClose} className="text-text-muted hover:text-text-primary text-xl leading-none">×</button>
+              <div className={`mt-1 text-[13px] font-mono font-bold tabular-nums ${livePnl >= 0 ? 'text-bull' : 'text-bear'}`}>
+                {livePnl >= 0 ? '+' : ''}{fmt(livePnl)} USD
+              </div>
+              <div className="text-[11px] text-text-muted font-mono">{stepFmt(lastPx)}</div>
+            </div>
+          </div>
+
+          {/* Tab strip */}
+          <div className="mt-4 grid grid-cols-3 bg-bg-hover rounded-lg p-1">
+            {[
+              { id: 'modify',  label: 'Modify' },
+              { id: 'partial', label: 'Partial close' },
+              { id: 'closeby', label: 'Close by' },
+            ].map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTab(t.id)}
+                className={`text-[13px] font-semibold py-2 rounded-md transition-all ${
+                  tab === t.id
+                    ? 'bg-white text-text-primary shadow-sm'
+                    : 'text-text-muted hover:text-text-secondary'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="p-5 space-y-5">
+          {tab === 'modify' && (
+            <>
+              <PriceField
+                label="Take Profit"
+                value={tp}
+                placeholder="Not set"
+                onChange={setTp}
+                onClear={() => setTp('')}
+                onStep={(dir) => setTp(stepPrice(tp || entry || lastPx, dir))}
+                delta={tpDelta}
+                deltaTone="bull"
+              />
+              <PriceField
+                label="Stop Loss"
+                value={sl}
+                placeholder="Not set"
+                onChange={setSl}
+                onClear={() => setSl('')}
+                onStep={(dir) => setSl(stepPrice(sl || entry || lastPx, dir))}
+                delta={slDelta}
+                deltaTone="bear"
+              />
+              <button
+                onClick={submitModify}
+                disabled={saving}
+                className="btn-primary w-full py-3 text-sm disabled:opacity-50"
+              >
+                {saving ? 'Saving…' : 'Modify position'}
+              </button>
+            </>
+          )}
+
+          {tab === 'partial' && (
+            <>
+              <div>
+                <label className="block text-[12px] font-semibold text-text-secondary mb-1.5">Quantity to close</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max={qty}
+                    value={partialQty}
+                    onChange={(e) => setPartialQty(e.target.value)}
+                    className="flex-1 px-3 py-2.5 rounded-lg border border-border-dark bg-white text-base font-mono text-text-primary focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/15"
+                  />
+                  <span className="text-xs text-text-muted whitespace-nowrap">/ {fmt(qty, 2)} lots</span>
+                </div>
+                <div className="flex gap-1.5 mt-2">
+                  {[0.25, 0.5, 0.75, 1].map((f) => (
+                    <button
+                      key={f}
+                      type="button"
+                      onClick={() => setPartialQty(String((qty * f).toFixed(2)))}
+                      className="text-[11px] font-bold px-2.5 py-1 rounded border border-border-dark text-text-secondary hover:border-primary-500 hover:text-primary-600 transition-colors"
+                    >
+                      {(f * 100).toFixed(0)}%
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <button
+                onClick={submitPartialClose}
+                disabled={saving || !Number(partialQty)}
+                className="btn-primary w-full py-3 text-sm disabled:opacity-50"
+              >
+                {saving ? 'Closing…' : `Close ${fmt(Number(partialQty) || 0, 2)} lots`}
+              </button>
+            </>
+          )}
+
+          {tab === 'closeby' && (
+            <>
+              <div className="rounded-lg bg-bg-hover/50 border border-border-subtle px-3 py-2.5 text-[12px] text-text-secondary leading-snug">
+                Close the entire <span className="font-bold text-text-primary">{fmt(qty, 2)} lot</span> {isBuy ? 'long' : 'short'} position at market. Realized P&L will settle to your trading wallet.
+              </div>
+              <button
+                onClick={submitFullClose}
+                disabled={saving}
+                className="btn-primary w-full py-3 text-sm disabled:opacity-50"
+              >
+                {saving ? 'Closing…' : `Close ${fmt(qty, 2)} lots at market`}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PriceField({ label, value, placeholder, onChange, onClear, onStep, delta, deltaTone }) {
+  const has = value && String(value).trim() !== '';
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <label className="text-[13px] font-semibold text-text-secondary">{label}</label>
+        <span
+          className="w-4 h-4 rounded-full border border-border-dark text-text-muted text-[10px] flex items-center justify-center"
+          title="Price triggers a market close at this level"
+        >?</span>
+      </div>
+      <div className="flex items-center bg-white border border-border-dark rounded-lg overflow-hidden focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500/15 transition-all">
+        <input
+          type="number"
+          step="any"
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)}
+          className="flex-1 bg-transparent px-3 py-2.5 text-base font-mono text-text-primary placeholder-text-muted focus:outline-none"
+        />
+        {has && (
+          <button
+            type="button"
+            onClick={onClear}
+            className="text-text-muted hover:text-text-primary px-2 transition-colors"
+            title="Clear"
+          >×</button>
+        )}
+        <span className="text-[11px] text-text-muted px-2 select-none flex items-center gap-0.5 border-l border-border-subtle">
+          Price <span className="text-[10px]">▾</span>
+        </span>
+        <button
+          type="button"
+          onClick={() => onStep(-1)}
+          className="w-9 h-10 border-l border-border-subtle text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors text-base font-bold"
+          title="−1 pip"
+        >−</button>
+        <button
+          type="button"
+          onClick={() => onStep(1)}
+          className="w-9 h-10 border-l border-border-subtle text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors text-base font-bold"
+          title="+1 pip"
+        >+</button>
+      </div>
+      {has && (
+        <div className="mt-1.5 flex items-center gap-2 text-[11px] tabular-nums">
+          <span className={deltaTone === 'bull' ? 'text-bull font-semibold' : 'text-bear font-semibold'}>
+            {delta.pips >= 0 ? '+' : ''}{delta.pips.toFixed(1)} pips
+          </span>
+          <span className="text-text-muted">·</span>
+          <span className="text-text-secondary">{delta.usd.toFixed(2)} USD</span>
+          <span className="text-text-muted">·</span>
+          <span className="text-text-secondary">{delta.pct.toFixed(2)} %</span>
+        </div>
+      )}
+    </div>
   );
 }

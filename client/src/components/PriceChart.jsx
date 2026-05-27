@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createChart } from 'lightweight-charts';
 import { api } from '../services/api';
 import { wsClient } from '../services/ws';
@@ -679,6 +679,7 @@ const INDICATOR_DEFAULTS = {
   keltner: false,   // Keltner Channels
   vwap: false,      // Volume-Weighted Average Price
   // Sub-panels
+  volume: false,    // Volume histogram (separate pane below candles)
   rsi: false,
   macd: false,
   stoch: false,     // Stochastic
@@ -739,6 +740,17 @@ export default function PriceChart({
   onCloseAll = null,
   calendarFilters = { high: true, medium: true, low: false, lowest: false },
   timeZone = 'local',     // 'local' | 'utc' | 'gmt'
+  // ── Position pill action callbacks ──────────────────────────────────
+  // Click on the pill body → opens the rich Edit TP/SL modal. Click on
+  // the × button → closes the position / strips just that level.
+  onPositionEdit = null,
+  onPositionClose = null,
+  onPositionRemoveSl = null,
+  onPositionRemoveTp = null,
+  // Drag-to-update — fires when the user drops a dragged SL / TP line
+  // onto a new price (snapped to pricePrecision).
+  onPositionUpdateSl = null,
+  onPositionUpdateTp = null,
 }) {
   const containerRef = useRef(null);
   const rsiContainerRef = useRef(null);
@@ -753,6 +765,16 @@ export default function PriceChart({
   const subPanelChartsRef = useRef({});
   const priceLinesRef = useRef(new Map());
   const candlesRef = useRef([]);
+  // Pixel-positioned HTML pills layered over each position's entry/SL/TP
+  // line (TradingView-style). Keyed by line identifier; y = pixel offset
+  // from the top of the chart container.
+  const [positionPills, setPositionPills] = useState([]);
+  // Live drag state for SL/TP lines. Non-null while the user is dragging
+  // a pill — overrides the rAF-computed pill Y for that key and pushes
+  // the new price to the underlying lightweight-charts price line on every
+  // mousemove. Committed to the backend (via onPositionUpdate*) on drop.
+  const [dragState, setDragState] = useState(null);
+  // shape: { key, kind, position, y, price, color }
   // Volume histogram series — lives on its own overlay price scale (bottom
   // 25% of the chart). Recreated together with the main series on chart-
   // type change so it doesn't survive into a chart type where it shouldn't.
@@ -1175,26 +1197,9 @@ export default function PriceChart({
       }
     } catch (_) {}
 
-    // Volume histogram lives in the bottom 16% of the chart on its own
-    // overlay price scale. Skip for the 'histogram' chart-type (where the
-    // main series IS already volume).
-    if (chartType !== 'histogram') {
-      try {
-        const volSeries = chart.addHistogramSeries({
-          priceFormat: { type: 'volume' },
-          priceScaleId: 'volume',
-          color: TV_COLORS.volumeUp,
-          lastValueVisible: false,        // no last-value clutter on the axis
-          priceLineVisible: false,
-        });
-        chart.priceScale('volume').applyOptions({
-          // Top 84% = candles, bottom 16% = volume. Was 78/22 — too much
-          // dead space; new ratio matches TradingView's compact volume row.
-          scaleMargins: { top: 0.84, bottom: 0 },
-        });
-        volumeSeriesRef.current = volSeries;
-      } catch (_) { /* fail-safe */ }
-    }
+    // Volume histogram is NOT auto-created here anymore — it's an opt-in
+    // indicator that the user enables via the Indicators dropdown. The
+    // dedicated `indicators.volume` effect below owns its lifecycle.
 
     // Re-paint with the data we already have so the chart isn't blank
     // until the next WS tick.
@@ -1204,6 +1209,62 @@ export default function PriceChart({
       _updateLastPriceLineColor(series, candlesRef.current);
     }
   }, [chartType]);
+
+  // ─── Volume indicator (toggleable) ─────────────────────────────────
+  // Lives in the bottom 16% of the chart on its own overlay price scale.
+  // Skipped when the main chart-type is already 'histogram' (volume IS
+  // the main series there).
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+
+    const wantVolume = indicators.volume && chartType !== 'histogram';
+
+    // Tear down when toggled off or when the main chart switches to
+    // 'histogram' (where a second volume pane would be redundant).
+    if (!wantVolume) {
+      if (volumeSeriesRef.current) {
+        try { chart.removeSeries(volumeSeriesRef.current); } catch (_) {}
+        volumeSeriesRef.current = null;
+        // Restore the candle pane to full height by widening the main
+        // price scale margin back to its default.
+        try {
+          chart.priceScale('right').applyOptions({ scaleMargins: { top: 0.05, bottom: 0.05 } });
+        } catch (_) {}
+      }
+      return;
+    }
+
+    // Toggled on — create the histogram and tighten the candle pane to
+    // make room for it.
+    if (!volumeSeriesRef.current) {
+      try {
+        const volSeries = chart.addHistogramSeries({
+          priceFormat: { type: 'volume' },
+          priceScaleId: 'volume',
+          color: TV_COLORS.volumeUp,
+          lastValueVisible: false,
+          priceLineVisible: false,
+        });
+        chart.priceScale('volume').applyOptions({
+          // Top 84% = candles, bottom 16% = volume. Matches TradingView's
+          // compact volume row.
+          scaleMargins: { top: 0.84, bottom: 0 },
+        });
+        // Push the main pane's bottom margin up so candles don't overlap
+        // the volume row. The next paint includes a smooth interpolation
+        // via lightweight-charts' built-in transitions.
+        try {
+          chart.priceScale('right').applyOptions({ scaleMargins: { top: 0.05, bottom: 0.18 } });
+        } catch (_) {}
+        volumeSeriesRef.current = volSeries;
+        // Backfill existing candles so the histogram isn't blank on enable.
+        if (candlesRef.current.length) {
+          _setVolumeData(volSeries, candlesRef.current);
+        }
+      } catch (_) { /* fail-safe */ }
+    }
+  }, [indicators.volume, chartType]);
 
   // Apply price precision when it changes (without recreating the series).
   useEffect(() => {
@@ -1750,22 +1811,25 @@ export default function PriceChart({
     }
 
     for (const p of symbolPositions) {
-      // Entry-price line — always drawn for every open position so the
-      // toggle has a visible effect even when SL/TP aren't set. Colored
-      // by side; label shows side + qty + live P&L vs current price.
+      // Entry / SL / TP lines — the price line itself is just a thin
+      // colored stroke; the HTML pill rendered on top (see overlay
+      // below) carries the qty + P&L + close ×.
+      //
+      // Colour scheme — chosen so entry never clashes with TP (green)
+      // or SL (red), even when one of them sits adjacent on the chart:
+      //   Entry BUY  → blue   (#3B82F6)
+      //   Entry SELL → orange (#F97316)
+      //   TP         → green  (#10b981)
+      //   SL         → red    (#ef4444)
       if (p.entryPrice && Number(p.entryPrice) > 0) {
         const isBuy = p.side === 'BUY';
-        const pnlNum = Number(p.unrealizedPnl || 0);
-        const pnlStr = Number.isFinite(pnlNum) && Math.abs(pnlNum) >= 0.005
-          ? ` · ${pnlNum >= 0 ? '+' : ''}${pnlNum.toFixed(2)}`
-          : '';
         desired.set(`pos:${p._id}:entry`, {
           price: Number(p.entryPrice),
-          color: isBuy ? '#16A34A' : '#DC2626',
-          lineWidth: 2,
+          color: isBuy ? '#3B82F6' : '#F97316',
+          lineWidth: 1,
           lineStyle: 0, // solid
           axisLabelVisible: true,
-          title: `${isBuy ? 'BUY' : 'SELL'} ${Number(p.quantity).toLocaleString('en-US', { maximumFractionDigits: 4 })}${pnlStr}`,
+          title: '',
         });
       }
       if (p.stopLoss) {
@@ -1775,7 +1839,7 @@ export default function PriceChart({
           lineWidth: 1,
           lineStyle: 2,
           axisLabelVisible: true,
-          title: 'SL',
+          title: '',
         });
       }
       if (p.takeProfit) {
@@ -1785,7 +1849,7 @@ export default function PriceChart({
           lineWidth: 1,
           lineStyle: 2,
           axisLabelVisible: true,
-          title: 'TP',
+          title: '',
         });
       }
     }
@@ -1842,6 +1906,159 @@ export default function PriceChart({
   useEffect(() => {
     return () => { priceLinesRef.current.clear(); };
   }, []);
+
+  // ─── 8b. Position-pill overlay positions ────────────────────────────
+  // Builds the descriptor list (one pill per entry / SL / TP line) and
+  // recomputes pixel-Y on every chart event that can shift price → pixel:
+  // pan, zoom, range refit, price changes. A rAF loop snapshot-diffs the
+  // coordinates so we only re-render when something actually moved.
+  const pillDescriptors = useMemo(() => {
+    if (chartType === 'histogram') return [];
+    const out = [];
+    for (const p of symbolPositions) {
+      if (p.entryPrice && Number(p.entryPrice) > 0) {
+        out.push({ key: `pos:${p._id}:entry`, kind: 'entry', price: Number(p.entryPrice), position: p });
+      }
+      if (p.stopLoss) {
+        out.push({ key: `pos:${p._id}:sl`, kind: 'sl', price: Number(p.stopLoss), position: p });
+      }
+      if (p.takeProfit) {
+        out.push({ key: `pos:${p._id}:tp`, kind: 'tp', price: Number(p.takeProfit), position: p });
+      }
+    }
+    return out;
+  }, [symbolPositions, chartType]);
+
+  useEffect(() => {
+    const series = candleSeriesRef.current;
+    const chart = chartRef.current;
+    if (!series || !chart || pillDescriptors.length === 0) {
+      setPositionPills([]);
+      return;
+    }
+
+    let lastSnap = '';
+    const recompute = () => {
+      const next = [];
+      const snapParts = [];
+      for (const d of pillDescriptors) {
+        let y = null;
+        try { y = series.priceToCoordinate(d.price); } catch (_) {}
+        if (y == null || !Number.isFinite(y)) continue;
+        next.push({ ...d, y });
+        snapParts.push(`${d.key}:${y.toFixed(1)}`);
+      }
+      const snap = snapParts.join('|');
+      if (snap !== lastSnap) {
+        lastSnap = snap;
+        setPositionPills(next);
+      }
+    };
+    recompute();
+
+    // Pan / zoom updates fire visible-range-change.
+    const ts = chart.timeScale();
+    const onChange = () => recompute();
+    try { ts.subscribeVisibleTimeRangeChange(onChange); } catch (_) {}
+
+    // Price-scale autoscale has no public event — poll via rAF. Cheap
+    // because the diff-check skips state updates when nothing moved.
+    let raf;
+    const tick = () => {
+      recompute();
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+
+    return () => {
+      try { ts.unsubscribeVisibleTimeRangeChange(onChange); } catch (_) {}
+      if (raf) cancelAnimationFrame(raf);
+    };
+  }, [pillDescriptors, livePrice, chartType]);
+
+  // Drag / click handler — invoked by every pill's mousedown.
+  //   • SL/TP pill, pointer moved > CLICK_THRESHOLD pixels  → drag,
+  //     converts pointer Y → price each frame, commits on drop.
+  //   • Any pill, pointer barely moved (< threshold)        → click,
+  //     opens the Edit TP/SL modal via onPositionEdit.
+  // Pan/zoom is frozen for the duration of the gesture so a drag can't
+  // be hijacked by chart scroll.
+  const startPillDrag = useCallback((pill, evt) => {
+    const chart = chartRef.current;
+    const series = candleSeriesRef.current;
+    const container = containerRef.current;
+    if (!chart || !series || !container) return;
+
+    evt.preventDefault();
+    evt.stopPropagation();
+
+    const rect = container.getBoundingClientRect();
+    const CLICK_THRESHOLD = 4; // px moved before we treat the gesture as a drag
+    const startX = evt.clientX;
+    const startY = evt.clientY;
+    let didDrag = false;
+    const draggable = pill.kind === 'sl' || pill.kind === 'tp';
+
+    // Drag overlay tint — matches the line stroke colour for each kind.
+    const color = pill.kind === 'sl'
+      ? '#ef4444'
+      : pill.kind === 'tp'
+        ? '#10b981'
+        : (pill.position.side === 'BUY' ? '#3B82F6' : '#F97316');
+    const step = Math.pow(10, -Math.min(8, Math.max(0, Number(pricePrecision) || 2)));
+    const snap = (p) => Math.round(p / step) * step;
+
+    try { chart.applyOptions({ handleScroll: false, handleScale: false }); } catch (_) {}
+
+    const onMove = (e) => {
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      // Promote to drag once the pointer moves past the click threshold.
+      // Only SL/TP can actually be dragged — for the entry pill, motion
+      // past the threshold simply cancels the would-be click.
+      if (!didDrag && (Math.abs(dx) > CLICK_THRESHOLD || Math.abs(dy) > CLICK_THRESHOLD)) {
+        didDrag = true;
+        if (draggable) {
+          setDragState({ key: pill.key, kind: pill.kind, position: pill.position, y: pill.y, price: pill.price, color });
+        }
+      }
+      if (!didDrag || !draggable) return;
+      const y = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
+      let p = series.coordinateToPrice(y);
+      if (p == null || !Number.isFinite(p)) return;
+      p = snap(p);
+      setDragState((curr) => curr ? { ...curr, y, price: p } : null);
+      const line = priceLinesRef.current.get(pill.key);
+      if (line) {
+        try { line.applyOptions({ price: p }); } catch (_) {}
+      }
+    };
+
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      try { chart.applyOptions({ handleScroll: true, handleScale: true }); } catch (_) {}
+
+      if (didDrag && draggable) {
+        // Drag drop — commit the new price.
+        setDragState((curr) => {
+          if (!curr) return null;
+          const cb = curr.kind === 'sl' ? onPositionUpdateSl : onPositionUpdateTp;
+          if (cb) cb(curr.position, curr.price);
+          return null;
+        });
+      } else if (!didDrag) {
+        // Click — open the Edit TP/SL modal.
+        setDragState(null);
+        onPositionEdit?.(pill.position);
+      } else {
+        setDragState(null);
+      }
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, [pricePrecision, onPositionUpdateSl, onPositionUpdateTp, onPositionEdit]);
 
   // ─── 9. MACD sub-panel ───────────────────────────────────────────────
   useEffect(() => {
@@ -1965,6 +2182,7 @@ export default function PriceChart({
               { key: 'donchian', label: 'Donchian Channels', color: '#10B981' },
               { key: 'keltner',  label: 'Keltner Channels',  color: '#F97316' },
               { group: 'Volume' },
+              { key: 'volume',   label: 'Volume',            color: TV_COLORS.volumeUp },
               { key: 'vwap',     label: 'VWAP',              color: '#7C3AED' },
               { group: 'Oscillators (sub-panel)' },
               { key: 'rsi',      label: 'RSI',           color: '#8B5CF6' },
@@ -2182,6 +2400,42 @@ export default function PriceChart({
           pixel under the toolbar instead of falling back to a 460 px tile. */}
       <div className="relative w-full flex-1 min-h-0" style={{ background: tvCanvas(theme).background }}>
         <div ref={containerRef} className="w-full h-full" />
+
+        {/* ── Position pills overlay ─────────────────────────────────
+            TradingView / Exness-style draggable labels rendered on top
+            of the chart canvas. Each pill is centered on its price-line
+            Y and shows: lot qty · live USD value · × close button.
+            SL/TP pills are vertically draggable; on drop the snapped
+            price is committed to the backend. */}
+        {positionPills.length > 0 && (
+          <div className="absolute inset-0 pointer-events-none z-10 overflow-hidden">
+            {positionPills.map((p) => {
+              // Drag override — when the user is dragging this pill, the
+              // rAF-computed y is stale; use the live drag y and price.
+              const drag = dragState && dragState.key === p.key ? dragState : null;
+              const y = drag ? drag.y : p.y;
+              const overridePrice = drag ? drag.price : null;
+              return (
+                <PositionPill
+                  key={p.key}
+                  y={y}
+                  kind={p.kind}
+                  position={p.position}
+                  pricePrecision={pricePrecision}
+                  isDragging={!!drag}
+                  overridePrice={overridePrice}
+                  onClose={() => {
+                    if (p.kind === 'entry') onPositionClose?.(p.position);
+                    else if (p.kind === 'sl') onPositionRemoveSl?.(p.position);
+                    else if (p.kind === 'tp') onPositionRemoveTp?.(p.position);
+                  }}
+                  onDragStart={(e) => startPillDrag(p, e)}
+                />
+              );
+            })}
+          </div>
+        )}
+
         <ChartDrawingToolbar controls={drawingControls} />
         {drawingControls.measureReadout && (
           <div className="absolute top-2 right-2 z-20 px-3 py-2 rounded-lg bg-white/95 border border-border-dark text-[11px] font-mono shadow-card backdrop-blur-sm flex items-center gap-3">
@@ -2391,5 +2645,163 @@ function HeikinAshiGlyph() {
       <line x1="14" y1="6" x2="14" y2="22" />
       <rect x="12" y="10" width="4" height="8" fill="currentColor" opacity="0.4" />
     </G>
+  );
+}
+
+// ─── Position pill (chart overlay) ────────────────────────────────────
+//
+// Floats over a price-line at the right edge of the chart (Exness /
+// TradingView style). Three variants:
+//   entry  → side colour (green/red) with live unrealized P&L · static
+//   sl     → neon red,   hypothetical P&L if SL fires   · DRAGGABLE
+//   tp     → neon green, hypothetical P&L if TP fires   · DRAGGABLE
+//
+// Visual treatment:
+//   • Glassmorphism pill: bg-white/95 + backdrop-blur
+//   • On hover (or while dragging): horizontal glow line spans the chart
+//     width at the pill's Y; pill itself gains a soft outer halo ring.
+//   • SL/TP pill cursor: ns-resize. Pointer down anywhere on the pill
+//     (except ×) starts a drag.
+function PositionPill({
+  y, kind, position, pricePrecision,
+  isDragging = false,
+  overridePrice = null,
+  onClose,
+  onDragStart,
+}) {
+  const [hover, setHover] = useState(false);
+
+  const qty = Number(position.quantity) || 0;
+  const entry = Number(position.entryPrice) || 0;
+  const isBuy = position.side === 'BUY';
+  const draggable = kind === 'sl' || kind === 'tp';
+  const active = hover || isDragging;
+
+  // Resolve target price: while dragging, use the live override.
+  let targetPrice;
+  if (overridePrice != null) targetPrice = overridePrice;
+  else if (kind === 'sl')  targetPrice = Number(position.stopLoss)   || 0;
+  else if (kind === 'tp')  targetPrice = Number(position.takeProfit) || 0;
+  else                     targetPrice = entry;
+
+  // Colour scheme — keep entry/TP/SL visually distinct:
+  //   Entry BUY  → blue   (#3B82F6) / glow #60A5FA
+  //   Entry SELL → orange (#F97316) / glow #FB923C
+  //   TP         → neon green (#10b981) / glow #34d399
+  //   SL         → neon red   (#ef4444) / glow #f87171
+  let color;
+  let glowColor;
+  let usd;
+  if (kind === 'entry') {
+    color     = isBuy ? '#3B82F6' : '#F97316';
+    glowColor = isBuy ? '#60A5FA' : '#FB923C';
+    usd = Number(position.unrealizedPnl) || 0;
+  } else if (kind === 'sl') {
+    color = '#ef4444';
+    glowColor = '#f87171';
+    usd = (isBuy ? targetPrice - entry : entry - targetPrice) * qty;
+  } else {
+    color = '#10b981';
+    glowColor = '#34d399';
+    usd = (isBuy ? targetPrice - entry : entry - targetPrice) * qty;
+  }
+
+  const qtyStr = qty.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 4,
+  });
+  const usdStr = `${usd >= 0 ? '+' : ''}${usd.toFixed(2)} USD`;
+  const priceStr = targetPrice.toFixed(Math.min(8, Math.max(0, Number(pricePrecision) || 2)));
+
+  return (
+    <>
+      {/* Glow strip — soft horizontal line spanning the chart width.
+          Renders only on hover/drag so the chart isn't visually noisy
+          when nothing is interactive. */}
+      {active && (
+        <div
+          className="absolute left-0 right-0 pointer-events-none"
+          style={{
+            top: `${y - 1}px`,
+            height: '2px',
+            background: glowColor,
+            boxShadow: `0 0 8px ${glowColor}, 0 0 16px ${glowColor}80`,
+            opacity: 0.85,
+            transition: 'opacity 120ms ease-out',
+          }}
+        />
+      )}
+
+      {/* Live price chip on the right axis while dragging — TradingView
+          shows the dragged level as a coloured axis label. */}
+      {isDragging && (
+        <div
+          className="absolute pointer-events-none font-mono text-[11px] tabular-nums font-bold px-1.5 py-1 rounded-sm shadow-md keep-white"
+          style={{
+            top: `${y - 11}px`,
+            right: '2px',
+            background: color,
+            color: '#FFFFFF',
+          }}
+        >
+          {priceStr}
+        </div>
+      )}
+
+      {/* The pill itself — compact, square corners, centered horizontally */}
+      <div
+        className="absolute pointer-events-auto select-none"
+        style={{
+          // Height ≈ 18px → offset by 9 to centre on the line.
+          top: `${y - 9}px`,
+          // Horizontally centered over the chart.
+          left: '50%',
+          transform: `translateX(-50%) ${active ? 'scale(1.02)' : 'scale(1)'}`,
+          transformOrigin: 'center center',
+          transition: isDragging
+            ? 'none'
+            : 'top 80ms ease-out, transform 120ms ease-out',
+        }}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+        onMouseDown={(e) => onDragStart?.(e)}
+      >
+        <div
+          className="flex items-stretch font-mono text-[10.5px] leading-none bg-white/95 backdrop-blur-[3px]"
+          style={{
+            border: `1px solid ${color}`,
+            color,
+            cursor: isDragging
+              ? 'grabbing'
+              : draggable
+                ? 'ns-resize'
+                : 'pointer',
+            boxShadow: active
+              ? `0 0 0 1px ${glowColor}55, 0 0 12px ${glowColor}55, 0 2px 6px rgba(0,0,0,0.10)`
+              : '0 1px 2px rgba(0,0,0,0.08)',
+            transition: 'box-shadow 120ms ease-out, border-color 120ms ease-out',
+          }}
+          title="Click to edit · drag to move"
+        >
+          <span className="px-1.5 py-0.5 tabular-nums font-semibold">{qtyStr}</span>
+          <span
+            className="px-1.5 py-0.5 tabular-nums font-semibold"
+            style={{ borderLeft: `1px solid ${color}` }}
+          >
+            {usdStr}
+          </span>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onClose?.(); }}
+            onMouseDown={(e) => e.stopPropagation()}
+            className="px-1.5 py-0.5 hover:bg-bg-hover transition-colors"
+            style={{ borderLeft: `1px solid ${color}`, cursor: 'pointer' }}
+            title={kind === 'entry' ? 'Close position' : `Remove ${kind.toUpperCase()}`}
+          >
+            ×
+          </button>
+        </div>
+      </div>
+    </>
   );
 }
