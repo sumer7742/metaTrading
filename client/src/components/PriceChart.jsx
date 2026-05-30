@@ -784,6 +784,14 @@ export default function PriceChart({
   // drops if the market moved during the drag.
   const livePriceRef = useRef(null);
   const instrumentRef = useRef(null);
+  // Manual-scale locks. When the user drags the price (right) or time
+  // (bottom) axis to stretch / compress it, lightweight-charts disables
+  // its own autoscale. Our code re-applies `autoScale: true` on every
+  // pan, zoom, and tick — which clobbers the manual stretch. These refs
+  // gate those re-applies: while a manual lock is set, auto-refit calls
+  // become no-ops. Right-click context menu items clear them on demand.
+  const manualPriceScaleRef = useRef(false);
+  const manualTimeScaleRef  = useRef(false);
   // Pixel-positioned HTML pills layered over each position's entry/SL/TP
   // line (TradingView-style). Keyed by line identifier; y = pixel offset
   // from the top of the chart container.
@@ -794,6 +802,10 @@ export default function PriceChart({
   // mousemove. Committed to the backend (via onPositionUpdate*) on drop.
   const [dragState, setDragState] = useState(null);
   // shape: { key, kind, position, y, price, color }
+  // Right-click chart context menu — null when closed; { x, y } page
+  // coords when open. Rendered as a floating panel near the cursor with
+  // the standard set of scale-reset actions.
+  const [chartCtxMenu, setChartCtxMenu] = useState(null);
   // Volume histogram series — lives on its own overlay price scale (bottom
   // 25% of the chart). Recreated together with the main series on chart-
   // type change so it doesn't survive into a chart type where it shouldn't.
@@ -1072,8 +1084,15 @@ export default function PriceChart({
     // pan / zoom. lightweight-charts will call our autoscaleInfoProvider
     // again, which reads the new visible range and returns fresh high/low.
     // Debounced so a rapid drag doesn't fire dozens of applyOptions calls.
+    //
+    // Respects the manual-scale lock: if the user has dragged the right
+    // axis to stretch / compress the Y scale (or the bottom axis for X),
+    // we DON'T re-apply autoScale. The user's manual stretch persists
+    // until they pick "Reset Y-Axis" / "Auto Fit" from the right-click
+    // context menu (or drag the axis back themselves).
     let _refitTimer = null;
     const requestRefit = () => {
+      if (manualPriceScaleRef.current) return;
       if (_refitTimer) cancelAnimationFrame(_refitTimer);
       _refitTimer = requestAnimationFrame(() => {
         try { candleSeriesRef.current?.priceScale().applyOptions({ autoScale: true }); }
@@ -1093,11 +1112,14 @@ export default function PriceChart({
     // snapped to target).
     kickAnimRef.current = () => {
       if (animRafRef.current != null) return; // already ticking
+      if (manualPriceScaleRef.current) return; // user-locked, don't fight
       const tick = () => {
         animRafRef.current = null;
         const state = animStateRef.current;
         try {
-          candleSeriesRef.current?.priceScale().applyOptions({ autoScale: true });
+          if (!manualPriceScaleRef.current) {
+            candleSeriesRef.current?.priceScale().applyOptions({ autoScale: true });
+          }
         } catch (_) {}
         // If the provider still has ease time remaining, queue another
         // frame. (The provider zeros `duration` on the final step.)
@@ -1152,6 +1174,109 @@ export default function PriceChart({
       overlayRef.current = {};
       priceLinesRef.current.clear();
     };
+  }, []);
+
+  // ─── 1b. Axis-drag detection + right-click context menu ─────────────
+  // Detect when the user starts dragging the right (price) axis or the
+  // bottom (time) axis — both are areas lightweight-charts itself
+  // handles for scale stretching. When a drag starts in one of those
+  // strips we set the corresponding manual lock so subsequent ticks /
+  // visible-range changes / order-line updates DON'T snap the scale
+  // back to fit.
+  //
+  // The same effect also wires the right-click context menu (open it,
+  // close on outside click / escape).
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    // Pixel widths of the axes — match the lightweight-charts defaults.
+    // Slightly generous so a mousedown in the gutter still registers as
+    // an axis drag rather than a chart-area click.
+    const AXIS_HIT_PX = 70;     // right-axis hit zone (px)
+    const TIME_HIT_PX = 36;     // bottom-axis hit zone (px)
+
+    const onMouseDown = (e) => {
+      if (e.button !== 0) return; // only left-button drags
+      const rect = container.getBoundingClientRect();
+      const xFromRight = rect.right - e.clientX;
+      const yFromBottom = rect.bottom - e.clientY;
+      const insideY = e.clientY >= rect.top && e.clientY <= rect.bottom;
+      const insideX = e.clientX >= rect.left && e.clientX <= rect.right;
+      if (xFromRight >= 0 && xFromRight < AXIS_HIT_PX && insideY) {
+        manualPriceScaleRef.current = true;
+      }
+      if (yFromBottom >= 0 && yFromBottom < TIME_HIT_PX && insideX) {
+        manualTimeScaleRef.current = true;
+      }
+    };
+
+    const onContextMenu = (e) => {
+      e.preventDefault();
+      // Position the menu at the cursor; clamp to viewport so it doesn't
+      // overflow the right edge (the menu renders right of `x`).
+      const MENU_W = 220;
+      const MENU_H = 220;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const x = Math.min(e.clientX, vw - MENU_W - 8);
+      const y = Math.min(e.clientY, vh - MENU_H - 8);
+      setChartCtxMenu({ x, y });
+    };
+
+    container.addEventListener('mousedown', onMouseDown);
+    container.addEventListener('contextmenu', onContextMenu);
+    return () => {
+      container.removeEventListener('mousedown', onMouseDown);
+      container.removeEventListener('contextmenu', onContextMenu);
+    };
+  }, []);
+
+  // Close the context menu on Escape — outside clicks are handled by the
+  // full-screen backdrop in the JSX below.
+  useEffect(() => {
+    if (!chartCtxMenu) return;
+    const onKey = (e) => { if (e.key === 'Escape') setChartCtxMenu(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [chartCtxMenu]);
+
+  // ─── 1c. Context-menu actions ────────────────────────────────────────
+  // Each action clears the menu, optionally clears the relevant manual
+  // lock, and forces a one-shot refit on the chart. We wrap in try/catch
+  // because lightweight-charts can be mid-teardown when the user picks.
+  const ctxRefreshScale = useCallback(() => {
+    try { candleSeriesRef.current?.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
+    setChartCtxMenu(null);
+  }, []);
+  const ctxAutoFit = useCallback(() => {
+    manualPriceScaleRef.current = false;
+    manualTimeScaleRef.current  = false;
+    try {
+      chartRef.current?.timeScale().fitContent();
+      candleSeriesRef.current?.priceScale().applyOptions({ autoScale: true });
+    } catch (_) {}
+    setChartCtxMenu(null);
+  }, []);
+  const ctxResetY = useCallback(() => {
+    manualPriceScaleRef.current = false;
+    try { candleSeriesRef.current?.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
+    setChartCtxMenu(null);
+  }, []);
+  const ctxResetX = useCallback(() => {
+    manualTimeScaleRef.current = false;
+    try { chartRef.current?.timeScale().fitContent(); } catch (_) {}
+    setChartCtxMenu(null);
+  }, []);
+  const ctxResetAll = useCallback(() => {
+    manualPriceScaleRef.current = false;
+    manualTimeScaleRef.current  = false;
+    try {
+      chartRef.current?.timeScale().fitContent();
+      candleSeriesRef.current?.priceScale().applyOptions({ autoScale: true });
+      chartRef.current?.timeScale().scrollToRealTime();
+    } catch (_) {}
+    setChartCtxMenu(null);
   }, []);
 
   // ─── 2. Theme re-skin ────────────────────────────────────────────────
@@ -1518,13 +1643,18 @@ export default function PriceChart({
       // candle they're looking at never clips. Auto-scroll horizontally
       // only when the user is already at the right edge — so historical
       // browsing isn't yanked back to live.
+      //
+      // Respects the user's manual scale: if they've stretched the right
+      // axis, skip the autoScale re-apply so a new tick doesn't snap
+      // their carefully chosen Y-zoom back to fit-all.
       try {
         const ts = chartRef.current?.timeScale();
         const range = ts?.getVisibleLogicalRange();
         const followingLive = range && range.to >= nextRef.length - 2;
-        // Always refit the Y axis.
-        candleSeriesRef.current?.priceScale().applyOptions({ autoScale: true });
-        if (followingLive) ts.scrollToRealTime();
+        if (!manualPriceScaleRef.current) {
+          candleSeriesRef.current?.priceScale().applyOptions({ autoScale: true });
+        }
+        if (followingLive && !manualTimeScaleRef.current) ts.scrollToRealTime();
       } catch (_) { /* timeScale may not be ready */ }
     });
 
@@ -1927,7 +2057,11 @@ export default function PriceChart({
     // when far from the current market.
     extraPricesRef.current = [...desired.values()].map((o) => o.price);
     // Force the price scale to recompute now that the extras have changed.
-    try { series.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
+    // Skip when the user has a manual scale lock — they don't want orders
+    // or positions yanking their Y-zoom back to fit.
+    if (!manualPriceScaleRef.current) {
+      try { series.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
+    }
   }, [symbolOrders, symbolPositions, livePrice, pendingPreview, pricePrecision, chartType]);
 
   useEffect(() => {
@@ -2775,6 +2909,26 @@ export default function PriceChart({
         )}
 
         <ChartDrawingToolbar controls={drawingControls} />
+
+        {/* Right-click chart context menu — TradingView-style. Theme-aware:
+            white card on light, slate-900 on dark. A full-screen backdrop
+            captures outside clicks. Each row is a single action; clicking
+            invokes the corresponding handler + closes the menu. */}
+        {chartCtxMenu && (
+          <ChartContextMenu
+            x={chartCtxMenu.x}
+            y={chartCtxMenu.y}
+            theme={theme}
+            onClose={() => setChartCtxMenu(null)}
+            onRefresh={ctxRefreshScale}
+            onAutoFit={ctxAutoFit}
+            onResetY={ctxResetY}
+            onResetX={ctxResetX}
+            onResetAll={ctxResetAll}
+            manualY={manualPriceScaleRef.current}
+            manualX={manualTimeScaleRef.current}
+          />
+        )}
         {drawingControls.measureReadout && (
           <div className="absolute top-2 right-2 z-20 px-3 py-2 rounded-lg bg-white/95 border border-border-dark text-[11px] font-mono shadow-card backdrop-blur-sm flex items-center gap-3">
             <span className="text-text-muted">Δ Price</span>
@@ -2993,6 +3147,142 @@ function HeikinAshiGlyph() {
 //   entry  → side colour (green/red) with live unrealized P&L · static
 //   sl     → neon red,   hypothetical P&L if SL fires   · DRAGGABLE
 //   tp     → neon green, hypothetical P&L if TP fires   · DRAGGABLE
+/**
+ * Floating right-click menu rendered above the chart canvas. Fixed-position
+ * (page coords) so it can extend outside the chart container if the user
+ * right-clicks near an edge. Backdrop captures outside clicks.
+ *
+ * Items mirror the spec exactly:
+ *   - Refresh Scale         one-shot autoScale re-apply (doesn't clear locks)
+ *   - Auto Fit Chart        clear locks + fitContent + autoScale
+ *   - Reset Y-Axis Zoom     clear Y lock + autoScale
+ *   - Reset X-Axis Zoom     clear X lock + fitContent
+ *   - Reset All View        clear both locks + fitContent + scroll-to-now
+ *
+ * Active lock indicators are shown next to "Reset Y" / "Reset X" so the
+ * user knows which axis they're currently controlling manually.
+ */
+function ChartContextMenu({
+  x, y, theme,
+  onClose, onRefresh, onAutoFit, onResetY, onResetX, onResetAll,
+  manualY, manualX,
+}) {
+  const isDark = theme === 'dark';
+  const card = isDark
+    ? { bg: '#0F172A', bgHover: '#1E293B', border: '#334155', text: '#F1F5F9', muted: '#94A3B8', divider: '#1E293B' }
+    : { bg: '#FFFFFF', bgHover: '#F1F5F9', border: '#E2E8F0', text: '#0F172A', muted: '#64748B', divider: '#E2E8F0' };
+
+  return (
+    <>
+      {/* Backdrop — invisible full-screen click target that dismisses the
+          menu on outside click without stealing scroll / keyboard events. */}
+      <div
+        className="fixed inset-0 z-40"
+        onClick={onClose}
+        onContextMenu={(e) => { e.preventDefault(); onClose(); }}
+      />
+      <div
+        className="fixed z-50 rounded-xl py-1.5 font-medium text-[13px] shadow-2xl select-none"
+        style={{
+          left: x,
+          top:  y,
+          minWidth: 220,
+          background: card.bg,
+          border: `1px solid ${card.border}`,
+          color: card.text,
+          backdropFilter: 'blur(8px)',
+        }}
+        onClick={(e) => e.stopPropagation()}
+        onContextMenu={(e) => e.preventDefault()}
+      >
+        <CtxItem onClick={onRefresh} card={card} icon={<IconRefresh />}>
+          Refresh Scale
+        </CtxItem>
+        <CtxItem onClick={onAutoFit} card={card} icon={<IconFit />}>
+          Auto Fit Chart
+        </CtxItem>
+        <CtxDivider card={card} />
+        <CtxItem onClick={onResetY} card={card} icon={<IconYAxis />} trailing={manualY ? <LockedDot card={card} /> : null}>
+          Reset Y-Axis Zoom
+        </CtxItem>
+        <CtxItem onClick={onResetX} card={card} icon={<IconXAxis />} trailing={manualX ? <LockedDot card={card} /> : null}>
+          Reset X-Axis Zoom
+        </CtxItem>
+        <CtxDivider card={card} />
+        <CtxItem onClick={onResetAll} card={card} icon={<IconResetAll />} accent>
+          Reset All View
+        </CtxItem>
+      </div>
+    </>
+  );
+}
+
+function CtxItem({ onClick, card, icon, accent, trailing, children }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full px-3 py-2 flex items-center gap-2.5 transition-colors text-left"
+      onMouseEnter={(e) => { e.currentTarget.style.background = card.bgHover; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+      style={{ color: accent ? '#3B82F6' : card.text }}
+    >
+      <span className="w-4 h-4 flex items-center justify-center shrink-0" style={{ color: accent ? '#3B82F6' : card.muted }}>
+        {icon}
+      </span>
+      <span className="flex-1">{children}</span>
+      {trailing}
+    </button>
+  );
+}
+
+function CtxDivider({ card }) {
+  return <div className="h-px mx-2 my-1" style={{ background: card.divider }} />;
+}
+
+function LockedDot({ card }) {
+  // Tiny dot indicates the user has a manual lock on this axis.
+  return (
+    <span
+      className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded"
+      style={{ background: '#F59E0B22', color: '#F59E0B' }}
+      title="Manual scale active"
+    >
+      Manual
+    </span>
+  );
+}
+
+const IconRefresh = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="23 4 23 10 17 10" />
+    <polyline points="1 20 1 14 7 14" />
+    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+  </svg>
+);
+const IconFit = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 7V3h4" /><path d="M21 7V3h-4" /><path d="M3 17v4h4" /><path d="M21 17v4h-4" />
+    <rect x="7" y="7" width="10" height="10" rx="1" />
+  </svg>
+);
+const IconYAxis = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 4v16" /><path d="M4 8h4" /><path d="M4 14h4" /><path d="M4 20h4" />
+  </svg>
+);
+const IconXAxis = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M4 20h16" /><path d="M8 20v-4" /><path d="M14 20v-4" /><path d="M20 20v-4" />
+  </svg>
+);
+const IconResetAll = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 12a9 9 0 1 0 9-9" />
+    <path d="M3 4v5h5" />
+  </svg>
+);
+
 //
 // Visual treatment:
 //   • Glassmorphism pill: bg-white/95 + backdrop-blur
