@@ -42,6 +42,7 @@ const reportsRoutes = require('./routes/reports');
 const subscriptionRoutes = require('./routes/subscription');
 const subscriptionWalletRoutes = require('./routes/subscriptionWallet');
 const accountPlansRoutes = require('./routes/accountPlans');
+const copyTradingRoutes = require('./routes/copyTrading');
 const fxRoutes = require('./routes/fx');
 
 const app = express();
@@ -193,6 +194,7 @@ app.use('/api/reports', reportsRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/subscription-wallet', subscriptionWalletRoutes);
 app.use('/api/account-plans', accountPlansRoutes);
+app.use('/api/copy-trading', copyTradingRoutes);
 app.use('/api/fx', fxRoutes);
 
 // ─── Serve frontend SPAs out of backend/public ─────────────────────
@@ -274,6 +276,29 @@ const start = async () => {
     await accountPlansService.ensureDefaultPlans();
   } catch (e) {
     logger.error('AccountPlan bootstrap failed', { err: e });
+  }
+
+  // One-time backfill: any instrument still carrying the legacy
+  // maxLeverage=100 (or null/0/undefined) gets bumped to the Unlimited
+  // sentinel (999999). Admin-set caps (anything ≥1 and ≠100) are left
+  // alone. Runs every boot but only touches rows that need lifting.
+  try {
+    const Instrument = require('./models/Instrument');
+    const UNLIMITED = 999999;
+    const res = await Instrument.updateMany(
+      { $or: [
+        { maxLeverage: { $exists: false } },
+        { maxLeverage: null },
+        { maxLeverage: 0 },
+        { maxLeverage: 100 },
+      ]},
+      { $set: { maxLeverage: UNLIMITED } }
+    );
+    if (res.modifiedCount) {
+      logger.info(`Instrument leverage backfill: ${res.modifiedCount} instrument(s) lifted to Unlimited`);
+    }
+  } catch (e) {
+    logger.error('Instrument leverage backfill failed', { err: e });
   }
 
   const server = http.createServer(app);

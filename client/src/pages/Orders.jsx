@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../services/api';
 import { fmtNum } from '../utils/format';
 import AssetIcon from '../components/AssetIcon';
+import { useAuthStore } from '../store/auth';
 
 /**
  * Trade History — closed positions for the selected trading account, with
@@ -13,8 +14,15 @@ import AssetIcon from '../components/AssetIcon';
  *   { items: Position[], summary: {...}, pagination: {...} }
  */
 export default function Orders() {
+  const user = useAuthStore((s) => s.user);
   const [accounts, setAccounts] = useState([]);
-  const [selectedAccountId, setSelectedAccountId] = useState('');
+  // Account ID picker — 'all' is a sentinel meaning "across every
+  // account that matches the current TYPE filter".
+  const [selectedAccountId, setSelectedAccountId] = useState('all');
+  // TYPE filter — 'all' / 'DEMO' / 'REAL' (where REAL == any tier code
+  // that isn't DEMO/VIRTUAL). Drives both which accounts appear in the
+  // ID dropdown and which IDs we send to the backend.
+  const [typeFilter, setTypeFilter] = useState('all');
   const [items, setItems] = useState([]);
   const [summary, setSummary] = useState({ totalTrades: 0, totalLot: 0, netPnl: 0, wins: 0, losses: 0 });
   const [pagination, setPagination] = useState({ page: 1, limit: 30, total: 0, pages: 0 });
@@ -28,34 +36,60 @@ export default function Orders() {
   const [toDate, setToDate] = useState('');
   const [page, setPage] = useState(1);
 
-  // Load accounts once. Pre-select the first account.
+  // Load accounts once.
   useEffect(() => {
     (async () => {
       try {
         const { data } = await api.get('/user/accounts');
         setAccounts(data.data);
-        if (data.data.length && !selectedAccountId) setSelectedAccountId(data.data[0]._id);
       } catch (_) { /* ignore */ }
     })();
   }, []);
 
-  // Reload history whenever filters or account change.
+  // Accounts narrowed by the TYPE filter (used by the ID dropdown).
+  const filteredAccounts = useMemo(() => {
+    if (typeFilter === 'all')  return accounts;
+    if (typeFilter === 'DEMO') return accounts.filter((a) => a.accountType === 'DEMO' || a.accountType === 'VIRTUAL');
+    if (typeFilter === 'REAL') return accounts.filter((a) => a.accountType !== 'DEMO' && a.accountType !== 'VIRTUAL');
+    return accounts;
+  }, [accounts, typeFilter]);
+
+  // If the currently-selected ID drops out of the filtered list, snap
+  // back to "all" so the dropdown stays valid.
   useEffect(() => {
-    if (!selectedAccountId) return;
+    if (selectedAccountId === 'all') return;
+    if (!filteredAccounts.some((a) => a._id === selectedAccountId)) {
+      setSelectedAccountId('all');
+    }
+  }, [filteredAccounts, selectedAccountId]);
+
+  // Reload history whenever filters change.
+  useEffect(() => {
+    if (!accounts.length) return;
     (async () => {
       setLoading(true);
       try {
-        const { data } = await api.get('/trading/positions/history', {
-          params: {
-            accountId: selectedAccountId,
-            symbol: symbolFilter || undefined,
-            side: sideFilter || undefined,
-            from: fromDate || undefined,
-            to: toDate || undefined,
-            page,
-            limit: 30,
-          },
-        });
+        // Build the backend filter. Specific account → single ID. "All"
+        // either omits accountId (server uses all user accounts) or sends
+        // a CSV list of the TYPE-filtered accounts when a TYPE is active.
+        const params = {
+          symbol: symbolFilter || undefined,
+          side: sideFilter || undefined,
+          from: fromDate || undefined,
+          to: toDate || undefined,
+          page,
+          limit: 30,
+        };
+        if (selectedAccountId !== 'all') {
+          params.accountId = selectedAccountId;
+        } else if (typeFilter !== 'all') {
+          // Server takes one accountId; we fan out by sending each in
+          // sequence then merging is overkill. Cheaper compromise: when
+          // a TYPE filter is on but ID is "all", just hit the API once
+          // per account in the filtered set in parallel.
+          params.accountIds = filteredAccounts.map((a) => a._id).join(',');
+        }
+        const { data } = await api.get('/trading/positions/history', { params });
         setItems(data.data.items);
         setSummary(data.data.summary);
         setPagination(data.data.pagination);
@@ -63,7 +97,7 @@ export default function Orders() {
         setLoading(false);
       }
     })();
-  }, [selectedAccountId, symbolFilter, sideFilter, fromDate, toDate, page]);
+  }, [selectedAccountId, typeFilter, filteredAccounts, accounts.length, symbolFilter, sideFilter, fromDate, toDate, page]);
 
   const account = useMemo(
     () => accounts.find((a) => a._id === selectedAccountId),
@@ -72,11 +106,42 @@ export default function Orders() {
 
   const downloadReport = () => {
     if (!items.length) return;
+
+    // CSV-quote helper — wraps in quotes and escapes embedded quotes.
+    const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const row = (cells) => cells.map(q).join(',');
+
+    // Header block at the top of the CSV — report metadata + user
+    // identification. Sits above the data table separated by a blank
+    // line so spreadsheet apps render it as a banner section.
+    const downloadedAt = new Date();
+    const userName = [user?.firstName, user?.lastName].filter(Boolean).join(' ') || '—';
+    const accountLabel = selectedAccountId === 'all'
+      ? `All accounts (${filteredAccounts.length})`
+      : (account?.accountNumber || selectedAccountId);
+    const typeLabel = typeFilter === 'all' ? 'All' : typeFilter;
+
+    const metaLines = [
+      row(['Trade History Report']),
+      row([]),
+      row(['Generated at',  downloadedAt.toLocaleString()]),
+      row(['Generated by',  userName]),
+      row(['Email',         user?.email || '—']),
+      row(['Phone',         user?.phone || user?.mobile || '—']),
+      row(['Account',       accountLabel]),
+      row(['Account type',  typeLabel]),
+      row(['Date range',    fromDate || toDate ? `${fromDate || '—'} → ${toDate || '—'}` : 'All time']),
+      row(['Symbol filter', symbolFilter || 'Any']),
+      row(['Side filter',   sideFilter || 'Any']),
+      row(['Rows in file',  items.length]),
+      row([]),
+    ];
+
     const headers = [
       'Order ID', 'Symbol', 'Side', 'Size', 'Open Price', 'Close Price',
       'Commission', 'Charge', 'Executed By', 'Remarks', 'Opened At', 'Closed At', 'P/L',
     ];
-    const rows = items.map((p) => [
+    const dataRows = items.map((p) => [
       shortId(p._id),
       p.symbol,
       p.side,
@@ -91,14 +156,21 @@ export default function Orders() {
       formatDateTime(p.closedAt),
       p.realizedPnl,
     ]);
-    const csv = [headers, ...rows]
-      .map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(','))
-      .join('\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+
+    const csv = [
+      ...metaLines,
+      row(headers),
+      ...dataRows.map(row),
+    ].join('\n');
+
+    // Filename uses ISO timestamp (YYYY-MM-DDTHH-mm) so files sort chronologically.
+    const tsLabel = downloadedAt.toISOString().replace(/[:.]/g, '-').slice(0, 16);
+    const fileTag = selectedAccountId === 'all' ? 'all-accounts' : (account?.accountNumber || selectedAccountId);
+    const blob = new Blob(['﻿', csv], { type: 'text/csv;charset=utf-8;' }); // BOM for Excel
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `trade-history-${account?.accountNumber || selectedAccountId}-${Date.now()}.csv`;
+    a.download = `trade-history_${fileTag}_${tsLabel}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -123,7 +195,8 @@ export default function Orders() {
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Account chip */}
+          {/* Account chip — ID and TYPE both selectable; "All" sentinel
+              for either side aggregates across accounts. */}
           <div className="border border-border-dark rounded px-3 py-1.5 text-xs flex items-center gap-3">
             <span className="text-primary-500 font-medium">Selected Account</span>
             <span className="text-gray-600">|</span>
@@ -133,7 +206,8 @@ export default function Orders() {
               onChange={(e) => { setSelectedAccountId(e.target.value); setPage(1); }}
               className="bg-white text-text-primary font-mono text-xs focus:outline-none border border-border-subtle rounded px-1 py-0.5"
             >
-              {accounts.map((a) => (
+              <option value="all">All accounts</option>
+              {filteredAccounts.map((a) => (
                 <option key={a._id} value={a._id}>
                   {a.accountNumber}
                 </option>
@@ -141,9 +215,15 @@ export default function Orders() {
             </select>
             <span className="text-gray-600">|</span>
             <span className="text-gray-400">TYPE:</span>
-            <span className="px-2 py-0.5 bg-bg-hover rounded text-[10px] font-bold text-primary-500">
-              {account?.accountType || '—'}
-            </span>
+            <select
+              value={typeFilter}
+              onChange={(e) => { setTypeFilter(e.target.value); setPage(1); }}
+              className="bg-bg-hover text-primary-500 font-bold text-[10px] focus:outline-none border border-border-subtle rounded px-2 py-0.5"
+            >
+              <option value="all">ALL</option>
+              <option value="REAL">REAL</option>
+              <option value="DEMO">DEMO</option>
+            </select>
           </div>
 
           {/* Filters toggle */}

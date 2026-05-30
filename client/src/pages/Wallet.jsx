@@ -228,7 +228,10 @@ export default function Wallet() {
   // currently-picked payment rail; `amount` is the dollars the user
   // wants to deposit. Continue-to-Payment hands these to the existing
   // DepositModal so the actual payment integration stays intact.
-  const [view, setView] = useState('grow');
+  // Default landing tab is Account Overview — gives the user a snapshot
+  // of all their balances / positions / activity before they pick an
+  // action (deposit, withdraw, transfer, etc).
+  const [view, setView] = useState('overview');
   // Pick up any deep-link the earlier effect parked in the ref.
   useEffect(() => {
     if (pendingDeepLinkRef.current) {
@@ -260,7 +263,7 @@ export default function Wallet() {
     { id: 'transfer', label: 'Internal Transfer', icon: <NITransfer /> },
     // Subscription Wallet lives on its own page — items with `to`
     // navigate via Link instead of switching the local view.
-    { id: 'subscription', label: 'Subscription Wallet', icon: <NISubscription />, to: '/subscription-wallet', badge: 'NEW' },
+    { id: 'subscription', label: 'Subscription Wallet', icon: <NISubscription />, to: '/subscription-wallet' },
     { id: 'history',  label: 'Transaction History', icon: <NIHistory /> },
     { id: 'details',  label: 'Account Details',   icon: <NIDetails /> },
   ];
@@ -289,9 +292,9 @@ export default function Wallet() {
                   {n.icon}
                 </span>
                 <span className={`text-[13px] truncate ${isActive ? 'font-bold' : 'font-medium'}`}>{n.label}</span>
-                {(n.id === 'grow' || n.badge) && (
+                {n.badge && (
                   <span className="ml-auto text-[9px] font-bold uppercase tracking-wider text-primary-600 bg-primary-500/15 px-1.5 py-0.5 rounded">
-                    {n.badge || 'New'}
+                    {n.badge}
                   </span>
                 )}
               </>
@@ -701,6 +704,16 @@ function WithdrawalsTable({ items }) {
   );
 }
 
+// Friendlier labels for the ledger Type column. Peer-to-peer transfer
+// rows render as "Transfer Sent" / "Transfer Received" with the
+// counterparty name surfaced inline so the user doesn't have to read
+// the cryptic system enum.
+function ledgerTypeLabel(l) {
+  if (l.type === 'INTERNAL_TRANSFER_OUT') return 'Transfer Sent';
+  if (l.type === 'INTERNAL_TRANSFER_IN')  return 'Transfer Received';
+  return l.type;
+}
+
 function LedgerTable({ items }) {
   if (!items.length) return <div className="text-gray-500 text-sm py-4 text-center">No ledger entries</div>;
   return (
@@ -716,18 +729,28 @@ function LedgerTable({ items }) {
         </tr>
       </thead>
       <tbody>
-        {items.map((l) => (
-          <tr key={l._id} className="table-row">
-            <td className="p-2">{fmtDate(l.createdAt)}</td>
-            <td className="p-2">{l.type}</td>
-            <td className="p-2">{l.currency}</td>
-            <td className={`p-2 text-right font-mono ${Number(l.amount) >= 0 ? 'text-bull' : 'text-bear'}`}>
-              {fmtNum(l.amount, 2)}
-            </td>
-            <td className="p-2 text-right font-mono">{fmtNum(l.balanceAfter, 2)}</td>
-            <td className="p-2 text-xs text-gray-400">{l.note || '-'}</td>
-          </tr>
-        ))}
+        {items.map((l) => {
+          const isXfer = l.type === 'INTERNAL_TRANSFER_OUT' || l.type === 'INTERNAL_TRANSFER_IN';
+          const cp = l.counterparty;
+          const cpLabel = isXfer && cp
+            ? (l.type === 'INTERNAL_TRANSFER_OUT' ? `to ${cp.name}` : `from ${cp.name}`)
+            : null;
+          return (
+            <tr key={l._id} className="table-row">
+              <td className="p-2">{fmtDate(l.createdAt)}</td>
+              <td className="p-2">
+                <span className="font-semibold">{ledgerTypeLabel(l)}</span>
+                {cpLabel && <span className="ml-1 text-text-muted">· {cpLabel}</span>}
+              </td>
+              <td className="p-2">{l.currency}</td>
+              <td className={`p-2 text-right font-mono ${Number(l.amount) >= 0 ? 'text-bull' : 'text-bear'}`}>
+                {fmtNum(l.amount, 2)}
+              </td>
+              <td className="p-2 text-right font-mono">{fmtNum(l.balanceAfter, 2)}</td>
+              <td className="p-2 text-xs text-gray-400">{l.note || '-'}</td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );
@@ -1787,7 +1810,7 @@ function AccountOverviewView({ totals, usd, usdSub, usdSubSigned, realBalances, 
         <button
           type="button"
           onClick={() => setView('grow')}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-sm shadow-card hover:shadow-elevated transition-all"
+          className="inline-flex items-center gap-2 px-5 py-2.5 rounded-full font-bold text-sm shadow-card hover:shadow-elevated transition-all"
           style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)', color: '#FFFFFF' }}
         >
           <span className="keep-white" style={{ color: '#FFFFFF' }}>+ Deposit</span>
@@ -2628,22 +2651,69 @@ function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCance
 }
 
 function TransferView({ accounts, balances, onDone }) {
-  const [from, setFrom] = useState(accounts[0]?._id || '');
-  const [to, setTo] = useState(accounts[1]?._id || accounts[0]?._id || '');
+  // ── Mode toggle: between own accounts (legacy) OR to another user.
+  // Both share the same endpoint family — `/wallet/transfers` for the
+  // existing flow, `/wallet/transfer-user` for the new peer-to-peer
+  // flow. We render two different panels but keep them under the same
+  // "Transfer" left-nav item so the user sees a single transfer hub.
+  const [mode, setMode] = useState('self'); // 'self' | 'user'
+
+  // Subscription Wallet uses the literal sentinel 'subscription' on the
+  // backend (it's user-level, not per-account). We surface it as a fake
+  // entry in the From/To dropdowns so the existing flow handles both.
+  const SUB_OPT = { _id: 'subscription', nickname: 'Subscription Wallet', accountType: 'SUB' };
+
+  // DEMO / VIRTUAL accounts use practice money — they have no real
+  // balance to move and aren't allowed on either side of an internal
+  // transfer. Filtered here so they never appear in the picker.
+  const liveAccounts = useMemo(
+    () => accounts.filter((a) => a.accountType !== 'DEMO' && a.accountType !== 'VIRTUAL'),
+    [accounts]
+  );
+
+  const [from, setFrom] = useState(liveAccounts[0]?._id || '');
+  const [to, setTo] = useState(liveAccounts[1]?._id || liveAccounts[0]?._id || '');
   const [currency, setCurrency] = useState('USD');
   const [amount, setAmount] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [confirm, setConfirm] = useState(false);
 
-  const fromAcc = accounts.find((a) => a._id === from);
-  const toAcc = accounts.find((a) => a._id === to);
-  const fromBalance = balances.find((b) => b.accountId === from && b.currency === currency);
-  const free = Number(fromBalance?.free || 0);
+  // Subscription Wallet snapshot — fetched once for the free-balance display
+  // when the user picks "Subscription Wallet" as the source.
+  const [subWallet, setSubWallet] = useState(null);
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await api.get('/subscription-wallet');
+        setSubWallet(r.data.data || null);
+      } catch { /* non-fatal */ }
+    })();
+  }, []);
+
+  // Merge live trading accounts + subscription wallet for the dropdowns.
+  // (Demo accounts are already filtered out of `liveAccounts` above.)
+  const transferOptions = useMemo(() => [...liveAccounts, SUB_OPT], [liveAccounts]);
+
+  const isSubFrom = from === 'subscription';
+  const isSubTo   = to   === 'subscription';
+  const fromAcc = transferOptions.find((a) => a._id === from);
+  const toAcc   = transferOptions.find((a) => a._id === to);
+
+  // Source balance: subscription wallet uses its own balance; trading
+  // wallets read from the per-account balances array.
+  const free = isSubFrom
+    ? Number(subWallet?.balance || 0)
+    : Number((balances.find((b) => b.accountId === from && b.currency === currency))?.free || 0);
   const overBudget = Number(amount) > free;
+  const subOnlyUsd = (isSubFrom || isSubTo) && currency !== 'USD';
 
   const submit = async () => {
     if (!from || !to || from === to || !amount) {
       toast.error('Pick two different accounts and a positive amount');
+      return;
+    }
+    if (subOnlyUsd) {
+      toast.error('Subscription Wallet transfers must be in USD');
       return;
     }
     setSubmitting(true);
@@ -2663,30 +2733,84 @@ function TransferView({ accounts, balances, onDone }) {
   return (
     <>
       <div>
-        <h1 className="text-2xl sm:text-3xl font-bold text-text-primary">Internal Transfer</h1>
-        <p className="text-sm text-text-secondary mt-1">Move funds instantly between your trading and funding accounts.</p>
+        <h1 className="text-2xl sm:text-3xl font-bold text-text-primary">Transfer Funds</h1>
+        <p className="text-sm text-text-secondary mt-1">
+          {mode === 'self'
+            ? 'Move funds instantly between your trading and funding accounts.'
+            : 'Send funds directly to another registered user using the internal wallet ledger.'}
+        </p>
       </div>
 
+      {/* Mode toggle */}
+      <div className="inline-flex p-1 bg-bg-hover rounded-xl border border-border-dark">
+        {[
+          { id: 'self', label: 'Between my accounts' },
+          { id: 'user', label: 'Send to another user' },
+        ].map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setMode(t.id)}
+            className={`px-4 py-2 text-sm font-bold rounded-lg transition-all ${
+              mode === t.id
+                ? 'bg-white text-text-primary shadow-card'
+                : 'text-text-secondary hover:text-text-primary'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {mode === 'user' && (
+        <TransferToUserPanel accounts={liveAccounts} balances={balances} onDone={onDone} />
+      )}
+
+      {mode === 'self' && (
       <div className="bg-white border border-border-dark rounded-2xl p-5 space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">From</label>
-            <select value={from} onChange={(e) => setFrom(e.target.value)} className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none">
-              {accounts.map((a) => (
-                <option key={a._id} value={a._id}>{a.nickname || a.accountNumber} · {a.accountType}</option>
+            <select
+              value={from}
+              onChange={(e) => {
+                const v = e.target.value;
+                setFrom(v);
+                if (v === 'subscription') setCurrency('USD');
+              }}
+              className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none"
+            >
+              {transferOptions.map((a) => (
+                <option key={a._id} value={a._id}>
+                  {a._id === 'subscription'
+                    ? 'Subscription Wallet · USD'
+                    : `${a.nickname || a.accountNumber} · ${a.accountType}`}
+                </option>
               ))}
             </select>
             {fromAcc && (
               <div className="mt-1.5 text-[11px] text-text-muted">
-                Free: <span className="font-mono font-semibold text-bull">{fmtMoney(free, currency)}</span>
+                {isSubFrom ? 'Balance' : 'Free'}: <span className="font-mono font-semibold text-bull">{fmtMoney(free, isSubFrom ? 'USD' : currency)}</span>
               </div>
             )}
           </div>
           <div>
             <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">To</label>
-            <select value={to} onChange={(e) => setTo(e.target.value)} className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none">
-              {accounts.map((a) => (
-                <option key={a._id} value={a._id}>{a.nickname || a.accountNumber} · {a.accountType}</option>
+            <select
+              value={to}
+              onChange={(e) => {
+                const v = e.target.value;
+                setTo(v);
+                if (v === 'subscription') setCurrency('USD');
+              }}
+              className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none"
+            >
+              {transferOptions.map((a) => (
+                <option key={a._id} value={a._id}>
+                  {a._id === 'subscription'
+                    ? 'Subscription Wallet · USD'
+                    : `${a.nickname || a.accountNumber} · ${a.accountType}`}
+                </option>
               ))}
             </select>
           </div>
@@ -2709,19 +2833,23 @@ function TransferView({ accounts, balances, onDone }) {
         {from === to && from && (
           <div className="text-[11px] text-bear font-semibold">Source and destination must be different accounts.</div>
         )}
+        {subOnlyUsd && (
+          <div className="text-[11px] text-warn font-semibold">Subscription Wallet only supports USD. Currency switched automatically.</div>
+        )}
 
         <button
           type="button"
           onClick={() => setConfirm(true)}
-          disabled={!from || !to || from === to || !amount || Number(amount) <= 0 || overBudget}
+          disabled={!from || !to || from === to || !amount || Number(amount) <= 0 || overBudget || subOnlyUsd}
           className="w-full py-3.5 rounded-xl font-bold text-base shadow-card hover:shadow-elevated transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)', color: '#FFFFFF' }}
         >
           <span className="keep-white" style={{ color: '#FFFFFF' }}>Review Transfer →</span>
         </button>
       </div>
+      )}
 
-      {confirm && (
+      {confirm && mode === 'self' && (
         <Modal onClose={() => setConfirm(false)}>
           <div className="text-lg font-bold text-text-primary">Confirm Transfer</div>
           <p className="text-sm text-text-secondary mt-2">
@@ -2738,6 +2866,302 @@ function TransferView({ accounts, balances, onDone }) {
         </Modal>
       )}
     </>
+  );
+}
+
+/**
+ * Peer-to-peer transfer panel.
+ *
+ * Recipient search is debounced (250 ms) and hits
+ * `/wallet/recipients/search?q=`. The picker accepts a referral code,
+ * email, or partial name and shows matching users with an avatar
+ * initials chip. Once a recipient is selected the form gates Review on
+ * a positive amount within the admin-tuned min/max, and a fee preview
+ * is shown if `feePercent > 0`.
+ */
+function TransferToUserPanel({ accounts, balances, onDone }) {
+  const [fromAccountId, setFromAccountId] = useState(accounts[0]?._id || '');
+  const [currency, setCurrency] = useState(accounts[0]?.baseCurrency || 'USD');
+  const [amount, setAmount] = useState('');
+  const [note, setNote] = useState('');
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [recipient, setRecipient] = useState(null);
+  const [cfg, setCfg] = useState({ enabled: true, min: '0', max: '0', feePercent: '0' });
+  const [submitting, setSubmitting] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+
+  // Pull admin settings once on mount so we can show min/max hints and
+  // pre-compute the fee preview. If the call fails we leave the
+  // permissive defaults — backend enforces the cap regardless.
+  useEffect(() => {
+    api.get('/wallet/transfer-user/settings')
+      .then((r) => setCfg(r.data.data || cfg))
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Debounced recipient search. The picker doesn't fire on every
+  // keystroke — we wait until the user stops typing for 250 ms so the
+  // backend isn't hammered for incremental garbage like "a", "ab", "abc".
+  useEffect(() => {
+    const q = query.trim();
+    if (recipient) return;       // already picked
+    if (q.length < 2) { setResults([]); return; }
+    let cancelled = false;
+    setSearching(true);
+    const t = setTimeout(() => {
+      api.get('/wallet/recipients/search', { params: { q, limit: 8 } })
+        .then((r) => { if (!cancelled) setResults(r.data.data || []); })
+        .catch(() => { if (!cancelled) setResults([]); })
+        .finally(() => { if (!cancelled) setSearching(false); });
+    }, 250);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [query, recipient]);
+
+  const acct = accounts.find((a) => a._id === fromAccountId);
+  const free = Number(balances.find((b) => b.accountId === fromAccountId && b.currency === currency)?.free || 0);
+  const amt = Number(amount) || 0;
+  const feePct = Number(cfg.feePercent) || 0;
+  const feeAmt = feePct > 0 ? amt * (feePct / 100) : 0;
+  const total = amt + feeAmt;
+  const overBudget = total > free;
+  const min = Number(cfg.min || 0);
+  const max = Number(cfg.max || 0);
+  const belowMin = min > 0 && amt > 0 && amt < min;
+  const aboveMax = max > 0 && amt > max;
+
+  const canReview = !!recipient && amt > 0 && !overBudget && !belowMin && !aboveMax && cfg.enabled !== false;
+
+  const submit = async () => {
+    if (!canReview || !fromAccountId) return;
+    setSubmitting(true);
+    try {
+      await api.post('/wallet/transfer-user', {
+        fromAccountId,
+        currency,
+        amount: String(amt),
+        note: note?.trim() || undefined,
+        recipientUserId: recipient._id,
+      });
+      toast.success(`Sent ${amt} ${currency} to ${recipient.name}`);
+      setAmount('');
+      setNote('');
+      setRecipient(null);
+      setQuery('');
+      setConfirm(false);
+      onDone && onDone();
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (cfg.enabled === false) {
+    return (
+      <div className="bg-white border border-border-dark rounded-2xl p-5">
+        <div className="text-sm font-bold text-text-primary">Peer transfers are currently disabled</div>
+        <p className="text-xs text-text-secondary mt-1">
+          User-to-user transfers have been turned off by the platform administrator. Try again later.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="bg-white border border-border-dark rounded-2xl p-5 space-y-4">
+        {/* From account + currency */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="sm:col-span-2">
+            <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">From account</label>
+            <select
+              value={fromAccountId}
+              onChange={(e) => setFromAccountId(e.target.value)}
+              className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none"
+            >
+              {accounts.map((a) => (
+                <option key={a._id} value={a._id}>
+                  {(a.nickname || a.accountNumber)} · {a.accountType}
+                </option>
+              ))}
+            </select>
+            {acct && (
+              <div className="mt-1.5 text-[11px] text-text-muted">
+                Free: <span className="font-mono font-semibold text-bull">{fmtMoney(free, currency)}</span>
+              </div>
+            )}
+          </div>
+          <div>
+            <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Currency</label>
+            <select value={currency} onChange={(e) => setCurrency(e.target.value)} className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none">
+              {['USD', 'EUR', 'GBP', 'INR'].map((c) => <option key={c}>{c}</option>)}
+            </select>
+          </div>
+        </div>
+
+        {/* Recipient picker */}
+        <div>
+          <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Recipient</label>
+          {recipient ? (
+            <div className="mt-1.5 flex items-center gap-3 px-3 py-2.5 rounded-xl border-2 border-primary-500 bg-primary-500/5">
+              <RecipientAvatar user={recipient} />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-bold text-text-primary truncate">{recipient.name}</div>
+                <div className="text-[11px] text-text-muted truncate">
+                  {recipient.referralCode ? `Ref: ${recipient.referralCode}` : recipient.email}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setRecipient(null); setQuery(''); setResults([]); }}
+                className="text-xs font-semibold text-text-secondary hover:text-bear px-2 py-1 rounded-lg hover:bg-bear/10 transition-colors"
+              >
+                Change
+              </button>
+            </div>
+          ) : (
+            <div className="mt-1.5 relative">
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search by username, referral code, email, or user ID"
+                className="w-full px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none"
+              />
+              {/* Results dropdown */}
+              {(searching || results.length > 0) && (
+                <div className="absolute z-20 mt-1 left-0 right-0 max-h-72 overflow-y-auto bg-white border border-border-dark rounded-xl shadow-elevated">
+                  {searching && results.length === 0 ? (
+                    <div className="px-3 py-3 text-xs text-text-muted">Searching…</div>
+                  ) : (
+                    results.map((u) => (
+                      <button
+                        key={u._id}
+                        type="button"
+                        onClick={() => { setRecipient(u); setResults([]); }}
+                        className="w-full flex items-center gap-3 px-3 py-2.5 hover:bg-bg-hover transition-colors text-left"
+                      >
+                        <RecipientAvatar user={u} />
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-bold text-text-primary truncate">{u.name}</div>
+                          <div className="text-[11px] text-text-muted truncate">
+                            {u.referralCode ? `Ref: ${u.referralCode}` : u.email}
+                          </div>
+                        </div>
+                      </button>
+                    ))
+                  )}
+                  {!searching && results.length === 0 && query.trim().length >= 2 && (
+                    <div className="px-3 py-3 text-xs text-text-muted">No users found.</div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Amount + note */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="sm:col-span-2">
+            <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Amount</label>
+            <input
+              type="number" inputMode="decimal" min="0" step="0.01"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder="0.00"
+              className={`w-full mt-1.5 px-3 py-2.5 rounded-xl border-2 bg-white text-lg font-bold text-text-primary focus:outline-none ${overBudget || belowMin || aboveMax ? 'border-bear' : 'border-border-dark focus:border-primary-500'}`}
+            />
+            <div className="mt-1.5 text-[11px] text-text-muted">
+              {min > 0 && <>Min <span className="font-mono">{fmtMoney(min, currency)}</span></>}
+              {min > 0 && max > 0 && ' · '}
+              {max > 0 && <>Max <span className="font-mono">{fmtMoney(max, currency)}</span></>}
+              {(min > 0 || max > 0) && feePct > 0 && ' · '}
+              {feePct > 0 && <>Fee <span className="font-mono">{feePct}%</span></>}
+            </div>
+            {overBudget && <div className="mt-1.5 text-[11px] text-bear font-semibold">Exceeds free balance ({fmtMoney(free, currency)})</div>}
+            {belowMin && <div className="mt-1.5 text-[11px] text-bear font-semibold">Below minimum transfer amount</div>}
+            {aboveMax && <div className="mt-1.5 text-[11px] text-bear font-semibold">Above maximum transfer amount</div>}
+          </div>
+          <div>
+            <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Note (optional)</label>
+            <input
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              maxLength={120}
+              placeholder="Visible to recipient"
+              className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none"
+            />
+          </div>
+        </div>
+
+        {/* Fee preview */}
+        {feeAmt > 0 && amt > 0 && (
+          <div className="text-[11px] text-text-secondary bg-bg-hover rounded-lg px-3 py-2 flex items-center justify-between">
+            <span>You send</span>
+            <span className="font-mono font-semibold text-text-primary">{fmtMoney(amt, currency)}</span>
+            <span>Fee {feePct}%</span>
+            <span className="font-mono text-warn">{fmtMoney(feeAmt, currency)}</span>
+            <span>Total debit</span>
+            <span className="font-mono font-bold text-text-primary">{fmtMoney(total, currency)}</span>
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={() => setConfirm(true)}
+          disabled={!canReview}
+          className="w-full py-3.5 rounded-xl font-bold text-base shadow-card hover:shadow-elevated transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)', color: '#FFFFFF' }}
+        >
+          <span className="keep-white" style={{ color: '#FFFFFF' }}>Review Transfer →</span>
+        </button>
+      </div>
+
+      {confirm && (
+        <Modal onClose={() => setConfirm(false)}>
+          <div className="text-lg font-bold text-text-primary">Confirm Transfer</div>
+          <div className="mt-3 px-3 py-2.5 rounded-xl bg-bg-hover flex items-center gap-3">
+            <RecipientAvatar user={recipient} />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-bold text-text-primary truncate">{recipient?.name}</div>
+              <div className="text-[11px] text-text-muted truncate">
+                {recipient?.referralCode ? `Ref: ${recipient.referralCode}` : recipient?.email}
+              </div>
+            </div>
+          </div>
+          <div className="mt-3 text-sm space-y-1">
+            <div className="flex items-center justify-between text-text-secondary"><span>Amount</span><span className="font-mono font-bold text-text-primary">{fmtMoney(amt, currency)}</span></div>
+            {feeAmt > 0 && (
+              <div className="flex items-center justify-between text-text-secondary"><span>Fee ({feePct}%)</span><span className="font-mono text-warn">{fmtMoney(feeAmt, currency)}</span></div>
+            )}
+            <div className="flex items-center justify-between font-bold pt-1 border-t border-border-subtle"><span className="text-text-primary">You pay</span><span className="font-mono text-text-primary">{fmtMoney(total, currency)}</span></div>
+          </div>
+          {note && <div className="mt-3 text-xs text-text-muted">Note: "{note}"</div>}
+          <div className="mt-4 flex items-center gap-2">
+            <button onClick={() => setConfirm(false)} className="flex-1 py-2.5 rounded-xl border border-border-dark text-text-primary font-semibold text-sm hover:bg-bg-hover transition-colors">Cancel</button>
+            <button onClick={submit} disabled={submitting} className="flex-1 py-2.5 rounded-xl font-bold text-sm text-white disabled:opacity-50" style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)', color: '#FFFFFF' }}>
+              <span className="keep-white" style={{ color: '#FFFFFF' }}>{submitting ? 'Sending…' : 'Confirm & Send'}</span>
+            </button>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
+function RecipientAvatar({ user }) {
+  if (user?.avatarUrl) {
+    return <img src={user.avatarUrl} alt="" className="w-10 h-10 rounded-full object-cover shrink-0" />;
+  }
+  const initials = String(user?.name || user?.email || '?')
+    .split(/\s+/).filter(Boolean).slice(0, 2).map((s) => s[0]?.toUpperCase()).join('') || '?';
+  return (
+    <div className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm shrink-0"
+         style={{ background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%)', color: '#FFFFFF' }}>
+      <span className="keep-white" style={{ color: '#FFFFFF' }}>{initials}</span>
+    </div>
   );
 }
 

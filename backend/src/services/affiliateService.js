@@ -2,6 +2,7 @@ const User = require('../models/User');
 const { Commission } = require('../models/Compliance');
 const { Wallet } = require('../models/Wallet');
 const walletService = require('./walletService');
+const subscriptionWalletService = require('./subscriptionWalletService');
 const { D, mul, gt } = require('../utils/decimal');
 const { WALLET_TX_TYPE } = require('../config/constants');
 
@@ -71,29 +72,28 @@ const distributeCommissions = async ({ tradeId, userId, feeAmount, currency }) =
 };
 
 /**
- * Run the daily payout batch — sweep PENDING commissions to the referrer's primary wallet.
- * Should be invoked from a cron job (e.g. once a day at 00:05 UTC).
+ * Run the daily payout batch — sweep PENDING commissions to the referrer's
+ * SUBSCRIPTION wallet. Cron-invoked (e.g. once a day at 00:05 UTC).
+ *
+ * Referral bonuses land in the subscription wallet (not the trading wallet)
+ * so the user can spend them on plan purchases / renewals but they don't
+ * affect trading margin / equity. One wallet per user — no trading-account
+ * lookup needed, and the user doesn't have to own a REAL account to receive
+ * a bonus.
  */
 const runPayoutBatch = async () => {
   const pending = await Commission.find({ status: 'PENDING' }).limit(500);
   let paid = 0;
 
   for (const c of pending) {
-    // Find the referrer's primary (REAL) account wallet to credit
-    const TradingAccount = require('../models/TradingAccount');
-    const acct = await TradingAccount.findOne({ userId: c.referrerId, accountType: { $nin: ['DEMO', 'VIRTUAL'] }, isActive: true });
-    if (!acct) continue;
-
     try {
-      await walletService.credit({
+      await subscriptionWalletService.credit({
         userId: c.referrerId,
-        accountId: acct._id,
-        currency: c.currency,
         amount: c.amount,
-        type: WALLET_TX_TYPE.ADJUSTMENT,
-        referenceType: 'commission',
-        referenceId: c._id,
+        reason: 'REFERRAL_BONUS',
         note: `Affiliate commission L${c.level}`,
+        paymentMethod: 'manual',
+        paymentRef: `commission:${c._id}`,
       });
       c.status = 'PAID';
       c.paidAt = new Date();
@@ -123,14 +123,14 @@ const getReferrerSummary = async (referrerId) => {
 /**
  * Manually credit a referral bonus to a user (admin action).
  * Creates a Commission row with sourceType='ADJUSTMENT' AND immediately
- * pays it to the user's REAL trading wallet, so the user sees the credit
- * both on the Affiliate page (commission history) and in their wallet
- * (real balance / transaction ledger).
+ * pays it to the user's SUBSCRIPTION wallet — bonuses go there (not the
+ * trading wallet) so they can be spent on plan purchases / renewals but
+ * don't inflate trading margin / equity.
  *
  * @param {object} ctx
  * @param {ObjectId} ctx.userId    — the user RECEIVING the bonus
  * @param {string|number} ctx.amount
- * @param {string} ctx.currency    — defaults to the user's primary account currency
+ * @param {string} ctx.currency    — defaults to the subscription wallet currency (USD)
  * @param {string} ctx.note        — visible in the user's commission row
  * @param {ObjectId} ctx.adminId   — who triggered it (req.userId from the admin route)
  * @returns {Promise<{commission, walletTx?}>}
@@ -140,7 +140,6 @@ const creditManual = async ({ userId, amount, currency, note, adminId }) => {
   if (!amount || !gt(amount, '0')) throw new Error('amount must be > 0');
 
   const User = require('../models/User');
-  const TradingAccount = require('../models/TradingAccount');
 
   const user = await User.findById(userId).select('_id isActive');
   if (!user) throw new Error('User not found');
@@ -167,14 +166,10 @@ const creditManual = async ({ userId, amount, currency, note, adminId }) => {
     );
   }
 
-  // Pick the user's primary REAL account so the credit lands somewhere
-  // real-money; if they have none, fall back to whatever active account
-  // exists. We never silently credit to demo (would be misleading).
-  let account = await TradingAccount.findOne({ userId, accountType: { $nin: ['DEMO', 'VIRTUAL'] }, isActive: true });
-  if (!account) account = await TradingAccount.findOne({ userId, isActive: true });
-  if (!account) throw new Error('User has no active trading account to credit');
-
-  const ccy = currency || account.baseCurrency || 'USD';
+  // Subscription wallet is single-currency (USD by default). The Commission
+  // row keeps the requested currency for the audit trail, but the actual
+  // credit lands in the subscription wallet's currency.
+  const ccy = currency || 'USD';
 
   // 1. Record the commission row first so the affiliate page can show it
   //    even if the wallet credit fails (status will be PENDING in that case).
@@ -191,17 +186,16 @@ const creditManual = async ({ userId, amount, currency, note, adminId }) => {
     note:       note || 'Admin-credited referral bonus',
   });
 
-  // 2. Credit the wallet immediately — this is the actual money movement.
+  // 2. Credit the subscription wallet — this is the actual money movement.
   try {
-    await walletService.credit({
+    await subscriptionWalletService.credit({
       userId,
-      accountId:     account._id,
-      currency:      ccy,
       amount:        String(amount),
-      type:          WALLET_TX_TYPE.ADJUSTMENT,
-      referenceType: 'commission',
-      referenceId:   commission._id,
+      reason:        'REFERRAL_BONUS',
       note:          note || 'Referral bonus (admin)',
+      paymentMethod: 'manual',
+      paymentRef:    `commission:${commission._id}`,
+      adminUserId:   adminId || null,
     });
     commission.status = 'PAID';
     commission.paidAt = new Date();
@@ -212,7 +206,7 @@ const creditManual = async ({ userId, amount, currency, note, adminId }) => {
     throw new Error(`Wallet credit failed: ${e.message}`);
   }
 
-  return { commission, accountId: account._id, currency: ccy };
+  return { commission, currency: ccy };
 };
 
 module.exports = { distributeCommissions, runPayoutBatch, getReferrerSummary, creditManual, DEFAULT_RATES };

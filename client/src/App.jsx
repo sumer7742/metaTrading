@@ -29,6 +29,7 @@ const Affiliate = lazy(() => import('./pages/Affiliate'));
 const PriceAlerts = lazy(() => import('./pages/PriceAlerts'));
 const Plans = lazy(() => import('./pages/Plans'));
 const SubscriptionWallet = lazy(() => import('./pages/SubscriptionWallet'));
+const CopyTrade = lazy(() => import('./pages/CopyTrade'));
 const Feedback = lazy(() => import('./pages/Feedback'));
 const Helpdesk = lazy(() => import('./pages/Helpdesk'));
 const Explore = lazy(() => import('./pages/Explore'));
@@ -86,6 +87,7 @@ export default function App() {
         <Route path="/affiliate" element={<Page><Affiliate /></Page>} />
         <Route path="/plans" element={<Page><Plans /></Page>} />
         <Route path="/subscription-wallet" element={<Page><SubscriptionWallet /></Page>} />
+        <Route path="/copy-trading" element={<Page><CopyTrade /></Page>} />
         <Route path="/wallet" element={<Page><Wallet /></Page>} />
         <Route path="/accounts/new" element={<Page><NewAccountTiers /></Page>} />
         <Route path="/accounts/new/:tierCode" element={<Page><NewAccountConfigure /></Page>} />

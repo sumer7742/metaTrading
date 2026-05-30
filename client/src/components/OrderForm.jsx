@@ -57,25 +57,50 @@ export default function OrderForm({
     };
   }, []);
 
-  // Cap comes purely from the user's effectiveLeverage (admin override
-  // wins over plan default, plan wins over fallback). Per spec, this
-  // is the SINGLE source of truth — the instrument's own maxLeverage
-  // field is NOT applied here, so admin/plan changes always reflect
-  // immediately regardless of what's seeded on each instrument row.
+  // Leverage resolution (priority-based, instrument always wins):
+  //   1. instrument.maxLeverage  — when set (>0), this is the final cap
+  //                                even if it's higher OR lower than the
+  //                                account would otherwise allow
+  //   2. account/plan leverage   — leverageState.effectiveLeverage from
+  //                                /user/leverage (plan default + admin
+  //                                override)
+  //   3. SYSTEM_DEFAULT          — final fallback when neither is set
   //
-  // Exception — DEMO / VIRTUAL accounts ALWAYS run at 1:Unlimited.
-  // Practice money is not subject to admin overrides; the trader can
-  // experiment with any leverage they like.
+  // Demo accounts are no longer a hard-coded override: if an instrument
+  // declares its own cap, demo accounts still respect it (per spec —
+  // instrument leverage overrides everything). Demo only kicks in when
+  // the instrument has nothing set, in which case it's unlimited.
   //
-  // Platform now supports 1:1 → 1:Unlimited (encoded as 999999). The
+  // Platform supports 1:1 → 1:Unlimited (encoded as 999999). The
   // numeric input accepts the full range; the visual slider caps at
   // SLIDER_VISUAL_MAX so it stays usable. UNLIMITED_THRESHOLD is the
   // value at/above which the UI displays "Unlimited" instead of a number.
   const UNLIMITED_THRESHOLD = 999999;
+  const SYSTEM_DEFAULT_LEVERAGE = 100;
+
   const isDemoAccount = account?.accountType === 'DEMO' || account?.accountType === 'VIRTUAL';
-  const MAX_LEVERAGE_UI = isDemoAccount
-    ? UNLIMITED_THRESHOLD
-    : (leverageState?.effectiveLeverage || 100);
+  // "Has instrument leverage" — null / undefined / 0 / negative all mean
+  // "not set, fall back". Any positive finite number (including the
+  // unlimited sentinel) is treated as an explicit instrument value.
+  const rawInstLev   = Number(instrument?.maxLeverage);
+  const hasInstLev   = Number.isFinite(rawInstLev) && rawInstLev > 0;
+  const accountCap   = Number(leverageState?.effectiveLeverage) || null;
+
+  let MAX_LEVERAGE_UI;
+  let capSource; // 'instrument' | 'account' | 'demo' | 'system'
+  if (hasInstLev) {
+    MAX_LEVERAGE_UI = rawInstLev;
+    capSource       = 'instrument';
+  } else if (isDemoAccount) {
+    MAX_LEVERAGE_UI = UNLIMITED_THRESHOLD;
+    capSource       = 'demo';
+  } else if (accountCap && accountCap > 0) {
+    MAX_LEVERAGE_UI = accountCap;
+    capSource       = 'account';
+  } else {
+    MAX_LEVERAGE_UI = SYSTEM_DEFAULT_LEVERAGE;
+    capSource       = 'system';
+  }
   const SLIDER_VISUAL_MAX = Math.min(MAX_LEVERAGE_UI, 2000);
   // NOTE: `isUnlimited` (derived from the leverage state) is computed
   // AFTER the `leverage` useState declaration below — putting it here
@@ -120,10 +145,31 @@ export default function OrderForm({
   // Risk-calculator inputs — only shown when riskCalc mode is active.
   const [riskPct, setRiskPct] = useState('1');     // % of free margin to risk
   const [stopDistance, setStopDistance] = useState(''); // distance in price units
-  const [quantity, setQuantity] = useState('');
+  // Quantity defaults to the instrument's minOrderSize (falling back to
+  // 0.01 lots) so the user can fire a trade immediately without having
+  // to type anything. They can still nudge / clear it.
+  const [quantity, setQuantity] = useState(() => {
+    const min = Number(instrument?.minOrderSize) || 0.01;
+    return String(min);
+  });
   const [price, setPrice] = useState(instrument?.lastPrice || '');
+  // TP/SL display state — separate raw input vs absolute price.
+  //   tpInput  / slInput  → exactly what the user typed in the current mode
+  //   takeProfit / stopLoss → derived absolute price (sent to the backend,
+  //                           drawn on the chart, used by autoTpSl)
+  // Keeping `input` separate avoids the value-being-reformatted-while-typing
+  // glitch that pure-derived state would cause (e.g. "5" → "5.0").
   const [stopLoss, setStopLoss] = useState('');
   const [takeProfit, setTakeProfit] = useState('');
+  // Display modes:
+  //   'price'   → raw asset price (default)
+  //   'pips'    → distance from reference price in pips
+  //   'money'   → desired USD profit (TP) / loss (SL)
+  //   'percent' → same as money but expressed as % of free equity
+  const [tpMode, setTpMode] = useState('price');
+  const [slMode, setSlMode] = useState('price');
+  const [tpInput, setTpInput] = useState('');
+  const [slInput, setSlInput] = useState('');
   const [leverage, setLeverage] = useState(initialLev);
   const [loading, setLoading] = useState(false);
   const [accountFree, setAccountFree] = useState(null);
@@ -223,8 +269,13 @@ export default function OrderForm({
     onPendingPriceChange(price ? { side, type: 'LIMIT', price } : null);
   }, [orderMode, side, price, onPendingPriceChange]);
 
-  const submit = async (e) => {
-    e.preventDefault();
+  // sideOverride lets the one-click Sell/Buy price cards fire an order
+  // with the clicked side without first waiting for `side` state to flush.
+  // When called from the form's onSubmit it stays undefined and we use
+  // the state-driven `side` as before.
+  const submit = async (e, sideOverride) => {
+    if (e && typeof e.preventDefault === 'function') e.preventDefault();
+    const effectiveSide = sideOverride || side;
     if (!account) return toast.error('No trading account selected');
     if (!quantity || Number(quantity) <= 0) return toast.error('Enter a valid quantity');
     if (orderMode === 'LIMIT') {
@@ -234,7 +285,7 @@ export default function OrderForm({
     // Confirmation step — gated by "Confirm before order" setting AND
     // not in one-click mode (which by definition skips confirmation).
     if (confirmBeforeOrder && !isOneClick) {
-      const sideLabel = side === 'BUY' ? 'Buy' : 'Sell';
+      const sideLabel = effectiveSide === 'BUY' ? 'Buy' : 'Sell';
       const modeLabel = orderMode === 'LIMIT' ? `LIMIT @ ${price}` : 'MARKET';
       const ok = window.confirm(`Confirm ${sideLabel} ${quantity} ${instrument?.baseCurrency} (${modeLabel}) with 1:${leverage} leverage?`);
       if (!ok) return;
@@ -244,7 +295,7 @@ export default function OrderForm({
       const payload = {
         accountId: account._id,
         symbol: instrument.symbol,
-        side,
+        side: effectiveSide,
         // Backend auto-resolves orderMode='LIMIT' into LIMIT or STOP based
         // on side + price vs current bid/ask. The user only ever sees
         // MARKET / LIMIT in the UI.
@@ -263,8 +314,9 @@ export default function OrderForm({
       toast.success(`Order ${data.data.status}`);
       onPlaced?.(data.data);
       // Reset form for the next entry — keep instrument/leverage/side
-      // (sticky UX), clear amount + SL/TP so they don't bleed across orders.
-      setQuantity('');
+      // (sticky UX), reset quantity to the minimum-order default so the
+      // user can fire again instantly, clear SL/TP so they don't bleed.
+      setQuantity(String(Number(instrument?.minOrderSize) || 0.01));
       setStopLoss('');
       setTakeProfit('');
     } catch (err) {
@@ -287,6 +339,103 @@ export default function OrderForm({
   const free = Number(accountFree || 0);
   const remainingAfter = free - requiredMargin;
   const overBudget = requiredMargin > 0 && remainingAfter < 0;
+
+  // ── TP/SL display-mode conversion helpers ──────────────────────────
+  // Sign convention — for TP, profit moves price UP for BUY, DOWN for SELL.
+  // SL flips that direction (loss is the opposite of profit). All
+  // conversions reference the projected entry (refPrice).
+  const _prec = Math.min(instrument?.pricePrecision || 2, 8);
+  const _pipSize = Math.pow(10, -_prec);
+
+  const _toPrice = (mode, raw, isTp) => {
+    const v = Number(raw);
+    if (!Number.isFinite(v) || v === 0) return '';
+    if (mode === 'price') return v;
+    if (!refPrice)        return '';
+    const dirTp = side === 'BUY' ? 1 : -1;
+    const dir   = isTp ? dirTp : -dirTp;
+    if (mode === 'pips')  return refPrice + dir * v * _pipSize;
+    if (mode === 'money') return qtyNum > 0 ? refPrice + dir * (v / qtyNum) : '';
+    if (mode === 'percent') {
+      if (!qtyNum || !free) return '';
+      const targetPnl = (v / 100) * free;
+      return refPrice + dir * (targetPnl / qtyNum);
+    }
+    return v;
+  };
+  const _fromPrice = (mode, priceStr, isTp) => {
+    const p = Number(priceStr);
+    if (!Number.isFinite(p) || p === 0) return '';
+    if (mode === 'price') return String(priceStr);
+    if (!refPrice)        return '';
+    const dirTp = side === 'BUY' ? 1 : -1;
+    const dir   = isTp ? dirTp : -dirTp;
+    const diff  = (p - refPrice) * dir;
+    if (mode === 'pips')  return (diff / _pipSize).toFixed(1);
+    if (mode === 'money') return qtyNum > 0 ? (diff * qtyNum).toFixed(2) : '';
+    if (mode === 'percent') {
+      if (!qtyNum || !free) return '';
+      return ((diff * qtyNum / free) * 100).toFixed(2);
+    }
+    return String(priceStr);
+  };
+
+  // User typed in the TP/SL input — store the raw value as-is AND derive
+  // the absolute price for backend submission / chart overlay.
+  const _onInputChange = (mode, isTp, setInput, setPrice) => (raw) => {
+    setInput(String(raw));
+    if (raw === '' || raw === '-' || raw == null) { setPrice(''); return; }
+    if (mode === 'price') { setPrice(String(raw)); return; }
+    const px = _toPrice(mode, raw, isTp);
+    if (px === '' || !Number.isFinite(Number(px))) { setPrice(''); return; }
+    setPrice(Number(px).toFixed(_prec));
+  };
+  const tpOnChange = _onInputChange(tpMode, true,  setTpInput, setTakeProfit);
+  const slOnChange = _onInputChange(slMode, false, setSlInput, setStopLoss);
+
+  // User switched the dropdown — re-format the input string to match the
+  // new mode based on the CURRENT absolute price. Display state stays in
+  // sync without nuking the underlying takeProfit/stopLoss value.
+  const _switchMode = (current, setMode, isTp, priceStr, setInput) => (next) => {
+    if (next === current) return;
+    if (!priceStr) { setMode(next); return; }
+    const v = _fromPrice(next, priceStr, isTp);
+    setInput(v);
+    setMode(next);
+  };
+  const switchTpMode = _switchMode(tpMode, setTpMode, true,  takeProfit, setTpInput);
+  const switchSlMode = _switchMode(slMode, setSlMode, false, stopLoss,   setSlInput);
+
+  // External writers (autoTpSl, nudge buttons, partial-close, manual
+  // overrides) call setTakeProfit/setStopLoss directly with an absolute
+  // price. Mirror that into the input string so the field reflects it.
+  useEffect(() => {
+    setTpInput(_fromPrice(tpMode, takeProfit, true));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [takeProfit, tpMode, refPrice, qtyNum, free, side]);
+  useEffect(() => {
+    setSlInput(_fromPrice(slMode, stopLoss, false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stopLoss, slMode, refPrice, qtyNum, free, side]);
+
+  // Short caption shown beneath each TP/SL row when a non-price mode is
+  // active — surfaces the actual asset-price + a hint when the mode
+  // can't be computed yet (no ref price, no quantity, no equity).
+  const _modeCaption = (mode, isTp, priceStr) => {
+    if (mode === 'price') return null;
+    if (!refPrice) return 'Enter a reference price (or wait for the live quote) to use this mode.';
+    if ((mode === 'money' || mode === 'percent') && !qtyNum) {
+      return 'Enter a volume so the converter can size the P&L.';
+    }
+    if (mode === 'percent' && !free) {
+      return 'Equity not loaded yet — check your account balance.';
+    }
+    if (!priceStr) return null;
+    const p = Number(priceStr);
+    return `≈ asset price ${Number.isFinite(p) ? p.toFixed(_prec) : '—'}`;
+  };
+  const tpCaption = _modeCaption(tpMode, true,  takeProfit);
+  const slCaption = _modeCaption(slMode, false, stopLoss);
 
   // Quick-pick quantity presets — based on what % of the user's free margin
   // they want to deploy. Inverted from margin → qty using current refPrice.
@@ -464,10 +613,10 @@ export default function OrderForm({
         text:    '#F8FAFC',
         dim:     '#94A3B8',
         muted:   '#64748B',
-        sell:    '#DC2626',
-        sellHi:  '#EF4444',
-        buy:     '#2563EB',
-        buyHi:   '#3B82F6',
+        sell:    '#EF4444',
+        sellHi:  '#F87171',
+        buy:     '#22C55E',
+        buyHi:   '#4ADE80',
       }
     : {
         pageBg:  '#F8FAFC',
@@ -477,10 +626,10 @@ export default function OrderForm({
         text:    '#0F172A',
         dim:     '#64748B',
         muted:   '#94A3B8',
-        sell:    '#DC2626',
-        sellHi:  '#EF4444',
-        buy:     '#2563EB',
-        buyHi:   '#3B82F6',
+        sell:    '#EF4444',
+        sellHi:  '#F87171',
+        buy:     '#22C55E',
+        buyHi:   '#4ADE80',
       };
 
   // Toggle handler — flips intent in tradeSettings (persisted), which then
@@ -539,7 +688,11 @@ export default function OrderForm({
         </svg>
       </div>
 
-      {/* ── Side-by-side Sell / Buy price cards ─────────────────── */}
+      {/* ── Side-by-side Sell / Buy price cards ───────────────────
+          In ONE-CLICK mode these cards ARE the trade-fire button:
+          clicking Sell fires a SELL order with the current quantity,
+          clicking Buy fires a BUY. In regular mode they just toggle
+          the side selection for the bottom Confirm CTA. */}
       <div className="grid grid-cols-2 gap-2 mb-2">
         <SidePriceCard
           label="Sell"
@@ -548,7 +701,10 @@ export default function OrderForm({
           active={!sideIsBuy}
           tone="sell"
           C={C}
-          onClick={() => setSide('SELL')}
+          onClick={() => {
+            setSide('SELL');
+            if (isOneClick) submit(null, 'SELL');
+          }}
         />
         <SidePriceCard
           label="Buy"
@@ -557,7 +713,10 @@ export default function OrderForm({
           active={sideIsBuy}
           tone="buy"
           C={C}
-          onClick={() => setSide('BUY')}
+          onClick={() => {
+            setSide('BUY');
+            if (isOneClick) submit(null, 'BUY');
+          }}
         />
       </div>
 
@@ -706,15 +865,21 @@ export default function OrderForm({
             label="Take Profit"
             help="Auto-closes the position in profit when price reaches this level."
             C={C}
+            subtext={tpCaption}
           >
             <NumericRow
               C={C}
-              value={takeProfit}
-              onChange={setTakeProfit}
+              value={tpInput}
+              onChange={tpOnChange}
               onMinus={() => nudgePx(setTakeProfit, takeProfit, -1)}
               onPlus={()  => nudgePx(setTakeProfit, takeProfit,  1)}
-              placeholder="Not set"
+              placeholder={tpMode === 'price' ? 'Not set'
+                : tpMode === 'pips'           ? 'e.g. 50'
+                : tpMode === 'money'          ? 'e.g. 25.00'
+                : 'e.g. 0.5'}
               priceLabel
+              priceLabelMode={tpMode}
+              onPriceLabelChange={switchTpMode}
               unified
             />
           </FieldCard>
@@ -726,15 +891,21 @@ export default function OrderForm({
             label="Stop Loss"
             help="Caps the loss by auto-closing the position when price hits this level."
             C={C}
+            subtext={slCaption}
           >
             <NumericRow
               C={C}
-              value={stopLoss}
-              onChange={setStopLoss}
+              value={slInput}
+              onChange={slOnChange}
               onMinus={() => nudgePx(setStopLoss, stopLoss, -1)}
               onPlus={()  => nudgePx(setStopLoss, stopLoss,  1)}
-              placeholder="Not set"
+              placeholder={slMode === 'price' ? 'Not set'
+                : slMode === 'pips'           ? 'e.g. 30'
+                : slMode === 'money'          ? 'e.g. 15.00'
+                : 'e.g. 0.3'}
               priceLabel
+              priceLabelMode={slMode}
+              onPriceLabelChange={switchSlMode}
               unified
             />
           </FieldCard>
@@ -748,22 +919,26 @@ export default function OrderForm({
           </div>
         )}
 
-        {/* ── Primary CTA: Confirm Sell/Buy <qty> lots ───────────── */}
-        <button
-          type="submit"
-          disabled={loading || overBudget || !!limitInvalidReason}
-          className="w-full py-2.5 rounded font-medium text-[14px] text-white transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-          style={{ background: sideIsBuy ? C.buy : C.sell }}
-        >
-          {loading
-            ? 'Placing…'
-            : isOneClick
-              ? `Quick ${sideIsBuy ? 'Buy' : 'Sell'}${quantity ? ` ${quantity} lots` : ''}`
+        {/* ── Primary CTA: Confirm Sell/Buy <qty> lots ─────────────
+            Hidden in one-click mode — the top Sell/Buy price cards ARE
+            the fire-button there. */}
+        {!isOneClick && (
+          <button
+            type="submit"
+            disabled={loading || overBudget || !!limitInvalidReason}
+            className="w-full py-2.5 rounded font-medium text-[14px] text-white transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+            style={{ background: sideIsBuy ? C.buy : C.sell }}
+          >
+            {loading
+              ? 'Placing…'
               : `Confirm ${sideIsBuy ? 'Buy' : 'Sell'}${quantity ? ` ${quantity} lots` : ''}`}
-        </button>
+          </button>
+        )}
 
-        {/* ── Cancel button ──────────────────────────────────────── */}
-        {onClose && (
+        {/* ── Cancel button — same gating: one-click mode doesn't
+            need it since clicking outside the panel / closing it via
+            chevron does the same thing. */}
+        {!isOneClick && onClose && (
           <button
             type="button"
             onClick={onClose}
@@ -785,8 +960,16 @@ export default function OrderForm({
           <InfoRow
             C={C}
             label="Leverage"
-            value={`1:${leverage}`}
-            help={`Max for your plan: 1:${MAX_LEVERAGE_UI}.`}
+            value={leverage >= UNLIMITED_THRESHOLD ? 'Unlimited' : `1:${leverage}`}
+            help={
+              capSource === 'instrument'
+                ? `Instrument leverage: ${MAX_LEVERAGE_UI >= UNLIMITED_THRESHOLD ? 'Unlimited' : `1:${MAX_LEVERAGE_UI}`} (overrides account).`
+                : capSource === 'demo'
+                  ? 'Demo account · no leverage cap.'
+                  : capSource === 'account'
+                    ? `Account leverage: 1:${MAX_LEVERAGE_UI}.`
+                    : `System default: 1:${MAX_LEVERAGE_UI}.`
+            }
           />
           <InfoRow
             C={C}
@@ -813,92 +996,110 @@ export default function OrderForm({
                   Effective leverage cap from /user/leverage still
                   applies — values above it are clamped on input. */}
               <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-[12px]" style={{ color: C.dim }}>Leverage</span>
-                  <span className="inline-flex items-center gap-1 text-[12px] font-medium px-2 py-0.5 rounded-sm" style={{ background: C.cardBg, color: C.buy, border: `1px solid ${C.border}` }}>
-                    <span className="opacity-70">1:</span>
+                {/* ── Header row: label + current value + source pill ── */}
+                <div className="flex items-center justify-between gap-2 mb-2.5">
+                  <div className="flex items-baseline gap-2 min-w-0">
+                    <span className="text-[12px] font-medium" style={{ color: C.dim }}>Leverage</span>
                     {isUnlimited ? (
-                      <span className="font-bold tracking-wide">Unlimited</span>
+                      <span className="text-[15px] font-bold tracking-tight" style={{ color: C.buy }}>
+                        Unlimited
+                      </span>
                     ) : (
-                      <input
-                        type="number"
-                        min={1}
-                        max={MAX_LEVERAGE_UI}
-                        step={1}
-                        value={leverage}
-                        onChange={(e) => {
-                          const v = Number(e.target.value);
-                          if (Number.isFinite(v)) setLeverage(Math.max(1, Math.min(MAX_LEVERAGE_UI, Math.round(v))));
-                        }}
-                        onBlur={() => { if (!leverage || leverage < 1) setLeverage(1); }}
-                        className="w-14 bg-transparent text-right outline-none tabular-nums"
-                        style={{ color: C.buy }}
-                        aria-label="Leverage multiplier"
-                      />
+                      <span className="inline-flex items-baseline gap-1 text-[15px] font-bold tracking-tight" style={{ color: C.buy }}>
+                        <span className="opacity-60 text-[12px]">1:</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={MAX_LEVERAGE_UI}
+                          step={1}
+                          value={leverage}
+                          onChange={(e) => {
+                            const v = Number(e.target.value);
+                            if (Number.isFinite(v)) setLeverage(Math.max(1, Math.min(MAX_LEVERAGE_UI, Math.round(v))));
+                          }}
+                          onBlur={() => { if (!leverage || leverage < 1) setLeverage(1); }}
+                          className="w-12 bg-transparent outline-none tabular-nums font-bold"
+                          style={{ color: C.buy }}
+                          aria-label="Leverage multiplier"
+                        />
+                      </span>
                     )}
-                  </span>
+                  </div>
+                  {capSource === 'instrument' && (
+                    <span
+                      className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded shrink-0"
+                      style={{ background: 'rgba(245,158,11,0.12)', color: '#B45309' }}
+                      title="This instrument's cap overrides your account / plan."
+                    >
+                      Instrument
+                    </span>
+                  )}
+                  {capSource === 'demo' && (
+                    <span
+                      className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded shrink-0"
+                      style={{ background: 'rgba(16,185,129,0.12)', color: '#047857' }}
+                    >
+                      Demo
+                    </span>
+                  )}
                 </div>
-                <input
-                  type="range"
-                  min={1}
-                  max={SLIDER_VISUAL_MAX}
-                  value={Math.min(leverage, SLIDER_VISUAL_MAX)}
-                  onChange={(e) => setLeverage(Number(e.target.value))}
-                  className="w-full h-1.5"
-                  style={{ accentColor: C.buy }}
-                  disabled={isUnlimited}
-                />
-                <div className="flex justify-between text-[11px] mt-1" style={{ color: C.muted }}>
-                  <span>1×</span><span>{Math.round(SLIDER_VISUAL_MAX / 2)}×</span><span>{SLIDER_VISUAL_MAX}×</span>
-                </div>
-                {/* Quick-pick chips — 1 / 10 / 100 / 500 / 1000 / Unlimited */}
-                <div className="flex flex-wrap gap-1 mt-2">
-                  {[1, 10, 100, 500, 1000].map((v) => {
-                    const locked = v > MAX_LEVERAGE_UI;
-                    const active = leverage === v;
-                    return (
-                      <button
-                        key={v}
-                        type="button"
-                        disabled={locked}
-                        onClick={() => setLeverage(v)}
-                        className="text-[11px] font-bold px-2 py-0.5 rounded transition-colors"
-                        style={{
-                          background: active ? C.buy : C.cardBg,
-                          color: locked ? C.muted : (active ? '#FFFFFF' : C.text),
-                          border: `1px solid ${active ? C.buy : C.border}`,
-                          opacity: locked ? 0.4 : 1,
-                          cursor: locked ? 'not-allowed' : 'pointer',
-                        }}
-                      >
-                        1:{v}
-                      </button>
-                    );
-                  })}
-                  {/* Unlimited toggle — sets leverage to the system max.
-                      Locked when the effective cap is below unlimited
-                      (plan/admin cap forces a finite leverage). */}
+
+                {/* ── Slider — hidden when Unlimited (it's meaningless
+                    against an unbounded scale). Scale ticks compress to
+                    1× / mid / max. ── */}
+                {!isUnlimited && (
+                  <>
+                    <input
+                      type="range"
+                      min={1}
+                      max={SLIDER_VISUAL_MAX}
+                      value={Math.min(leverage, SLIDER_VISUAL_MAX)}
+                      onChange={(e) => setLeverage(Number(e.target.value))}
+                      className="w-full h-1.5"
+                      style={{ accentColor: C.buy }}
+                    />
+                    <div className="flex justify-between text-[10px] mt-0.5" style={{ color: C.muted }}>
+                      <span>1×</span><span>{Math.round(SLIDER_VISUAL_MAX / 2)}×</span><span>{SLIDER_VISUAL_MAX}×</span>
+                    </div>
+                  </>
+                )}
+
+                {/* ── Preset chip grid — uniform 3-column layout so all
+                    six picks (1:1 · 1:10 · 1:100 · 1:500 · 1:1000 ·
+                    1:Unlimited) align in two clean rows. ── */}
+                <div className="grid grid-cols-3 gap-1.5 mt-2.5">
                   {(() => {
                     const unlockedUnlimited = MAX_LEVERAGE_UI >= UNLIMITED_THRESHOLD;
-                    const locked = !unlockedUnlimited;
-                    return (
-                      <button
-                        type="button"
-                        disabled={locked}
-                        onClick={() => !locked && setLeverage(isUnlimited ? 100 : UNLIMITED_THRESHOLD)}
-                        className="text-[11px] font-bold px-2 py-0.5 rounded transition-colors"
-                        style={{
-                          background: isUnlimited ? C.buy : C.cardBg,
-                          color: locked ? C.muted : (isUnlimited ? '#FFFFFF' : C.text),
-                          border: `1px solid ${isUnlimited ? C.buy : C.border}`,
-                          opacity: locked ? 0.4 : 1,
-                          cursor: locked ? 'not-allowed' : 'pointer',
-                        }}
-                        title={locked ? `Capped at 1:${MAX_LEVERAGE_UI} by your plan` : undefined}
-                      >
-                        1:Unlimited
-                      </button>
-                    );
+                    const chips = [
+                      { label: '1:1',         value: 1,                     locked: false },
+                      { label: '1:10',        value: 10,                    locked: 10 > MAX_LEVERAGE_UI },
+                      { label: '1:100',       value: 100,                   locked: 100 > MAX_LEVERAGE_UI },
+                      { label: '1:500',       value: 500,                   locked: 500 > MAX_LEVERAGE_UI },
+                      { label: '1:1000',      value: 1000,                  locked: 1000 > MAX_LEVERAGE_UI },
+                      { label: 'Unlimited',   value: UNLIMITED_THRESHOLD,   locked: !unlockedUnlimited, isUnl: true },
+                    ];
+                    return chips.map((c) => {
+                      const active = c.isUnl ? isUnlimited : (!isUnlimited && leverage === c.value);
+                      return (
+                        <button
+                          key={c.label}
+                          type="button"
+                          disabled={c.locked}
+                          onClick={() => !c.locked && setLeverage(c.value)}
+                          className="text-[11px] font-bold py-1.5 rounded transition-all"
+                          style={{
+                            background: active ? C.buy : C.cardBg,
+                            color: c.locked ? C.muted : (active ? '#FFFFFF' : C.text),
+                            border: `1px solid ${active ? C.buy : C.border}`,
+                            opacity: c.locked ? 0.4 : 1,
+                            cursor: c.locked ? 'not-allowed' : 'pointer',
+                          }}
+                          title={c.locked ? `Capped at 1:${MAX_LEVERAGE_UI}` : undefined}
+                        >
+                          {c.label}
+                        </button>
+                      );
+                    });
                   })()}
                 </div>
               </div>
@@ -999,7 +1200,14 @@ function FieldCard({ label, help, error, subtext, C, children }) {
   );
 }
 
-function NumericRow({ value, onChange, onMinus, onPlus, placeholder, suffix, priceLabel, pill, unified, required, error, C }) {
+function NumericRow({
+  value, onChange, onMinus, onPlus, placeholder, suffix, priceLabel,
+  // priceLabelMode / onPriceLabelChange — when provided, the static
+  // "Price" pill becomes an interactive dropdown letting the user pick
+  // how the field is expressed (price / pips / money / % of equity).
+  priceLabelMode, onPriceLabelChange,
+  pill, unified, required, error, C,
+}) {
   // Unified variant — single bordered bar with internal vertical dividers
   // between the input, suffix, minus, and plus segments (Exness-style
   // volume selector). Used when `unified` is true, typically with a suffix
@@ -1037,11 +1245,12 @@ function NumericRow({ value, onChange, onMinus, onPlus, placeholder, suffix, pri
             {pill}
           </div>
         )}
-        {/* Price segment — e.g. TP/SL "Price" label */}
+        {/* Price segment — interactive dropdown when a mode is wired,
+            falls back to a plain "Price" label otherwise. */}
         {priceLabel && (
-          <div className="shrink-0 flex items-center px-2 text-[13px] font-medium" style={{ color: C.dim }}>
-            Price
-          </div>
+          onPriceLabelChange
+            ? <PriceModeDropdown C={C} mode={priceLabelMode || 'price'} onChange={onPriceLabelChange} />
+            : <div className="shrink-0 flex items-center px-2 text-[13px] font-medium" style={{ color: C.dim }}>Price</div>
         )}
         {/* Suffix segment — e.g. "Lots" */}
         {suffix && (
@@ -1118,6 +1327,123 @@ function NumericRow({ value, onChange, onMinus, onPlus, placeholder, suffix, pri
       <NudgeButton onClick={onPlus} aria-label="Increase" C={C}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="5" y1="12" x2="19" y2="12" /><line x1="12" y1="5" x2="12" y2="19" /></svg>
       </NudgeButton>
+    </div>
+  );
+}
+
+/**
+ * PriceModeDropdown — segment inside NumericRow that lets the user pick
+ * how a TP/SL field is expressed (price / pips / money / % of equity).
+ * Renders the current mode label + caret; clicking opens a floating
+ * menu. Closes on outside click or ESC.
+ */
+const PRICE_MODE_OPTIONS = [
+  { id: 'price',   label: 'By asset price' },
+  { id: 'pips',    label: 'In pips' },
+  { id: 'money',   label: 'In money' },
+  { id: 'percent', label: 'In % of equity' },
+];
+const PRICE_MODE_SHORT = {
+  price:   'Price',
+  pips:    'Pips',
+  money:   'Money',
+  percent: '% Eq.',
+};
+function PriceModeDropdown({ C, mode, onChange }) {
+  const [open, setOpen] = useState(false);
+  // Anchored coords for the fixed-position panel. We compute them from
+  // the trigger button's bounding rect each time we open the menu —
+  // necessary because the NumericRow parent has overflow-hidden (for
+  // its rounded corners) which would otherwise clip an absolutely-
+  // positioned dropdown.
+  const [coords, setCoords] = useState(null);
+  const ref = useRef(null);
+  const btnRef = useRef(null);
+
+  const computeCoords = () => {
+    const el = btnRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setCoords({ top: r.bottom + 4, right: window.innerWidth - r.right });
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    computeCoords();
+    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    const onReflow = () => computeCoords();
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', onReflow);
+    window.addEventListener('scroll', onReflow, true);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', onReflow);
+      window.removeEventListener('scroll', onReflow, true);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} className="shrink-0 flex items-stretch">
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex items-center gap-1 px-2 text-[13px] font-medium cursor-pointer transition-colors hover:bg-bg-hover/40"
+        style={{ color: C.dim }}
+      >
+        <span>{PRICE_MODE_SHORT[mode] || 'Price'}</span>
+        <svg
+          width="10"
+          height="10"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className={`transition-transform ${open ? 'rotate-180' : ''}`}
+          style={{ color: C.dim, opacity: 0.7 }}
+        >
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+      {open && coords && (
+        <div
+          className="fixed rounded-md shadow-elevated overflow-hidden z-[60]"
+          style={{
+            top: coords.top,
+            right: coords.right,
+            width: 140,
+            background: C.cardBg,
+            border: `1px solid ${C.border}`,
+            animation: 'pmdOpen 140ms ease-out',
+            boxShadow: '0 10px 30px rgba(15,23,42,0.18), 0 2px 6px rgba(15,23,42,0.08)',
+          }}
+        >
+          <style>{`@keyframes pmdOpen { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }`}</style>
+          {PRICE_MODE_OPTIONS.map((opt) => {
+            const active = opt.id === mode;
+            return (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => { onChange?.(opt.id); setOpen(false); }}
+                className="w-full text-left px-2.5 py-1.5 text-[12px] transition-colors hover:bg-bg-hover/40"
+                style={{
+                  color: active ? C.buy : C.text,
+                  background: active ? 'rgba(59,130,246,0.08)' : 'transparent',
+                  fontWeight: active ? 600 : 500,
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

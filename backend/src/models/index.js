@@ -3,7 +3,16 @@ const mongoose = require('mongoose');
 const depositSchema = new mongoose.Schema(
   {
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    accountId: { type: mongoose.Schema.Types.ObjectId, ref: 'TradingAccount', required: true },
+    // Target wallet:
+    //   'trading'      → credit the user's trading-account wallet (default; legacy behaviour)
+    //   'subscription' → credit the user's standalone Subscription Wallet
+    // The admin verification flow checks this field to route the credit.
+    targetWallet: { type: String, enum: ['trading', 'subscription'], default: 'trading', index: true },
+    // accountId is REQUIRED for trading-wallet deposits but ignored for
+    // subscription-wallet deposits (the Subscription Wallet is per-user,
+    // not per-account). We leave it optional at the schema level and
+    // gate it in the controller.
+    accountId: { type: mongoose.Schema.Types.ObjectId, ref: 'TradingAccount' },
     // What the user actually saw / paid in (e.g. INR via UPI). Admin
     // reconciles against this against the UPI/bank receipt. Wallet
     // credit, however, happens in the base currency (USD) — see

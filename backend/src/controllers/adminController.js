@@ -559,23 +559,37 @@ const confirmDeposit = asyncHandler(async (req, res) => {
   dep.confirmedAt = new Date();
   dep.confirmedBy = req.userId;
   await dep.save();
-  // Credit the canonical USD wallet. `baseAmount` was pre-computed at
-  // submit-time using the live FX rate; fallback to the original
-  // amount only when this is a legacy record without base fields.
+  // Credit amount — always in the base USD value pre-computed at submit.
   const creditCurrency = dep.baseCurrency || 'USD';
   const creditAmount = dep.baseAmount && Number(dep.baseAmount) > 0
     ? dep.baseAmount
     : dep.amount;
-  await walletService.credit({
-    userId: dep.userId,
-    accountId: dep.accountId,
-    currency: creditCurrency,
-    amount: creditAmount,
-    type: WALLET_TX_TYPE.DEPOSIT,
-    referenceType: 'deposit',
-    referenceId: dep._id,
-    note: `Deposit confirmed · ${dep.amount} ${dep.currency} @ ${dep.fxRateUsed || 1}`,
-  });
+
+  // Route the credit. Subscription-wallet deposits land in the
+  // user-level Subscription Wallet via its own service; trading-wallet
+  // deposits go through the classic walletService (per-account).
+  if (dep.targetWallet === 'subscription') {
+    const subscriptionWalletService = require('../services/subscriptionWalletService');
+    await subscriptionWalletService.credit({
+      userId: dep.userId,
+      amount: creditAmount,
+      reason: 'DEPOSIT',
+      paymentMethod: dep.method,
+      paymentRef: String(dep._id),
+      note: `Subscription wallet · ${dep.amount} ${dep.currency} confirmed by admin`,
+    });
+  } else {
+    await walletService.credit({
+      userId: dep.userId,
+      accountId: dep.accountId,
+      currency: creditCurrency,
+      amount: creditAmount,
+      type: WALLET_TX_TYPE.DEPOSIT,
+      referenceType: 'deposit',
+      referenceId: dep._id,
+      note: `Deposit confirmed · ${dep.amount} ${dep.currency} @ ${dep.fxRateUsed || 1}`,
+    });
+  }
   await logAction(req, 'DEPOSIT_CONFIRMED', { type: 'DEPOSIT', id: dep._id });
   // Push the credit to the user's open sessions so the wallet hero,
   // notification center, and dashboard balance update instantly
@@ -790,7 +804,10 @@ const getSystemSettings = asyncHandler(async (req, res) => {
  */
 const updateSystemSettings = asyncHandler(async (req, res) => {
   const systemSettings = require('../services/systemSettings.service');
-  const { routingMode, defaultLpProvider } = req.body;
+  const {
+    routingMode, defaultLpProvider,
+    userTransfer, // { enabled, min, max, feePercent }
+  } = req.body;
 
   // Validate intent before any writes — keeps the system in a consistent
   // state if either field is malformed.
@@ -808,6 +825,31 @@ const updateSystemSettings = asyncHandler(async (req, res) => {
         `defaultLpProvider must be one of ${Object.values(LP_PROVIDER).join(', ')}`,
         400
       );
+    }
+  }
+  // Peer-to-peer transfer knobs — light validation: amounts must be
+  // non-negative decimals, feePercent in [0, 100], enabled coerced to
+  // boolean. Bad input rejects the whole payload so partial writes
+  // can't leave the platform half-configured.
+  if (userTransfer !== undefined) {
+    const isNonNegNum = (v) => v !== undefined && Number.isFinite(Number(v)) && Number(v) >= 0;
+    if (userTransfer.min !== undefined && !isNonNegNum(userTransfer.min)) {
+      throw new AppError('userTransfer.min must be a non-negative number', 400);
+    }
+    if (userTransfer.max !== undefined && !isNonNegNum(userTransfer.max)) {
+      throw new AppError('userTransfer.max must be a non-negative number', 400);
+    }
+    if (userTransfer.feePercent !== undefined) {
+      const f = Number(userTransfer.feePercent);
+      if (!Number.isFinite(f) || f < 0 || f > 100) {
+        throw new AppError('userTransfer.feePercent must be between 0 and 100', 400);
+      }
+    }
+    if (userTransfer.min !== undefined && userTransfer.max !== undefined) {
+      const a = Number(userTransfer.min), b = Number(userTransfer.max);
+      if (b > 0 && a > b) {
+        throw new AppError('userTransfer.min cannot exceed userTransfer.max', 400);
+      }
     }
   }
 
@@ -829,13 +871,112 @@ const updateSystemSettings = asyncHandler(async (req, res) => {
 
   if (routingMode !== undefined) await systemSettings.setSetting('routingMode', routingMode, req.userId);
   if (defaultLpProvider !== undefined) await systemSettings.setSetting('defaultLpProvider', defaultLpProvider, req.userId);
+  if (userTransfer && typeof userTransfer === 'object') {
+    if (userTransfer.enabled    !== undefined) await systemSettings.setSetting('userTransfer.enabled',    !!userTransfer.enabled, req.userId);
+    if (userTransfer.min        !== undefined) await systemSettings.setSetting('userTransfer.min',        String(userTransfer.min), req.userId);
+    if (userTransfer.max        !== undefined) await systemSettings.setSetting('userTransfer.max',        String(userTransfer.max), req.userId);
+    if (userTransfer.feePercent !== undefined) await systemSettings.setSetting('userTransfer.feePercent', String(userTransfer.feePercent), req.userId);
+  }
 
   await logAction(req, 'SYSTEM_SETTINGS_UPDATE', { type: 'SYSTEM', id: null }, {
-    routingMode, defaultLpProvider,
+    routingMode, defaultLpProvider, userTransfer,
   });
 
   const fresh = await systemSettings.getAllSettings();
   sendSuccess(res, fresh);
+});
+
+/**
+ * GET /admin/transfers/user
+ * List all peer-to-peer wallet transfers. Pairs the OUT row with its
+ * IN row (same referenceId) and returns a flat record per transfer:
+ *
+ *   { referenceId, createdAt, currency, amount, fee, status,
+ *     from: { userId, name, email, accountId },
+ *     to:   { userId, name, email, accountId },
+ *     note }
+ *
+ * Pagination: ?limit=100&before=<iso-date>. Filters: ?fromUserId,
+ * ?toUserId, ?currency, ?minAmount, ?maxAmount, ?status.
+ *
+ * NOTE: "status" here is always 'COMPLETED' for paired rows; an
+ * unpaired OUT row (no matching IN) is surfaced as 'FAILED' so an
+ * on-call can spot stuck transfers and reconcile.
+ */
+const listUserTransfers = asyncHandler(async (req, res) => {
+  const { WalletLedger } = require('../models/Wallet');
+  const User = require('../models/User');
+  const { limit = 100, before, fromUserId, toUserId, currency, minAmount, maxAmount, status } = req.query;
+
+  const cap = Math.min(500, Math.max(1, Number(limit) || 100));
+  const filter = { type: 'INTERNAL_TRANSFER_OUT' };
+  if (currency) filter.currency = currency;
+  if (fromUserId) filter.userId = fromUserId;
+  if (before) filter.createdAt = { $lt: new Date(before) };
+
+  const outs = await WalletLedger.find(filter).sort({ createdAt: -1 }).limit(cap).lean();
+  const refIds = outs.map((o) => o.referenceId).filter(Boolean);
+  const ins = refIds.length
+    ? await WalletLedger.find({
+        type: 'INTERNAL_TRANSFER_IN',
+        referenceId: { $in: refIds },
+      }).lean()
+    : [];
+  const inByRef = new Map(ins.map((i) => [String(i.referenceId), i]));
+
+  const userIds = new Set();
+  for (const o of outs) userIds.add(String(o.userId));
+  for (const i of ins)  userIds.add(String(i.userId));
+  const users = userIds.size
+    ? await User.find({ _id: { $in: [...userIds] } }).select('_id firstName lastName email referralCode').lean()
+    : [];
+  const userById = new Map(users.map((u) => [String(u._id), u]));
+  const displayUser = (u) => u && ({
+    userId:       String(u._id),
+    name:         [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email,
+    email:        u.email,
+    referralCode: u.referralCode || null,
+  });
+
+  const rows = outs.map((o) => {
+    const inRow = inByRef.get(String(o.referenceId));
+    // OUT amount is signed-negative; the absolute value is the sender's
+    // debit total (gross amount + fee). The IN row carries the receiver
+    // credit (the net gross amount). The fee is the difference.
+    const outAbs = Math.abs(Number(o.amount));
+    const inAbs  = inRow ? Math.abs(Number(inRow.amount)) : null;
+    const fee    = inAbs != null ? Math.max(0, outAbs - inAbs) : 0;
+    const rowStatus = inRow ? 'COMPLETED' : 'FAILED';
+    return {
+      referenceId:  String(o.referenceId),
+      createdAt:    o.createdAt,
+      currency:     o.currency,
+      amount:       inAbs != null ? String(inAbs) : String(outAbs),
+      fee:          String(fee),
+      totalDebited: String(outAbs),
+      status:       rowStatus,
+      from: {
+        ...displayUser(userById.get(String(o.userId))),
+        accountId: String(o.accountId),
+      },
+      to: inRow ? {
+        ...displayUser(userById.get(String(inRow.userId))),
+        accountId: String(inRow.accountId),
+      } : null,
+      note: o.note || null,
+    };
+  });
+
+  // Optional post-filters (cheaper than threading them through the query).
+  const filtered = rows.filter((r) => {
+    if (toUserId && r.to?.userId !== String(toUserId)) return false;
+    if (status && r.status !== String(status).toUpperCase()) return false;
+    if (minAmount != null && Number(r.amount) < Number(minAmount)) return false;
+    if (maxAmount != null && Number(r.amount) > Number(maxAmount)) return false;
+    return true;
+  });
+
+  sendSuccess(res, filtered);
 });
 
 module.exports = {
@@ -865,4 +1006,5 @@ module.exports = {
   updateUserRiskControls,
   getSystemSettings,
   updateSystemSettings,
+  listUserTransfers,
 };

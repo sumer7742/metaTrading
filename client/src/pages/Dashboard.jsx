@@ -232,7 +232,10 @@ export default function Dashboard() {
         </div>
       </header>
 
-      {/* ── Equity hero card ─────────────────────────────────────── */}
+      {/* ── Premium Equity hero ──────────────────────────────────────
+          Single hero band: total equity on the left, three unique KPIs
+          on the right. Lifetime P&L moved out of here (it now lives in
+          the Performance stats block below) to avoid duplication. */}
       {(() => {
         const eq = fmtMoneyBoth(equity, primaryCur, fxRate);
         const bal = fmtMoneyBoth(liveBalance, primaryCur, fxRate);
@@ -240,29 +243,39 @@ export default function Dashboard() {
         const pct = equity > 0 ? (unrealized / equity) * 100 : 0;
         const pos = unrealized >= 0;
         return (
-          <div className="bg-white border border-border-dark rounded-2xl p-6 shadow-sm relative overflow-hidden">
-            {/* Soft blue glow top-right */}
-            <span className="pointer-events-none absolute -top-12 -right-12 w-48 h-48 rounded-full" style={{ background: 'radial-gradient(circle, rgba(59,130,246,0.12), transparent 70%)' }} />
+          <div
+            className="relative overflow-hidden rounded-3xl border border-border-dark shadow-sm p-6 sm:p-7"
+            style={{
+              background: 'linear-gradient(135deg, #FFFFFF 0%, #F8FAFF 60%, #EEF2FF 100%)',
+            }}
+          >
+            {/* Decorative glow + grid pattern */}
+            <span className="pointer-events-none absolute -top-20 -right-20 w-72 h-72 rounded-full opacity-60" style={{ background: 'radial-gradient(circle, rgba(59,130,246,0.16), transparent 70%)' }} />
+            <span className="pointer-events-none absolute -bottom-24 -left-12 w-56 h-56 rounded-full opacity-40" style={{ background: 'radial-gradient(circle, rgba(16,185,129,0.10), transparent 70%)' }} />
 
-            <div className="relative grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* Total equity */}
-              <div className="lg:col-span-2">
-                <div className="text-[10px] uppercase tracking-[0.2em] font-bold text-text-muted">Total Equity</div>
-                <div className="mt-1 flex items-baseline gap-3 flex-wrap">
-                  <div className="text-4xl sm:text-5xl font-bold font-mono tabular-nums text-text-primary leading-none">{eq.primary}</div>
+            <div className="relative grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* ─ Left: Equity headline ─ */}
+              <div className="lg:col-span-7">
+                <div className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.22em] font-extrabold text-text-muted">
+                  <span className="w-1 h-1 rounded-full bg-primary-500" />
+                  Total Equity
+                </div>
+                <div className="mt-1.5 flex items-baseline gap-3 flex-wrap">
+                  <div className="text-4xl sm:text-5xl font-extrabold font-mono tabular-nums text-text-primary leading-none tracking-tight">{eq.primary}</div>
                   {Math.abs(unrealized) > 0.005 && (
                     <span
-                      className="inline-flex items-center gap-1 text-sm font-bold font-mono px-2 py-1 rounded-lg"
+                      className="inline-flex items-center gap-1 text-sm font-bold font-mono px-2.5 py-1 rounded-full ring-1"
                       style={{
                         color: pos ? '#16A34A' : '#DC2626',
                         background: pos ? 'rgba(22,163,74,0.10)' : 'rgba(220,38,38,0.10)',
+                        boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.04)',
                       }}
                     >
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
                         {pos ? <path d="M6 15l6-6 6 6" /> : <path d="M6 9l6 6 6-6" />}
                       </svg>
                       {ur.primary}
-                      <span className="text-text-muted/80 font-normal">({pct >= 0 ? '+' : ''}{pct.toFixed(2)}%)</span>
+                      <span className="opacity-70 font-normal">({pct >= 0 ? '+' : ''}{pct.toFixed(2)}%)</span>
                     </span>
                   )}
                 </div>
@@ -270,13 +283,16 @@ export default function Dashboard() {
                   <div className="text-xs font-mono text-text-muted mt-2">{eq.secondary}</div>
                 )}
 
-                {/* Balance breakdown — primary currency + any non-primary wallets */}
-                <div className="mt-4 pt-4 border-t border-border-subtle flex items-center gap-4 flex-wrap text-[11px]">
-                  <span className="text-text-muted">Balance</span>
-                  <span className="font-mono font-semibold text-text-primary">{bal.primary}</span>
+                {/* Balance row */}
+                <div className="mt-5 flex items-center gap-3 flex-wrap text-[11px]">
+                  <span className="inline-flex items-center gap-1.5 text-text-muted">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="6" width="20" height="14" rx="2" /><path d="M2 10h20" /></svg>
+                    Balance
+                  </span>
+                  <span className="font-mono font-bold text-text-primary">{bal.primary}</span>
                   {bal.secondary && <span className="font-mono text-text-muted">({bal.secondary})</span>}
                   {Object.entries(liveByCur).filter(([c]) => c !== primaryCur).map(([c, t]) => (
-                    <span key={c} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-bg-hover font-mono text-text-secondary">
+                    <span key={c} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/80 border border-border-subtle font-mono text-text-secondary">
                       <span className="text-text-muted">{c}</span>
                       {currencySymbol(c)}{Math.round(Number(t.balance) || 0).toLocaleString()}
                     </span>
@@ -284,22 +300,27 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* Mini metrics — won't overflow because hero card is wide */}
-              <div className="grid grid-cols-2 gap-3">
-                <MiniStat label="Open" value={positions.length} accent="primary" />
-                <MiniStat
+              {/* ─ Right: 3 unique KPIs (de-duplicated) ─
+                  Lifetime P&L was here; it lives in the Performance
+                  block below now. We keep only the metrics that aren't
+                  shown elsewhere on this page. */}
+              <div className="lg:col-span-5 grid grid-cols-3 gap-3">
+                <HeroKpi
+                  label="Open"
+                  value={positions.length}
+                  caption="Positions"
+                  accent="primary"
+                />
+                <HeroKpi
                   label="Today"
                   value={fmtMoney(todayPnl, primaryCur)}
+                  caption={todayPnl >= 0 ? 'Realised gain' : 'Realised loss'}
                   accent={todayPnl > 0 ? 'bull' : todayPnl < 0 ? 'bear' : 'neutral'}
                 />
-                <MiniStat
-                  label="Lifetime"
-                  value={fmtMoney(lifetimePnl, primaryCur)}
-                  accent={lifetimePnl > 0 ? 'bull' : lifetimePnl < 0 ? 'bear' : 'neutral'}
-                />
-                <MiniStat
+                <HeroKpi
                   label="Win Rate"
-                  value={winRate == null ? '—' : `${winRate.toFixed(1)}%`}
+                  value={winRate == null ? '—' : `${winRate.toFixed(0)}%`}
+                  caption="All time"
                   accent={winRate == null ? 'neutral' : winRate >= 50 ? 'bull' : 'bear'}
                 />
               </div>
@@ -308,17 +329,27 @@ export default function Dashboard() {
         );
       })()}
 
+      {/* ── Lifetime portfolio stats block — filter-aware ───────────── */}
+      <PortfolioStats />
+
+      {/* ── Monthly time-series chart ───────────────────────────────── */}
+      <PortfolioChart />
+
+
       {/* ── Main grid: positions table (left) + allocation + accounts (right) ── */}
       <div className="grid grid-cols-12 gap-5">
         {/* ── Open positions — premium card grid ─────────────────── */}
         <section className="col-span-12 lg:col-span-8 space-y-3">
           {/* Section header */}
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <h2 className="text-base font-bold text-text-primary">Open Positions</h2>
-              <span className="inline-flex items-center justify-center min-w-[24px] h-[20px] px-1.5 rounded-full bg-primary-500/10 text-primary-600 text-[10px] font-bold">
-                {livePositions.length}
-              </span>
+          <div className="flex items-end justify-between gap-2 px-1">
+            <div>
+              <div className="text-[10px] uppercase tracking-[0.18em] font-extrabold text-text-muted">Live</div>
+              <div className="flex items-center gap-2 mt-0.5">
+                <h2 className="text-base font-bold text-text-primary tracking-tight">Open positions</h2>
+                <span className="inline-flex items-center justify-center min-w-[22px] h-[18px] px-1.5 rounded-full bg-primary-500/10 text-primary-600 text-[10px] font-bold">
+                  {livePositions.length}
+                </span>
+              </div>
             </div>
             <Link to="/trade" className="text-xs font-semibold text-primary-600 hover:underline">Manage →</Link>
           </div>
@@ -362,7 +393,8 @@ export default function Dashboard() {
           {/* Allocation breakdown */}
           <div className="bg-white border border-border-dark rounded-2xl overflow-hidden shadow-sm">
             <div className="px-5 py-3.5 border-b border-border-subtle">
-              <h3 className="text-sm font-bold text-text-primary">Allocation</h3>
+              <div className="text-[10px] uppercase tracking-[0.18em] font-extrabold text-text-muted">Exposure</div>
+              <h3 className="text-sm font-bold text-text-primary mt-0.5">Allocation</h3>
               <p className="text-[11px] text-text-muted mt-0.5">By asset class</p>
             </div>
             <div className="p-5">
@@ -412,7 +444,10 @@ export default function Dashboard() {
           {/* Account split */}
           <div className="bg-white border border-border-dark rounded-2xl overflow-hidden shadow-sm">
             <div className="px-5 py-3.5 border-b border-border-subtle flex items-center justify-between">
-              <h3 className="text-sm font-bold text-text-primary">Accounts</h3>
+              <div>
+                <div className="text-[10px] uppercase tracking-[0.18em] font-extrabold text-text-muted">Wallet</div>
+                <h3 className="text-sm font-bold text-text-primary mt-0.5">Accounts</h3>
+              </div>
               <Link to="/wallet" className="text-[11px] font-semibold text-primary-600 hover:underline">Manage →</Link>
             </div>
             <div className="grid grid-cols-2 divide-x divide-border-subtle">
@@ -427,28 +462,21 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Trades breakdown — winning/losing/open compact */}
-          <div className="bg-white border border-border-dark rounded-2xl overflow-hidden shadow-sm">
-            <div className="px-5 py-3.5 border-b border-border-subtle">
-              <h3 className="text-sm font-bold text-text-primary">Trades</h3>
-              <p className="text-[11px] text-text-muted mt-0.5">Live account · all-time</p>
-            </div>
-            <div className="p-3 space-y-1">
-              <TradeBreakdownRow label="Winning" value={data.trades.winningLive} today={data.trades.winningLiveToday} tone="bull" />
-              <TradeBreakdownRow label="Losing" value={data.trades.losingLive} today={data.trades.losingLiveToday} tone="bear" />
-              <TradeBreakdownRow label="Closed" value={data.trades.closedLive} today={data.trades.closedLiveToday} tone="neutral" />
-              <TradeBreakdownRow label="Open" value={data.trades.openLive} tone="primary" />
-            </div>
-          </div>
+          {/* "Trades" breakdown card removed — its 4 rows (Winning /
+              Losing / Closed / Open) were exact duplicates of the
+              Lifetime stats block above. */}
         </aside>
       </div>
 
       {/* ── Recent activity (full-width row) ──────────────────────── */}
       <section className="bg-white border border-border-dark rounded-2xl overflow-hidden shadow-sm">
         <div className="px-5 py-3.5 border-b border-border-subtle flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-bull animate-pulse" />
-            <h2 className="text-base font-bold text-text-primary">Recent Activity</h2>
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.18em] font-extrabold text-text-muted">Live</div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-bull animate-pulse" />
+              <h2 className="text-sm font-bold text-text-primary">Recent activity</h2>
+            </div>
           </div>
           <Link to="/reports" className="text-xs font-semibold text-primary-600 hover:underline">View all →</Link>
         </div>
@@ -606,6 +634,695 @@ function PositionCard({ p }) {
 }
 
 // ─── Component helpers ───────────────────────────────────────────────
+
+/**
+ * PortfolioStats — filterable stats card. Two dropdown filters at the
+ * top: time-window (Lifetime / 7 / 30 / 90 / 365 days) and account
+ * (All accounts / pick one). Refetches /user/dashboard/lifetime-stats
+ * whenever a filter changes.
+ */
+const TIME_RANGES = [
+  { id: 0,   label: 'Lifetime' },
+  { id: 7,   label: 'Last 7 days' },
+  { id: 30,  label: 'Last 30 days' },
+  { id: 90,  label: 'Last 90 days' },
+  { id: 365, label: 'Last year' },
+];
+
+function PortfolioStats() {
+  const [accounts, setAccounts] = useState([]);
+  const [days, setDays] = useState(0);
+  const [accountId, setAccountId] = useState(''); // '' = All
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  // Load account list once for the dropdown.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await api.get('/user/accounts');
+        if (!cancelled) setAccounts(r.data.data || []);
+      } catch { /* non-fatal */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Fetch filtered stats whenever the filters change.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      try {
+        const params = new URLSearchParams();
+        if (days)       params.set('days', String(days));
+        if (accountId)  params.set('accountId', accountId);
+        const r = await api.get(`/user/dashboard/lifetime-stats?${params.toString()}`);
+        if (!cancelled) setStats(r.data.data);
+      } catch { /* non-fatal — keep previous numbers */ }
+      finally { if (!cancelled) setLoading(false); }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [days, accountId]);
+
+  const sign = (n) => (n > 0 ? '+' : '') + n.toFixed(2);
+  const toneOf = (n) => n > 0 ? 'bull' : n < 0 ? 'bear' : 'neutral';
+  const num = (k) => Number(stats?.[k] || 0);
+
+  const netProfit     = num('netProfit');
+  const profit        = num('profit');
+  const loss          = num('loss');
+  const unrealized    = num('unrealizedPnl');
+  const closedOrders  = Number(stats?.closedOrders || 0);
+  const profitable    = Number(stats?.profitable   || 0);
+  const unprofitable  = Number(stats?.unprofitable || 0);
+  const tradingVolume = num('tradingVolume');
+  const lossDisp      = Math.abs(loss);
+
+  // 8 cells (Net profit emphasised). "Lifetime" row removed — was a
+  // verbatim duplicate of Net profit when no date filter is set.
+  const rows = [
+    { label: 'Net profit',     value: `${sign(netProfit)} USD`,            tone: toneOf(netProfit),  emphasis: true },
+    { label: 'Profit',         value: `+${profit.toFixed(2)} USD`,         tone: 'bull' },
+    { label: 'Loss',           value: `-${lossDisp.toFixed(2)} USD`,       tone: 'bear' },
+    { label: 'Unrealised P/L', value: `${sign(unrealized)} USD`,           tone: toneOf(unrealized) },
+    { label: 'Closed orders',  value: closedOrders.toLocaleString() },
+    { label: 'Profitable',     value: profitable.toLocaleString(),         tone: 'bull' },
+    { label: 'Unprofitable',   value: unprofitable.toLocaleString(),       tone: 'bear' },
+    { label: 'Trading volume', value: `${tradingVolume.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD` },
+  ];
+
+  return (
+    <section className="rounded-2xl border border-border-dark bg-white p-5 sm:p-6 shadow-sm">
+      <div className="flex items-center justify-between gap-3 mb-5 flex-wrap">
+        <div className="min-w-0">
+          <div className="text-[10px] uppercase tracking-[0.18em] font-extrabold text-text-muted">Performance</div>
+          <h2 className="text-base font-bold text-text-primary tracking-tight mt-0.5">Trading summary</h2>
+          <span className="text-[11px] text-text-muted">
+            {loading ? 'Loading…' : 'Filter the window or pick an account to drill down'}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={days}
+            onChange={(e) => setDays(Number(e.target.value))}
+            className="text-xs font-semibold rounded-lg border border-border-dark bg-white px-2.5 py-1.5 focus:outline-none focus:border-primary-500"
+          >
+            {TIME_RANGES.map((r) => (
+              <option key={r.id} value={r.id}>{r.label}</option>
+            ))}
+          </select>
+          <select
+            value={accountId}
+            onChange={(e) => setAccountId(e.target.value)}
+            className="text-xs font-semibold rounded-lg border border-border-dark bg-white px-2.5 py-1.5 focus:outline-none focus:border-primary-500 max-w-[180px]"
+          >
+            <option value="">All accounts</option>
+            {accounts.map((a) => (
+              <option key={a._id} value={a._id}>
+                {a.nickname || a.accountNumber} · {a.baseCurrency || 'USD'}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-4">
+        {rows.map((r) => (
+          <StatCell key={r.label} {...r} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * PortfolioChart — premium Exness-style analytics card with:
+ *   • Segmented metric tabs    (Net profit · Closed orders · Trading volume · Equity)
+ *   • Timeframe selector       (1D · 1W · 1M · 3M · 1Y · ALL)
+ *   • Different chart per tab  (area, bars, histogram, smooth curve)
+ *   • Gradient area fills, smooth Bézier curves, hover tooltip
+ *   • Empty state + loading state
+ *
+ * Self-fetches /user/dashboard/monthly-series with the chosen `range`
+ * param so bucket granularity adapts (hourly / daily / weekly / monthly).
+ */
+const CHART_TABS = [
+  { id: 'netProfit',     label: 'Net profit',     type: 'area' },
+  { id: 'closedOrders',  label: 'Closed orders',  type: 'bar' },
+  { id: 'tradingVolume', label: 'Trading volume', type: 'histogram' },
+  { id: 'equity',        label: 'Equity',         type: 'curve' },
+];
+
+const TIMEFRAMES = [
+  { id: '1d',  label: '1D' },
+  { id: '1w',  label: '1W' },
+  { id: '1m',  label: '1M' },
+  { id: '3m',  label: '3M' },
+  { id: '1y',  label: '1Y' },
+  { id: 'all', label: 'ALL' },
+];
+
+function PortfolioChart({ accountId }) {
+  const [buckets, setBuckets] = useState([]);
+  const [tab, setTab] = useState('netProfit');
+  const [range, setRange] = useState('1y');
+  const [loading, setLoading] = useState(false);
+  const [hoverIdx, setHoverIdx] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const params = new URLSearchParams({ range });
+        if (accountId) params.set('accountId', accountId);
+        const r = await api.get(`/user/dashboard/monthly-series?${params.toString()}`);
+        if (!cancelled) setBuckets(r.data.data?.buckets || []);
+      } catch { /* keep previous */ }
+      finally { if (!cancelled) setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [accountId, range]);
+
+  const activeTab = CHART_TABS.find((t) => t.id === tab) || CHART_TABS[0];
+
+  // Y-axis bounds per chart type. Area/curve modes always render the
+  // continuous value (netProfit/equity) and want a symmetric scale around
+  // zero when crossing it. Bar/histogram modes use only the active metric.
+  const { yMax, yMin, ticks } = useMemo(() => {
+    if (!buckets.length) return { yMax: 4, yMin: 0, ticks: [0, 1, 2, 3, 4] };
+    const vals = buckets.map((b) => Number(b[tab] || 0));
+    const minV = Math.min(0, ...vals);
+    const maxV = Math.max(0, ...vals);
+    const span = Math.max(Math.abs(minV), Math.abs(maxV), 4);
+    const tickStep = niceStep(span / 4);
+    const top = Math.ceil(span / tickStep) * tickStep;
+    if (minV < 0) {
+      // Symmetric scale
+      return {
+        yMax: top, yMin: -top,
+        ticks: [-top, -top / 2, 0, top / 2, top],
+      };
+    }
+    return {
+      yMax: top, yMin: 0,
+      ticks: [0, top / 4, top / 2, (3 * top) / 4, top],
+    };
+  }, [buckets, tab]);
+
+  // SVG geometry
+  const W = 920, H = 300;
+  const PAD = { top: 18, right: 28, bottom: 32, left: 44 };
+  const innerW = W - PAD.left - PAD.right;
+  const innerH = H - PAD.top - PAD.bottom;
+  const n = Math.max(1, buckets.length);
+  const slot = innerW / n;
+  const barW = Math.min(22, slot * 0.55);
+  const yRange = yMax - yMin;
+  const yOf = (v) => PAD.top + innerH * (1 - (v - yMin) / yRange);
+  const cxOf = (i) => PAD.left + slot * i + slot / 2;
+
+  // Headline value for the active tab.
+  const headline = useMemo(() => {
+    if (!buckets.length) return null;
+    if (tab === 'equity') {
+      const last = buckets[buckets.length - 1]?.equity ?? 0;
+      return { value: last, fmt: 'usd', tone: last >= 0 ? 'bull' : 'bear' };
+    }
+    if (tab === 'closedOrders') {
+      const total = buckets.reduce((s, b) => s + Number(b.closedOrders || 0), 0);
+      return { value: total, fmt: 'int', tone: 'neutral' };
+    }
+    if (tab === 'tradingVolume') {
+      const total = buckets.reduce((s, b) => s + Number(b.tradingVolume || 0), 0);
+      return { value: total, fmt: 'usd', tone: 'neutral' };
+    }
+    const total = buckets.reduce((s, b) => s + Number(b.netProfit || 0), 0);
+    return { value: total, fmt: 'usd', tone: total >= 0 ? 'bull' : 'bear' };
+  }, [buckets, tab]);
+
+  const fmtHeadline = (h) => {
+    if (!h) return '—';
+    if (h.fmt === 'int') return h.value.toLocaleString();
+    return `${h.value >= 0 ? '' : '-'}$${Math.abs(h.value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  const hovered = hoverIdx != null ? buckets[hoverIdx] : null;
+
+  // Smooth Bézier path through the data points (used by area + curve).
+  const smoothPath = useMemo(() => {
+    if (!buckets.length) return '';
+    const pts = buckets.map((b, i) => ({ x: cxOf(i), y: yOf(Number(b[tab] || 0)) }));
+    return smoothPathFromPoints(pts);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buckets, tab, yMax, yMin]);
+
+  const areaPath = useMemo(() => {
+    if (!smoothPath || !buckets.length) return '';
+    const lastX = cxOf(buckets.length - 1);
+    const firstX = cxOf(0);
+    const baseY = yOf(yMin < 0 ? 0 : yMin);
+    return `${smoothPath} L ${lastX} ${baseY} L ${firstX} ${baseY} Z`;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [smoothPath, buckets, yMin, yMax]);
+
+  const totalNonZero = buckets.length > 0 && buckets.some((b) => Number(b[tab] || 0) !== 0);
+
+  return (
+    <section className="rounded-2xl border border-border-dark bg-white p-5 sm:p-6 shadow-sm">
+      <style>{`
+        @keyframes pcFade {
+          from { opacity: 0; transform: translateY(4px); }
+          to   { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes pcDraw {
+          from { stroke-dashoffset: 1400; }
+          to   { stroke-dashoffset: 0; }
+        }
+      `}</style>
+
+      {/* ── Header: eyebrow + segmented metric tabs + timeframe ── */}
+      <div className="space-y-4">
+        <div className="flex items-end justify-between gap-3 flex-wrap">
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.18em] font-extrabold text-text-muted">Analytics</div>
+            <div className={`text-2xl font-extrabold tabular-nums mt-1 ${
+              headline?.tone === 'bull' ? 'text-bull' : headline?.tone === 'bear' ? 'text-bear' : 'text-text-primary'
+            }`}>
+              {fmtHeadline(headline)}
+            </div>
+            <div className="text-[11px] text-text-muted mt-0.5">{activeTab.label} · {TIMEFRAMES.find((t) => t.id === range)?.label || '—'}</div>
+          </div>
+
+          {/* Timeframe pill row — Exness-style segmented */}
+          <div className="inline-flex p-1 rounded-xl bg-bg-hover/60 border border-border-subtle">
+            {TIMEFRAMES.map((t) => {
+              const active = t.id === range;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setRange(t.id)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold tracking-wide transition-all ${
+                    active
+                      ? 'bg-white text-text-primary shadow-sm'
+                      : 'text-text-muted hover:text-text-secondary'
+                  }`}
+                >
+                  {t.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Metric tabs — segmented control with sliding active state */}
+        <div className="inline-flex p-1 rounded-xl bg-bg-hover/60 border border-border-subtle w-full sm:w-auto overflow-x-auto">
+          {CHART_TABS.map((t) => {
+            const active = tab === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTab(t.id)}
+                className={`px-3.5 py-1.5 rounded-lg text-[12px] font-semibold whitespace-nowrap transition-all ${
+                  active
+                    ? 'bg-white text-text-primary shadow-sm'
+                    : 'text-text-muted hover:text-text-secondary'
+                }`}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── SVG chart ── */}
+      <div className="relative w-full overflow-x-auto mt-4">
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[680px] h-[300px]" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="pcAreaGreen" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%"  stopColor="#16A34A" stopOpacity="0.32" />
+              <stop offset="100%" stopColor="#16A34A" stopOpacity="0.02" />
+            </linearGradient>
+            <linearGradient id="pcAreaRed" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%"  stopColor="#EF4444" stopOpacity="0.28" />
+              <stop offset="100%" stopColor="#EF4444" stopOpacity="0.02" />
+            </linearGradient>
+            <linearGradient id="pcAreaBlue" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%"  stopColor="#3B82F6" stopOpacity="0.28" />
+              <stop offset="100%" stopColor="#3B82F6" stopOpacity="0.02" />
+            </linearGradient>
+            <linearGradient id="pcBarBlue" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%"  stopColor="#3B82F6" />
+              <stop offset="100%" stopColor="#2563EB" />
+            </linearGradient>
+          </defs>
+
+          {/* Grid lines + Y labels */}
+          {ticks.map((v, i) => {
+            const y = yOf(v);
+            const isZero = Math.abs(v) < 1e-9;
+            return (
+              <g key={i}>
+                <line
+                  x1={PAD.left}
+                  x2={W - PAD.right}
+                  y1={y}
+                  y2={y}
+                  stroke={isZero ? '#CBD5E1' : '#F1F5F9'}
+                  strokeWidth="1"
+                  strokeDasharray={isZero ? '0' : '4 4'}
+                />
+                <text
+                  x={PAD.left - 10}
+                  y={y + 4}
+                  textAnchor="end"
+                  fill="#94A3B8"
+                  style={{ fontSize: '10.5px', fontWeight: 500, fontFamily: 'Inter, sans-serif' }}
+                >
+                  {fmtAxis(v)}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Chart body — type per tab */}
+          {totalNonZero && activeTab.type === 'area' && (
+            <g style={{ animation: 'pcFade 240ms ease-out' }}>
+              <path d={areaPath} fill={
+                (headline?.value ?? 0) >= 0 ? 'url(#pcAreaGreen)' : 'url(#pcAreaRed)'
+              } />
+              <path
+                d={smoothPath}
+                fill="none"
+                stroke={(headline?.value ?? 0) >= 0 ? '#16A34A' : '#EF4444'}
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ strokeDasharray: 1400, animation: 'pcDraw 700ms ease-out forwards' }}
+              />
+            </g>
+          )}
+
+          {totalNonZero && activeTab.type === 'curve' && (
+            <g style={{ animation: 'pcFade 240ms ease-out' }}>
+              <path d={areaPath} fill="url(#pcAreaBlue)" />
+              <path
+                d={smoothPath}
+                fill="none"
+                stroke="#3B82F6"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                style={{ strokeDasharray: 1400, animation: 'pcDraw 700ms ease-out forwards' }}
+              />
+            </g>
+          )}
+
+          {totalNonZero && activeTab.type === 'bar' && (
+            <g style={{ animation: 'pcFade 240ms ease-out' }}>
+              {buckets.map((b, i) => {
+                const v = Number(b[tab] || 0);
+                if (!v) return null;
+                const y = yOf(v);
+                const y0 = yOf(0);
+                const isHovered = hoverIdx === i;
+                return (
+                  <rect
+                    key={b.key}
+                    x={cxOf(i) - barW / 2}
+                    y={Math.min(y, y0)}
+                    width={barW}
+                    height={Math.max(2, Math.abs(y0 - y))}
+                    fill="url(#pcBarBlue)"
+                    rx="3"
+                    style={{
+                      opacity: hoverIdx == null || isHovered ? 1 : 0.4,
+                      transition: 'opacity 140ms ease',
+                    }}
+                  />
+                );
+              })}
+            </g>
+          )}
+
+          {totalNonZero && activeTab.type === 'histogram' && (
+            <g style={{ animation: 'pcFade 240ms ease-out' }}>
+              {buckets.map((b, i) => {
+                const v = Number(b[tab] || 0);
+                if (!v) return null;
+                const y = yOf(v);
+                const y0 = yOf(0);
+                // Histogram tinted by the bucket's net P&L direction:
+                // green-leaning months get green volume, losing months red.
+                const fill = (b.netProfit || 0) >= 0 ? '#16A34A' : '#EF4444';
+                const isHovered = hoverIdx === i;
+                return (
+                  <rect
+                    key={b.key}
+                    x={cxOf(i) - barW / 2}
+                    y={Math.min(y, y0)}
+                    width={barW}
+                    height={Math.max(2, Math.abs(y0 - y))}
+                    fill={fill}
+                    rx="3"
+                    style={{
+                      opacity: hoverIdx == null || isHovered ? 0.92 : 0.4,
+                      transition: 'opacity 140ms ease',
+                    }}
+                  />
+                );
+              })}
+            </g>
+          )}
+
+          {/* Zero baseline (only when scale crosses zero) */}
+          {yMin < 0 && (
+            <line
+              x1={PAD.left}
+              x2={W - PAD.right}
+              y1={yOf(0)}
+              y2={yOf(0)}
+              stroke="#CBD5E1"
+              strokeWidth="1"
+            />
+          )}
+
+          {/* Hover vertical guide line + dot */}
+          {hoverIdx != null && hovered && (
+            <g pointerEvents="none">
+              <line
+                x1={cxOf(hoverIdx)}
+                x2={cxOf(hoverIdx)}
+                y1={PAD.top}
+                y2={H - PAD.bottom}
+                stroke="#CBD5E1"
+                strokeDasharray="3 4"
+                strokeWidth="1"
+              />
+              {(activeTab.type === 'area' || activeTab.type === 'curve') && (
+                <>
+                  <circle
+                    cx={cxOf(hoverIdx)}
+                    cy={yOf(Number(hovered[tab] || 0))}
+                    r="6"
+                    fill="#FFFFFF"
+                    stroke={
+                      activeTab.type === 'curve'
+                        ? '#3B82F6'
+                        : (headline?.value ?? 0) >= 0 ? '#16A34A' : '#EF4444'
+                    }
+                    strokeWidth="2"
+                  />
+                </>
+              )}
+            </g>
+          )}
+
+          {/* X-axis labels */}
+          {buckets.map((b, i) => {
+            const stride = buckets.length <= 8 ? 1 : buckets.length <= 14 ? 2 : Math.ceil(buckets.length / 8);
+            if (i % stride !== 0 && i !== buckets.length - 1) return null;
+            const isHovered = hoverIdx === i;
+            return (
+              <text
+                key={b.key}
+                x={cxOf(i)}
+                y={H - PAD.bottom + 18}
+                textAnchor="middle"
+                fill={isHovered ? '#0F172A' : '#94A3B8'}
+                style={{ fontSize: '10.5px', fontWeight: isHovered ? 700 : 500, fontFamily: 'Inter, sans-serif' }}
+              >
+                {b.label}
+              </text>
+            );
+          })}
+
+          {/* Hit areas — invisible columns covering each bucket */}
+          {buckets.map((b, i) => (
+            <rect
+              key={`hit-${b.key}`}
+              x={PAD.left + slot * i}
+              y={PAD.top}
+              width={slot}
+              height={innerH}
+              fill="transparent"
+              onMouseEnter={() => setHoverIdx(i)}
+              onMouseLeave={() => setHoverIdx(null)}
+              style={{ cursor: 'pointer' }}
+            />
+          ))}
+        </svg>
+
+        {/* Tooltip — floating card anchored to the hovered column */}
+        {hovered && (
+          <div
+            className="absolute pointer-events-none"
+            style={{
+              left: `${(cxOf(hoverIdx) / W) * 100}%`,
+              top: '8px',
+              transform: hoverIdx > buckets.length / 2 ? 'translateX(-105%)' : 'translateX(5%)',
+            }}
+          >
+            <div
+              className="rounded-xl border border-border-subtle bg-white shadow-elevated px-3 py-2.5 text-[11px] min-w-[160px]"
+              style={{ animation: 'pcFade 140ms ease-out' }}
+            >
+              <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted">{hovered.label}</div>
+              {tab === 'netProfit' ? (
+                <div className="mt-1.5 space-y-1">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-text-secondary">Profit</span>
+                    <span className="font-mono font-bold text-bull tabular-nums">+${hovered.profit.toFixed(2)}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-text-secondary">Loss</span>
+                    <span className="font-mono font-bold text-bear tabular-nums">${hovered.loss.toFixed(2)}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 pt-1 border-t border-border-subtle">
+                    <span className="font-semibold text-text-primary">Net</span>
+                    <span className={`font-mono font-extrabold tabular-nums ${hovered.netProfit >= 0 ? 'text-bull' : 'text-bear'}`}>
+                      {hovered.netProfit >= 0 ? '+' : ''}${hovered.netProfit.toFixed(2)}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-1.5 flex items-center justify-between gap-3">
+                  <span className="text-text-secondary">{activeTab.label}</span>
+                  <span className="font-mono font-extrabold text-text-primary tabular-nums">
+                    {tab === 'closedOrders'
+                      ? hovered.closedOrders.toLocaleString()
+                      : `$${Number(hovered[tab] || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                  </span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* States */}
+        {loading && buckets.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-text-muted">Loading…</div>
+        )}
+        {!loading && buckets.length > 0 && !totalNonZero && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="text-xs text-text-muted bg-white/85 backdrop-blur-sm px-3.5 py-2 rounded-lg border border-border-subtle shadow-sm">
+              No data for this window — try a longer timeframe or another metric.
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+// Smooth path through points using cubic Bézier with Catmull-Rom control
+// points. Produces TradingView-style soft curves without sharp corners.
+function smoothPathFromPoints(pts) {
+  if (!pts.length) return '';
+  if (pts.length === 1) return `M ${pts[0].x} ${pts[0].y}`;
+  let d = `M ${pts[0].x} ${pts[0].y}`;
+  const tension = 0.5;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2] || p2;
+    const cp1x = p1.x + ((p2.x - p0.x) / 6) * tension * 2;
+    const cp1y = p1.y + ((p2.y - p0.y) / 6) * tension * 2;
+    const cp2x = p2.x - ((p3.x - p1.x) / 6) * tension * 2;
+    const cp2y = p2.y - ((p3.y - p1.y) / 6) * tension * 2;
+    d += ` C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${p2.x} ${p2.y}`;
+  }
+  return d;
+}
+
+// Pick a "nice" axis step (1, 2, 5, 10, 20, 50, …) given a raw target.
+function niceStep(raw) {
+  if (raw <= 0) return 1;
+  const exp = Math.floor(Math.log10(raw));
+  const base = Math.pow(10, exp);
+  const m = raw / base;
+  let nice;
+  if (m <= 1) nice = 1;
+  else if (m <= 2) nice = 2;
+  else if (m <= 5) nice = 5;
+  else nice = 10;
+  return nice * base;
+}
+
+function fmtAxis(n) {
+  const abs = Math.abs(n);
+  if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(abs >= 10_000_000 ? 0 : 1)}M`;
+  if (abs >= 1_000)     return `${(n / 1_000).toFixed(abs >= 10_000 ? 0 : 1)}k`;
+  if (Number.isInteger(n)) return String(n);
+  return n.toFixed(1);
+}
+
+/**
+ * HeroKpi — premium glassmorphism KPI tile used inside the Equity hero.
+ * Bigger and more polished than the legacy MiniStat (which is now only
+ * used by the older sections).
+ */
+function HeroKpi({ label, value, caption, accent }) {
+  const palette = accent === 'bull' ? '#16A34A'
+    : accent === 'bear' ? '#DC2626'
+    : accent === 'primary' ? '#3B82F6'
+    : '#0F172A';
+  return (
+    <div
+      className="relative rounded-2xl p-3.5 sm:p-4 border border-white/70 backdrop-blur-sm"
+      style={{ background: 'rgba(255,255,255,0.78)' }}
+    >
+      <div className="flex items-center gap-1.5">
+        <span className="w-1 h-1 rounded-full" style={{ background: palette }} />
+        <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted">{label}</div>
+      </div>
+      <div
+        className="mt-1.5 text-lg sm:text-xl font-extrabold tabular-nums leading-tight"
+        style={{ color: palette }}
+      >
+        {value}
+      </div>
+      <div className="text-[10px] text-text-muted mt-0.5">{caption}</div>
+    </div>
+  );
+}
+
+function StatCell({ label, value, tone, emphasis }) {
+  const toneCls = tone === 'bull' ? 'text-bull' : tone === 'bear' ? 'text-bear' : 'text-text-primary';
+  return (
+    <div>
+      <div className="text-[11px] uppercase tracking-wider font-semibold text-text-muted">{label}</div>
+      <div className={`${emphasis ? 'text-xl' : 'text-base'} font-bold tabular-nums mt-1 ${toneCls}`}>
+        {value}
+      </div>
+    </div>
+  );
+}
 
 function MiniStat({ label, value, accent = 'neutral' }) {
   const palette = accent === 'bull' ? 'text-bull' : accent === 'bear' ? 'text-bear' : accent === 'primary' ? 'text-primary-600' : 'text-text-primary';

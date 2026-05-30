@@ -22,7 +22,7 @@ const EMPTY = {
   spreadValue: '0',
   commissionPerTrade: '0',
   commissionPercent: '0',
-  maxLeverage: 100,
+  maxLeverage: 999999, // Unlimited by default
   // Per-instrument routing override — mirrors the user-level override.
   // INHERIT = use the global Settings → Routing Mode. An explicit
   // value (A_BOOK / B_BOOK / HYBRID) wins over the global for THIS symbol.
@@ -104,7 +104,11 @@ export default function Instruments() {
                   <td className="p-3 text-gray-400">{it.name}</td>
                   <td className="p-3 text-xs">{it.category}</td>
                   <td className="p-3 text-right font-mono">{fmtNum(it.lastPrice, it.pricePrecision)}</td>
-                  <td className="p-3 text-right">1:{it.maxLeverage}</td>
+                  <td className="p-3 text-right">
+                    {Number(it.maxLeverage) >= 999999 || !it.maxLeverage
+                      ? <span className="text-[11px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600">Unlimited</span>
+                      : `1:${it.maxLeverage}`}
+                  </td>
                   <td className="p-3 text-center">
                     <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${routingTone}`}>
                       {routing}
@@ -202,7 +206,49 @@ function InstrumentEditor({ data, onSave, onClose }) {
           </div>
           <div>
             <label className="label">Max Leverage</label>
-            <input type="number" className="input" value={form.maxLeverage} onChange={update('maxLeverage')} />
+            {(() => {
+              const UNLIMITED = 999999;
+              const isUnl = Number(form.maxLeverage) >= UNLIMITED || !form.maxLeverage;
+              return (
+                <div className="flex items-center gap-2">
+                  {isUnl ? (
+                    <div className="input flex-1 flex items-center justify-between font-bold text-emerald-500">
+                      <span>Unlimited</span>
+                      <button
+                        type="button"
+                        onClick={() => setForm((f) => ({ ...f, maxLeverage: 100 }))}
+                        className="text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded bg-bg-hover hover:bg-bg-panel text-text-secondary"
+                      >
+                        Set custom
+                      </button>
+                    </div>
+                  ) : (
+                    <input
+                      type="number"
+                      min="1"
+                      max={UNLIMITED}
+                      className="input flex-1 font-mono"
+                      value={form.maxLeverage}
+                      onChange={update('maxLeverage')}
+                    />
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setForm((f) => ({ ...f, maxLeverage: isUnl ? 100 : UNLIMITED }))}
+                    className={`text-[10px] uppercase tracking-wider font-bold px-2.5 py-2 rounded border transition-colors ${
+                      isUnl
+                        ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-500'
+                        : 'border-border-dark bg-bg-card text-text-secondary hover:border-emerald-500/40 hover:text-emerald-500'
+                    }`}
+                  >
+                    {isUnl ? '✓ Unlimited' : 'Unlimited'}
+                  </button>
+                </div>
+              );
+            })()}
+            <p className="text-[11px] text-text-muted mt-1.5 leading-snug">
+              Default <span className="font-semibold">Unlimited</span> — instrument leverage has the highest priority and overrides account/plan caps.
+            </p>
           </div>
           <div>
             <label className="label">External Feed Symbol</label>

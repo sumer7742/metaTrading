@@ -27,6 +27,44 @@ const getLedger = asyncHandler(async (req, res) => {
   const filter = { userId: req.userId };
   if (accountId) filter.accountId = accountId;
   const entries = await WalletLedger.find(filter).sort({ createdAt: -1 }).limit(Number(limit)).lean();
+
+  // Enrich peer-to-peer transfer rows with the counterparty's display
+  // name so the wallet history can render "Transfer to/from <name>"
+  // without an extra round-trip from the FE. We look at all
+  // INTERNAL_TRANSFER_* rows for this user, find the matching pair-row
+  // (same referenceId, other user) and inline its userId / name.
+  const transferIds = entries
+    .filter((e) => (e.type === 'INTERNAL_TRANSFER_OUT' || e.type === 'INTERNAL_TRANSFER_IN') && e.referenceId)
+    .map((e) => e.referenceId);
+  if (transferIds.length) {
+    const pairs = await WalletLedger.find({
+      referenceId: { $in: transferIds },
+      userId: { $ne: req.userId },
+      type: { $in: ['INTERNAL_TRANSFER_OUT', 'INTERNAL_TRANSFER_IN'] },
+    }).select('userId referenceId').lean();
+    const otherIdByRef = new Map(pairs.map((p) => [String(p.referenceId), String(p.userId)]));
+    const userIds = [...new Set(pairs.map((p) => String(p.userId)))];
+    const User = require('../models/User');
+    const users = userIds.length
+      ? await User.find({ _id: { $in: userIds } }).select('_id firstName lastName email referralCode avatarUrl').lean()
+      : [];
+    const userById = new Map(users.map((u) => [String(u._id), u]));
+    for (const e of entries) {
+      if (e.type !== 'INTERNAL_TRANSFER_OUT' && e.type !== 'INTERNAL_TRANSFER_IN') continue;
+      const otherId = otherIdByRef.get(String(e.referenceId));
+      if (!otherId) continue;
+      const u = userById.get(otherId);
+      if (!u) continue;
+      const name = [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email;
+      e.counterparty = {
+        userId:       String(u._id),
+        name,
+        referralCode: u.referralCode || null,
+        avatarUrl:    u.avatarUrl || null,
+      };
+    }
+  }
+
   sendSuccess(res, entries);
 });
 
@@ -446,12 +484,20 @@ const internalTransfer = asyncHandler(async (req, res) => {
     throw new AppError('Cannot transfer to the same account', 400);
   }
 
+  // Subscription wallet is identified by the literal sentinel
+  // 'subscription' on either side. It lives at the user level (no
+  // accountId) — the routing logic below dispatches debit/credit to
+  // subscriptionWalletService.
+  const isSubFrom = String(fromAccountId) === 'subscription';
+  const isSubTo   = String(toAccountId)   === 'subscription';
+
   const TradingAccount = require('../models/TradingAccount');
   const [from, to] = await Promise.all([
-    TradingAccount.findOne({ _id: fromAccountId, userId: req.userId }),
-    TradingAccount.findOne({ _id: toAccountId, userId: req.userId }),
+    isSubFrom ? Promise.resolve(null) : TradingAccount.findOne({ _id: fromAccountId, userId: req.userId }),
+    isSubTo   ? Promise.resolve(null) : TradingAccount.findOne({ _id: toAccountId,   userId: req.userId }),
   ]);
-  if (!from || !to) throw new AppError('Account not found or not yours', 404);
+  if (!isSubFrom && !from) throw new AppError('Source account not found or not yours', 404);
+  if (!isSubTo   && !to)   throw new AppError('Destination account not found or not yours', 404);
 
   // Validate amount up front so a bad input doesn't reach walletService.
   const amtNum = Number(amount);
@@ -460,44 +506,79 @@ const internalTransfer = asyncHandler(async (req, res) => {
   }
   const amtStr = String(amtNum);
 
-  // Debit source, credit destination — single user, no FX, simple flow.
-  // If credit fails after a successful debit, roll the debit back via a
-  // compensating credit on the source so the user's funds aren't lost.
-  // Mongo standalone (dev/MVP) lacks transactions, so this rollback path
-  // is the next-best correctness guarantee.
-  await walletService.debit({
-    userId: req.userId,
-    accountId: fromAccountId,
-    currency,
-    amount: amtStr,
-    type: 'TRANSFER',
-    referenceType: 'transfer',
-    note: note || `Transfer to ${to.accountNumber}`,
-  });
+  const subscriptionWalletService = require('../services/subscriptionWalletService');
 
-  try {
-    await walletService.credit({
+  // ── Debit source ──
+  if (isSubFrom) {
+    try {
+      await subscriptionWalletService.debit({
+        userId: req.userId,
+        amount: amtStr,
+        reason: 'ADMIN_DEBIT',
+        note: note || (to ? `Transfer to ${to.accountNumber}` : 'Internal transfer'),
+      });
+    } catch (err) {
+      if (err.code === 'INSUFFICIENT_SUBSCRIPTION_BALANCE') {
+        throw new AppError(err.message, 402, err.code);
+      }
+      throw err;
+    }
+  } else {
+    await walletService.debit({
       userId: req.userId,
-      accountId: toAccountId,
+      accountId: fromAccountId,
       currency,
       amount: amtStr,
       type: 'TRANSFER',
       referenceType: 'transfer',
-      note: note || `Transfer from ${from.accountNumber}`,
+      note: note || (isSubTo ? 'Transfer to Subscription Wallet' : `Transfer to ${to.accountNumber}`),
     });
-  } catch (creditErr) {
-    // Compensating credit on source — best-effort. If THIS fails too, we
-    // log loudly so the on-call can manually reconcile from the ledger.
-    try {
+  }
+
+  // ── Credit destination, with a compensating rollback if it fails ──
+  try {
+    if (isSubTo) {
+      await subscriptionWalletService.credit({
+        userId: req.userId,
+        amount: amtStr,
+        reason: 'DEPOSIT',
+        paymentMethod: 'internal_transfer',
+        note: note || (from ? `Transfer from ${from.accountNumber}` : 'Internal transfer'),
+      });
+    } else {
       await walletService.credit({
         userId: req.userId,
-        accountId: fromAccountId,
+        accountId: toAccountId,
         currency,
         amount: amtStr,
         type: 'TRANSFER',
         referenceType: 'transfer',
-        note: 'Rollback: failed transfer credit on destination',
+        note: note || (isSubFrom ? 'Transfer from Subscription Wallet' : `Transfer from ${from.accountNumber}`),
       });
+    }
+  } catch (creditErr) {
+    // Compensating credit on source — best-effort. Logs loudly if both
+    // legs fail so an on-call can reconcile from the ledger.
+    try {
+      if (isSubFrom) {
+        await subscriptionWalletService.credit({
+          userId: req.userId,
+          amount: amtStr,
+          reason: 'REFUND',
+          paymentMethod: 'internal_transfer',
+          note: 'Rollback: failed transfer credit on destination',
+        });
+      } else {
+        await walletService.credit({
+          userId: req.userId,
+          accountId: fromAccountId,
+          currency,
+          amount: amtStr,
+          type: 'TRANSFER',
+          referenceType: 'transfer',
+          note: 'Rollback: failed transfer credit on destination',
+        });
+      }
     } catch (rbErr) {
       console.error(
         `[wallet] CRITICAL: failed to roll back transfer ` +
@@ -752,6 +833,64 @@ const convertCurrency = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * GET /wallet/recipients/search?q=<term>
+ * Autocomplete for the "Send to user" form. Matches against referralCode,
+ * email, name, or _id. Excludes the caller and blocked users. Returns a
+ * slim recipient shape ({ _id, name, email, referralCode, avatarUrl }).
+ */
+const searchTransferRecipients = asyncHandler(async (req, res) => {
+  const userTransferService = require('../services/userTransferService');
+  const { q, limit } = req.query;
+  const results = await userTransferService.searchRecipients(req.userId, q, Number(limit) || 10);
+  sendSuccess(res, results);
+});
+
+/**
+ * GET /wallet/transfer-user/settings
+ * Returns the current admin-tunable limits for the form (so the FE can
+ * show min/max hints + a fee preview before submit).
+ */
+const getUserTransferSettings = asyncHandler(async (req, res) => {
+  const userTransferService = require('../services/userTransferService');
+  const cfg = await userTransferService.getTransferSettings();
+  sendSuccess(res, {
+    enabled:    cfg['userTransfer.enabled'] !== false,
+    min:        String(cfg['userTransfer.min']        || '0'),
+    max:        String(cfg['userTransfer.max']        || '0'),
+    feePercent: String(cfg['userTransfer.feePercent'] || '0'),
+  });
+});
+
+/**
+ * POST /wallet/transfer-user
+ * Body: {
+ *   fromAccountId, currency, amount, note?,
+ *   recipientUserId? | recipientUsername? | recipientReferralCode?
+ * }
+ * Sends funds to another registered user. Reuses walletService.credit/debit;
+ * writes two ledger rows (INTERNAL_TRANSFER_OUT on sender, INTERNAL_TRANSFER_IN
+ * on receiver) with a shared referenceId.
+ */
+const transferToUser = asyncHandler(async (req, res) => {
+  const userTransferService = require('../services/userTransferService');
+  const {
+    fromAccountId, currency, amount, note,
+    recipientUserId, recipientUsername, recipientReferralCode,
+  } = req.body || {};
+
+  const result = await userTransferService.transferToUser({
+    fromUserId:    req.userId,
+    fromAccountId,
+    currency:      currency || BASE_CURRENCY,
+    amount,
+    note,
+    recipient:     { recipientUserId, recipientUsername, recipientReferralCode },
+    req,
+  });
+  sendSuccess(res, result);
+});
+
 module.exports = {
   getBalances,
   getLedger,
@@ -764,4 +903,7 @@ module.exports = {
   createRazorpayOrder,
   verifyRazorpayPayment,
   razorpayWebhook,
+  searchTransferRecipients,
+  getUserTransferSettings,
+  transferToUser,
 };

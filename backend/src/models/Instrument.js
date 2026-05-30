@@ -55,9 +55,12 @@ const instrumentSchema = new mongoose.Schema(
     // profit (e.g. "2" = take 2% of profit). 0 disables.
     profitSharePercent: { type: String, default: '0' },
 
-    // Leverage
-    maxLeverage: { type: Number, default: 100 },
-    leverageLadder: { type: [Number], default: [1, 5, 10, 20, 50, 100] },
+    // Leverage — defaults to Unlimited (999999 sentinel). Admin can
+    // override to a finite cap per instrument; instrument leverage has
+    // the highest priority over account/plan leverage at order time.
+    // null is also accepted as "unlimited" for legacy rows.
+    maxLeverage: { type: Number, default: 999999 },
+    leverageLadder: { type: [Number], default: [1, 5, 10, 20, 50, 100, 200, 500, 1000] },
 
     // Trading hours - simplified: 24/7 if empty
     tradingHours: {

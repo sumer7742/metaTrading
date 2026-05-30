@@ -112,6 +112,20 @@ const getDashboard = asyncHandler(async (req, res) => {
   const realizedPnlToday = closedLiveToday.reduce((s, p) => s + Number(p.realizedPnl || 0), 0);
   const realizedPnlLifetime = closedLive.reduce((s, p) => s + Number(p.realizedPnl || 0), 0);
 
+  // Lifetime profit / loss split — the portfolio stats block shows
+  // gross winners and gross losers separately so the user sees the
+  // distribution, not just the net.
+  const profitLifetime = winningLive.reduce((s, p) => s + Number(p.realizedPnl || 0), 0);
+  const lossLifetime   = losingLive.reduce((s, p) => s + Number(p.realizedPnl || 0), 0); // signed (negative)
+
+  // Trading volume — notional traded across every CLOSED live trade.
+  // Approximated as qty × entryPrice; close-price could be used too but
+  // entry is what was committed.
+  const tradingVolumeLifetime = closedLive.reduce(
+    (s, p) => s + Math.abs(Number(p.quantity || 0) * Number(p.entryPrice || 0)),
+    0
+  );
+
   // Win rate ignores break-even (PnL=0) trades in the denominator so a
   // bunch of zero-PnL closes don't drag the rate to nonsense values.
   const decided = winningLive.length + losingLive.length;
@@ -209,6 +223,11 @@ const getDashboard = asyncHandler(async (req, res) => {
       realizedToday: realizedPnlToday.toFixed(2),
       realizedLifetime: realizedPnlLifetime.toFixed(2),
       winRate: winRate != null ? Number(winRate.toFixed(1)) : null,
+      // Lifetime breakdown — used by the Portfolio stats block.
+      profit: profitLifetime.toFixed(2),       // sum of winning trades
+      loss:   lossLifetime.toFixed(2),         // signed sum of losing trades (negative)
+      netProfit: realizedPnlLifetime.toFixed(2),
+      tradingVolume: tradingVolumeLifetime.toFixed(2),
     },
     accounts: {
       live: liveAccounts.length,
@@ -235,4 +254,223 @@ const getDashboard = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { getDashboard };
+/**
+ * GET /user/dashboard/lifetime-stats?days=&accountId=
+ *
+ * Filterable stats block for the Portfolio page. Both filters are optional:
+ *   - days       — restricts to trades closed within the last N days
+ *                  (0/missing = no time filter, "lifetime")
+ *   - accountId  — restricts to a single trading account
+ *                  (missing = all accounts the user owns)
+ *
+ * Returns:
+ *   { netProfit, profit, loss, unrealizedPnl,
+ *     closedOrders, profitable, unprofitable,
+ *     tradingVolume }
+ */
+const getLifetimeStats = asyncHandler(async (req, res) => {
+  const userId = req.userId;
+  const daysRaw = Number(req.query.days);
+  const days = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.min(3650, Math.floor(daysRaw)) : 0;
+  const accountId = req.query.accountId;
+
+  const accounts = await TradingAccount.find({ userId, isActive: true }).select('_id').lean();
+  let accountIds = accounts.map((a) => a._id);
+  if (accountId) {
+    accountIds = accountIds.filter((id) => String(id) === String(accountId));
+  }
+  if (!accountIds.length) {
+    return sendSuccess(res, {
+      netProfit: '0.00', profit: '0.00', loss: '0.00', unrealizedPnl: '0.00',
+      closedOrders: 0, profitable: 0, unprofitable: 0, tradingVolume: '0.00',
+    });
+  }
+
+  const closedFilter = { accountId: { $in: accountIds }, status: 'CLOSED' };
+  if (days > 0) {
+    const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    closedFilter.closedAt = { $gte: cutoff };
+  }
+
+  const [closed, openPositions] = await Promise.all([
+    Position.find(closedFilter).lean(),
+    Position.find({ accountId: { $in: accountIds }, status: 'OPEN' }).lean(),
+  ]);
+
+  // Roll up the 8 stat values.
+  let profit = 0, loss = 0, tradingVolume = 0, winners = 0, losers = 0;
+  for (const p of closed) {
+    const pnl = Number(p.realizedPnl || 0);
+    if (pnl > 0) { profit += pnl; winners += 1; }
+    else if (pnl < 0) { loss += pnl; losers += 1; }
+    tradingVolume += Math.abs(Number(p.quantity || 0) * Number(p.entryPrice || 0));
+  }
+  const netProfit = profit + loss; // loss is signed-negative
+
+  // Unrealized P&L across open positions (entry vs current mark).
+  // Cheap version — mark = lastPrice; mismatched-quote positions still
+  // contribute their qty×Δ which is fine for a rolled-up portfolio number.
+  const instIds = [...new Set(openPositions.map((p) => String(p.instrumentId)))];
+  const insts = instIds.length
+    ? await Instrument.find({ _id: { $in: instIds } }).select('_id lastPrice').lean()
+    : [];
+  const instMap = new Map(insts.map((i) => [String(i._id), i]));
+  let unrealizedPnl = 0;
+  for (const p of openPositions) {
+    const inst = instMap.get(String(p.instrumentId));
+    const mark = Number(inst?.lastPrice || p.entryPrice);
+    const entry = Number(p.entryPrice);
+    const qty = Number(p.quantity);
+    unrealizedPnl += p.side === 'BUY' ? (mark - entry) * qty : (entry - mark) * qty;
+  }
+
+  sendSuccess(res, {
+    netProfit: netProfit.toFixed(2),
+    profit:    profit.toFixed(2),
+    loss:      loss.toFixed(2),
+    unrealizedPnl: unrealizedPnl.toFixed(2),
+    closedOrders: closed.length,
+    profitable: winners,
+    unprofitable: losers,
+    tradingVolume: tradingVolume.toFixed(2),
+  });
+});
+
+/**
+ * GET /user/dashboard/monthly-series?accountId=&range=1d|1w|1m|3m|1y|all&months=13
+ *
+ * Adaptive time-series rollup for the Portfolio chart. The `range` param
+ * picks the right bucket granularity (hourly / daily / weekly / monthly)
+ * so the chart always renders a comfortable 7-36 data points regardless
+ * of horizon:
+ *   1d  → 24 hourly  buckets
+ *   1w  → 7 daily    buckets
+ *   1m  → 30 daily   buckets
+ *   3m  → 13 weekly  buckets
+ *   1y  → 13 monthly buckets (default — also the legacy `months` flow)
+ *   all → 36 monthly buckets
+ *
+ * Each bucket carries: netProfit, profit, loss, closedOrders,
+ * tradingVolume, equity (running cumulative netProfit).
+ */
+const RANGE_CONFIG = {
+  '1d':  { grain: 'hour',  count: 24 },
+  '1w':  { grain: 'day',   count: 7 },
+  '1m':  { grain: 'day',   count: 30 },
+  '3m':  { grain: 'week',  count: 13 },
+  '1y':  { grain: 'month', count: 13 },
+  'all': { grain: 'month', count: 36 },
+};
+
+const _bucketKey = (d, grain) => {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  if (grain === 'hour')  return `${yyyy}-${mm}-${dd}T${String(d.getHours()).padStart(2, '0')}`;
+  if (grain === 'day')   return `${yyyy}-${mm}-${dd}`;
+  if (grain === 'week') {
+    // ISO week: Monday-anchored week start.
+    const mon = new Date(d);
+    mon.setHours(0, 0, 0, 0);
+    mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7));
+    return `${mon.getFullYear()}-W${String(mon.getMonth() + 1).padStart(2, '0')}-${String(mon.getDate()).padStart(2, '0')}`;
+  }
+  return `${yyyy}-${mm}`;
+};
+
+const _labelFor = (d, grain) => {
+  if (grain === 'hour')  return `${String(d.getHours()).padStart(2, '0')}:00`;
+  if (grain === 'day')   return d.toLocaleString('en-US', { month: 'short', day: 'numeric' });
+  if (grain === 'week') {
+    const mon = new Date(d);
+    mon.setDate(mon.getDate() - ((mon.getDay() + 6) % 7));
+    return mon.toLocaleString('en-US', { month: 'short', day: 'numeric' });
+  }
+  return d.toLocaleString('en-US', { month: 'short' });
+};
+
+const _stepBack = (d, grain, i) => {
+  const c = new Date(d);
+  if (grain === 'hour')  c.setHours(c.getHours() - i, 0, 0, 0);
+  else if (grain === 'day')   { c.setHours(0, 0, 0, 0); c.setDate(c.getDate() - i); }
+  else if (grain === 'week')  { c.setHours(0, 0, 0, 0); c.setDate(c.getDate() - ((c.getDay() + 6) % 7) - 7 * i); }
+  else                        c.setMonth(c.getMonth() - i, 1);
+  return c;
+};
+
+const getMonthlySeries = asyncHandler(async (req, res) => {
+  const userId = req.userId;
+  const range = String(req.query.range || '').toLowerCase();
+  const cfg = RANGE_CONFIG[range] || null;
+
+  // Legacy `months` param keeps backward-compat with earlier FE bundles.
+  let grain, count;
+  if (cfg) { grain = cfg.grain; count = cfg.count; }
+  else {
+    grain = 'month';
+    const monthsRaw = Number(req.query.months);
+    count = Number.isFinite(monthsRaw) && monthsRaw > 0 ? Math.min(36, Math.floor(monthsRaw)) : 13;
+  }
+
+  const accountId = req.query.accountId;
+  const accounts = await TradingAccount.find({ userId, isActive: true }).select('_id').lean();
+  let accountIds = accounts.map((a) => a._id);
+  if (accountId) accountIds = accountIds.filter((id) => String(id) === String(accountId));
+
+  if (!accountIds.length) {
+    return sendSuccess(res, { grain, buckets: [] });
+  }
+
+  const now = new Date();
+  const buckets = [];
+  const idxByKey = {};
+  for (let i = count - 1; i >= 0; i--) {
+    const d = _stepBack(now, grain, i);
+    const key = _bucketKey(d, grain);
+    idxByKey[key] = buckets.length;
+    buckets.push({
+      key,
+      label: _labelFor(d, grain),
+      tsStart: d.getTime(),
+      netProfit: 0, profit: 0, loss: 0,
+      closedOrders: 0, tradingVolume: 0,
+      equity: 0,
+    });
+  }
+
+  const oldest = new Date(buckets[0].tsStart);
+  const closed = await Position.find({
+    accountId: { $in: accountIds },
+    status: 'CLOSED',
+    closedAt: { $gte: oldest },
+  }).lean();
+
+  for (const p of closed) {
+    if (!p.closedAt) continue;
+    const key = _bucketKey(new Date(p.closedAt), grain);
+    const idx = idxByKey[key];
+    if (idx == null) continue;
+    const b = buckets[idx];
+    const pnl = Number(p.realizedPnl || 0);
+    if (pnl > 0) b.profit += pnl;
+    else if (pnl < 0) b.loss += pnl;
+    b.netProfit += pnl;
+    b.closedOrders += 1;
+    b.tradingVolume += Math.abs(Number(p.quantity || 0) * Number(p.entryPrice || 0));
+  }
+
+  // Running cumulative net profit → "equity" proxy.
+  let cum = 0;
+  for (const b of buckets) {
+    cum += b.netProfit;
+    b.equity        = Number(cum.toFixed(2));
+    b.netProfit     = Number(b.netProfit.toFixed(2));
+    b.profit        = Number(b.profit.toFixed(2));
+    b.loss          = Number(b.loss.toFixed(2));
+    b.tradingVolume = Number(b.tradingVolume.toFixed(2));
+  }
+
+  sendSuccess(res, { grain, range: range || 'monthly', buckets });
+});
+
+module.exports = { getDashboard, getLifetimeStats, getMonthlySeries };

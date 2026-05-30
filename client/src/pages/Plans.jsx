@@ -287,7 +287,10 @@ export default function Plans() {
               <FeatureRow label="API access" plans={plans} value={(p) => p.features?.apiAccess ? '✓' : '—'} />
               <FeatureRow label="Devices login" plans={plans} value={(p) => p.limits?.maxDevices == null ? 'Unlimited' : p.limits.maxDevices} />
               <FeatureRow label="Support" plans={plans} value={(p) => (p.features?.customSupport || p.features?.postPaid) ? 'Dedicated' : 'Standard'} />
-              <FeatureRow label="Max leverage" plans={plans} value={(p) => `1:${p.limits?.defaultLeverage || 100}`} />
+              {/* "Max leverage" row removed — leverage now lives at the
+                  instrument level (per-symbol cap) and the account-type
+                  picker, so showing a static per-plan value here was
+                  misleading. */}
             </tbody>
           </table>
         </div>

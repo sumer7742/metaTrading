@@ -342,28 +342,40 @@ const placeOrder = asyncHandler(async (req, res) => {
     }
   }
 
-  // Resolve leverage. Platform-wide rule: 1:1 → 1:Unlimited.
-  //   - Account-tier cap (checked above as tierMaxLeverage) is the
-  //     authoritative ceiling. null = unlimited.
-  //   - Instrument's own maxLeverage is honoured ONLY as an upper bound
-  //     when the field is a positive finite number — leaves room for
-  //     exchange-rule caps on specific instruments (crypto, etc.). When
-  //     missing / zero / null, leverage is uncapped at the instrument
-  //     level and only the tier ceiling applies.
+  // Resolve leverage with the platform's priority-based rule:
+  //   1. instrument.maxLeverage      — if set (>0), it's the FINAL value
+  //                                    even when higher OR lower than what
+  //                                    the account would allow
+  //   2. account.leverage / plan     — used when the instrument hasn't
+  //                                    set its own
+  //   3. SYSTEM_DEFAULT_LEVERAGE     — final fallback (100)
+  //
+  // Practical effect: a crypto with maxLeverage=500 caps the trade at
+  // 1:500 even if the user's plan is unlimited; an instrument left
+  // un-set inherits the account's effective leverage.
+  const SYSTEM_DEFAULT_LEVERAGE = 100;
   const instMax = Number(instrument.maxLeverage);
   const hasInstCap = Number.isFinite(instMax) && instMax > 0;
+
+  // Effective cap from the priority chain.
+  let effectiveCap;
+  if (hasInstCap) {
+    effectiveCap = instMax;
+  } else if (Number.isFinite(Number(account.leverage)) && Number(account.leverage) > 0) {
+    effectiveCap = Number(account.leverage);
+  } else {
+    effectiveCap = SYSTEM_DEFAULT_LEVERAGE;
+  }
+
   let orderLeverage;
   if (leverage != null) {
     orderLeverage = Number(leverage);
-    if (hasInstCap && orderLeverage > instMax) {
-      throw new AppError(
-        `Leverage 1:${orderLeverage} exceeds the per-instrument cap for ${instrument.symbol} (1:${instMax})`,
-        400
-      );
-    }
+    // Clamp (don't reject) to the resolved cap so the user can't request
+    // more than the instrument allows. A request at the unlimited sentinel
+    // when the instrument is capped just snaps down to the cap.
+    if (orderLeverage > effectiveCap) orderLeverage = effectiveCap;
   } else {
-    const acctLev = Number(account.leverage || 1);
-    orderLeverage = hasInstCap ? Math.min(acctLev, instMax) : acctLev;
+    orderLeverage = effectiveCap;
   }
   if (!Number.isFinite(orderLeverage) || orderLeverage < 1) orderLeverage = 1;
 
@@ -453,6 +465,31 @@ const placeOrder = asyncHandler(async (req, res) => {
     order,
     userId: req.userId,
   });
+
+  // ── Copy-trading fan-out ────────────────────────────────────────────
+  // If the user has public followers, fire mirror orders on each.
+  // Best-effort: a failure here must NOT block the parent's order
+  // response. Skipped for closeOnly/reduceOnly so we don't mirror
+  // close orders (the close path has its own hook).
+  if (settledOrder && !order.closeOnly && !order.reduceOnly) {
+    setImmediate(async () => {
+      try {
+        // Resolve the resulting OPEN position created by this order.
+        const pos = await Position.findOne({
+          userId: req.userId,
+          accountId: order.accountId,
+          symbol: order.symbol,
+          status: POSITION_STATUS.OPEN,
+        }).sort({ createdAt: -1 }).lean();
+        if (pos) {
+          const copyService = require('../services/copyTradingService');
+          await copyService.onMasterOrderFilled({ order: settledOrder.toObject?.() || settledOrder, position: pos });
+        }
+      } catch (e) {
+        console.error('[copyTrading] fan-out (open) failed:', e.message);
+      }
+    });
+  }
 
   // Update candles for any trades that just executed
   // (in MVP we look up trades created after order creation)
@@ -550,6 +587,7 @@ const listHistory = asyncHandler(async (req, res) => {
 const positionHistory = asyncHandler(async (req, res) => {
   const {
     accountId,
+    accountIds, // optional CSV — used when the FE picks "All" with a TYPE filter
     symbol,
     side,
     from,
@@ -559,7 +597,15 @@ const positionHistory = asyncHandler(async (req, res) => {
   } = req.query;
 
   const baseFilter = { userId: req.userId, status: POSITION_STATUS.CLOSED };
-  if (accountId) baseFilter.accountId = accountId;
+  if (accountId) {
+    baseFilter.accountId = accountId;
+  } else if (accountIds) {
+    // CSV list — restricts the rollup to a specific set of accounts
+    // (e.g. all REAL accounts the user owns). The userId guard above
+    // already ensures the caller can't query someone else's accounts.
+    const ids = String(accountIds).split(',').map((s) => s.trim()).filter(Boolean);
+    if (ids.length) baseFilter.accountId = { $in: ids };
+  }
   if (symbol) baseFilter.symbol = String(symbol).toUpperCase();
   if (side && (side === 'BUY' || side === 'SELL')) baseFilter.side = side;
   if (from || to) {
@@ -742,6 +788,19 @@ const closePosition = asyncHandler(async (req, res) => {
     console.warn('[closePosition] broadcast failed:', e.message);
   }
 
+  // ── Copy-trading: close every mirrored follower position ──────────
+  setImmediate(async () => {
+    try {
+      const copyService = require('../services/copyTradingService');
+      await copyService.onMasterPositionClosed({
+        position: closedPosition || position,
+        realizedPnl: closedPosition?.realizedPnl,
+      });
+    } catch (err) {
+      console.error('[copyTrading] fan-out (close) failed:', err.message);
+    }
+  });
+
   sendSuccess(res, {
     order: result,
     position: closedPosition,
@@ -885,6 +944,16 @@ const modifyPosition = asyncHandler(async (req, res) => {
   if (takeProfit !== undefined) position.takeProfit = takeProfit == null ? null : String(takeProfit);
   await position.save();
   sendSuccess(res, position);
+
+  // Copy-trading: propagate SL/TP to mirrored follower positions.
+  setImmediate(async () => {
+    try {
+      const copyService = require('../services/copyTradingService');
+      await copyService.onMasterSlTpChanged({ position });
+    } catch (err) {
+      console.error('[copyTrading] fan-out (sl/tp) failed:', err.message);
+    }
+  });
 });
 
 /**
@@ -1006,13 +1075,22 @@ const placeOcoOrder = asyncHandler(async (req, res) => {
     );
   }
 
-  // Apply instrument-level leverage ceiling only when the instrument has
-  // a positive finite cap; otherwise the user's chosen value passes
-  // through unchanged (subject to tier/effective-leverage gates elsewhere).
+  // Priority-based leverage resolution (matches the single-order path):
+  //   instrument.maxLeverage > account.leverage > SYSTEM_DEFAULT (100).
+  // Instrument always wins when set, even if higher than account.
+  const _SYSTEM_DEFAULT_LEV_OCO = 100;
   const _instMaxOco = Number(instrument.maxLeverage);
   const _hasInstCapOco = Number.isFinite(_instMaxOco) && _instMaxOco > 0;
-  let cappedLeverage = Number(leverage || account.leverage || 1);
-  if (_hasInstCapOco) cappedLeverage = Math.min(cappedLeverage, _instMaxOco);
+  let _effectiveCapOco;
+  if (_hasInstCapOco) {
+    _effectiveCapOco = _instMaxOco;
+  } else if (Number.isFinite(Number(account.leverage)) && Number(account.leverage) > 0) {
+    _effectiveCapOco = Number(account.leverage);
+  } else {
+    _effectiveCapOco = _SYSTEM_DEFAULT_LEV_OCO;
+  }
+  let cappedLeverage = leverage != null ? Number(leverage) : _effectiveCapOco;
+  if (cappedLeverage > _effectiveCapOco) cappedLeverage = _effectiveCapOco;
   if (!Number.isFinite(cappedLeverage) || cappedLeverage < 1) cappedLeverage = 1;
 
   // Margin: only ONE of the two legs ever fills (the other is cancelled by

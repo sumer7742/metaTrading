@@ -707,6 +707,23 @@ export default function Trade() {
     }
   };
 
+  // Drag drops on a pending-order pill can race with the order being
+  // filled or triggered server-side. Backend rejects with one of two
+  // benign error messages — swallow them and refresh so the stale pill
+  // disappears. Any other error gets a normal toast so real failures
+  // (auth, validation, server) still surface.
+  const handleOrderModifyError = (err) => {
+    const msg = errorMessage(err) || '';
+    const benign =
+      msg.includes('Only PENDING orders can be modified') ||
+      msg.includes('Stop has already triggered');
+    if (benign) {
+      refresh();
+      return;
+    }
+    toast.error(msg);
+  };
+
   const closePosition = async (id) => {
     try {
       await api.post(`/trading/positions/${id}/close`);
@@ -720,16 +737,31 @@ export default function Trade() {
   // Position-modify modal. Replaces the old window.prompt pair with a
   // proper popup (TP/SL fields + tabs for partial close / close-by).
   const [slTpModalPosition, setSlTpModalPosition] = useState(null);
-  const modifyPositionSlTp = (position) => setSlTpModalPosition(position);
+  // Kind discriminator on the modal target. The same SL/TP modal opens
+  // for filled positions and for pending orders, but the submit endpoint
+  // differs — positions → /trading/positions/:id, orders → /trading/orders/:id.
+  // Without this, an order click was PUT'ing to the positions endpoint
+  // with an order ID, producing 404s and (with some legacy code paths)
+  // unexpected fills at market.
+  const [slTpModalKind, setSlTpModalKind] = useState('position'); // 'position' | 'order'
+  const openSlTpModal = (entity, kind = 'position') => {
+    setSlTpModalKind(kind);
+    setSlTpModalPosition(entity);
+  };
+  const closeSlTpModal = () => setSlTpModalPosition(null);
+  const modifyPositionSlTp = (position) => openSlTpModal(position, 'position');
 
-  const submitSlTpModify = async (positionId, payload) => {
+  const submitSlTpModify = async (id, payload) => {
+    const isOrder = slTpModalKind === 'order';
+    const url = isOrder ? `/trading/orders/${id}` : `/trading/positions/${id}`;
     try {
-      await api.put(`/trading/positions/${positionId}`, payload);
-      toast.success('Position updated');
-      setSlTpModalPosition(null);
+      await api.put(url, payload);
+      toast.success(isOrder ? 'Order updated' : 'Position updated');
+      closeSlTpModal();
       refresh();
     } catch (err) {
-      toast.error(errorMessage(err));
+      if (isOrder) handleOrderModifyError(err);
+      else toast.error(errorMessage(err));
     }
   };
 
@@ -1415,7 +1447,7 @@ export default function Trade() {
           <Link
             to="/wallet"
             title="Deposit funds"
-            className="h-9 inline-flex items-center gap-1.5 px-2.5 sm:px-4 font-bold text-[13px] shadow-card hover:shadow-elevated transition-all shrink-0"
+            className="h-9 inline-flex items-center gap-1.5 px-3 sm:px-4 rounded-xl font-bold text-[13px] shadow-card hover:shadow-elevated transition-all shrink-0"
             style={{
               background: 'linear-gradient(135deg, #3B82F6 0%, #1D4ED8 55%, #1E3A8A 100%)',
               color: '#FFFFFF',
@@ -1692,7 +1724,25 @@ export default function Trade() {
                 { label: 'Last Price', value: fmtNum(instrument.lastPrice, Math.min(instrument.pricePrecision || 2, 5)), mono: true },
                 { label: 'Bid / Ask', value: `${fmtNum(instrument.bid, Math.min(instrument.pricePrecision || 2, 5))} / ${fmtNum(instrument.ask, Math.min(instrument.pricePrecision || 2, 5))}`, mono: true },
                 { label: 'Spread', value: instrument.spreadValue ? `${instrument.spreadValue} (${instrument.spreadType || 'FIXED'})` : '—' },
-                { label: 'Max Leverage', value: instrument.maxLeverage ? `1:${instrument.maxLeverage}` : '—' },
+                {
+                  label: 'Max Leverage',
+                  // Resolved leverage via priority chain:
+                  //   instrument.maxLeverage > account > system default.
+                  // Unlimited sentinel renders as the badge "Unlimited".
+                  value: (() => {
+                    const UNLIMITED = 999999;
+                    const inst = Number(instrument.maxLeverage);
+                    const isDemo = account?.accountType === 'DEMO' || account?.accountType === 'VIRTUAL';
+                    let cap, src;
+                    if (Number.isFinite(inst) && inst > 0) { cap = inst; src = 'inst'; }
+                    else if (isDemo) { cap = UNLIMITED; src = 'demo'; }
+                    else if (leverageState?.effectiveLeverage) { cap = Number(leverageState.effectiveLeverage); src = 'acct'; }
+                    else { cap = 100; src = 'sys'; }
+                    const txt = cap >= UNLIMITED ? 'Unlimited' : `1:${cap}`;
+                    const tag = src === 'inst' ? ' · from instrument' : src === 'demo' ? ' · demo' : src === 'acct' ? ' · from plan' : ' · default';
+                    return `${txt}${tag}`;
+                  })(),
+                },
                 { label: 'Min Order', value: instrument.minOrderSize || '—' },
                 { label: 'Precision', value: `${instrument.pricePrecision || 2} digits` },
                 { label: 'Feed', value: instrument.externalProvider || 'Internal' },
@@ -2177,7 +2227,22 @@ export default function Trade() {
                      - "Open positions" toggle:      entry line for each position
                      - "TP / SL on positions":       SL/TP lines anchored to positions
                      - "Stop / Limit orders":        pending LIMIT/STOP order lines + pendingPreview */
-                  openOrders={tradeSettings.showOnChart.stopLimit ? openOrders : []}
+                  openOrders={
+                    // Pending LIMIT/STOP orders honour the same two-axis
+                    // gating that positions do:
+                    //   stopLimit toggle → entry-price line
+                    //   tpsl toggle      → SL/TP lines on the order
+                    // Strip SL/TP fields when tpsl is off so the order's
+                    // entry pill still renders but its SL/TP pills don't
+                    // (matches the position-side semantics line-for-line).
+                    tradeSettings.showOnChart.stopLimit
+                      ? openOrders.map((o) => ({
+                          ...o,
+                          stopLoss:   tradeSettings.showOnChart.tpsl ? o.stopLoss   : null,
+                          takeProfit: tradeSettings.showOnChart.tpsl ? o.takeProfit : null,
+                        }))
+                      : []
+                  }
                   positions={
                     // Two independent toggles share the same position array:
                     //   positions toggle → entry-price line
@@ -2229,13 +2294,66 @@ export default function Trade() {
                   /* Position pill actions on the chart — × closes / modifies */
                   /* Click anywhere on the pill body (not the × button) opens
                      the rich Edit TP/SL modal. */
-                  onPositionEdit={(p) => setSlTpModalPosition(p)}
+                  onPositionEdit={(p) => openSlTpModal(p, 'position')}
                   onPositionClose={(p) => closePosition(p._id)}
                   onPositionRemoveSl={(p) => api.put(`/trading/positions/${p._id}`, { stopLoss: null }).then(() => { toast.success('SL removed'); refresh(); }).catch((e) => toast.error(errorMessage(e)))}
                   onPositionRemoveTp={(p) => api.put(`/trading/positions/${p._id}`, { takeProfit: null }).then(() => { toast.success('TP removed'); refresh(); }).catch((e) => toast.error(errorMessage(e)))}
-                  /* Drag-to-update — fires on drop with the snapped price. */
-                  onPositionUpdateSl={(p, price) => api.put(`/trading/positions/${p._id}`, { stopLoss: price }).then(() => { toast.success(`SL updated to ${price}`); refresh(); }).catch((e) => toast.error(errorMessage(e)))}
-                  onPositionUpdateTp={(p, price) => api.put(`/trading/positions/${p._id}`, { takeProfit: price }).then(() => { toast.success(`TP updated to ${price}`); refresh(); }).catch((e) => toast.error(errorMessage(e)))}
+                  /* Drag-to-update — fires throttled during drag with
+                     opts.live=true (silent push), and once again on drop
+                     with the final snapped price (toast + refresh). */
+                  onPositionUpdateSl={(p, price, opts = {}) => {
+                    const req = api.put(`/trading/positions/${p._id}`, { stopLoss: price });
+                    if (opts.live) {
+                      req.catch(() => {});
+                      return;
+                    }
+                    req.then(() => { toast.success(`SL updated to ${price}`); refresh(); })
+                       .catch((e) => toast.error(errorMessage(e)));
+                  }}
+                  onPositionUpdateTp={(p, price, opts = {}) => {
+                    const req = api.put(`/trading/positions/${p._id}`, { takeProfit: price });
+                    if (opts.live) {
+                      req.catch(() => {});
+                      return;
+                    }
+                    req.then(() => { toast.success(`TP updated to ${price}`); refresh(); })
+                       .catch((e) => toast.error(errorMessage(e)));
+                  }}
+                  /* Pending-order pill actions — same pill UX, but routed
+                     to /trading/orders/:id. Drag the entry line to re-price
+                     the LIMIT/STOP, drag from +TP/+SL handles to attach a
+                     level, × to cancel / strip just that level. Live-drag
+                     pushes are silent (opts.live=true); drop-commit toasts
+                     and refreshes the order tables. Race-window: an order
+                     can transition from PENDING to PARTIALLY_FILLED / FILLED
+                     between drag start and drop (or between throttled live
+                     pushes). The backend rejects the PUT with "Only PENDING
+                     orders can be modified" / "Stop has already triggered".
+                     We treat both as benign races — silently refresh so the
+                     pill disappears, no scary error toast. */
+                  onOrderEdit={(o) => openSlTpModal(o, 'order')}
+                  onOrderCancel={(o) => cancelOrder(o._id)}
+                  onOrderRemoveSl={(o) => api.put(`/trading/orders/${o._id}`, { stopLoss: null }).then(() => { toast.success('Order SL removed'); refresh(); }).catch((e) => handleOrderModifyError(e))}
+                  onOrderRemoveTp={(o) => api.put(`/trading/orders/${o._id}`, { takeProfit: null }).then(() => { toast.success('Order TP removed'); refresh(); }).catch((e) => handleOrderModifyError(e))}
+                  onOrderUpdatePrice={(o, price, opts = {}) => {
+                    const body = o.type === 'STOP' ? { stopPrice: price } : { price };
+                    const req = api.put(`/trading/orders/${o._id}`, body);
+                    if (opts.live) { req.catch(() => {}); return; }
+                    req.then(() => { toast.success(`Order moved to ${price}`); refresh(); })
+                       .catch((e) => handleOrderModifyError(e));
+                  }}
+                  onOrderUpdateSl={(o, price, opts = {}) => {
+                    const req = api.put(`/trading/orders/${o._id}`, { stopLoss: price });
+                    if (opts.live) { req.catch(() => {}); return; }
+                    req.then(() => { toast.success(`Order SL set to ${price}`); refresh(); })
+                       .catch((e) => handleOrderModifyError(e));
+                  }}
+                  onOrderUpdateTp={(o, price, opts = {}) => {
+                    const req = api.put(`/trading/orders/${o._id}`, { takeProfit: price });
+                    if (opts.live) { req.catch(() => {}); return; }
+                    req.then(() => { toast.success(`Order TP set to ${price}`); refresh(); })
+                       .catch((e) => handleOrderModifyError(e));
+                  }}
                   orderSide={orderSide}
                   onOrderSideChange={handleOrderSideChange}
                   hideQuickTrade={(showOrderPanel && !isFullscreen) || (isFullscreen && showFloatingOrder)}
@@ -2604,12 +2722,21 @@ export default function Trade() {
       {slTpModalPosition && (
         <PositionSlTpModal
           position={slTpModalPosition}
+          kind={slTpModalKind}
           instrument={instrumentsBySymbol?.[slTpModalPosition.symbol]}
-          onClose={() => setSlTpModalPosition(null)}
+          onClose={closeSlTpModal}
           onSubmit={(payload) => submitSlTpModify(slTpModalPosition._id, payload)}
           onPartialClose={async (closeQty) => {
-            // Partial close uses the dedicated endpoint. Full close
-            // (closeQty >= position.quantity) falls back to /close.
+            // Partial close is a position-only operation. For pending
+            // orders the modal hides the "Partial close" / "Close by"
+            // tabs entirely (see kind prop in PositionSlTpModal) so this
+            // handler should only run for filled positions — but guard
+            // anyway in case a future change forgets to gate the tab.
+            if (slTpModalKind === 'order') {
+              cancelOrder(slTpModalPosition._id);
+              closeSlTpModal();
+              return;
+            }
             const fullQty = Number(slTpModalPosition.quantity);
             const qty = Math.min(fullQty, Math.max(0, Number(closeQty)));
             if (!qty) return;
@@ -2620,7 +2747,7 @@ export default function Trade() {
                 await api.post(`/trading/positions/${slTpModalPosition._id}/partial-close`, { quantity: qty });
               }
               toast.success(qty >= fullQty ? 'Position closing' : `Closing ${qty} lots`);
-              setSlTpModalPosition(null);
+              closeSlTpModal();
               refresh();
             } catch (e) { toast.error(errorMessage(e)); }
           }}
@@ -3263,7 +3390,23 @@ function SidebarPerformance({ instrument, livePrice }) {
           { l: 'Base / Quote', v: instrument.baseCurrency && instrument.quoteCurrency ? `${instrument.baseCurrency} / ${instrument.quoteCurrency}` : null },
           { l: 'Precision',    v: instrument.pricePrecision ? `${instrument.pricePrecision} digits` : null },
           { l: 'Min Order',    v: instrument.minOrderSize || null },
-          { l: 'Max Leverage', v: instrument.maxLeverage ? `1:${instrument.maxLeverage}` : null },
+          {
+            l: 'Max Leverage',
+            v: (() => {
+              const UNLIMITED = 999999;
+              const inst = Number(instrument.maxLeverage);
+              if (Number.isFinite(inst) && inst > 0) {
+                return inst >= UNLIMITED ? 'Unlimited' : `1:${inst}`;
+              }
+              // Fall back to account/plan when the instrument doesn't set one.
+              if (account?.accountType === 'DEMO' || account?.accountType === 'VIRTUAL') return 'Unlimited';
+              const acct = Number(leverageState?.effectiveLeverage);
+              if (Number.isFinite(acct) && acct > 0) {
+                return acct >= UNLIMITED ? 'Unlimited' : `1:${acct}`;
+              }
+              return '1:100';
+            })(),
+          },
           { l: 'Commission',   v: instrument.commissionPercent && Number(instrument.commissionPercent) > 0 ? `${(Number(instrument.commissionPercent) * 100).toFixed(3)}%` : null },
         ].filter((r) => r.v != null);
         if (!rows.length) return null;
@@ -3517,7 +3660,8 @@ function OrdersTable({ orders, onCancel, fxRate, instrumentsBySymbol }) {
 // is 0.01. The pip / USD / % readout below each price field shows the
 // delta between the entered price and the position's entry, which is
 // how MT5 / cTrader render this control.
-function PositionSlTpModal({ position, instrument, onClose, onSubmit, onPartialClose }) {
+function PositionSlTpModal({ position, kind = 'position', instrument, onClose, onSubmit, onPartialClose }) {
+  const isOrder = kind === 'order';
   const [tab, setTab] = useState('modify');
   const [tp, setTp] = useState(position.takeProfit ? String(position.takeProfit) : '');
   const [sl, setSl] = useState(position.stopLoss ? String(position.stopLoss) : '');
@@ -3610,13 +3754,17 @@ function PositionSlTpModal({ position, instrument, onClose, onSubmit, onPartialC
             </div>
           </div>
 
-          {/* Tab strip */}
-          <div className="mt-4 grid grid-cols-3 bg-bg-hover rounded-lg p-1">
-            {[
-              { id: 'modify',  label: 'Modify' },
-              { id: 'partial', label: 'Partial close' },
-              { id: 'closeby', label: 'Close by' },
-            ].map((t) => (
+          {/* Tab strip — for pending orders we only show "Modify" since
+              partial-close / close-by are position-only operations. */}
+          <div className={`mt-4 grid bg-bg-hover rounded-lg p-1 ${isOrder ? 'grid-cols-1' : 'grid-cols-3'}`}>
+            {(isOrder
+              ? [{ id: 'modify', label: 'Modify order' }]
+              : [
+                  { id: 'modify',  label: 'Modify' },
+                  { id: 'partial', label: 'Partial close' },
+                  { id: 'closeby', label: 'Close by' },
+                ]
+            ).map((t) => (
               <button
                 key={t.id}
                 type="button"
@@ -3662,7 +3810,7 @@ function PositionSlTpModal({ position, instrument, onClose, onSubmit, onPartialC
                 disabled={saving}
                 className="btn-primary w-full py-3 text-sm disabled:opacity-50"
               >
-                {saving ? 'Saving…' : 'Modify position'}
+                {saving ? 'Saving…' : (isOrder ? 'Modify order' : 'Modify position')}
               </button>
             </>
           )}

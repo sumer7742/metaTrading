@@ -196,10 +196,18 @@ function CryptoImage({ symbol, size }) {
   if (failed) {
     return (
       <span
-        className="rounded-full flex items-center justify-center font-bold text-white shrink-0"
-        style={{ width: size, height: size, background: '#475569', fontSize: Math.round(size * 0.4) }}
+        className="keep-white rounded-full flex items-center justify-center font-bold shrink-0"
+        style={{
+          width: size,
+          height: size,
+          background: '#475569',
+          color: '#FFFFFF',
+          fontSize: Math.round(size * 0.4),
+          lineHeight: 1,
+          textShadow: '0 1px 1px rgba(0,0,0,0.25)',
+        }}
       >
-        {symbol.slice(0, 2).toUpperCase()}
+        {symbol.slice(0, 3).toUpperCase()}
       </span>
     );
   }
@@ -217,6 +225,24 @@ function CryptoImage({ symbol, size }) {
   );
 }
 
+// Common quote suffixes used by exchanges. We strip these from the
+// symbol to infer the base currency when the row doesn't carry one
+// (e.g. legacy instruments seeded without baseCurrency/category).
+const QUOTE_SUFFIXES = ['USDT', 'USDC', 'USD', 'BUSD', 'INR', 'EUR', 'GBP', 'JPY', 'AUD', 'BTC', 'ETH'];
+
+function _inferBaseFromSymbol(sym) {
+  if (!sym) return '';
+  const upper = sym.toUpperCase().replace(/[\/\-_.]/g, '');
+  // Longest suffix wins — USDT before USD before USD before T to avoid
+  // mis-matching BTCUSD as BTCUSD/T.
+  for (const suf of [...QUOTE_SUFFIXES].sort((a, b) => b.length - a.length)) {
+    if (upper.endsWith(suf) && upper.length > suf.length) {
+      return upper.slice(0, upper.length - suf.length);
+    }
+  }
+  return upper;
+}
+
 export default function AssetIcon({
   row,
   symbol,
@@ -227,14 +253,22 @@ export default function AssetIcon({
   round = false,
 }) {
   const sym   = (symbol        ?? row?.symbol        ?? '').toUpperCase();
-  const base  = (baseCurrency  ?? row?.baseCurrency  ?? '').toUpperCase();
-  const quote = (quoteCurrency ?? row?.quoteCurrency ?? '').toUpperCase();
   const cat   = (category      ?? row?.category      ?? '').toUpperCase();
+  const quote = (quoteCurrency ?? row?.quoteCurrency ?? '').toUpperCase();
+  // Resolve a usable base currency. If the row didn't carry one (legacy
+  // / partially-seeded data) we infer it by stripping a known quote
+  // suffix off the symbol. That makes BTCUSD render the BTC logo even
+  // when category/baseCurrency are blank.
+  let base = (baseCurrency ?? row?.baseCurrency ?? '').toUpperCase();
+  if (!base) base = _inferBaseFromSymbol(sym);
 
-  // CRYPTO → real coin logo when available
-  if (cat === 'CRYPTO' && base) {
+  // CRYPTO → real coin logo when available. We accept either:
+  //   1. an explicit category=CRYPTO row
+  //   2. ANY symbol whose inferred base is in our crypto list — covers
+  //      seed gaps where category wasn't set on the instrument.
+  if (base) {
     const baseLower = base.toLowerCase();
-    if (CRYPTO_LIST.has(baseLower)) {
+    if (CRYPTO_LIST.has(baseLower) && (cat === 'CRYPTO' || cat === '' || cat === 'OTHER')) {
       return <CryptoImage symbol={baseLower} size={size} />;
     }
   }
@@ -267,21 +301,33 @@ export default function AssetIcon({
     );
   }
 
-  // COMMODITY / INDEX / fallback → coloured tile with text glyph
+  // COMMODITY / INDEX / fallback → coloured tile with text glyph.
+  // Use the resolved BASE for the fallback so BTCUSD shows "BTC" instead
+  // of the symbol-prefix "BT" (which scans as a country code, not a coin).
+  const fallbackGlyph = (base.length >= 3 ? base.slice(0, 3) : base || sym.slice(0, 2) || '?');
   const meta =
     COMMODITY[base] ||
     COMMODITY[sym]  ||
     INDEX[sym]      ||
-    { glyph: sym.slice(0, 2) || '?', bg: '#475569' };
+    { glyph: fallbackGlyph, bg: '#475569' };
 
+  // Inline `color: #FFFFFF` + `keep-white` class — Tailwind's text-white
+  // gets overridden by global table/typography styles in some surfaces
+  // (Orders activity rail, dashboards), which is why the glyph used to
+  // render dark-on-dark. Forcing it via inline style guarantees the
+  // text is always visible against the coloured tile.
   return (
     <span
-      className={`flex items-center justify-center font-bold text-white shrink-0 ${round ? 'rounded-full' : 'rounded-xl'}`}
+      className={`keep-white flex items-center justify-center font-bold shrink-0 ${round ? 'rounded-full' : 'rounded-xl'}`}
       style={{
         width: size,
         height: size,
         background: meta.bg,
+        color: '#FFFFFF',
         fontSize: Math.round(size * (meta.glyph.length > 2 ? 0.32 : 0.4)),
+        letterSpacing: meta.glyph.length > 2 ? '-0.02em' : '0',
+        lineHeight: 1,
+        textShadow: '0 1px 1px rgba(0,0,0,0.25)',
       }}
     >
       {meta.glyph}

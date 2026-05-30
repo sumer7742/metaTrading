@@ -42,6 +42,7 @@ const NAV_SECTIONS = [
       { to: '/plans', icon: I.plans, label: 'Plans' },
       { to: '/account-plans', icon: I.plans, label: 'Account Plans' },
       { to: '/subscription-wallets', icon: I.plans, label: 'Sub. Wallets' },
+      { to: '/user-transfers', icon: I.deposit, label: 'User Transfers' },
     ],
   },
   {

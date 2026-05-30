@@ -751,6 +751,18 @@ export default function PriceChart({
   // onto a new price (snapped to pricePrecision).
   onPositionUpdateSl = null,
   onPositionUpdateTp = null,
+  // ── Pending-order pill action callbacks ─────────────────────────────
+  // Mirror of the position callbacks but routed to /trading/orders/:id
+  // so a LIMIT / STOP order shown on the chart gets the same draggable
+  // pill UI: drag the entry line to re-price, drag from +TP / +SL to
+  // attach a level, × to cancel / strip.
+  onOrderEdit = null,
+  onOrderCancel = null,
+  onOrderUpdatePrice = null,   // (order, price, opts?) — drag entry line
+  onOrderUpdateSl = null,
+  onOrderUpdateTp = null,
+  onOrderRemoveSl = null,
+  onOrderRemoveTp = null,
 }) {
   const containerRef = useRef(null);
   const rsiContainerRef = useRef(null);
@@ -765,6 +777,13 @@ export default function PriceChart({
   const subPanelChartsRef = useRef({});
   const priceLinesRef = useRef(new Map());
   const candlesRef = useRef([]);
+  // Live-price / instrument refs — synced via effects below so the drag
+  // handler can always read the freshest values without resubscribing.
+  // Without these refs the order-entry drag clamp would use the value
+  // captured at drag start, which can be stale by the time the user
+  // drops if the market moved during the drag.
+  const livePriceRef = useRef(null);
+  const instrumentRef = useRef(null);
   // Pixel-positioned HTML pills layered over each position's entry/SL/TP
   // line (TradingView-style). Keyed by line identifier; y = pixel offset
   // from the top of the chart container.
@@ -783,6 +802,14 @@ export default function PriceChart({
   // line so the autoscale provider can include them in the y-axis range —
   // ensures user-placed price lines are always visible on the chart.
   const extraPricesRef = useRef([]);
+
+  // Keep refs in sync with the latest props every render so the drag
+  // handler always reads fresh livePrice / bid / ask, not the value at
+  // drag start. Critical for the order-entry clamp — market can move
+  // during a drag and we need to clamp against the current market, not
+  // the price that was live when the user first grabbed the pill.
+  livePriceRef.current = livePrice;
+  instrumentRef.current = instrument;
 
   // Soft-animation state for the y-axis. `animLo/animHi` are the
   // currently-displayed range; `targetLo/targetHi` are where we're
@@ -1917,17 +1944,72 @@ export default function PriceChart({
     const out = [];
     for (const p of symbolPositions) {
       if (p.entryPrice && Number(p.entryPrice) > 0) {
-        out.push({ key: `pos:${p._id}:entry`, kind: 'entry', price: Number(p.entryPrice), position: p });
+        out.push({ key: `pos:${p._id}:entry`, kind: 'entry', price: Number(p.entryPrice), position: p, target: 'position' });
       }
       if (p.stopLoss) {
-        out.push({ key: `pos:${p._id}:sl`, kind: 'sl', price: Number(p.stopLoss), position: p });
+        out.push({ key: `pos:${p._id}:sl`, kind: 'sl', price: Number(p.stopLoss), position: p, target: 'position' });
       }
       if (p.takeProfit) {
-        out.push({ key: `pos:${p._id}:tp`, kind: 'tp', price: Number(p.takeProfit), position: p });
+        out.push({ key: `pos:${p._id}:tp`, kind: 'tp', price: Number(p.takeProfit), position: p, target: 'position' });
+      }
+    }
+    // Pending LIMIT / STOP orders — same pill UX. Entry price comes from
+    // `price` (LIMIT) or `stopPrice` (STOP). The original order is kept
+    // on `order` so cancel / modify callbacks have the raw record. We
+    // also synthesize a position-shaped object on `position` so the same
+    // PositionPill render path works without branching on every line.
+    //
+    // /orders/open returns PENDING *and* PARTIALLY_FILLED. Only PENDING
+    // can be modified by the backend — drawing a draggable pill for a
+    // PARTIALLY_FILLED order would let the user drag it and then hit
+    // "Only PENDING orders can be modified" on drop. Skip those here.
+    // STOP orders that have already triggered are also un-modifiable.
+    for (const o of symbolOrders) {
+      if (o.status && o.status !== 'PENDING') continue;
+      if (o.type === 'STOP' && o.triggeredAt) continue;
+      const entryPrice = o.type === 'STOP' ? Number(o.stopPrice) : Number(o.price);
+      if (!Number.isFinite(entryPrice) || entryPrice <= 0) continue;
+      const pseudo = {
+        _id: o._id,
+        side: o.side,
+        quantity: o.quantity,
+        entryPrice,
+        stopLoss: o.stopLoss,
+        takeProfit: o.takeProfit,
+        unrealizedPnl: '0',
+        __orderType: o.type,
+      };
+      out.push({
+        key: `order:${o._id}:entry`,
+        kind: 'entry',
+        price: entryPrice,
+        position: pseudo,
+        order: o,
+        target: 'order',
+      });
+      if (o.stopLoss) {
+        out.push({
+          key: `order:${o._id}:sl`,
+          kind: 'sl',
+          price: Number(o.stopLoss),
+          position: pseudo,
+          order: o,
+          target: 'order',
+        });
+      }
+      if (o.takeProfit) {
+        out.push({
+          key: `order:${o._id}:tp`,
+          kind: 'tp',
+          price: Number(o.takeProfit),
+          position: pseudo,
+          order: o,
+          target: 'order',
+        });
       }
     }
     return out;
-  }, [symbolPositions, chartType]);
+  }, [symbolPositions, symbolOrders, chartType]);
 
   useEffect(() => {
     const series = candleSeriesRef.current;
@@ -1983,7 +2065,7 @@ export default function PriceChart({
   //     opens the Edit TP/SL modal via onPositionEdit.
   // Pan/zoom is frozen for the duration of the gesture so a drag can't
   // be hijacked by chart scroll.
-  const startPillDrag = useCallback((pill, evt) => {
+  const startPillDrag = useCallback((pill, evt, opts = {}) => {
     const chart = chartRef.current;
     const series = candleSeriesRef.current;
     const container = containerRef.current;
@@ -1993,11 +2075,25 @@ export default function PriceChart({
     evt.stopPropagation();
 
     const rect = container.getBoundingClientRect();
+    // immediate=true skips the click-vs-drag threshold and promotes
+    // straight to a drag gesture. Used for the entry pill's quick-add
+    // buttons — the user explicitly grabbed a +TP / +SL handle so we
+    // shouldn't gate it behind 4 px of motion.
+    const immediate = opts.immediate === true;
     const CLICK_THRESHOLD = 4; // px moved before we treat the gesture as a drag
-    const startX = evt.clientX;
-    const startY = evt.clientY;
-    let didDrag = false;
-    const draggable = pill.kind === 'sl' || pill.kind === 'tp';
+    // Touch events expose clientX/Y on the first touch; mouse events have
+    // them directly. Normalise once so the rest of the gesture works for
+    // both pointer kinds.
+    const pt = (e) => {
+      const t = e.touches?.[0] || e.changedTouches?.[0];
+      return t ? { x: t.clientX, y: t.clientY } : { x: e.clientX, y: e.clientY };
+    };
+    const startPt = pt(evt);
+    let didDrag = immediate;
+    // Pending-order entry lines are draggable (re-price the LIMIT / STOP
+    // trigger). Position entry lines are static — only SL/TP move.
+    const isOrderEntry = pill.kind === 'entry' && pill.target === 'order';
+    const draggable = pill.kind === 'sl' || pill.kind === 'tp' || isOrderEntry;
 
     // Drag overlay tint — matches the line stroke colour for each kind.
     const color = pill.kind === 'sl'
@@ -2008,49 +2104,216 @@ export default function PriceChart({
     const step = Math.pow(10, -Math.min(8, Math.max(0, Number(pricePrecision) || 2)));
     const snap = (p) => Math.round(p / step) * step;
 
+    // ── Order-side guard ────────────────────────────────────────────
+    // Dragging a LIMIT or STOP order across the live market price would
+    // cause the backend to fill it immediately (modifyOrder removes the
+    // resting order, re-adds at the new price, and if the new price has
+    // crossed market it gets matched right away — user perceives this as
+    // "the order opened at live price instead of moving").
+    //
+    // Clamp the dragged price to the valid side of market for each
+    // order type/side. Use bid/ask when available (tighter, more
+    // accurate than lastPrice) and read everything via refs so a market
+    // move mid-drag updates the clamp in real time. We leave a 3-tick
+    // cushion so float-precision quirks and rapid ticks can't sneak the
+    // order across the boundary:
+    //   BUY  LIMIT → price < ask  (resting buy below offer)
+    //   SELL LIMIT → price > bid  (resting sell above bid)
+    //   BUY  STOP  → stopPrice > ask  (trigger if rises)
+    //   SELL STOP  → stopPrice < bid  (trigger if falls)
+    // SL/TP drags use a different guard (anchored to the entry price,
+    // server-validated) so they stay untouched.
+    const orderType = pill.order?.type || pill.position?.__orderType;
+    const orderSide = pill.position?.side;
+    const clampOrderPrice = (p) => {
+      if (!isOrderEntry) return p;
+      const inst = instrumentRef.current;
+      const last = Number(livePriceRef.current);
+      const askRaw = Number(inst?.ask);
+      const bidRaw = Number(inst?.bid);
+      const ask = Number.isFinite(askRaw) && askRaw > 0 ? askRaw : last;
+      const bid = Number.isFinite(bidRaw) && bidRaw > 0 ? bidRaw : last;
+      if (!Number.isFinite(ask) || !Number.isFinite(bid) || ask <= 0 || bid <= 0) return p;
+      const cushion = step * 3;
+      if (orderType === 'LIMIT') {
+        if (orderSide === 'BUY')  return Math.min(p, ask - cushion);
+        if (orderSide === 'SELL') return Math.max(p, bid + cushion);
+      } else if (orderType === 'STOP') {
+        if (orderSide === 'BUY')  return Math.max(p, ask + cushion);
+        if (orderSide === 'SELL') return Math.min(p, bid - cushion);
+      }
+      return p;
+    };
+
+    // ── coordinateToPrice helper ────────────────────────────────────
+    // Wraps lightweight-charts' coordinateToPrice with bounds clamping so
+    // a drag past the top/bottom edge of the chart still produces a valid
+    // price (clipped to the visible range).
+    const coordinateToPrice = (clientY) => {
+      const y = Math.max(0, Math.min(rect.height, clientY - rect.top));
+      const p = series.coordinateToPrice(y);
+      return { y, price: Number.isFinite(p) ? p : null };
+    };
+
+    // Magnetic snap to the nearest candle high / low within a small
+    // tolerance band. Tolerance scales with the visible price range so
+    // it stays useful on both BTC-sized prices and EURUSD-sized prices.
+    const SNAP_FRACTION = 0.0015; // ~0.15% of visible range
+    const candles = candlesRef.current || [];
+    const visiblePxHigh = Number(series.coordinateToPrice(0)) || 0;
+    const visiblePxLow  = Number(series.coordinateToPrice(rect.height)) || 0;
+    const tol = Math.abs(visiblePxHigh - visiblePxLow) * SNAP_FRACTION;
+    const magneticSnap = (p) => {
+      if (!candles.length || !(tol > 0)) return p;
+      let best = null;
+      let bestDist = Infinity;
+      // Only consider the last 60 candles — that's what's visible at
+      // typical zooms and keeps the per-frame scan cheap.
+      const start = Math.max(0, candles.length - 60);
+      for (let i = start; i < candles.length; i++) {
+        const c = candles[i];
+        const h = Number(c.high);
+        const l = Number(c.low);
+        if (Number.isFinite(h)) {
+          const d = Math.abs(p - h);
+          if (d < bestDist) { bestDist = d; best = h; }
+        }
+        if (Number.isFinite(l)) {
+          const d = Math.abs(p - l);
+          if (d < bestDist) { bestDist = d; best = l; }
+        }
+      }
+      return best != null && bestDist <= tol ? best : p;
+    };
+
+    // Throttled silent backend push — fires at most every LIVE_THROTTLE
+    // ms while dragging so the order state stays in sync without
+    // spamming the API or surfacing a toast per frame.
+    const LIVE_THROTTLE = 250;
+    let lastLiveAt = 0;
+    let pendingLivePrice = null;
+    let liveTimer = null;
+    // Resolve the right backend callback based on what's being dragged.
+    // Order entries reroute to onOrderUpdatePrice; SL/TP route to the
+    // order or position variant depending on the descriptor target.
+    const resolveCb = () => {
+      if (isOrderEntry) return onOrderUpdatePrice;
+      if (pill.target === 'order') {
+        return pill.kind === 'sl' ? onOrderUpdateSl : onOrderUpdateTp;
+      }
+      return pill.kind === 'sl' ? onPositionUpdateSl : onPositionUpdateTp;
+    };
+    const liveCb = resolveCb();
+    // Callback subject — order callbacks expect the raw order; position
+    // callbacks expect the position object.
+    const subject = pill.target === 'order' ? (pill.order || pill.position) : pill.position;
+    // Skip live throttled pushes for order targets. The backend's
+    // modifyOrder removes the LIMIT from the book and re-adds it per
+    // request, so multiple in-flight PUTs during a drag can race the
+    // matching engine and accidentally fill / cancel the order. Order
+    // drags commit on drop only; position SL/TP drags are safe because
+    // they don't touch the order book.
+    const allowLive = pill.target !== 'order';
+    const pushLive = (price) => {
+      if (!allowLive || !liveCb) return;
+      const now = Date.now();
+      pendingLivePrice = price;
+      const fire = () => {
+        lastLiveAt = Date.now();
+        liveTimer = null;
+        try { liveCb(subject, pendingLivePrice, { live: true }); } catch (_) {}
+      };
+      if (now - lastLiveAt >= LIVE_THROTTLE) {
+        fire();
+      } else if (!liveTimer) {
+        liveTimer = setTimeout(fire, LIVE_THROTTLE - (now - lastLiveAt));
+      }
+    };
+
     try { chart.applyOptions({ handleScroll: false, handleScale: false }); } catch (_) {}
+    // Body-level cursor lock so the grabbing pointer persists even when
+    // the mouse leaves the pill mid-drag.
+    const prevCursor = document.body.style.cursor;
+    const prevSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'grabbing';
+    document.body.style.userSelect = 'none';
+
+    // Immediate mode: seed dragState now so the preview pill renders at
+    // the grab origin before the first mousemove fires.
+    if (immediate && draggable) {
+      setDragState({ key: pill.key, kind: pill.kind, position: pill.position, order: pill.order || null, target: pill.target || 'position', y: pill.y, price: pill.price, color, snapped: false });
+    }
 
     const onMove = (e) => {
-      const dx = e.clientX - startX;
-      const dy = e.clientY - startY;
+      // Block touch scroll/zoom while the user is dragging the pill on mobile.
+      if (e.cancelable && e.touches) { try { e.preventDefault(); } catch (_) {} }
+      const cur = pt(e);
+      const dx = cur.x - startPt.x;
+      const dy = cur.y - startPt.y;
       // Promote to drag once the pointer moves past the click threshold.
       // Only SL/TP can actually be dragged — for the entry pill, motion
       // past the threshold simply cancels the would-be click.
       if (!didDrag && (Math.abs(dx) > CLICK_THRESHOLD || Math.abs(dy) > CLICK_THRESHOLD)) {
         didDrag = true;
         if (draggable) {
-          setDragState({ key: pill.key, kind: pill.kind, position: pill.position, y: pill.y, price: pill.price, color });
+          setDragState({ key: pill.key, kind: pill.kind, position: pill.position, order: pill.order || null, target: pill.target || 'position', y: pill.y, price: pill.price, color, snapped: false });
         }
       }
       if (!didDrag || !draggable) return;
-      const y = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
-      let p = series.coordinateToPrice(y);
-      if (p == null || !Number.isFinite(p)) return;
-      p = snap(p);
-      setDragState((curr) => curr ? { ...curr, y, price: p } : null);
+      const { y, price } = coordinateToPrice(cur.y);
+      if (price == null) return;
+      // Clamp to the valid side of market for order entry drags so the
+      // user can't accidentally drag a LIMIT/STOP across live price and
+      // trigger an immediate fill.
+      const clamped = clampOrderPrice(price);
+      const snappedPrice = magneticSnap(clamped);
+      const snapped = snappedPrice !== clamped;
+      const p = snap(snappedPrice);
+      // After snap, the y position should reflect the (possibly clamped)
+      // price so the pill visually stops at the live-price barrier even
+      // when the cursor pushes past it. Re-derive y from p.
+      let displayY = y;
+      try {
+        const recomputed = series.priceToCoordinate(p);
+        if (Number.isFinite(recomputed)) displayY = recomputed;
+      } catch (_) {}
+      setDragState((curr) => curr ? { ...curr, y: displayY, price: p, snapped } : null);
       const line = priceLinesRef.current.get(pill.key);
       if (line) {
         try { line.applyOptions({ price: p }); } catch (_) {}
       }
+      pushLive(p);
     };
 
     const onUp = () => {
       window.removeEventListener('mousemove', onMove);
       window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onUp);
+      window.removeEventListener('touchcancel', onUp);
       try { chart.applyOptions({ handleScroll: true, handleScale: true }); } catch (_) {}
+      document.body.style.cursor = prevCursor;
+      document.body.style.userSelect = prevSelect;
+      if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
 
       if (didDrag && draggable) {
-        // Drag drop — commit the new price.
+        // Drag drop — commit the new price (final, with toast).
         setDragState((curr) => {
           if (!curr) return null;
-          const cb = curr.kind === 'sl' ? onPositionUpdateSl : onPositionUpdateTp;
-          if (cb) cb(curr.position, curr.price);
+          const cb = resolveCb();
+          // Re-clamp at drop time. Market can move between the last
+          // mousemove and mouseup; without a final clamp the committed
+          // price could have just crossed market in that tiny window.
+          const finalPrice = snap(clampOrderPrice(curr.price));
+          if (cb) cb(subject, finalPrice);
           return null;
         });
       } else if (!didDrag) {
-        // Click — open the Edit TP/SL modal.
+        // Click — open the Edit TP/SL modal (or the order edit modal
+        // when the pill belongs to a pending order).
         setDragState(null);
-        onPositionEdit?.(pill.position);
+        if (pill.target === 'order') onOrderEdit?.(pill.order || pill.position);
+        else onPositionEdit?.(pill.position);
       } else {
         setDragState(null);
       }
@@ -2058,7 +2321,41 @@ export default function PriceChart({
 
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
-  }, [pricePrecision, onPositionUpdateSl, onPositionUpdateTp, onPositionEdit]);
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('touchend', onUp);
+    window.addEventListener('touchcancel', onUp);
+  }, [pricePrecision, livePrice, onPositionUpdateSl, onPositionUpdateTp, onPositionEdit,
+      onOrderUpdatePrice, onOrderUpdateSl, onOrderUpdateTp, onOrderEdit]);
+
+  // Entry-pill quick-add: user mousedowns on the inline "+TP" / "+SL"
+  // handle inside the entry pill. We synthesize a pill descriptor at the
+  // entry's pixel Y and reuse the SL/TP drag pipeline (drag → throttled
+  // live push → drop commit). The synthetic pill key is namespaced with
+  // `:new` so it never collides with an existing line; the ephemeral
+  // preview is rendered separately below when dragState references it.
+  // Works for both filled positions and pending orders — target/order are
+  // threaded through so the drop commit hits the right backend endpoint.
+  const startQuickAddDrag = useCallback((position, kind, evt, ctx = {}) => {
+    const series = candleSeriesRef.current;
+    if (!series || !position) return;
+    const entryPrice = Number(position.entryPrice);
+    if (!Number.isFinite(entryPrice) || entryPrice <= 0) return;
+    let entryY = null;
+    try { entryY = series.priceToCoordinate(entryPrice); } catch (_) {}
+    if (entryY == null || !Number.isFinite(entryY)) return;
+    const target = ctx.target || 'position';
+    const keyPrefix = target === 'order' ? 'order' : 'pos';
+    const syntheticPill = {
+      key: `${keyPrefix}:${position._id}:${kind}:new`,
+      kind,                       // 'sl' | 'tp'
+      position,
+      order: ctx.order || null,
+      target,
+      y: entryY,
+      price: entryPrice,
+    };
+    startPillDrag(syntheticPill, evt, { immediate: true });
+  }, [startPillDrag]);
 
   // ─── 9. MACD sub-panel ───────────────────────────────────────────────
   useEffect(() => {
@@ -2415,24 +2712,65 @@ export default function PriceChart({
               const drag = dragState && dragState.key === p.key ? dragState : null;
               const y = drag ? drag.y : p.y;
               const overridePrice = drag ? drag.price : null;
+              // For the entry pill, hide the inline +TP/+SL quick-add
+              // handle once the level already exists (its real pill is
+              // rendered separately below). Keeps the entry pill compact
+              // and avoids two ways to drag the same level.
+              const showQuickTp = p.kind === 'entry' && !p.position.takeProfit;
+              const showQuickSl = p.kind === 'entry' && !p.position.stopLoss;
+              const isOrder = p.target === 'order';
               return (
                 <PositionPill
                   key={p.key}
                   y={y}
                   kind={p.kind}
                   position={p.position}
+                  target={p.target}
                   pricePrecision={pricePrecision}
                   isDragging={!!drag}
+                  snapped={!!(drag && drag.snapped)}
                   overridePrice={overridePrice}
+                  showQuickTp={showQuickTp}
+                  showQuickSl={showQuickSl}
                   onClose={() => {
-                    if (p.kind === 'entry') onPositionClose?.(p.position);
-                    else if (p.kind === 'sl') onPositionRemoveSl?.(p.position);
-                    else if (p.kind === 'tp') onPositionRemoveTp?.(p.position);
+                    if (p.kind === 'entry') {
+                      if (isOrder) onOrderCancel?.(p.order || p.position);
+                      else onPositionClose?.(p.position);
+                    } else if (p.kind === 'sl') {
+                      if (isOrder) onOrderRemoveSl?.(p.order || p.position);
+                      else onPositionRemoveSl?.(p.position);
+                    } else if (p.kind === 'tp') {
+                      if (isOrder) onOrderRemoveTp?.(p.order || p.position);
+                      else onPositionRemoveTp?.(p.position);
+                    }
                   }}
                   onDragStart={(e) => startPillDrag(p, e)}
+                  onQuickDragStart={(kind, e) => startQuickAddDrag(
+                    p.position, kind, e,
+                    { target: p.target, order: p.order },
+                  )}
                 />
               );
             })}
+            {/* Ephemeral preview pill — rendered while the user is mid-drag
+                on a quick-add gesture. dragState references a synthetic key
+                (`:new` suffix) that isn't in positionPills, so we render a
+                throwaway PositionPill that tracks the cursor until drop. */}
+            {dragState && dragState.key.endsWith(':new') && (
+              <PositionPill
+                key={dragState.key}
+                y={dragState.y}
+                kind={dragState.kind}
+                position={dragState.position}
+                pricePrecision={pricePrecision}
+                isDragging
+                snapped={!!dragState.snapped}
+                overridePrice={dragState.price}
+                onClose={() => {}}
+                onDragStart={() => {}}
+                onQuickDragStart={() => {}}
+              />
+            )}
           </div>
         )}
 
@@ -2664,17 +3002,34 @@ function HeikinAshiGlyph() {
 //     (except ×) starts a drag.
 function PositionPill({
   y, kind, position, pricePrecision,
+  target = 'position',
   isDragging = false,
+  snapped = false,
   overridePrice = null,
+  showQuickTp = false,
+  showQuickSl = false,
   onClose,
   onDragStart,
+  onQuickDragStart,
 }) {
   const [hover, setHover] = useState(false);
+  // Mount-in animation flag. Flips to `true` on the next frame so the
+  // CSS transition has a real start state to animate from. Without the
+  // rAF dodge React batches the initial render and the transition fires
+  // with no delta. Animation runs once per pill key (i.e. once per
+  // order creation), giving the TP/SL pill a soft slide-in on appear.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    const r = requestAnimationFrame(() => setMounted(true));
+    return () => cancelAnimationFrame(r);
+  }, []);
 
   const qty = Number(position.quantity) || 0;
   const entry = Number(position.entryPrice) || 0;
   const isBuy = position.side === 'BUY';
-  const draggable = kind === 'sl' || kind === 'tp';
+  const isOrder = target === 'order';
+  // Order entries are also draggable (re-price the LIMIT / STOP trigger).
+  const draggable = kind === 'sl' || kind === 'tp' || (kind === 'entry' && isOrder);
   const active = hover || isDragging;
 
   // Resolve target price: while dragging, use the live override.
@@ -2710,8 +3065,20 @@ function PositionPill({
     minimumFractionDigits: 2,
     maximumFractionDigits: 4,
   });
-  const usdStr = `${usd >= 0 ? '+' : ''}${usd.toFixed(2)} USD`;
+  const usdStr = `${usd >= 0 ? '+' : ''}${usd.toFixed(2)}`;
   const priceStr = targetPrice.toFixed(Math.min(8, Math.max(0, Number(pricePrecision) || 2)));
+  // Short kind label that renders inside the pill. Entry pills keep their
+  // existing qty-first layout for backwards compatibility, while SL/TP
+  // pills lead with the label so users can tell them apart at a glance.
+  // Pending-order entry pills also lead with a label (LIMIT / STOP) so
+  // the user can distinguish them from filled-position entries.
+  const labelStr = kind === 'sl'
+    ? 'SL'
+    : kind === 'tp'
+      ? 'TP'
+      : isOrder
+        ? (position.__orderType === 'STOP' ? 'STOP' : 'LIMIT')
+        : null;
 
   return (
     <>
@@ -2750,56 +3117,140 @@ function PositionPill({
 
       {/* The pill itself — compact, square corners, centered horizontally */}
       <div
-        className="absolute pointer-events-auto select-none"
+        className="absolute pointer-events-auto select-none touch-none"
         style={{
           // Height ≈ 18px → offset by 9 to centre on the line.
           top: `${y - 9}px`,
           // Horizontally centered over the chart.
           left: '50%',
-          transform: `translateX(-50%) ${active ? 'scale(1.02)' : 'scale(1)'}`,
+          // Mount-in animation: start slightly translated + faded, settle
+          // into place on the next frame. Live drags suppress the spring
+          // so the pill tracks the cursor 1:1.
+          transform: `translateX(-50%) translateY(${mounted ? 0 : -4}px) ${active ? 'scale(1.02)' : 'scale(1)'}`,
+          opacity: mounted ? 1 : 0,
           transformOrigin: 'center center',
           transition: isDragging
             ? 'none'
-            : 'top 80ms ease-out, transform 120ms ease-out',
+            : 'top 80ms ease-out, transform 220ms cubic-bezier(0.16,1,0.3,1), opacity 220ms ease-out',
         }}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
         onMouseDown={(e) => onDragStart?.(e)}
+        onTouchStart={(e) => onDragStart?.(e)}
       >
-        <div
-          className="flex items-stretch font-mono text-[10.5px] leading-none bg-white/95 backdrop-blur-[3px]"
-          style={{
-            border: `1px solid ${color}`,
-            color,
-            cursor: isDragging
-              ? 'grabbing'
-              : draggable
-                ? 'ns-resize'
-                : 'pointer',
-            boxShadow: active
-              ? `0 0 0 1px ${glowColor}55, 0 0 12px ${glowColor}55, 0 2px 6px rgba(0,0,0,0.10)`
-              : '0 1px 2px rgba(0,0,0,0.08)',
-            transition: 'box-shadow 120ms ease-out, border-color 120ms ease-out',
-          }}
-          title="Click to edit · drag to move"
-        >
-          <span className="px-1.5 py-0.5 tabular-nums font-semibold">{qtyStr}</span>
-          <span
-            className="px-1.5 py-0.5 tabular-nums font-semibold"
-            style={{ borderLeft: `1px solid ${color}` }}
+        {/* Outer group — splits the pill into two side-by-side chips:
+              1. quick-add (+TP / +SL) — leads on the left so the user
+                 can grab a level as soon as they spot the position.
+              2. main info chip — price/qty · PnL · × close.
+            A small gap between them prevents the +TP/+SL buttons from
+            visually merging into the price segment. */}
+        <div className="flex items-stretch gap-1.5 font-mono text-[10.5px] leading-none">
+          {/* +TP — standalone draggable chip, green. mousedown stops
+              propagation so the entry pill's own drag doesn't fire. */}
+          {showQuickTp && (
+            <button
+              type="button"
+              onMouseDown={(e) => { e.stopPropagation(); onQuickDragStart?.('tp', e); }}
+              onTouchStart={(e) => { e.stopPropagation(); onQuickDragStart?.('tp', e); }}
+              onClick={(e) => e.stopPropagation()}
+              className="px-1.5 py-0.5 hover:brightness-110 transition-all flex items-center gap-0.5 keep-white"
+              style={{
+                background: '#10b981',
+                color: '#FFFFFF',
+                border: '1px solid #10b981',
+                cursor: 'grab',
+                boxShadow: '0 1px 3px rgba(16,185,129,0.25)',
+              }}
+              title="Drag down/up to set Take Profit"
+            >
+              <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+                <path d="M12 5v14" /><path d="M5 12h14" />
+              </svg>
+              <span className="text-[9px] font-extrabold tracking-wide">TP</span>
+            </button>
+          )}
+          {/* +SL — standalone draggable chip, red. */}
+          {showQuickSl && (
+            <button
+              type="button"
+              onMouseDown={(e) => { e.stopPropagation(); onQuickDragStart?.('sl', e); }}
+              onTouchStart={(e) => { e.stopPropagation(); onQuickDragStart?.('sl', e); }}
+              onClick={(e) => e.stopPropagation()}
+              className="px-1.5 py-0.5 hover:brightness-110 transition-all flex items-center gap-0.5 keep-white"
+              style={{
+                background: '#ef4444',
+                color: '#FFFFFF',
+                border: '1px solid #ef4444',
+                cursor: 'grab',
+                boxShadow: '0 1px 3px rgba(239,68,68,0.25)',
+              }}
+              title="Drag down/up to set Stop Loss"
+            >
+              <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+                <path d="M12 5v14" /><path d="M5 12h14" />
+              </svg>
+              <span className="text-[9px] font-extrabold tracking-wide">SL</span>
+            </button>
+          )}
+          {/* Main info chip — label · price/qty · PnL · × close. */}
+          <div
+            className="flex items-stretch bg-white/85 backdrop-blur-md"
+            style={{
+              border: `1px solid ${snapped ? glowColor : color}`,
+              color,
+              cursor: isDragging
+                ? 'grabbing'
+                : draggable
+                  ? 'grab'
+                  : 'pointer',
+              boxShadow: active
+                ? `0 0 0 1px ${glowColor}55, 0 0 14px ${glowColor}66, 0 2px 8px rgba(0,0,0,0.12)`
+                : '0 1px 3px rgba(0,0,0,0.10)',
+              transition: 'box-shadow 120ms ease-out, border-color 120ms ease-out, background-color 120ms ease-out',
+            }}
+            title={draggable ? `${labelStr || ''} · drag to move · click to edit` : 'Click to edit · drag to move'}
           >
-            {usdStr}
-          </span>
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onClose?.(); }}
-            onMouseDown={(e) => e.stopPropagation()}
-            className="px-1.5 py-0.5 hover:bg-bg-hover transition-colors"
-            style={{ borderLeft: `1px solid ${color}`, cursor: 'pointer' }}
-            title={kind === 'entry' ? 'Close position' : `Remove ${kind.toUpperCase()}`}
-          >
-            ×
-          </button>
+            {/* Lead label — TP/SL/LIMIT/STOP chip with coloured bg. */}
+            {labelStr && (
+              <span
+                className="px-1.5 py-0.5 font-extrabold tracking-wide text-[10px] keep-white"
+                style={{ background: color, color: '#FFFFFF' }}
+              >
+                {labelStr}
+              </span>
+            )}
+            {/* Current price (when labeled) or qty (entry pill fallback). */}
+            {labelStr ? (
+              <span
+                className="px-1.5 py-0.5 tabular-nums font-bold"
+                style={{ borderLeft: `1px solid ${color}` }}
+              >
+                {priceStr}
+              </span>
+            ) : (
+              <span className="px-1.5 py-0.5 tabular-nums font-semibold">{qtyStr}</span>
+            )}
+            <span
+              className="px-1.5 py-0.5 tabular-nums font-semibold"
+              style={{ borderLeft: `1px solid ${color}` }}
+            >
+              {usdStr}
+            </span>
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onClose?.(); }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
+              className="px-1.5 py-0.5 hover:bg-black/10 transition-colors flex items-center"
+              style={{ borderLeft: `1px solid ${color}`, cursor: 'pointer' }}
+              title={kind === 'entry' ? (isOrder ? 'Cancel order' : 'Close position') : `Remove ${labelStr || kind.toUpperCase()}`}
+            >
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round">
+                <path d="M18 6L6 18" />
+                <path d="M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
     </>

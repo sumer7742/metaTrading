@@ -36,6 +36,7 @@ const PRIMARY_NAV = [
   { to: '/watchlist', label: 'Watchlist' },
   { to: '/dashboard', label: 'Portfolio' },
   { to: '/wallet', label: 'Wallets' },
+  { to: '/copy-trading', label: 'Copy Trading' },
 ];
 
 // Secondary nav was removed — these destinations now live in Explore's
@@ -218,12 +219,17 @@ export default function Layout({ children }) {
                 key={item.label}
                 to={item.to}
                 className={({ isActive: a }) =>
-                  `px-3 py-2 rounded-lg text-sm font-semibold transition-colors ${
+                  `relative px-3 py-2 rounded-lg text-sm font-semibold transition-colors inline-flex items-center gap-1.5 ${
                     a ? 'bg-primary-500/10 text-primary-600' : 'text-text-secondary hover:text-text-primary hover:bg-bg-hover'
                   }`
                 }
               >
                 {item.label}
+                {item.badge && (
+                  <span className="text-[9px] font-extrabold uppercase tracking-wider px-1.5 py-0.5 rounded bg-primary-500 text-white">
+                    {item.badge}
+                  </span>
+                )}
               </NavLink>
             ))}
           </nav>

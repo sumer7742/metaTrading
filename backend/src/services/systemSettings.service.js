@@ -16,6 +16,13 @@ const TTL_MS = Number(process.env.SETTINGS_CACHE_TTL_MS) || 60_000;
 const DEFAULTS = {
   routingMode: 'B_BOOK',
   defaultLpProvider: 'NONE',
+  // Peer-to-peer wallet transfers (Wallet → Transfer Funds → Another User).
+  // Keep keys flat (dotted strings as Mongo doc keys) so adding more
+  // transfer knobs later is a single-row insert each.
+  'userTransfer.enabled':    true,
+  'userTransfer.min':        '1',
+  'userTransfer.max':        '0',   // 0 = no upper cap
+  'userTransfer.feePercent': '0',
 };
 
 const _cache = new Map(); // key -> { value, expiresAt }

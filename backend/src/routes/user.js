@@ -8,6 +8,8 @@ const router = express.Router();
 router.use(authenticate);
 
 router.get('/dashboard', dash.getDashboard);
+router.get('/dashboard/lifetime-stats', dash.getLifetimeStats);
+router.get('/dashboard/monthly-series', dash.getMonthlySeries);
 router.put('/profile', c.updateProfile);
 router.post('/kyc', c.submitKYC);
 router.get('/kyc/status', c.getKycStatus);

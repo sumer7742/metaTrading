@@ -50,6 +50,11 @@ router.get('/withdrawals', c.listWithdrawals);
 router.post('/transfers', c.internalTransfer);
 router.post('/convert', c.convertCurrency);
 
+// Peer-to-peer transfer (Transfer Funds → Another User).
+router.get ('/recipients/search',     c.searchTransferRecipients);
+router.get ('/transfer-user/settings', c.getUserTransferSettings);
+router.post('/transfer-user',          c.transferToUser);
+
 console.log('[wallet routes] registered:', router.stack.filter(l => l.route).map(l => `${Object.keys(l.route.methods)[0].toUpperCase()} ${l.route.path}`).join(', '));
 
 module.exports = router;

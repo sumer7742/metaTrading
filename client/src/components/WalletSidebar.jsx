@@ -19,13 +19,13 @@ import { Link } from 'react-router-dom';
  */
 const NAV_ITEMS = [
   { id: 'overview', label: 'Account Overview',     icon: <NIOverview /> },
-  { id: 'grow',     label: 'Deposit Funds',        icon: <NIDeposit />, newBadge: true },
+  { id: 'grow',     label: 'Deposit Funds',        icon: <NIDeposit /> },
   { id: 'withdraw', label: 'Withdraw Funds',       icon: <NIWithdraw /> },
   { id: 'transfer', label: 'Internal Transfer',    icon: <NITransfer /> },
   // Subscription Wallet is a SEPARATE page (its own balance, plan
   // charges only). Always navigate via Link even when the sidebar is
   // in onSelect-callback mode on the Wallet page.
-  { id: 'subscription', label: 'Subscription Wallet', icon: <NISubscription />, to: '/subscription-wallet', newBadge: true },
+  { id: 'subscription', label: 'Subscription Wallet', icon: <NISubscription />, to: '/subscription-wallet' },
   { id: 'history',  label: 'Transaction History',  icon: <NIHistory /> },
   { id: 'details',  label: 'Account Details',      icon: <NIDetails /> },
 ];

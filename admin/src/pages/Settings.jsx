@@ -214,11 +214,128 @@ export default function Settings() {
         )}
       </div>
 
+      {/* Peer-to-peer wallet transfers — admin toggle + limits + fee. */}
+      <UserTransfersSettingsCard settings={settings} save={save} saving={saving} />
+
       {/* Raw settings dump — useful for debugging. */}
       <details className="text-xs text-text-muted">
         <summary className="cursor-pointer hover:text-text-secondary">Raw settings</summary>
         <pre className="mt-2 bg-bg-dark p-3 rounded overflow-auto">{JSON.stringify(settings, null, 2)}</pre>
       </details>
+    </div>
+  );
+}
+
+/**
+ * Peer-to-peer wallet transfer admin controls. Mirrors the four
+ * SystemSetting keys: `userTransfer.enabled`, `userTransfer.min`,
+ * `userTransfer.max`, `userTransfer.feePercent`.
+ *
+ * Save semantics: the page already debounces saves through the parent
+ * `save({...})` helper. To avoid one PUT per keystroke we hold the
+ * draft locally and only fire on blur / explicit Save.
+ */
+function UserTransfersSettingsCard({ settings, save, saving }) {
+  const initial = {
+    enabled:    settings['userTransfer.enabled'] !== false,
+    min:        String(settings['userTransfer.min']        ?? '1'),
+    max:        String(settings['userTransfer.max']        ?? '0'),
+    feePercent: String(settings['userTransfer.feePercent'] ?? '0'),
+  };
+  const [draft, setDraft] = useState(initial);
+  useEffect(() => { setDraft(initial); /* eslint-disable-next-line */ }, [
+    settings['userTransfer.enabled'],
+    settings['userTransfer.min'],
+    settings['userTransfer.max'],
+    settings['userTransfer.feePercent'],
+  ]);
+
+  const dirty =
+    draft.enabled    !== initial.enabled    ||
+    draft.min        !== initial.min        ||
+    draft.max        !== initial.max        ||
+    draft.feePercent !== initial.feePercent;
+
+  return (
+    <div className="card p-6">
+      <div className="flex items-start justify-between gap-4 mb-4">
+        <div>
+          <h2 className="text-base font-semibold text-white">Wallet — Peer Transfers</h2>
+          <p className="text-xs text-text-muted mt-1 max-w-md">
+            User-to-user wallet transfers reuse the existing ledger. Funds move atomically
+            between sender (INTERNAL_TRANSFER_OUT) and receiver (INTERNAL_TRANSFER_IN) with
+            a shared reference id for audit.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setDraft({ ...draft, enabled: !draft.enabled })}
+          className={`text-[10px] uppercase font-bold px-2.5 py-1 rounded transition-colors ${
+            draft.enabled ? 'bg-emerald-500/20 text-emerald-400' : 'bg-bear/20 text-bear'
+          }`}
+        >
+          {draft.enabled ? 'ENABLED' : 'DISABLED'}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div>
+          <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1">Min transfer</label>
+          <input
+            type="number" min="0" step="0.01"
+            value={draft.min}
+            onChange={(e) => setDraft({ ...draft, min: e.target.value })}
+            className="w-full px-3 py-2 rounded bg-bg-dark border border-border-dark text-sm font-mono text-white focus:border-primary-500 focus:outline-none"
+          />
+          <div className="mt-1 text-[10px] text-text-muted">0 = no minimum</div>
+        </div>
+        <div>
+          <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1">Max transfer</label>
+          <input
+            type="number" min="0" step="0.01"
+            value={draft.max}
+            onChange={(e) => setDraft({ ...draft, max: e.target.value })}
+            className="w-full px-3 py-2 rounded bg-bg-dark border border-border-dark text-sm font-mono text-white focus:border-primary-500 focus:outline-none"
+          />
+          <div className="mt-1 text-[10px] text-text-muted">0 = no maximum</div>
+        </div>
+        <div>
+          <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1">Fee %</label>
+          <input
+            type="number" min="0" max="100" step="0.01"
+            value={draft.feePercent}
+            onChange={(e) => setDraft({ ...draft, feePercent: e.target.value })}
+            className="w-full px-3 py-2 rounded bg-bg-dark border border-border-dark text-sm font-mono text-white focus:border-primary-500 focus:outline-none"
+          />
+          <div className="mt-1 text-[10px] text-text-muted">Charged to sender on top of amount</div>
+        </div>
+      </div>
+
+      <div className="mt-4 flex items-center justify-end gap-2">
+        {dirty && (
+          <button
+            type="button"
+            onClick={() => setDraft(initial)}
+            disabled={saving}
+            className="px-3 py-1.5 rounded text-xs font-semibold border border-border-dark text-text-secondary hover:text-white hover:border-border-accent transition-colors"
+          >
+            Reset
+          </button>
+        )}
+        <button
+          type="button"
+          disabled={!dirty || saving}
+          onClick={() => save({ userTransfer: {
+            enabled:    draft.enabled,
+            min:        draft.min,
+            max:        draft.max,
+            feePercent: draft.feePercent,
+          }})}
+          className="px-4 py-1.5 rounded text-xs font-bold bg-primary-500 text-white disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary-600 transition-colors"
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
     </div>
   );
 }

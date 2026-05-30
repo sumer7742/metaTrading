@@ -15,6 +15,7 @@ const { Wallet } = require('../models/Wallet');
 const { WALLET_TX_TYPE } = require('../config/constants');
 const { Plan, Subscription } = require('../models/Subscription');
 const { SubscriptionTransaction } = require('../models/SubscriptionWallet');
+const { Deposit } = require('../models/index');
 
 /* ── User-facing ────────────────────────────────────────────────── */
 
@@ -172,6 +173,79 @@ const deposit = asyncHandler(async (req, res) => {
   }
 });
 
+/**
+ * POST /subscription-wallet/manual-deposit
+ *
+ * User submits a manual deposit request (UPI / Bank / Crypto / Skrill /
+ * Neteller / etc). Goes through the same admin-verification workflow
+ * as a regular trading-wallet deposit, but on confirm the funds land
+ * in the Subscription Wallet (routed by Deposit.targetWallet === 'subscription'
+ * inside the admin confirmDeposit flow).
+ *
+ * Body: { amount, currency, method, txReference, senderName,
+ *         senderUpiId, senderBankAccount, screenshot, screenshotMimeType, note }
+ */
+const manualDeposit = asyncHandler(async (req, res) => {
+  const {
+    amount,
+    currency = 'USD',
+    method,
+    txReference,
+    senderName,
+    senderUpiId,
+    senderBankAccount,
+    screenshot,
+    screenshotMimeType,
+    note,
+  } = req.body;
+
+  const amt = Number(amount);
+  if (!Number.isFinite(amt) || amt <= 0) {
+    throw new AppError('amount must be a positive number', 400);
+  }
+  if (!method) throw new AppError('Payment method is required', 400);
+  if (!txReference || !String(txReference).trim()) {
+    throw new AppError('Transaction reference is required', 400);
+  }
+  if (!screenshot) {
+    throw new AppError('Payment proof screenshot is required', 400);
+  }
+
+  // Base wallet balance is USD. For non-USD deposits, admin reconciles
+  // the converted amount manually at verification time — the FE pre-
+  // computes the displayed USD value when submitting.
+  const baseAmount = amt;
+  const fxRateUsed = 1;
+
+  const dep = await Deposit.create({
+    userId: req.userId,
+    targetWallet: 'subscription',
+    accountId: undefined, // not bound to a trading account
+    currency: String(currency).toUpperCase(),
+    amount: String(amt),
+    baseCurrency: 'USD',
+    baseAmount: String(baseAmount.toFixed(2)),
+    fxRateUsed,
+    method,
+    txReference: String(txReference).trim(),
+    senderName,
+    senderUpiId,
+    senderBankAccount,
+    screenshot,
+    screenshotMimeType,
+    note: note || 'Subscription wallet top-up',
+    status: 'PENDING',
+  });
+
+  sendSuccess(res, {
+    depositId: dep._id,
+    status: dep.status,
+    amount: dep.amount,
+    currency: dep.currency,
+    method: dep.method,
+  }, 201);
+});
+
 // POST /subscription-wallet/auto-renew  { enabled }
 const toggleAutoRenew = asyncHandler(async (req, res) => {
   const wallet = await subscriptionWalletService.setAutoRenew(req.userId, !!req.body.enabled);
@@ -322,6 +396,7 @@ const adminLogs = asyncHandler(async (req, res) => {
 module.exports = {
   getWallet,
   deposit,
+  manualDeposit,
   toggleAutoRenew,
   history,
   renew,
