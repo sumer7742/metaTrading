@@ -699,6 +699,14 @@ const verifyRazorpayPayment = asyncHandler(async (req, res) => {
   dep.providerPaymentId = paymentId;
   await dep.save();
 
+  // Partner program: try the first-deposit bonus hook. Best-effort.
+  try {
+    const partnerService = require('../services/partnerService');
+    await partnerService.handleFirstQualifyingDeposit({ userId: dep.userId, deposit: dep });
+  } catch (e) {
+    console.warn('[razorpay verify] partner hook failed:', e.message);
+  }
+
   sendSuccess(res, { depositId: dep._id, status: 'COMPLETED' });
 });
 
@@ -739,6 +747,13 @@ const razorpayWebhook = asyncHandler(async (req, res) => {
       dep.completedAt = new Date();
       dep.providerPaymentId = payment.id;
       await dep.save();
+      // Partner program: best-effort first-deposit bonus.
+      try {
+        const partnerService = require('../services/partnerService');
+        await partnerService.handleFirstQualifyingDeposit({ userId: dep.userId, deposit: dep });
+      } catch (e) {
+        console.warn('[razorpay webhook] partner hook failed:', e.message);
+      }
     }
   }
   res.json({ ok: true });

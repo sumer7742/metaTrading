@@ -26,6 +26,7 @@ const Profile = lazy(() => import('./pages/Profile'));
 const Orders = lazy(() => import('./pages/Orders'));
 const Reports = lazy(() => import('./pages/Reports'));
 const Affiliate = lazy(() => import('./pages/Affiliate'));
+const Partner   = lazy(() => import('./pages/Partner'));
 const PriceAlerts = lazy(() => import('./pages/PriceAlerts'));
 const Plans = lazy(() => import('./pages/Plans'));
 const SubscriptionWallet = lazy(() => import('./pages/SubscriptionWallet'));
@@ -84,7 +85,8 @@ export default function App() {
         <Route path="/orders" element={<Page><Orders /></Page>} />
         <Route path="/reports" element={<Page><Reports /></Page>} />
         <Route path="/alerts" element={<Page><PriceAlerts /></Page>} />
-        <Route path="/affiliate" element={<Page><Affiliate /></Page>} />
+        <Route path="/affiliate" element={<Page><Partner /></Page>} />
+        <Route path="/partner" element={<Page><Partner /></Page>} />
         <Route path="/plans" element={<Page><Plans /></Page>} />
         <Route path="/subscription-wallet" element={<Page><SubscriptionWallet /></Page>} />
         <Route path="/copy-trading" element={<Page><CopyTrade /></Page>} />
@@ -94,7 +96,7 @@ export default function App() {
         <Route path="/accounts" element={<Navigate to="/wallet" replace />} />
         <Route path="/profile" element={<Page><Profile /></Page>} />
         <Route path="/funds" element={<Navigate to="/wallet" replace />} />
-        <Route path="/ib-room" element={<Page><Affiliate /></Page>} />
+        <Route path="/ib-room" element={<Page><Partner /></Page>} />
         <Route path="/bonuses" element={<Page><Plans /></Page>} />
         <Route path="/helpdesk" element={<Page><Helpdesk /></Page>} />
         <Route path="/feedback" element={<Page><Feedback /></Page>} />

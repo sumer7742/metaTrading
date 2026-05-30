@@ -40,6 +40,12 @@ router.get('/reports/trades', c.tradesReport);
 // User-to-user transfer log (paired ledger rows enriched with names).
 router.get('/transfers/user', c.listUserTransfers);
 
+// Partner / Referral admin endpoints.
+router.get('/partners',              c.listPartners);
+router.get('/partners/analytics',    c.partnerAnalytics);
+router.put('/partners/:id/level',    c.setPartnerLevel);
+router.post('/partners/:id/block',   c.setPartnerBlocked);
+
 // Update per-account execution config (book type / LP / leverage / etc.)
 // Kept for backwards-compat with older admin builds; new global routing
 // supersedes per-account choices in orderRouter.service.

@@ -70,6 +70,15 @@ const userSchema = new mongoose.Schema(
     referralCode: { type: String, unique: true, sparse: true },
     referredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 
+    // Partner / Referral program. `partnerLevel` is normally derived
+    // from the active-referral count + tier thresholds in SystemSetting,
+    // but admin can pin it (`partnerLevelLocked: true`) to override
+    // auto-progression. `partnerBlocked` excludes the user from earning
+    // commissions WITHOUT touching `isActive` (which gates login).
+    partnerLevel:       { type: String, default: null },   // 'BRONZE' | 'SILVER' | 'GOLD' | 'DIAMOND'
+    partnerLevelLocked: { type: Boolean, default: false },
+    partnerBlocked:     { type: Boolean, default: false, index: true },
+
     // ─── Admin-controlled leverage override ─────────────────────────
     // The effective leverage cap for this user follows this precedence:
     //   1. customLeverage (set by admin) — overrides everything below

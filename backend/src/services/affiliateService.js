@@ -33,16 +33,37 @@ const DEFAULT_RATES = { 1: '0.20', 2: '0.05', 3: '0.01' };
 const distributeCommissions = async ({ tradeId, userId, feeAmount, currency }) => {
   if (!feeAmount || !gt(feeAmount, '0')) return [];
 
-  // Walk up the referral chain
-  let currentUserId = userId;
+  // L1 is now handled by the Partner program — the rate depends on the
+  // referrer's tier (Bronze/Silver/Gold/Diamond) instead of a fixed 20%.
+  // partnerService computes the tier %, writes the Commission row, AND
+  // credits the subscription wallet immediately so the partner dashboard
+  // updates in real time. L2/L3 still go through the legacy path below.
   const created = [];
+  try {
+    const partnerService = require('./partnerService');
+    const l1 = await partnerService.distributeRevenueShare({
+      tradeId,
+      refereeId: userId,
+      feeAmount,
+      currency,
+    });
+    if (l1) created.push(l1);
+  } catch (e) {
+    console.error('[Affiliate] L1 (partner) commission error:', e.message);
+  }
 
-  for (let level = 1; level <= 3; level++) {
+  // Walk up the referral chain for L2 / L3 only — L1 already handled by
+  // partnerService above. Start one level up so `level=2` matches L2.
+  const firstUser = await User.findById(userId).select('referredBy').lean();
+  if (!firstUser || !firstUser.referredBy) return created;
+  let currentUserId = firstUser.referredBy;
+
+  for (let level = 2; level <= 3; level++) {
     const user = await User.findById(currentUserId).select('referredBy affiliateRates').lean();
     if (!user || !user.referredBy) break;
 
-    const referrer = await User.findById(user.referredBy).select('_id role isActive affiliateRates').lean();
-    if (!referrer || !referrer.isActive) {
+    const referrer = await User.findById(user.referredBy).select('_id role isActive partnerBlocked affiliateRates').lean();
+    if (!referrer || !referrer.isActive || referrer.partnerBlocked) {
       currentUserId = user.referredBy;
       continue;
     }

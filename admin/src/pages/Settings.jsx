@@ -217,6 +217,9 @@ export default function Settings() {
       {/* Peer-to-peer wallet transfers — admin toggle + limits + fee. */}
       <UserTransfersSettingsCard settings={settings} save={save} saving={saving} />
 
+      {/* Partner / Referral program. */}
+      <PartnerSettingsCard settings={settings} save={save} saving={saving} />
+
       {/* Raw settings dump — useful for debugging. */}
       <details className="text-xs text-text-muted">
         <summary className="cursor-pointer hover:text-text-secondary">Raw settings</summary>
@@ -330,6 +333,164 @@ function UserTransfersSettingsCard({ settings, save, saving }) {
             min:        draft.min,
             max:        draft.max,
             feePercent: draft.feePercent,
+          }})}
+          className="px-4 py-1.5 rounded text-xs font-bold bg-primary-500 text-white disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary-600 transition-colors"
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Partner / Referral program admin controls. Mirrors the SystemSetting keys:
+ *   partner.enabled, partner.bonusAmount, partner.minDeposit, partner.tiers
+ *
+ * Tiers are stored as a JSON array of { name, minActive, maxActive, percent }.
+ * Admin edits each row inline; the Save handler validates server-side that
+ * thresholds are strictly increasing.
+ */
+function PartnerSettingsCard({ settings, save, saving }) {
+  const initial = {
+    enabled:     settings['partner.enabled'] !== false,
+    bonusAmount: String(settings['partner.bonusAmount'] ?? '10'),
+    minDeposit:  String(settings['partner.minDeposit']  ?? '50'),
+    tiers:       Array.isArray(settings['partner.tiers']) && settings['partner.tiers'].length
+      ? settings['partner.tiers'].map((t) => ({
+          name:      String(t.name),
+          minActive: Number(t.minActive),
+          maxActive: Number(t.maxActive),
+          percent:   String(t.percent),
+        }))
+      : [
+          { name: 'BRONZE',  minActive:   1, maxActive:  20, percent: '10' },
+          { name: 'SILVER',  minActive:  21, maxActive:  50, percent: '15' },
+          { name: 'GOLD',    minActive:  51, maxActive: 200, percent: '20' },
+          { name: 'DIAMOND', minActive: 201, maxActive:   0, percent: '25' },
+        ],
+  };
+  const [draft, setDraft] = useState(initial);
+  useEffect(() => { setDraft(initial); /* eslint-disable-next-line */ }, [
+    settings['partner.enabled'],
+    settings['partner.bonusAmount'],
+    settings['partner.minDeposit'],
+    JSON.stringify(settings['partner.tiers']),
+  ]);
+
+  const dirty = JSON.stringify(draft) !== JSON.stringify(initial);
+
+  const updateTier = (i, patch) => {
+    const next = draft.tiers.map((t, idx) => idx === i ? { ...t, ...patch } : t);
+    setDraft({ ...draft, tiers: next });
+  };
+
+  return (
+    <div className="card p-6">
+      <div className="flex items-start justify-between gap-4 mb-4">
+        <div>
+          <h2 className="text-base font-semibold text-white">Partner / Referral Program</h2>
+          <p className="text-xs text-text-muted mt-1 max-w-md">
+            Instant bonus on referee's first qualifying deposit + tier-based revenue share on
+            trade fees. Tiers are computed from active referral count (active = first deposit
+            ≥ Min deposit). All earnings credit the subscription wallet.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setDraft({ ...draft, enabled: !draft.enabled })}
+          className={`text-[10px] uppercase font-bold px-2.5 py-1 rounded transition-colors ${
+            draft.enabled ? 'bg-emerald-500/20 text-emerald-400' : 'bg-bear/20 text-bear'
+          }`}
+        >
+          {draft.enabled ? 'ENABLED' : 'DISABLED'}
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+        <div>
+          <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1">Bonus amount (USD)</label>
+          <input
+            type="number" min="0" step="0.01"
+            value={draft.bonusAmount}
+            onChange={(e) => setDraft({ ...draft, bonusAmount: e.target.value })}
+            className="w-full px-3 py-2 rounded bg-bg-dark border border-border-dark text-sm font-mono text-white focus:border-primary-500 focus:outline-none"
+          />
+          <div className="mt-1 text-[10px] text-text-muted">Paid once per referee on their first qualifying deposit</div>
+        </div>
+        <div>
+          <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1">Min qualifying deposit (USD)</label>
+          <input
+            type="number" min="0" step="0.01"
+            value={draft.minDeposit}
+            onChange={(e) => setDraft({ ...draft, minDeposit: e.target.value })}
+            className="w-full px-3 py-2 rounded bg-bg-dark border border-border-dark text-sm font-mono text-white focus:border-primary-500 focus:outline-none"
+          />
+          <div className="mt-1 text-[10px] text-text-muted">Below this, deposit doesn't trigger bonus or count toward tier</div>
+        </div>
+      </div>
+
+      <div className="mb-2 text-[11px] uppercase tracking-wider font-bold text-text-muted">Tier thresholds</div>
+      <div className="space-y-2">
+        {draft.tiers.map((t, i) => (
+          <div key={i} className="grid grid-cols-12 gap-2 items-center bg-bg-dark border border-border-dark rounded p-2">
+            <div className="col-span-3">
+              <input
+                value={t.name}
+                onChange={(e) => updateTier(i, { name: e.target.value.toUpperCase() })}
+                className="w-full px-2 py-1.5 rounded bg-bg-panel border border-border-dark text-xs font-bold text-white focus:border-primary-500 focus:outline-none"
+              />
+            </div>
+            <div className="col-span-3">
+              <label className="block text-[10px] text-text-muted mb-0.5">Min active</label>
+              <input
+                type="number" min="0"
+                value={t.minActive}
+                onChange={(e) => updateTier(i, { minActive: Number(e.target.value) })}
+                className="w-full px-2 py-1.5 rounded bg-bg-panel border border-border-dark text-xs font-mono text-white focus:border-primary-500 focus:outline-none"
+              />
+            </div>
+            <div className="col-span-3">
+              <label className="block text-[10px] text-text-muted mb-0.5">Max active (0 = ∞)</label>
+              <input
+                type="number" min="0"
+                value={t.maxActive}
+                onChange={(e) => updateTier(i, { maxActive: Number(e.target.value) })}
+                className="w-full px-2 py-1.5 rounded bg-bg-panel border border-border-dark text-xs font-mono text-white focus:border-primary-500 focus:outline-none"
+              />
+            </div>
+            <div className="col-span-3">
+              <label className="block text-[10px] text-text-muted mb-0.5">% of fee</label>
+              <input
+                type="number" min="0" max="100" step="0.1"
+                value={t.percent}
+                onChange={(e) => updateTier(i, { percent: e.target.value })}
+                className="w-full px-2 py-1.5 rounded bg-bg-panel border border-border-dark text-xs font-mono text-white focus:border-primary-500 focus:outline-none"
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-4 flex items-center justify-end gap-2">
+        {dirty && (
+          <button
+            type="button"
+            onClick={() => setDraft(initial)}
+            disabled={saving}
+            className="px-3 py-1.5 rounded text-xs font-semibold border border-border-dark text-text-secondary hover:text-white hover:border-border-accent transition-colors"
+          >
+            Reset
+          </button>
+        )}
+        <button
+          type="button"
+          disabled={!dirty || saving}
+          onClick={() => save({ partner: {
+            enabled:     draft.enabled,
+            bonusAmount: draft.bonusAmount,
+            minDeposit:  draft.minDeposit,
+            tiers:       draft.tiers,
           }})}
           className="px-4 py-1.5 rounded text-xs font-bold bg-primary-500 text-white disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary-600 transition-colors"
         >

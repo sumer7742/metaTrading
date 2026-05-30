@@ -590,6 +590,16 @@ const confirmDeposit = asyncHandler(async (req, res) => {
       note: `Deposit confirmed · ${dep.amount} ${dep.currency} @ ${dep.fxRateUsed || 1}`,
     });
   }
+  // Partner program: trigger the first-deposit bonus if this user was
+  // referred and this is their first qualifying deposit. Best-effort —
+  // never throws, never blocks the deposit confirmation.
+  try {
+    const partnerService = require('../services/partnerService');
+    await partnerService.handleFirstQualifyingDeposit({ userId: dep.userId, deposit: dep });
+  } catch (e) {
+    console.warn('[deposit confirm] partner hook failed:', e.message);
+  }
+
   await logAction(req, 'DEPOSIT_CONFIRMED', { type: 'DEPOSIT', id: dep._id });
   // Push the credit to the user's open sessions so the wallet hero,
   // notification center, and dashboard balance update instantly
@@ -869,8 +879,53 @@ const updateSystemSettings = asyncHandler(async (req, res) => {
     );
   }
 
+  // Partner / Referral settings — bonus amount, min deposit, tiers,
+  // enabled toggle. Each field is validated then written through.
+  const { partner } = req.body || {};
+  if (partner && typeof partner === 'object') {
+    if (partner.bonusAmount !== undefined && !(Number.isFinite(Number(partner.bonusAmount)) && Number(partner.bonusAmount) >= 0)) {
+      throw new AppError('partner.bonusAmount must be a non-negative number', 400);
+    }
+    if (partner.minDeposit !== undefined && !(Number.isFinite(Number(partner.minDeposit)) && Number(partner.minDeposit) >= 0)) {
+      throw new AppError('partner.minDeposit must be a non-negative number', 400);
+    }
+    if (partner.tiers !== undefined) {
+      if (!Array.isArray(partner.tiers) || partner.tiers.length === 0) {
+        throw new AppError('partner.tiers must be a non-empty array', 400);
+      }
+      const sorted = [...partner.tiers].sort((a, b) => Number(a.minActive) - Number(b.minActive));
+      for (let i = 0; i < sorted.length; i++) {
+        const t = sorted[i];
+        if (!t.name || typeof t.name !== 'string') throw new AppError(`partner.tiers[${i}].name is required`, 400);
+        if (!Number.isFinite(Number(t.minActive)) || Number(t.minActive) < 0) throw new AppError(`partner.tiers[${i}].minActive must be ≥ 0`, 400);
+        if (!Number.isFinite(Number(t.maxActive)) || Number(t.maxActive) < 0) throw new AppError(`partner.tiers[${i}].maxActive must be ≥ 0`, 400);
+        const pct = Number(t.percent);
+        if (!Number.isFinite(pct) || pct < 0 || pct > 100) throw new AppError(`partner.tiers[${i}].percent must be 0–100`, 400);
+        if (i > 0 && Number(t.minActive) <= Number(sorted[i - 1].minActive)) {
+          throw new AppError(`partner.tiers thresholds must be strictly increasing`, 400);
+        }
+      }
+    }
+  }
+
   if (routingMode !== undefined) await systemSettings.setSetting('routingMode', routingMode, req.userId);
   if (defaultLpProvider !== undefined) await systemSettings.setSetting('defaultLpProvider', defaultLpProvider, req.userId);
+  if (partner && typeof partner === 'object') {
+    if (partner.enabled     !== undefined) await systemSettings.setSetting('partner.enabled',     !!partner.enabled, req.userId);
+    if (partner.bonusAmount !== undefined) await systemSettings.setSetting('partner.bonusAmount', String(partner.bonusAmount), req.userId);
+    if (partner.minDeposit  !== undefined) await systemSettings.setSetting('partner.minDeposit',  String(partner.minDeposit),  req.userId);
+    if (partner.tiers       !== undefined) {
+      const normalized = [...partner.tiers]
+        .map((t) => ({
+          name:      String(t.name).toUpperCase(),
+          minActive: Number(t.minActive),
+          maxActive: Number(t.maxActive),
+          percent:   String(t.percent),
+        }))
+        .sort((a, b) => a.minActive - b.minActive);
+      await systemSettings.setSetting('partner.tiers', normalized, req.userId);
+    }
+  }
   if (userTransfer && typeof userTransfer === 'object') {
     if (userTransfer.enabled    !== undefined) await systemSettings.setSetting('userTransfer.enabled',    !!userTransfer.enabled, req.userId);
     if (userTransfer.min        !== undefined) await systemSettings.setSetting('userTransfer.min',        String(userTransfer.min), req.userId);
@@ -979,6 +1034,162 @@ const listUserTransfers = asyncHandler(async (req, res) => {
   sendSuccess(res, filtered);
 });
 
+// ─── Partner / Referral admin endpoints ───────────────────────────────
+
+/**
+ * GET /admin/partners
+ * List users that have at least one referee, with their tier, active /
+ * total referral counts, total commission paid, and block flag.
+ * Filters: ?level=BRONZE&blocked=true&search=email,referralCode,name
+ */
+const listPartners = asyncHandler(async (req, res) => {
+  const partnerService = require('../services/partnerService');
+  const { Commission } = require('../models/Compliance');
+
+  // Anyone who has at least one referee is a potential partner.
+  const partnerIds = await User.distinct('referredBy', { referredBy: { $ne: null } });
+  if (!partnerIds.length) return sendSuccess(res, []);
+
+  const filter = { _id: { $in: partnerIds } };
+  if (req.query.blocked === 'true')  filter.partnerBlocked = true;
+  if (req.query.blocked === 'false') filter.partnerBlocked = { $ne: true };
+  if (req.query.search) {
+    const rx = new RegExp(String(req.query.search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    filter.$or = [
+      { email: rx }, { firstName: rx }, { lastName: rx }, { referralCode: rx },
+    ];
+  }
+
+  const users = await User.find(filter)
+    .select('_id firstName lastName email referralCode partnerLevel partnerLevelLocked partnerBlocked createdAt')
+    .lean();
+
+  // Commission rollups, single aggregate.
+  const commGroups = await Commission.aggregate([
+    { $match: { referrerId: { $in: users.map((u) => u._id) } } },
+    { $addFields: { amtNum: { $toDouble: '$amount' } } },
+    { $group: {
+        _id: '$referrerId',
+        lifetime: { $sum: '$amtNum' },
+        paid:     { $sum: { $cond: [{ $eq: ['$status', 'PAID'] }, '$amtNum', 0] } },
+        pending:  { $sum: { $cond: [{ $eq: ['$status', 'PENDING'] }, '$amtNum', 0] } },
+    } },
+  ]);
+  const commByUser = new Map(commGroups.map((g) => [String(g._id), g]));
+
+  const out = [];
+  for (const u of users) {
+    const lvl = await partnerService.getPartnerLevel(u._id);
+    if (req.query.level && lvl.tier.name !== String(req.query.level).toUpperCase()) continue;
+    const totalReferrals = await User.countDocuments({ referredBy: u._id });
+    const comm = commByUser.get(String(u._id)) || { lifetime: 0, paid: 0, pending: 0 };
+    out.push({
+      _id:          String(u._id),
+      name:         [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email,
+      email:        u.email,
+      referralCode: u.referralCode,
+      level:        lvl.tier.name,
+      percent:      lvl.tier.percent,
+      locked:       lvl.locked,
+      blocked:      !!u.partnerBlocked,
+      activeReferrals: lvl.activeCount,
+      totalReferrals,
+      lifetimeEarnings: Number(comm.lifetime).toFixed(2),
+      paidEarnings:     Number(comm.paid).toFixed(2),
+      pendingEarnings:  Number(comm.pending).toFixed(2),
+      createdAt:    u.createdAt,
+    });
+  }
+  // Sort: most active referrals first.
+  out.sort((a, b) => b.activeReferrals - a.activeReferrals);
+  sendSuccess(res, out);
+});
+
+/**
+ * PUT /admin/partners/:id/level
+ * Body: { level: 'BRONZE'|'SILVER'|'GOLD'|'DIAMOND'|null, locked: boolean }
+ * Pins a tier override or clears it.
+ */
+const setPartnerLevel = asyncHandler(async (req, res) => {
+  const { level, locked } = req.body || {};
+  const user = await User.findById(req.params.id);
+  if (!user) throw new AppError('User not found', 404);
+  if (level !== undefined) user.partnerLevel = level || null;
+  if (locked !== undefined) user.partnerLevelLocked = !!locked;
+  await user.save();
+  await logAction(req, 'PARTNER_LEVEL_OVERRIDE', { type: 'USER', id: user._id }, { level, locked });
+  sendSuccess(res, {
+    _id: String(user._id),
+    partnerLevel:       user.partnerLevel,
+    partnerLevelLocked: user.partnerLevelLocked,
+  });
+});
+
+/**
+ * POST /admin/partners/:id/block — Body: { blocked: boolean }
+ * Excludes the partner from earning future commissions WITHOUT touching
+ * `isActive` (which gates login).
+ */
+const setPartnerBlocked = asyncHandler(async (req, res) => {
+  const { blocked } = req.body || {};
+  const user = await User.findById(req.params.id);
+  if (!user) throw new AppError('User not found', 404);
+  user.partnerBlocked = !!blocked;
+  await user.save();
+  await logAction(req, 'PARTNER_BLOCK_TOGGLE', { type: 'USER', id: user._id }, { blocked: !!blocked });
+  sendSuccess(res, { _id: String(user._id), partnerBlocked: user.partnerBlocked });
+});
+
+/**
+ * GET /admin/partners/analytics
+ * Aggregate program-wide stats: total partners, active partners, bonuses
+ * paid, revenue shared, commission liability (pending), top earners.
+ */
+const partnerAnalytics = asyncHandler(async (req, res) => {
+  const { Commission } = require('../models/Compliance');
+  const totalPartners = (await User.distinct('referredBy', { referredBy: { $ne: null } })).length;
+  const totalReferrals = await User.countDocuments({ referredBy: { $ne: null } });
+
+  const totals = await Commission.aggregate([
+    { $addFields: { amtNum: { $toDouble: '$amount' } } },
+    { $group: {
+        _id: null,
+        bonusesPaid: { $sum: { $cond: [{ $and: [{ $eq: ['$sourceType', 'DEPOSIT_BONUS'] }, { $eq: ['$status', 'PAID'] }] }, '$amtNum', 0] } },
+        revenueShared: { $sum: { $cond: [{ $and: [{ $in: ['$sourceType', ['TRADE_FEE','SPREAD']] }, { $eq: ['$status', 'PAID'] }] }, '$amtNum', 0] } },
+        liability: { $sum: { $cond: [{ $eq: ['$status', 'PENDING'] }, '$amtNum', 0] } },
+    } },
+  ]);
+  const t = totals[0] || { bonusesPaid: 0, revenueShared: 0, liability: 0 };
+
+  const topEarners = await Commission.aggregate([
+    { $addFields: { amtNum: { $toDouble: '$amount' } } },
+    { $group: { _id: '$referrerId', total: { $sum: '$amtNum' } } },
+    { $sort: { total: -1 } }, { $limit: 10 },
+  ]);
+  const topUsers = topEarners.length
+    ? await User.find({ _id: { $in: topEarners.map((e) => e._id) } }).select('firstName lastName email referralCode').lean()
+    : [];
+  const userMap = new Map(topUsers.map((u) => [String(u._id), u]));
+  const top = topEarners.map((e) => {
+    const u = userMap.get(String(e._id)) || {};
+    return {
+      userId: String(e._id),
+      name:   [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email || '—',
+      referralCode: u.referralCode || null,
+      total:  Number(e.total).toFixed(2),
+    };
+  });
+
+  sendSuccess(res, {
+    totalPartners,
+    totalReferrals,
+    bonusesPaid:   Number(t.bonusesPaid).toFixed(2),
+    revenueShared: Number(t.revenueShared).toFixed(2),
+    commissionLiability: Number(t.liability).toFixed(2),
+    topEarners: top,
+  });
+});
+
 module.exports = {
   dashboard,
   listUsers,
@@ -1007,4 +1218,8 @@ module.exports = {
   getSystemSettings,
   updateSystemSettings,
   listUserTransfers,
+  listPartners,
+  setPartnerLevel,
+  setPartnerBlocked,
+  partnerAnalytics,
 };

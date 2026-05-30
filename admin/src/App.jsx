@@ -18,6 +18,7 @@ import Plans from './pages/Plans';
 import AccountPlans from './pages/AccountPlans';
 import SubscriptionWallets from './pages/SubscriptionWallets';
 import UserTransfers from './pages/UserTransfers';
+import Partners from './pages/Partners';
 
 const wrap = (el) => (
   <ProtectedRoute>
@@ -45,6 +46,7 @@ export default function App() {
       <Route path="/account-plans" element={wrap(<AccountPlans />)} />
       <Route path="/subscription-wallets" element={wrap(<SubscriptionWallets />)} />
       <Route path="/user-transfers" element={wrap(<UserTransfers />)} />
+      <Route path="/partners" element={wrap(<Partners />)} />
       <Route path="/settings" element={wrap(<Settings />)} />
       <Route path="/security" element={wrap(<Security />)} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />

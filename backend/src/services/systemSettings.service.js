@@ -23,6 +23,24 @@ const DEFAULTS = {
   'userTransfer.min':        '1',
   'userTransfer.max':        '0',   // 0 = no upper cap
   'userTransfer.feePercent': '0',
+  // Partner / Referral program. Bonuses + revenue share credit the user's
+  // Subscription Wallet (see partnerService). Tiers are computed from
+  // active referral count (active = referee made a qualifying first
+  // deposit ≥ `minDeposit`). Each tier carries the L1 revenue-share %.
+  //
+  // `tiers` is stored as a JSON array so the admin can edit the
+  // thresholds inline without a schema migration. Tier with maxActive=0
+  // means "no upper bound" (Diamond). Tiers must be sorted ascending
+  // by `minActive`.
+  'partner.enabled':     true,
+  'partner.bonusAmount': '10',      // instant credit on referee's first qualifying deposit
+  'partner.minDeposit':  '50',      // deposit threshold that "activates" a referee
+  'partner.tiers': [
+    { name: 'BRONZE',  minActive:   1, maxActive:  20, percent: '10' },
+    { name: 'SILVER',  minActive:  21, maxActive:  50, percent: '15' },
+    { name: 'GOLD',    minActive:  51, maxActive: 200, percent: '20' },
+    { name: 'DIAMOND', minActive: 201, maxActive:   0, percent: '25' },
+  ],
 };
 
 const _cache = new Map(); // key -> { value, expiresAt }
