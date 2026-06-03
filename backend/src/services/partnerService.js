@@ -25,6 +25,7 @@ const User = require('../models/User');
 const { Deposit, Notification } = require('../models');
 const systemSettings = require('./systemSettings.service');
 const subscriptionWalletService = require('./subscriptionWalletService');
+const bonusWalletService = require('./bonusWalletService');
 const { D, gt, gte, mul, add } = require('../utils/decimal');
 
 // ─── Settings ────────────────────────────────────────────────────────
@@ -201,15 +202,14 @@ const handleFirstQualifyingDeposit = async ({ userId, deposit }) => {
       note:       `Instant bonus for first qualifying deposit by referee`,
     });
 
-    // 2. Credit the referrer's Subscription Wallet.
+    // 2. Credit the referrer's Bonus Wallet.
     try {
-      await subscriptionWalletService.credit({
-        userId:        referrer._id,
-        amount:        bonus.toString(),
-        reason:        'REFERRAL_BONUS',
-        note:          'Partner program: first deposit bonus',
-        paymentMethod: 'system',
-        paymentRef:    `commission:${commission._id}`,
+      await bonusWalletService.credit({
+        userId:     referrer._id,
+        amount:     bonus.toString(),
+        reason:     'PARTNER_COMMISSION',
+        note:       'Partner program: first deposit bonus',
+        paymentRef: `commission:${commission._id}`,
       });
       commission.status = 'PAID';
       commission.paidAt = new Date();
@@ -233,7 +233,7 @@ const handleFirstQualifyingDeposit = async ({ userId, deposit }) => {
     } catch (_) {}
     try {
       const broadcaster = require('../websocket/server');
-      broadcaster.notifyUser(String(referrer._id), 'subscriptionWallet', { event: 'UPDATED' });
+      broadcaster.notifyUser(String(referrer._id), 'bonusWallet', { event: 'UPDATED' });
       broadcaster.notifyUser(String(referrer._id), 'notifications', { type: 'PARTNER_BONUS' });
     } catch (_) {}
 
@@ -287,20 +287,19 @@ const distributeRevenueShare = async ({ tradeId, refereeId, feeAmount, currency 
     // referrer a live-updating dashboard which matches the spec's
     // "Today's earnings / Real-time" feel.)
     try {
-      await subscriptionWalletService.credit({
-        userId:        referrer._id,
-        amount:        amount.toString(),
-        reason:        'REFERRAL_BONUS',
-        note:          `Revenue share · tier ${lvl.tier.name} · ${pct.toString()}%`,
-        paymentMethod: 'system',
-        paymentRef:    `commission:${commission._id}`,
+      await bonusWalletService.credit({
+        userId:     referrer._id,
+        amount:     amount.toString(),
+        reason:     'REVENUE_SHARE',
+        note:       `Revenue share · tier ${lvl.tier.name} · ${pct.toString()}%`,
+        paymentRef: `commission:${commission._id}`,
       });
       commission.status = 'PAID';
       commission.paidAt = new Date();
       await commission.save();
       try {
         const broadcaster = require('../websocket/server');
-        broadcaster.notifyUser(String(referrer._id), 'subscriptionWallet', { event: 'UPDATED' });
+        broadcaster.notifyUser(String(referrer._id), 'bonusWallet', { event: 'UPDATED' });
       } catch (_) {}
     } catch (e) {
       console.error('[partner] revenue-share wallet credit failed:', e.message);
@@ -346,12 +345,12 @@ const getDashboardData = async (userId) => {
   const totalReferrals  = await User.countDocuments({ referredBy: userId });
   const user = await User.findById(userId).select('referralCode firstName lastName partnerLevel partnerLevelLocked partnerBlocked').lean();
 
-  // Available balance = the user's current Subscription Wallet balance
-  // (where all partner earnings land). Fetch it cheaply.
+  // Available balance = the user's current Bonus Wallet balance
+  // (where all referral/partner earnings now land). Fetch it cheaply.
   let availableBalance = '0';
   let walletCurrency = 'USD';
   try {
-    const wallet = await subscriptionWalletService.getOrCreate(userId);
+    const wallet = await bonusWalletService.getOrCreate(userId);
     availableBalance = wallet?.balance || '0';
     walletCurrency = wallet?.currency || 'USD';
   } catch (_) {}

@@ -484,20 +484,24 @@ const internalTransfer = asyncHandler(async (req, res) => {
     throw new AppError('Cannot transfer to the same account', 400);
   }
 
-  // Subscription wallet is identified by the literal sentinel
-  // 'subscription' on either side. It lives at the user level (no
-  // accountId) — the routing logic below dispatches debit/credit to
-  // subscriptionWalletService.
+  // Subscription ("Main") wallet and Bonus wallet are identified by the
+  // literal sentinels 'subscription' / 'bonus' on either side. Both live
+  // at the user level (no accountId) — the routing below dispatches
+  // debit/credit to the matching service.
   const isSubFrom = String(fromAccountId) === 'subscription';
   const isSubTo   = String(toAccountId)   === 'subscription';
+  const isBonusFrom = String(fromAccountId) === 'bonus';
+  const isBonusTo   = String(toAccountId)   === 'bonus';
+  const isSpecialFrom = isSubFrom || isBonusFrom;
+  const isSpecialTo   = isSubTo   || isBonusTo;
 
   const TradingAccount = require('../models/TradingAccount');
   const [from, to] = await Promise.all([
-    isSubFrom ? Promise.resolve(null) : TradingAccount.findOne({ _id: fromAccountId, userId: req.userId }),
-    isSubTo   ? Promise.resolve(null) : TradingAccount.findOne({ _id: toAccountId,   userId: req.userId }),
+    isSpecialFrom ? Promise.resolve(null) : TradingAccount.findOne({ _id: fromAccountId, userId: req.userId }),
+    isSpecialTo   ? Promise.resolve(null) : TradingAccount.findOne({ _id: toAccountId,   userId: req.userId }),
   ]);
-  if (!isSubFrom && !from) throw new AppError('Source account not found or not yours', 404);
-  if (!isSubTo   && !to)   throw new AppError('Destination account not found or not yours', 404);
+  if (!isSpecialFrom && !from) throw new AppError('Source account not found or not yours', 404);
+  if (!isSpecialTo   && !to)   throw new AppError('Destination account not found or not yours', 404);
 
   // Validate amount up front so a bad input doesn't reach walletService.
   const amtNum = Number(amount);
@@ -507,15 +511,31 @@ const internalTransfer = asyncHandler(async (req, res) => {
   const amtStr = String(amtNum);
 
   const subscriptionWalletService = require('../services/subscriptionWalletService');
+  const bonusWalletService = require('../services/bonusWalletService');
+
+  const destLabel = isBonusTo ? 'Bonus Wallet' : isSubTo ? 'Main Wallet' : (to && to.accountNumber);
+  const srcLabel  = isBonusFrom ? 'Bonus Wallet' : isSubFrom ? 'Main Wallet' : (from && from.accountNumber);
 
   // ── Debit source ──
-  if (isSubFrom) {
+  if (isBonusFrom) {
+    try {
+      await bonusWalletService.debit({
+        userId: req.userId,
+        amount: amtStr,
+        reason: 'TRANSFER_OUT',
+        note: note || `Transfer to ${destLabel || 'wallet'}`,
+      });
+    } catch (err) {
+      if (err.code === 'INSUFFICIENT_BONUS_BALANCE') throw new AppError(err.message, 402, err.code);
+      throw err;
+    }
+  } else if (isSubFrom) {
     try {
       await subscriptionWalletService.debit({
         userId: req.userId,
         amount: amtStr,
         reason: 'ADMIN_DEBIT',
-        note: note || (to ? `Transfer to ${to.accountNumber}` : 'Internal transfer'),
+        note: note || `Transfer to ${destLabel || 'wallet'}`,
       });
     } catch (err) {
       if (err.code === 'INSUFFICIENT_SUBSCRIPTION_BALANCE') {
@@ -531,19 +551,26 @@ const internalTransfer = asyncHandler(async (req, res) => {
       amount: amtStr,
       type: 'TRANSFER',
       referenceType: 'transfer',
-      note: note || (isSubTo ? 'Transfer to Subscription Wallet' : `Transfer to ${to.accountNumber}`),
+      note: note || `Transfer to ${destLabel || 'wallet'}`,
     });
   }
 
   // ── Credit destination, with a compensating rollback if it fails ──
   try {
-    if (isSubTo) {
+    if (isBonusTo) {
+      await bonusWalletService.credit({
+        userId: req.userId,
+        amount: amtStr,
+        reason: 'TRANSFER_IN',
+        note: note || `Transfer from ${srcLabel || 'wallet'}`,
+      });
+    } else if (isSubTo) {
       await subscriptionWalletService.credit({
         userId: req.userId,
         amount: amtStr,
         reason: 'DEPOSIT',
         paymentMethod: 'internal_transfer',
-        note: note || (from ? `Transfer from ${from.accountNumber}` : 'Internal transfer'),
+        note: note || `Transfer from ${srcLabel || 'wallet'}`,
       });
     } else {
       await walletService.credit({
@@ -553,14 +580,21 @@ const internalTransfer = asyncHandler(async (req, res) => {
         amount: amtStr,
         type: 'TRANSFER',
         referenceType: 'transfer',
-        note: note || (isSubFrom ? 'Transfer from Subscription Wallet' : `Transfer from ${from.accountNumber}`),
+        note: note || `Transfer from ${srcLabel || 'wallet'}`,
       });
     }
   } catch (creditErr) {
     // Compensating credit on source — best-effort. Logs loudly if both
     // legs fail so an on-call can reconcile from the ledger.
     try {
-      if (isSubFrom) {
+      if (isBonusFrom) {
+        await bonusWalletService.credit({
+          userId: req.userId,
+          amount: amtStr,
+          reason: 'TRANSFER_IN',
+          note: 'Rollback: failed transfer credit on destination',
+        });
+      } else if (isSubFrom) {
         await subscriptionWalletService.credit({
           userId: req.userId,
           amount: amtStr,
@@ -856,8 +890,12 @@ const convertCurrency = asyncHandler(async (req, res) => {
  */
 const searchTransferRecipients = asyncHandler(async (req, res) => {
   const userTransferService = require('../services/userTransferService');
-  const { q, limit } = req.query;
-  const results = await userTransferService.searchRecipients(req.userId, q, Number(limit) || 10);
+  const { q, limit, by } = req.query;
+  // `by=uid` → match the permanent public User ID only (recipient picker
+  // restricted to User ID search). Anything else keeps the broad match.
+  const results = await userTransferService.searchRecipients(
+    req.userId, q, Number(limit) || 10, { uidOnly: by === 'uid' }
+  );
   sendSuccess(res, results);
 });
 

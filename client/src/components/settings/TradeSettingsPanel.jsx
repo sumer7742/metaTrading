@@ -63,8 +63,13 @@ export default function TradeSettingsPanel() {
             <SettingsRow label="TP / SL on positions">
               <Toggle label="TP/SL" checked={s.showOnChart.tpsl} onChange={(v) => setVal('showOnChart.tpsl', v)} />
             </SettingsRow>
+            {/* Pending orders + Order preview are linked: toggling either
+                keeps both in sync (one on → the other auto-on, and v.v.). */}
             <SettingsRow label="Pending orders">
-              <Toggle label="Pending" checked={s.showOnChart.stopLimit} onChange={(v) => setVal('showOnChart.stopLimit', v)} />
+              <Toggle label="Pending" checked={s.showOnChart.stopLimit} onChange={(v) => { setVal('showOnChart.stopLimit', v); setVal('showOnChart.orderPreview', v); }} />
+            </SettingsRow>
+            <SettingsRow label="Order preview (Entry / TP / SL)">
+              <Toggle label="Order preview" checked={s.showOnChart.orderPreview} onChange={(v) => { setVal('showOnChart.orderPreview', v); setVal('showOnChart.stopLimit', v); }} />
             </SettingsRow>
             <SettingsRow label="Economic calendar">
               <Toggle label="Calendar" checked={s.showOnChart.calendar} onChange={(v) => setVal('showOnChart.calendar', v)} />

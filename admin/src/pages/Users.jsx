@@ -38,7 +38,7 @@ export default function Users() {
       <form onSubmit={onSearch} className="card p-3 flex flex-wrap gap-3 items-end">
         <div className="flex-1 min-w-[200px]">
           <label className="label">Search</label>
-          <input className="input" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="email, name, phone" />
+          <input className="input" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="User ID, email, name, phone" />
         </div>
         <div>
           <label className="label">KYC</label>
@@ -65,6 +65,7 @@ export default function Users() {
         <table className="w-full text-sm">
           <thead className="text-xs text-gray-500 uppercase">
             <tr>
+              <th className="text-left p-3">User ID</th>
               <th className="text-left p-3">Email</th>
               <th className="text-left p-3">Name</th>
               <th className="text-left p-3">Role</th>
@@ -83,6 +84,18 @@ export default function Users() {
                 : null;
               return (
                 <tr key={u._id} className="table-row">
+                  <td className="p-3">
+                    {u.userUid ? (
+                      <button
+                        type="button"
+                        onClick={() => { navigator.clipboard.writeText(u.userUid); toast.success('User ID copied'); }}
+                        title="Copy User ID"
+                        className="font-mono text-xs font-bold text-primary-500 hover:text-primary-400"
+                      >
+                        {u.userUid}
+                      </button>
+                    ) : <span className="text-gray-600 text-xs">—</span>}
+                  </td>
                   <td className="p-3">{u.email}</td>
                   <td className="p-3">{u.firstName} {u.lastName}</td>
                   <td className="p-3 text-xs text-primary-500">{u.role}</td>
@@ -335,8 +348,20 @@ function UserDetail({ userId, onClose, onJumpToUser }) {
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
       <div className="card max-w-3xl w-full max-h-[90vh] overflow-y-auto">
-        <div className="px-5 py-3 border-b border-border-dark flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-white">{user.email}</h2>
+        <div className="px-5 py-3 border-b border-border-dark flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <h2 className="text-lg font-semibold text-white truncate">{user.email}</h2>
+            {user.userUid && (
+              <button
+                type="button"
+                onClick={() => { navigator.clipboard.writeText(user.userUid); toast.success('User ID copied'); }}
+                title="Copy User ID"
+                className="shrink-0 font-mono text-xs font-bold text-primary-500 bg-primary-500/10 border border-primary-500/30 rounded px-2 py-0.5 hover:bg-primary-500/20 transition-colors"
+              >
+                {user.userUid}
+              </button>
+            )}
+          </div>
           <div className="flex items-center gap-1">
             <button
               type="button"
@@ -354,6 +379,7 @@ function UserDetail({ userId, onClose, onJumpToUser }) {
         </div>
         <div className="p-5 space-y-5">
           <div className="grid grid-cols-2 gap-4 text-sm">
+            <Field label="User ID" value={user.userUid || '—'} />
             <Field label="Name" value={`${user.firstName || ''} ${user.lastName || ''}`} />
             <Field label="Phone" value={user.phone || '-'} />
             <Field label="Role" value={user.role} />

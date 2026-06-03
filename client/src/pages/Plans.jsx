@@ -74,7 +74,7 @@ export default function Plans() {
         paymentMethod: 'subscription_wallet',
       });
       const price = billing === 'YEARLY' ? confirmPlan.yearlyPrice : confirmPlan.monthlyPrice;
-      toast.success(`Subscribed to ${confirmPlan.name} · ${Number(price).toFixed(2)} deducted from Subscription Wallet`);
+      toast.success(`Subscribed to ${confirmPlan.name} · ${Number(price).toFixed(2)} deducted from Bonus Wallet`);
       setConfirmPlan(null);
       refresh();
     } catch (e) {
@@ -147,7 +147,7 @@ export default function Plans() {
         )}
         <div className="card p-5">
           <div className="flex items-center justify-between gap-2">
-            <div className="text-xs uppercase text-gray-500 tracking-wider">Subscription wallet</div>
+            <div className="text-xs uppercase text-gray-500 tracking-wider">Bonus wallet</div>
             {subWallet?.isLowBalance && (
               <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-warn/15 text-warn">Low</span>
             )}
@@ -156,7 +156,7 @@ export default function Plans() {
             <div className="text-xl font-bold text-text-primary font-mono tabular-nums">
               {walletSym}{fmt(balanceNum)}
             </div>
-            <Link to="/subscription-wallet" className="text-sm text-primary-500 hover:underline font-semibold">Top up →</Link>
+            <Link to="/bonus-wallet" className="text-sm text-primary-500 hover:underline font-semibold">Top up →</Link>
           </div>
           <div className="text-[11px] text-text-muted mt-1">
             Plan charges debit this wallet only — trading balance is never touched.
@@ -333,7 +333,7 @@ function RechargePromptModal({ plan, billing, balance, needed, shortfall, curren
         </div>
         <div className="p-5 space-y-3 text-sm">
           <div className="bg-bear/10 border border-bear/30 rounded-lg p-3 text-bear text-[13px] font-semibold">
-            Not enough balance in your Subscription Wallet to renew {plan?.name}.
+            Not enough balance in your Bonus Wallet to renew {plan?.name}.
           </div>
           <div className="grid grid-cols-3 gap-3 text-center">
             <Stat label="Balance" value={`${sym}${fmt(balance)}`} tone="muted" />
@@ -341,12 +341,12 @@ function RechargePromptModal({ plan, billing, balance, needed, shortfall, curren
             <Stat label="Top up by" value={`${sym}${fmt(shortfall)}`} tone="bear" />
           </div>
           <p className="text-[11px] text-text-muted leading-snug">
-            Renewals can only be paid from the Subscription Wallet. Trading wallet funds cannot be moved here.
+            Renewals are paid from your Bonus Wallet. Move funds in via Internal Transfer if needed.
           </p>
         </div>
         <div className="px-5 py-3 border-t border-border-subtle flex justify-end gap-2">
           <button onClick={onClose} className="btn-ghost text-sm">Maybe later</button>
-          <Link to="/subscription-wallet" onClick={onClose} className="btn-primary text-sm">
+          <Link to="/bonus-wallet" onClick={onClose} className="btn-primary text-sm">
             Add funds →
           </Link>
         </div>
@@ -411,7 +411,7 @@ function ConfirmPayModal({ plan, billing, wallet, submitting, onConfirm, onClose
           )}
 
           <p className="text-[11px] text-text-muted leading-snug">
-            Funds are deducted from your Subscription Wallet ({ccy}) immediately. Your trading wallet is never touched. Subscription activates the moment the payment clears — there's no refund window for partial use.
+            Funds are deducted from your Bonus Wallet ({ccy}) immediately. Your trading wallet is never touched. Subscription activates the moment the payment clears — there's no refund window for partial use.
           </p>
         </div>
         <div className="px-5 py-3 border-t border-border-dark flex justify-end gap-2">

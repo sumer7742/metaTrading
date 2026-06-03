@@ -104,7 +104,12 @@ export default function Withdrawals() {
             {items.map((w) => (
               <tr key={w._id} className="table-row">
                 <td className="p-3 text-xs text-gray-400">{fmtDate(w.createdAt)}</td>
-                <td className="p-3 text-xs text-gray-400 font-mono">{w.userId.toString().slice(-6)}</td>
+                <td className="p-3 text-xs">
+                  {w.user?.userUid
+                    ? <span className="font-mono font-bold text-primary-500">{w.user.userUid}</span>
+                    : <span className="font-mono text-gray-400">{w.userId?.toString().slice(-6)}</span>}
+                  {w.user?.name && <div className="text-[10px] text-gray-500 truncate max-w-[160px]">{w.user.name}</div>}
+                </td>
                 <td className="p-3">
                   <span className="text-xs px-2 py-0.5 rounded bg-bg-hover text-white">
                     {w.method === 'UPI' ? '📱 UPI' : w.method === 'BANK' ? '🏦 Bank' : '₿ Crypto'}
@@ -213,7 +218,9 @@ function WithdrawalDetailModal({ withdrawal: w, onClose, onApprove, onReject }) 
           <div className="grid grid-cols-2 gap-4">
             <div>
               <div className="text-xs text-gray-500 uppercase mb-1">User ID</div>
-              <div className="text-white font-mono text-sm">{w.userId}</div>
+              <div className="text-white font-mono text-sm">{w.user?.userUid || '—'}</div>
+              {w.user?.name && <div className="text-[11px] text-gray-500 mt-0.5">{w.user.name}</div>}
+              <div className="text-[10px] text-gray-600 font-mono mt-0.5 break-all">{w.userId}</div>
             </div>
             <div>
               <div className="text-xs text-gray-500 uppercase mb-1">Submitted</div>

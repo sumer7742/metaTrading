@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { fmtDate } from '../utils/format';
+import HelpdeskChat from './HelpdeskChat';
 
 /**
  * Helpdesk page — three panes:
@@ -137,6 +138,7 @@ export default function Helpdesk() {
       {/* Tabs */}
       <div className="flex items-center border-b border-border-dark px-2 gap-1">
         {[
+          { k: 'chat', label: 'Live Chat', count: null },
           { k: 'faq', label: 'Knowledge Base', count: KB_ARTICLES.length },
           { k: 'tickets', label: 'My Tickets', count: tickets.length },
           { k: 'new', label: 'New Ticket', count: null },
@@ -162,6 +164,8 @@ export default function Helpdesk() {
           </button>
         ))}
       </div>
+
+      {tab === 'chat' && <HelpdeskChat embedded />}
 
       {tab === 'faq' && (
         <div className="space-y-4">

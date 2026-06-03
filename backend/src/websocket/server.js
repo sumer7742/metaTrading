@@ -26,6 +26,10 @@ class WSBroadcaster {
     // channel -> Set<ws>
     this.subscriptions = new Map();
     this.heartbeatInterval = null;
+    // userId(string) -> Set<ws> — presence tracking (additive; used by chat).
+    this.userSockets = new Map();
+    // presence subscribers: fn(userId, online:boolean)
+    this.presenceHandlers = [];
   }
 
   attach(server) {
@@ -72,6 +76,15 @@ class WSBroadcaster {
         // malformed URL — anonymous
       }
 
+      // Presence: track this socket against its user. Fire the "online"
+      // hook only when it's the user's FIRST live socket.
+      if (ws.userId) {
+        const uid = String(ws.userId);
+        let set = this.userSockets.get(uid);
+        if (!set) { set = new Set(); this.userSockets.set(uid, set); this._emitPresence(uid, true); }
+        set.add(ws);
+      }
+
       ws.on('pong', () => {
         ws.isAlive = true;
       });
@@ -91,6 +104,16 @@ class WSBroadcaster {
           if (set) {
             set.delete(ws);
             if (!set.size) this.subscriptions.delete(ch);
+          }
+        }
+        // Presence: drop this socket; fire "offline" when the user's LAST
+        // socket goes away.
+        if (ws.userId) {
+          const uid = String(ws.userId);
+          const set = this.userSockets.get(uid);
+          if (set) {
+            set.delete(ws);
+            if (!set.size) { this.userSockets.delete(uid); this._emitPresence(uid, false); }
           }
         }
       });
@@ -182,6 +205,25 @@ class WSBroadcaster {
 
   notifyUser(userId, channel, data) {
     this.publish(`user:${channel}:${userId}`, data);
+  }
+
+  // ── Presence (additive — used by the helpdesk chat) ─────────────────
+  // True when the user has at least one live socket.
+  isOnline(userId) {
+    const set = this.userSockets.get(String(userId));
+    return !!set && set.size > 0;
+  }
+
+  // Register a presence listener: fn(userId, online). Chat uses this to
+  // push an online/offline event to the conversation counterpart.
+  onPresence(fn) {
+    if (typeof fn === 'function') this.presenceHandlers.push(fn);
+  }
+
+  _emitPresence(userId, online) {
+    for (const fn of this.presenceHandlers) {
+      try { fn(userId, online); } catch (_) { /* never let a handler break the socket loop */ }
+    }
   }
 
   // Called by server.js during graceful shutdown — politely close every

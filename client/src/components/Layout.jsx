@@ -371,6 +371,17 @@ export default function Layout({ children }) {
                   </Link>
 
                   <Link
+                    to="/helpdesk/chat"
+                    className="flex items-center gap-3 px-4 py-2.5 text-sm text-text-primary hover:bg-bg-hover transition-colors"
+                    role="menuitem"
+                  >
+                    <span className="text-text-muted">
+                      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+                    </span>
+                    Chat with Support
+                  </Link>
+
+                  <Link
                     to="/profile"
                     className="flex items-center gap-3 px-4 py-2.5 text-sm text-text-primary hover:bg-bg-hover transition-colors"
                     role="menuitem"

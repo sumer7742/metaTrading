@@ -97,9 +97,9 @@ export default function SubscriptionWallet() {
       <WalletSidebar activeId="subscription" />
       <main className="col-span-12 lg:col-span-10 xl:col-span-10 min-w-0 space-y-5">
       <PageHero
-        eyebrow="Subscription"
-        title="Subscription Wallet"
-        subtitle="A dedicated balance used only for plan purchases and renewals. Your trading wallet is never touched."
+        eyebrow="Wallet"
+        title="Main Wallet"
+        subtitle="Your general balance. Add funds and move money between your wallets and trading accounts."
       />
 
       {/* ── Premium balance card ───────────────────────────────────── */}
@@ -112,7 +112,7 @@ export default function SubscriptionWallet() {
           <div>
             <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] font-extrabold text-text-muted">
               <span className="w-1.5 h-1.5 rounded-full bg-primary-500" />
-              Subscription wallet
+              Main wallet
             </div>
             <div className="mt-2 flex items-baseline gap-2 font-mono tabular-nums">
               <span className="text-5xl md:text-6xl font-extrabold text-text-primary tracking-tight">
@@ -132,64 +132,7 @@ export default function SubscriptionWallet() {
             >
               + Add Funds
             </button>
-            <Link to="/plans" className="btn-secondary text-sm">View Plans</Link>
-          </div>
-        </div>
-
-        {/* Low-balance warning */}
-        {isLow && (
-          <div className="mt-5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 flex items-start gap-3">
-            <span className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center text-amber-700 shrink-0">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 9v4M12 17h.01" /><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-              </svg>
-            </span>
-            <div className="text-sm">
-              <div className="font-bold text-amber-900">Low subscription balance</div>
-              <div className="text-amber-800 text-[12px] mt-0.5">
-                Your balance is at or below {sym}{fmt(lowThreshold)}. Top up to keep your subscription from being downgraded on renewal.
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Status strip — plan + auto-renew + countdown */}
-        <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-3">
-          <StatusTile
-            label="Current plan"
-            value={effectivePlan?.name || '—'}
-            badge={statusTone}
-            sub={sub?.billingCycle ? `${sub.billingCycle.toLowerCase()} billing` : null}
-          />
-          <StatusTile
-            label="Renews in"
-            value={countdown ? countdown.label : '—'}
-            sub={sub?.expiresAt ? new Date(sub.expiresAt).toLocaleDateString() : 'No renewal scheduled'}
-            tone={countdown?.expired ? 'bear' : 'primary'}
-          />
-          <div className="rounded-2xl border border-border-dark p-4 bg-bg-hover/30">
-            <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted">Auto-renew</div>
-            <div className="mt-2 flex items-center justify-between gap-3">
-              <span className={`text-sm font-bold ${wallet?.autoRenew ? 'text-bull' : 'text-text-muted'}`}>
-                {wallet?.autoRenew ? 'Enabled' : 'Disabled'}
-              </span>
-              <button
-                onClick={() => toggleAutoRenew(!wallet?.autoRenew)}
-                disabled={savingAutoRenew}
-                className={`relative w-12 h-6 rounded-full transition border ${
-                  wallet?.autoRenew ? 'bg-bull border-bull' : 'bg-bg-hover border-border-dark'
-                } disabled:opacity-60`}
-              >
-                <div
-                  className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition shadow ${
-                    wallet?.autoRenew ? 'left-[26px]' : 'left-0.5'
-                  }`}
-                />
-              </button>
-            </div>
-            <div className="text-[11px] text-text-muted mt-1.5 leading-snug">
-              Renewals debit this wallet. {wallet?.gracePeriodDays || 0}-day grace period.
-            </div>
+            <Link to="/wallet?action=transfer" className="btn-secondary text-sm">Transfer</Link>
           </div>
         </div>
       </div>
@@ -378,7 +321,7 @@ function DepositModal({ currency, onClose, onSuccess }) {
     setSubmitting(true);
     try {
       await api.post('/subscription-wallet/deposit', { amount: n, sourceAccountId });
-      toast.success(`${sym}${n.toFixed(2)} moved to Subscription Wallet`);
+      toast.success(`${sym}${n.toFixed(2)} moved to Main Wallet`);
       onSuccess();
     } catch (e) {
       const code = e.response?.data?.error?.code;
@@ -446,7 +389,7 @@ function DepositModal({ currency, onClose, onSuccess }) {
         {/* Header + step indicator */}
         <div className="px-5 py-3.5 border-b border-border-subtle">
           <div className="flex items-center justify-between">
-            <h3 className="text-base font-bold text-text-primary">Add funds to Subscription Wallet</h3>
+            <h3 className="text-base font-bold text-text-primary">Add funds to Main Wallet</h3>
             <button onClick={onClose} className="text-text-muted hover:text-text-primary text-xl leading-none">×</button>
           </div>
           <div className="mt-3 flex items-center gap-1.5">
@@ -565,7 +508,7 @@ function DepositModal({ currency, onClose, onSuccess }) {
           {step === 2 && method && method.id !== 'TRADING' && (
             <div className="space-y-3">
               <div className="rounded-xl border border-primary-500/30 bg-primary-500/5 px-3 py-2.5 text-[12px] text-text-secondary leading-snug">
-                Send <span className="font-bold text-text-primary">{sym}{n.toFixed(2)}</span> via {method.label}, then upload proof. An admin will verify and credit your Subscription Wallet.
+                Send <span className="font-bold text-text-primary">{sym}{n.toFixed(2)}</span> via {method.label}, then upload proof. An admin will verify and credit your Main Wallet.
               </div>
               <div>
                 <div className="text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1.5">Transaction reference *</div>
@@ -644,7 +587,7 @@ function DepositModal({ currency, onClose, onSuccess }) {
               )}
               <p className="text-[11px] text-text-muted leading-snug pt-2 border-t border-border-subtle">
                 {method.id === 'TRADING'
-                  ? 'Funds transfer instantly. Your trading wallet is debited and Subscription Wallet credited in one step.'
+                  ? 'Funds transfer instantly. Your trading wallet is debited and Main Wallet credited in one step.'
                   : 'Submission goes to admin for verification. You\'ll get a notification when the deposit is credited.'}
               </p>
             </div>

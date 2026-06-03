@@ -44,8 +44,9 @@ export default function Wallet() {
   // refresh doesn't re-trigger it.
   useEffect(() => {
     const action = searchParams.get('action');
-    if (action === 'deposit' || action === 'withdraw') {
-      pendingDeepLinkRef.current = action === 'withdraw' ? 'withdraw' : 'grow';
+    const VIEW_FOR = { deposit: 'grow', withdraw: 'withdraw', transfer: 'transfer' };
+    if (VIEW_FOR[action]) {
+      pendingDeepLinkRef.current = VIEW_FOR[action];
       const next = new URLSearchParams(searchParams);
       next.delete('action');
       setSearchParams(next, { replace: true });
@@ -263,7 +264,8 @@ export default function Wallet() {
     { id: 'transfer', label: 'Internal Transfer', icon: <NITransfer /> },
     // Subscription Wallet lives on its own page — items with `to`
     // navigate via Link instead of switching the local view.
-    { id: 'subscription', label: 'Subscription Wallet', icon: <NISubscription />, to: '/subscription-wallet' },
+    { id: 'subscription', label: 'Main Wallet', icon: <NISubscription />, to: '/subscription-wallet' },
+    { id: 'bonus', label: 'Bonus Wallet', icon: <NIBonus />, to: '/bonus-wallet' },
     { id: 'history',  label: 'Transaction History', icon: <NIHistory /> },
     { id: 'details',  label: 'Account Details',   icon: <NIDetails /> },
   ];
@@ -2658,10 +2660,13 @@ function TransferView({ accounts, balances, onDone }) {
   // "Transfer" left-nav item so the user sees a single transfer hub.
   const [mode, setMode] = useState('self'); // 'self' | 'user'
 
-  // Subscription Wallet uses the literal sentinel 'subscription' on the
-  // backend (it's user-level, not per-account). We surface it as a fake
-  // entry in the From/To dropdowns so the existing flow handles both.
-  const SUB_OPT = { _id: 'subscription', nickname: 'Subscription Wallet', accountType: 'SUB' };
+  // Subscription ("Main") + Bonus wallets use the literal sentinels
+  // 'subscription' / 'bonus' on the backend (user-level, not per-account).
+  // We surface them as fake entries in the From/To dropdowns so the
+  // existing transfer flow handles them. (Bonus has no withdraw path, but
+  // funds CAN move out via this internal transfer.)
+  const SUB_OPT = { _id: 'subscription', nickname: 'Main Wallet', accountType: 'SUB' };
+  const BONUS_OPT = { _id: 'bonus', nickname: 'Bonus Wallet', accountType: 'BONUS' };
 
   // DEMO / VIRTUAL accounts use practice money — they have no real
   // balance to move and aren't allowed on either side of an internal
@@ -2678,34 +2683,44 @@ function TransferView({ accounts, balances, onDone }) {
   const [submitting, setSubmitting] = useState(false);
   const [confirm, setConfirm] = useState(false);
 
-  // Subscription Wallet snapshot — fetched once for the free-balance display
-  // when the user picks "Subscription Wallet" as the source.
+  // Main + Bonus wallet snapshots — fetched once for the free-balance
+  // display when the user picks one as the source.
   const [subWallet, setSubWallet] = useState(null);
+  const [bonusWallet, setBonusWallet] = useState(null);
   useEffect(() => {
     (async () => {
       try {
         const r = await api.get('/subscription-wallet');
         setSubWallet(r.data.data || null);
       } catch { /* non-fatal */ }
+      try {
+        const b = await api.get('/bonus-wallet');
+        setBonusWallet(b.data.data || null);
+      } catch { /* non-fatal */ }
     })();
   }, []);
 
-  // Merge live trading accounts + subscription wallet for the dropdowns.
+  // Merge live trading accounts + Main + Bonus wallets for the dropdowns.
   // (Demo accounts are already filtered out of `liveAccounts` above.)
-  const transferOptions = useMemo(() => [...liveAccounts, SUB_OPT], [liveAccounts]);
+  const transferOptions = useMemo(() => [...liveAccounts, SUB_OPT, BONUS_OPT], [liveAccounts]);
 
   const isSubFrom = from === 'subscription';
   const isSubTo   = to   === 'subscription';
+  const isBonusFrom = from === 'bonus';
+  const isBonusTo   = to   === 'bonus';
+  const isSpecial = (id) => id === 'subscription' || id === 'bonus';
   const fromAcc = transferOptions.find((a) => a._id === from);
   const toAcc   = transferOptions.find((a) => a._id === to);
 
-  // Source balance: subscription wallet uses its own balance; trading
+  // Source balance: Main/Bonus wallets use their own balance; trading
   // wallets read from the per-account balances array.
   const free = isSubFrom
     ? Number(subWallet?.balance || 0)
+    : isBonusFrom
+    ? Number(bonusWallet?.balance || 0)
     : Number((balances.find((b) => b.accountId === from && b.currency === currency))?.free || 0);
   const overBudget = Number(amount) > free;
-  const subOnlyUsd = (isSubFrom || isSubTo) && currency !== 'USD';
+  const subOnlyUsd = (isSpecial(from) || isSpecial(to)) && currency !== 'USD';
 
   const submit = async () => {
     if (!from || !to || from === to || !amount) {
@@ -2713,7 +2728,7 @@ function TransferView({ accounts, balances, onDone }) {
       return;
     }
     if (subOnlyUsd) {
-      toast.error('Subscription Wallet transfers must be in USD');
+      toast.error('Main / Bonus Wallet transfers must be in USD');
       return;
     }
     setSubmitting(true);
@@ -2763,11 +2778,29 @@ function TransferView({ accounts, balances, onDone }) {
       </div>
 
       {mode === 'user' && (
-        <TransferToUserPanel accounts={liveAccounts} balances={balances} onDone={onDone} />
+        <TransferToUserPanel accounts={liveAccounts} balances={balances} subWallet={subWallet} onDone={onDone} />
       )}
 
       {mode === 'self' && (
       <div className="bg-white border border-border-dark rounded-2xl p-5 space-y-4">
+        {/* Quick action — one tap pre-selects the existing Subscription
+            Wallet as the destination (still uses the same /wallet/transfers
+            flow). Purely a discoverability shortcut; no logic changes. */}
+        {!isSubTo && (
+          <button
+            type="button"
+            onClick={() => {
+              if (from === 'subscription') setFrom(liveAccounts[0]?._id || '');
+              setTo('subscription');
+              setCurrency('USD');
+            }}
+            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl border border-primary-500/40 bg-primary-500/5 text-primary-600 text-sm font-bold hover:bg-primary-500/10 transition-colors"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14" /><path d="M5 12l7-7 7 7" /></svg>
+            Transfer to Main Wallet
+          </button>
+        )}
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">From</label>
@@ -2776,21 +2809,23 @@ function TransferView({ accounts, balances, onDone }) {
               onChange={(e) => {
                 const v = e.target.value;
                 setFrom(v);
-                if (v === 'subscription') setCurrency('USD');
+                if (v === 'subscription' || v === 'bonus') setCurrency('USD');
               }}
               className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none"
             >
               {transferOptions.map((a) => (
                 <option key={a._id} value={a._id}>
                   {a._id === 'subscription'
-                    ? 'Subscription Wallet · USD'
+                    ? 'Main Wallet · USD'
+                    : a._id === 'bonus'
+                    ? 'Bonus Wallet · USD'
                     : `${a.nickname || a.accountNumber} · ${a.accountType}`}
                 </option>
               ))}
             </select>
             {fromAcc && (
               <div className="mt-1.5 text-[11px] text-text-muted">
-                {isSubFrom ? 'Balance' : 'Free'}: <span className="font-mono font-semibold text-bull">{fmtMoney(free, isSubFrom ? 'USD' : currency)}</span>
+                {(isSubFrom || isBonusFrom) ? 'Balance' : 'Free'}: <span className="font-mono font-semibold text-bull">{fmtMoney(free, (isSubFrom || isBonusFrom) ? 'USD' : currency)}</span>
               </div>
             )}
           </div>
@@ -2801,14 +2836,16 @@ function TransferView({ accounts, balances, onDone }) {
               onChange={(e) => {
                 const v = e.target.value;
                 setTo(v);
-                if (v === 'subscription') setCurrency('USD');
+                if (v === 'subscription' || v === 'bonus') setCurrency('USD');
               }}
               className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none"
             >
               {transferOptions.map((a) => (
                 <option key={a._id} value={a._id}>
                   {a._id === 'subscription'
-                    ? 'Subscription Wallet · USD'
+                    ? 'Main Wallet · USD'
+                    : a._id === 'bonus'
+                    ? 'Bonus Wallet · USD'
                     : `${a.nickname || a.accountNumber} · ${a.accountType}`}
                 </option>
               ))}
@@ -2834,7 +2871,7 @@ function TransferView({ accounts, balances, onDone }) {
           <div className="text-[11px] text-bear font-semibold">Source and destination must be different accounts.</div>
         )}
         {subOnlyUsd && (
-          <div className="text-[11px] text-warn font-semibold">Subscription Wallet only supports USD. Currency switched automatically.</div>
+          <div className="text-[11px] text-warn font-semibold">Main / Bonus Wallet only supports USD. Currency switched automatically.</div>
         )}
 
         <button
@@ -2873,15 +2910,19 @@ function TransferView({ accounts, balances, onDone }) {
  * Peer-to-peer transfer panel.
  *
  * Recipient search is debounced (250 ms) and hits
- * `/wallet/recipients/search?q=`. The picker accepts a referral code,
- * email, or partial name and shows matching users with an avatar
- * initials chip. Once a recipient is selected the form gates Review on
+ * `/wallet/recipients/search?q=&by=uid` — matching the recipient's
+ * permanent User ID ONLY (e.g. USR100245), shown with an avatar initials
+ * chip. Once a recipient is selected the form gates Review on
  * a positive amount within the admin-tuned min/max, and a fee preview
  * is shown if `feePercent > 0`.
  */
-function TransferToUserPanel({ accounts, balances, onDone }) {
-  const [fromAccountId, setFromAccountId] = useState(accounts[0]?._id || '');
+function TransferToUserPanel({ accounts, balances, subWallet, onDone }) {
+  // Source options = trading accounts + the user-level Main Wallet
+  // (sentinel 'subscription', USD-only).
+  const fromOptions = [...accounts, { _id: 'subscription', nickname: 'Main Wallet', accountType: 'MAIN' }];
+  const [fromAccountId, setFromAccountId] = useState(accounts[0]?._id || 'subscription');
   const [currency, setCurrency] = useState(accounts[0]?.baseCurrency || 'USD');
+  const isMainFrom = fromAccountId === 'subscription';
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
   const [query, setQuery] = useState('');
@@ -2912,7 +2953,7 @@ function TransferToUserPanel({ accounts, balances, onDone }) {
     let cancelled = false;
     setSearching(true);
     const t = setTimeout(() => {
-      api.get('/wallet/recipients/search', { params: { q, limit: 8 } })
+      api.get('/wallet/recipients/search', { params: { q, limit: 8, by: 'uid' } })
         .then((r) => { if (!cancelled) setResults(r.data.data || []); })
         .catch(() => { if (!cancelled) setResults([]); })
         .finally(() => { if (!cancelled) setSearching(false); });
@@ -2920,8 +2961,10 @@ function TransferToUserPanel({ accounts, balances, onDone }) {
     return () => { cancelled = true; clearTimeout(t); };
   }, [query, recipient]);
 
-  const acct = accounts.find((a) => a._id === fromAccountId);
-  const free = Number(balances.find((b) => b.accountId === fromAccountId && b.currency === currency)?.free || 0);
+  const acct = fromOptions.find((a) => a._id === fromAccountId);
+  const free = isMainFrom
+    ? Number(subWallet?.balance || 0)
+    : Number(balances.find((b) => b.accountId === fromAccountId && b.currency === currency)?.free || 0);
   const amt = Number(amount) || 0;
   const feePct = Number(cfg.feePercent) || 0;
   const feeAmt = feePct > 0 ? amt * (feePct / 100) : 0;
@@ -2979,25 +3022,31 @@ function TransferToUserPanel({ accounts, balances, onDone }) {
             <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">From account</label>
             <select
               value={fromAccountId}
-              onChange={(e) => setFromAccountId(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value;
+                setFromAccountId(v);
+                if (v === 'subscription') setCurrency('USD');
+              }}
               className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none"
             >
-              {accounts.map((a) => (
+              {fromOptions.map((a) => (
                 <option key={a._id} value={a._id}>
-                  {(a.nickname || a.accountNumber)} · {a.accountType}
+                  {a._id === 'subscription'
+                    ? 'Main Wallet · USD'
+                    : `${(a.nickname || a.accountNumber)} · ${a.accountType}`}
                 </option>
               ))}
             </select>
             {acct && (
               <div className="mt-1.5 text-[11px] text-text-muted">
-                Free: <span className="font-mono font-semibold text-bull">{fmtMoney(free, currency)}</span>
+                {isMainFrom ? 'Balance' : 'Free'}: <span className="font-mono font-semibold text-bull">{fmtMoney(free, isMainFrom ? 'USD' : currency)}</span>
               </div>
             )}
           </div>
           <div>
             <label className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Currency</label>
-            <select value={currency} onChange={(e) => setCurrency(e.target.value)} className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none">
-              {['USD', 'EUR', 'GBP', 'INR'].map((c) => <option key={c}>{c}</option>)}
+            <select value={currency} onChange={(e) => setCurrency(e.target.value)} disabled={isMainFrom} className="w-full mt-1.5 px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none disabled:opacity-60">
+              {(isMainFrom ? ['USD'] : ['USD', 'EUR', 'GBP', 'INR']).map((c) => <option key={c}>{c}</option>)}
             </select>
           </div>
         </div>
@@ -3010,8 +3059,8 @@ function TransferToUserPanel({ accounts, balances, onDone }) {
               <RecipientAvatar user={recipient} />
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-bold text-text-primary truncate">{recipient.name}</div>
-                <div className="text-[11px] text-text-muted truncate">
-                  {recipient.referralCode ? `Ref: ${recipient.referralCode}` : recipient.email}
+                <div className="text-[11px] text-text-muted truncate font-mono">
+                  {recipient.userUid || recipient.email}
                 </div>
               </div>
               <button
@@ -3027,7 +3076,14 @@ function TransferToUserPanel({ accounts, balances, onDone }) {
               <input
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search by username, referral code, email, or user ID"
+                placeholder="Enter recipient's User ID (e.g. USR100245)"
+                autoComplete="off"
+                autoCorrect="off"
+                autoCapitalize="characters"
+                spellCheck={false}
+                name="recipient-user-id"
+                data-lpignore="true"
+                data-1p-ignore=""
                 className="w-full px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:border-primary-500 focus:outline-none"
               />
               {/* Results dropdown */}
@@ -3046,8 +3102,8 @@ function TransferToUserPanel({ accounts, balances, onDone }) {
                         <RecipientAvatar user={u} />
                         <div className="min-w-0 flex-1">
                           <div className="text-sm font-bold text-text-primary truncate">{u.name}</div>
-                          <div className="text-[11px] text-text-muted truncate">
-                            {u.referralCode ? `Ref: ${u.referralCode}` : u.email}
+                          <div className="text-[11px] text-text-muted truncate font-mono">
+                            {u.userUid || u.email}
                           </div>
                         </div>
                       </button>
@@ -3126,8 +3182,8 @@ function TransferToUserPanel({ accounts, balances, onDone }) {
             <RecipientAvatar user={recipient} />
             <div className="min-w-0 flex-1">
               <div className="text-sm font-bold text-text-primary truncate">{recipient?.name}</div>
-              <div className="text-[11px] text-text-muted truncate">
-                {recipient?.referralCode ? `Ref: ${recipient.referralCode}` : recipient?.email}
+              <div className="text-[11px] text-text-muted truncate font-mono">
+                {recipient?.userUid || recipient?.email}
               </div>
             </div>
           </div>
@@ -3346,11 +3402,35 @@ function AccountDetailsView({ user, accounts, balances, fxRate, onRefresh, setVi
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="6" width="20" height="14" rx="2" /><path d="M2 10h20" /><path d="M6 16h4" /></svg>
             </span>
             <div>
-              <div className="text-base font-bold text-text-primary">Subscription Wallet</div>
+              <div className="text-base font-bold text-text-primary">Main Wallet</div>
               <div className="text-[12px] text-text-muted mt-0.5">Separate balance for plan purchases & renewals — trading funds are never touched.</div>
             </div>
           </div>
           <div className="flex items-center gap-3 text-primary-600 font-semibold text-sm">
+            Open
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 5l7 7-7 7" /></svg>
+          </div>
+        </div>
+      </Link>
+
+      {/* Bonus Wallet entry-point card — referral/partner earnings land
+          here automatically. No direct withdrawal; transfer out only. */}
+      <Link
+        to="/bonus-wallet"
+        className="block bg-white border-2 border-border-dark rounded-2xl p-5 hover:border-bull hover:shadow-card transition-all"
+      >
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div className="flex items-center gap-3">
+            <span className="w-11 h-11 rounded-xl flex items-center justify-center text-bull"
+                  style={{ background: 'linear-gradient(135deg, #16A34A22, #16A34A11)' }}>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="8" width="18" height="13" rx="2" /><path d="M3 12h18" /><path d="M12 8v13" /><path d="M12 8s-3-5-5-3 1 3 5 3z" /><path d="M12 8s3-5 5-3-1 3-5 3z" /></svg>
+            </span>
+            <div>
+              <div className="text-base font-bold text-text-primary">Bonus Wallet</div>
+              <div className="text-[12px] text-text-muted mt-0.5">All referral &amp; partner earnings, credited automatically. Transfer out to spend — no direct withdrawal.</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 text-bull font-semibold text-sm">
             Open
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 5l7 7-7 7" /></svg>
           </div>

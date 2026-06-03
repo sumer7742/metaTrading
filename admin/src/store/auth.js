@@ -1,6 +1,10 @@
 import { create } from 'zustand';
 import { api, errorMessage } from '../services/api';
 
+// Roles allowed into the admin console. MANAGER is part of the management
+// hierarchy (scoped, read-mostly views); add future mgmt roles here.
+const ADMIN_APP_ROLES = ['ADMIN', 'SUPER_ADMIN', 'MANAGER'];
+
 export const useAuthStore = create((set) => ({
   user: null,
   loading: true,
@@ -10,7 +14,7 @@ export const useAuthStore = create((set) => ({
     if (!token) return set({ loading: false });
     try {
       const { data } = await api.get('/auth/me');
-      if (!['ADMIN', 'SUPER_ADMIN'].includes(data.data.role)) {
+      if (!ADMIN_APP_ROLES.includes(data.data.role)) {
         localStorage.removeItem('admin_accessToken');
         localStorage.removeItem('admin_refreshToken');
         set({ user: null, loading: false });
@@ -26,7 +30,7 @@ export const useAuthStore = create((set) => ({
 
   login: async (email, password, twoFactorCode) => {
     const { data } = await api.post('/auth/login', { email, password, twoFactorCode });
-    if (!['ADMIN', 'SUPER_ADMIN'].includes(data.data.user.role)) {
+    if (!ADMIN_APP_ROLES.includes(data.data.user.role)) {
       throw new Error('Not an admin account');
     }
     localStorage.setItem('admin_accessToken', data.data.accessToken);

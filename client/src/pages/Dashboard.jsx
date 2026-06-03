@@ -739,6 +739,12 @@ function PortfolioStats() {
             className="text-xs font-semibold rounded-lg border border-border-dark bg-white px-2.5 py-1.5 focus:outline-none focus:border-primary-500 max-w-[180px]"
           >
             <option value="">All accounts</option>
+            {accounts.some((a) => a.accountType !== 'DEMO' && a.accountType !== 'VIRTUAL') && (
+              <option value="ALL_REAL">All Real Accounts</option>
+            )}
+            {accounts.some((a) => a.accountType === 'DEMO' || a.accountType === 'VIRTUAL') && (
+              <option value="ALL_DEMO">All Demo Accounts</option>
+            )}
             {accounts.map((a) => (
               <option key={a._id} value={a._id}>
                 {a.nickname || a.accountNumber} · {a.baseCurrency || 'USD'}

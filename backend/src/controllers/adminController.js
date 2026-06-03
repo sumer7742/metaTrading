@@ -83,6 +83,7 @@ const listUsers = asyncHandler(async (req, res) => {
       { firstName: new RegExp(search, 'i') },
       { lastName: new RegExp(search, 'i') },
       { phone: new RegExp(search, 'i') },
+      { userUid: new RegExp(search, 'i') },   // search by permanent User ID (e.g. USR100245)
     ];
   }
   if (kyc) filter.kycStatus = kyc;
@@ -407,10 +408,29 @@ const referralDiagnostic = asyncHandler(async (req, res) => {
 });
 
 // WITHDRAWALS
+// Attach a lightweight { userUid, email, name } badge to rows keyed by
+// `userId`. Additive — surfaces the permanent User ID on the deposits /
+// withdrawals tables without altering any existing field on the row.
+async function attachUserBadge(items) {
+  if (!Array.isArray(items) || !items.length) return items;
+  const ids = [...new Set(items.map((it) => String(it.userId)).filter(Boolean))];
+  if (!ids.length) return items;
+  const users = await User.find({ _id: { $in: ids } }).select('userUid email firstName lastName').lean();
+  const byId = new Map(users.map((u) => [String(u._id), u]));
+  for (const it of items) {
+    const u = byId.get(String(it.userId));
+    it.user = u
+      ? { userUid: u.userUid || null, email: u.email, name: [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email }
+      : null;
+  }
+  return items;
+}
+
 const listWithdrawals = asyncHandler(async (req, res) => {
   const { status } = req.query;
   const filter = status ? { status } : {};
   const items = await Withdrawal.find(filter).sort({ createdAt: -1 }).limit(200).lean();
+  await attachUserBadge(items);
   sendSuccess(res, items);
 });
 
@@ -548,6 +568,7 @@ const listDeposits = asyncHandler(async (req, res) => {
   const { status } = req.query;
   const filter = status ? { status } : {};
   const items = await Deposit.find(filter).sort({ createdAt: -1 }).limit(200).lean();
+  await attachUserBadge(items);
   sendSuccess(res, items);
 });
 
@@ -568,7 +589,16 @@ const confirmDeposit = asyncHandler(async (req, res) => {
   // Route the credit. Subscription-wallet deposits land in the
   // user-level Subscription Wallet via its own service; trading-wallet
   // deposits go through the classic walletService (per-account).
-  if (dep.targetWallet === 'subscription') {
+  if (dep.targetWallet === 'bonus') {
+    const bonusWalletService = require('../services/bonusWalletService');
+    await bonusWalletService.credit({
+      userId: dep.userId,
+      amount: creditAmount,
+      reason: 'DEPOSIT',
+      paymentRef: String(dep._id),
+      note: `Bonus wallet · ${dep.amount} ${dep.currency} confirmed by admin`,
+    });
+  } else if (dep.targetWallet === 'subscription') {
     const subscriptionWalletService = require('../services/subscriptionWalletService');
     await subscriptionWalletService.credit({
       userId: dep.userId,

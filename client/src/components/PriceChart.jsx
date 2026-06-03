@@ -253,51 +253,49 @@ export function convertToHeikinAshi(candles) {
  *
  * Extras (open LIMIT/STOP/SL/TP price lines) extend the range only
  * marginally so they remain visible without blowing the scale wide. */
-// Autoscale provider — invoked by lightweight-charts whenever it needs to
-// fit the price range to the visible candles. Library calls this with the
-// `firstIdx` / `lastIdx` of the currently-visible range, so we always
-// compute high/low from EXACTLY what the user is looking at — wherever
-// they scroll the price axis follows. Padding is proportional and
-// expressed as `margins` (pixels above/below the data range) so even
-// during a sharp price spike the wicks stay well inside the viewport.
-const makeAutoscaleProvider = (candlesRef, extraPricesRef, animStateRef, kickAnimRef, hysteresisRef) => (start, end) => {
-  const data = candlesRef.current;
-  if (!data || data.length < 2) return null;
+// Autoscale provider — invoked by lightweight-charts (v4) whenever it needs
+// to fit the price range to the visible candles. v4 calls it with a SINGLE
+// argument: `baseImplementation()`, a function returning the default
+// AutoscaleInfo computed from the bars CURRENTLY ON SCREEN. Calling it is
+// what makes the price scale follow scroll / pan / zoom / timeframe / new
+// bars automatically — the library hands us the exact visible range, so we
+// never have to guess indices. (The previous code assumed a
+// `(firstIdx, lastIdx)` signature v4 never passes, so it always fell back to
+// the last 100 candles → the scale never rescaled while scrolling history.)
+const makeAutoscaleProvider = (candlesRef, extraPricesRef, animStateRef, kickAnimRef, hysteresisRef) => (baseImplementation) => {
+  let base = null;
+  try { base = typeof baseImplementation === 'function' ? baseImplementation() : null; } catch (_) { base = null; }
 
-  // The library passes firstIdx/lastIdx of the visible range — use them
-  // if present, otherwise fall back to the last 100 candles (initial
-  // mount, before timeScale settles).
-  let firstIdx, lastIdx;
-  if (typeof start === 'number' && typeof end === 'number') {
-    firstIdx = Math.max(0, Math.floor(start));
-    lastIdx  = Math.min(data.length - 1, Math.ceil(end));
+  let lo, hi;
+  if (base && base.priceRange && Number.isFinite(base.priceRange.minValue) && Number.isFinite(base.priceRange.maxValue)) {
+    // Visible high/low straight from the library — always reflects exactly
+    // what's on screen, wherever the user has scrolled / zoomed.
+    lo = base.priceRange.minValue;
+    hi = base.priceRange.maxValue;
   } else {
-    firstIdx = Math.max(0, data.length - 100);
-    lastIdx  = data.length - 1;
-  }
-  if (lastIdx < firstIdx) return null;
-
-  let lo = Infinity;
-  let hi = -Infinity;
-  for (let i = firstIdx; i <= lastIdx; i++) {
-    const c = data[i];
-    if (!c) continue;
-    if (Number.isFinite(c.low)  && c.low  < lo) lo = c.low;
-    if (Number.isFinite(c.high) && c.high > hi) hi = c.high;
-  }
-  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
-
-  // Always honour the latest candle's close so the live price line stays
-  // inside the visible range even mid-tick.
-  const last = data[data.length - 1];
-  if (Number.isFinite(last?.close)) {
-    lo = Math.min(lo, last.close);
-    hi = Math.max(hi, last.close);
+    // Fallback only when the base range isn't ready yet (very first call,
+    // before the time scale settles): use the most recent window.
+    const data = candlesRef.current;
+    if (!data || data.length < 1) return base || null;
+    lo = Infinity; hi = -Infinity;
+    for (let i = Math.max(0, data.length - 100); i < data.length; i++) {
+      const c = data[i];
+      if (!c) continue;
+      if (Number.isFinite(c.low)  && c.low  < lo) lo = c.low;
+      if (Number.isFinite(c.high) && c.high > hi) hi = c.high;
+    }
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return base || null;
   }
 
-  // Include user-placed price lines (SL/TP/LIMIT/STOP) but cap how far
-  // they can stretch the scale — a far-away LIMIT shouldn't compress the
-  // candle area to a sliver.
+  // NOTE: we intentionally do NOT force-include the latest candle's close.
+  // `baseImplementation()` already includes the live candle whenever it's on
+  // screen; forcing it in would drag the scale toward the live price while
+  // the user is scrolled deep into history — the exact "follows the latest
+  // range, not the visible range" bug this change fixes.
+
+  // Include user-placed price lines (SL/TP/LIMIT/STOP) but cap how far they
+  // can stretch the scale — a far-away order line shouldn't compress the
+  // visible candles to a sliver.
   const extras = extraPricesRef?.current;
   if (Array.isArray(extras) && extras.length) {
     const span0 = Math.max(hi - lo, 1e-9);
@@ -386,17 +384,32 @@ const makeAutoscaleProvider = (candlesRef, extraPricesRef, animStateRef, kickAni
     outHi = state.animHi;
   }
 
-  // Defer to lightweight-charts' built-in pixel margins (driven by the
-  // price scale's `scaleMargins`) for top/bottom whitespace. Returning a
-  // small `margins.above/below` in PRICE units adds extra safety so wicks
-  // never sit on the very top/bottom pixel even after the scaleMargins
-  // calculation. Bumped to 6 % so big volatility spikes have headroom
-  // before the next autoscale recompute catches them.
+  // ── Guarantee containment, THEN add breathing space ─────────────────
+  // The eased range (outLo/outHi) may LAG the raw visible range while it
+  // animates toward a new target. That lag is exactly what we want when the
+  // range SHRINKS (a spike scrolled out of view → smooth zoom-in), but it
+  // must never apply when the range GROWS — otherwise a fast bullish/bearish
+  // spike renders above the top / below the bottom edge for the few frames
+  // the ease takes to catch up (the reported "candles cross the top edge"
+  // bug). So clamp the rendered range to ALWAYS fully contain the raw
+  // visible extremes: instant grow, smooth shrink — the way TradingView
+  // behaves. `lo`/`hi` here already include the latest tick's close and any
+  // capped order/SL/TP lines, so nothing the user can see is ever clipped.
+  outLo = Math.min(outLo, lo);
+  outHi = Math.max(outHi, hi);
+
+  // Breathing space so candles never touch the chart boundaries. Expressed
+  // in PRICE units (added straight onto the range) rather than via `margins`
+  // — lightweight-charts interprets `margins` as PIXELS, which scales
+  // unpredictably across instruments (a tiny forex span vs a 5-figure crypto
+  // span). Price-unit padding is applied identically everywhere. The right
+  // price scale's `scaleMargins` adds a further pixel-% cushion on top.
+  // ~12 % each side keeps upper + lower wicks clear of the borders with
+  // room to spare, matching TradingView's roomy autoscale feel.
   const span = Math.max(outHi - outLo, Math.abs(outHi) * 1e-6, 1e-9);
-  const safetyPad = span * 0.06;
+  const pad = span * 0.12;
   return {
-    priceRange: { minValue: outLo, maxValue: outHi },
-    margins: { above: safetyPad, below: safetyPad },
+    priceRange: { minValue: outLo - pad, maxValue: outHi + pad },
   };
 };
 
@@ -696,6 +709,7 @@ export default function PriceChart({
   openOrders = [],
   positions = [],
   pendingPreview = null,
+  orderPreview = null,   // { side, mode, entry, tp, sl } — live order-form preview
   pricePrecision = 2,
   // Optional account/instrument summary rendered as a top-right overlay
   // on the chart (matches the TradingView-reference layout).
@@ -1196,6 +1210,18 @@ export default function PriceChart({
     const AXIS_HIT_PX = 70;     // right-axis hit zone (px)
     const TIME_HIT_PX = 36;     // bottom-axis hit zone (px)
 
+    // Distinguish a CLICK from a DRAG. We only engage the manual-scale lock
+    // once the pointer actually moves past a small threshold while pressed
+    // in the axis gutter — a plain click (e.g. on a candle near the live
+    // edge, which sits within the right-axis hit zone) must NEVER freeze
+    // autoscale. Locking on click was the cause of "the scale froze and
+    // candles clip until I refresh": one stray click near the right edge
+    // disabled autoscale for the rest of the session.
+    let pendingPriceDrag = false;
+    let pendingTimeDrag = false;
+    let downX = 0, downY = 0;
+    const DRAG_THRESHOLD = 3; // px of movement before a press counts as a scale drag
+
     const onMouseDown = (e) => {
       if (e.button !== 0) return; // only left-button drags
       const rect = container.getBoundingClientRect();
@@ -1203,11 +1229,42 @@ export default function PriceChart({
       const yFromBottom = rect.bottom - e.clientY;
       const insideY = e.clientY >= rect.top && e.clientY <= rect.bottom;
       const insideX = e.clientX >= rect.left && e.clientX <= rect.right;
-      if (xFromRight >= 0 && xFromRight < AXIS_HIT_PX && insideY) {
+      downX = e.clientX; downY = e.clientY;
+      // Arm a potential drag — do NOT lock yet.
+      pendingPriceDrag = (xFromRight >= 0 && xFromRight < AXIS_HIT_PX && insideY);
+      pendingTimeDrag  = (yFromBottom >= 0 && yFromBottom < TIME_HIT_PX && insideX);
+    };
+
+    const onMouseMove = (e) => {
+      if (!pendingPriceDrag && !pendingTimeDrag) return;
+      // Vertical movement in the right gutter → manual Y-scale; horizontal
+      // movement in the bottom gutter → manual X-scale. Only then lock.
+      if (pendingPriceDrag && Math.abs(e.clientY - downY) > DRAG_THRESHOLD) {
         manualPriceScaleRef.current = true;
+        pendingPriceDrag = false;
       }
-      if (yFromBottom >= 0 && yFromBottom < TIME_HIT_PX && insideX) {
+      if (pendingTimeDrag && Math.abs(e.clientX - downX) > DRAG_THRESHOLD) {
         manualTimeScaleRef.current = true;
+        pendingTimeDrag = false;
+      }
+    };
+
+    const onMouseUp = () => {
+      // Press released without crossing the threshold → it was a click, not
+      // a scale drag. Drop the pending arm so autoscale keeps running.
+      pendingPriceDrag = false;
+      pendingTimeDrag = false;
+    };
+
+    // Double-click the price (right) axis → resume dynamic autoscale, the
+    // standard TradingView gesture. Clears the manual lock and re-fits.
+    const onDblClick = (e) => {
+      const rect = container.getBoundingClientRect();
+      const xFromRight = rect.right - e.clientX;
+      const insideY = e.clientY >= rect.top && e.clientY <= rect.bottom;
+      if (xFromRight >= 0 && xFromRight < AXIS_HIT_PX && insideY) {
+        manualPriceScaleRef.current = false;
+        try { candleSeriesRef.current?.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
       }
     };
 
@@ -1225,9 +1282,15 @@ export default function PriceChart({
     };
 
     container.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+    container.addEventListener('dblclick', onDblClick);
     container.addEventListener('contextmenu', onContextMenu);
     return () => {
       container.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      container.removeEventListener('dblclick', onDblClick);
       container.removeEventListener('contextmenu', onContextMenu);
     };
   }, []);
@@ -1532,6 +1595,15 @@ export default function PriceChart({
         updateSeriesData(candleSeriesRef.current, chartType, filled);
         _setVolumeData(volumeSeriesRef.current, filled);
         _updateLastPriceLineColor(candleSeriesRef.current, filled);
+        // Fresh dataset (symbol / timeframe / chart-type switch) — reset the
+        // autoscale animation so the axis SNAPS to the new instrument's range
+        // on the next provider call instead of easing across from the prior
+        // (unrelated) price range. Requirement: "recalculate on timeframe change".
+        {
+          const as = animStateRef.current;
+          as.animLo = as.animHi = as.fromLo = as.fromHi = as.targetLo = as.targetHi = null;
+          as.startedAt = 0; as.duration = 0;
+        }
         try { candleSeriesRef.current.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
         try {
           // 120 candles × 8px barSpacing ≈ 960px of candle area —
@@ -1915,6 +1987,24 @@ export default function PriceChart({
     [positions, symbol]
   );
 
+  // True once a REAL pending order matches the live preview (same side +
+  // entry price). The moment Place Order lands the real order in
+  // `openOrders`, this flips true and the preview pill/lines are hidden —
+  // so the preview and the freshly-created order never show at once. This
+  // is the clean "remove preview, render real order" handoff with zero
+  // coupling to the order form / submit path.
+  const previewRealMatch = useMemo(() => {
+    if (!orderPreview || orderPreview.mode !== 'LIMIT' || !(Number(orderPreview.entry) > 0)) return false;
+    const ep = Number(orderPreview.entry);
+    const tol = Math.max(ep * 0.0003, 1e-9);
+    return symbolOrders.some((o) => {
+      if (o.status && o.status !== 'PENDING') return false;
+      if (o.side !== orderPreview.side) return false;
+      const op = Number(o.type === 'STOP' ? o.stopPrice : o.price);
+      return Number.isFinite(op) && Math.abs(op - ep) <= tol;
+    });
+  }, [orderPreview, symbolOrders]);
+
   // ─── 8. Price lines (orders / positions / live / preview) ────────────
   // chartType is in deps so the line set is re-applied on the new series
   // after a chart-type swap (priceLinesRef.current was cleared in #3).
@@ -2033,6 +2123,52 @@ export default function PriceChart({
       });
     }
 
+    // ── Live order-preview lines (Entry / TP / SL) ─────────────────────
+    // Drawn from the order form BEFORE confirmation. Purely visual — no
+    // order is placed. Gated upstream by the Show-on-Chart > Order preview
+    // toggle (parent passes null when off). Entry is dashed (blue for a
+    // MARKET entry, orange for a pending LIMIT); TP solid green; SL solid red.
+    // Preview lines are hidden once a matching real order exists (the
+    // handoff). Dashed + muted tones keep them visually distinct from
+    // real order/position lines (which are solid / fully saturated).
+    if (orderPreview && !previewRealMatch) {
+      const isLimit = orderPreview.mode === 'LIMIT';
+      // axisLabelVisible:false on all preview lines — the right price axis
+      // already shows the live price + real order/position labels; adding
+      // 3 more coloured draft tags clutters it. The dotted line (+ the
+      // draggable pill for LIMIT) already conveys the level.
+      if (orderPreview.entry && Number(orderPreview.entry) > 0) {
+        desired.set('preview:entry', {
+          price: Number(orderPreview.entry),
+          color: isLimit ? '#F59E0B' : '#60A5FA',
+          lineWidth: 1,
+          lineStyle: 2, // dotted — clearly a draft
+          axisLabelVisible: false,
+          title: isLimit ? '◹ LIMIT' : '◹ ENTRY',
+        });
+      }
+      if (orderPreview.tp && Number(orderPreview.tp) > 0) {
+        desired.set('preview:tp', {
+          price: Number(orderPreview.tp),
+          color: '#4ADE80',
+          lineWidth: 1,
+          lineStyle: 2, // dotted (draft) vs solid real lines
+          axisLabelVisible: false,
+          title: '◹ TP',
+        });
+      }
+      if (orderPreview.sl && Number(orderPreview.sl) > 0) {
+        desired.set('preview:sl', {
+          price: Number(orderPreview.sl),
+          color: '#F87171',
+          lineWidth: 1,
+          lineStyle: 2, // dotted
+          axisLabelVisible: false,
+          title: '◹ SL',
+        });
+      }
+    }
+
     const live = priceLinesRef.current;
     for (const [key, line] of live.entries()) {
       const want = desired.get(key);
@@ -2062,7 +2198,7 @@ export default function PriceChart({
     if (!manualPriceScaleRef.current) {
       try { series.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
     }
-  }, [symbolOrders, symbolPositions, livePrice, pendingPreview, pricePrecision, chartType]);
+  }, [symbolOrders, symbolPositions, livePrice, pendingPreview, orderPreview, previewRealMatch, pricePrecision, chartType]);
 
   useEffect(() => {
     return () => { priceLinesRef.current.clear(); };
@@ -2142,8 +2278,24 @@ export default function PriceChart({
         });
       }
     }
+
+    // ── Live order PREVIEW pill (pending/LIMIT) ────────────────────────
+    // A synthetic, un-placed "draft order" so the user gets the exact same
+    // interactive pill (draggable LIMIT entry, +TP / +SL quick-add, ×) as a
+    // real pending order — but its drag callbacks route to the order FORM,
+    // not the backend. Identified by the sentinel _id '__preview__'.
+    if (orderPreview && orderPreview.mode === 'LIMIT' && Number(orderPreview.entry) > 0 && !previewRealMatch) {
+      const peEntry = Number(orderPreview.entry);
+      const peSl = Number(orderPreview.sl) > 0 ? String(orderPreview.sl) : null;
+      const peTp = Number(orderPreview.tp) > 0 ? String(orderPreview.tp) : null;
+      const pseudoOrder = { _id: '__preview__', side: orderPreview.side, type: 'LIMIT', price: peEntry, stopLoss: peSl, takeProfit: peTp, status: 'PENDING', __preview: true };
+      const pseudoPos = { _id: '__preview__', side: orderPreview.side, quantity: 0, entryPrice: peEntry, stopLoss: peSl, takeProfit: peTp, unrealizedPnl: '0', __orderType: 'LIMIT', __preview: true };
+      out.push({ key: 'preview:order:entry', kind: 'entry', price: peEntry, position: pseudoPos, order: pseudoOrder, target: 'order' });
+      if (peSl) out.push({ key: 'preview:order:sl', kind: 'sl', price: Number(peSl), position: pseudoPos, order: pseudoOrder, target: 'order' });
+      if (peTp) out.push({ key: 'preview:order:tp', kind: 'tp', price: Number(peTp), position: pseudoPos, order: pseudoOrder, target: 'order' });
+    }
     return out;
-  }, [symbolPositions, symbolOrders, chartType]);
+  }, [symbolPositions, symbolOrders, orderPreview, previewRealMatch, chartType]);
 
   useEffect(() => {
     const series = candleSeriesRef.current;
@@ -3318,6 +3470,9 @@ function PositionPill({
   const entry = Number(position.entryPrice) || 0;
   const isBuy = position.side === 'BUY';
   const isOrder = target === 'order';
+  // Draft preview pill (un-placed order) — rendered slightly faded + a
+  // "PREVIEW" label so it's never mistaken for a real pending order.
+  const isPreview = !!position.__preview;
   // Order entries are also draggable (re-price the LIMIT / STOP trigger).
   const draggable = kind === 'sl' || kind === 'tp' || (kind === 'entry' && isOrder);
   const active = hover || isDragging;
@@ -3367,7 +3522,7 @@ function PositionPill({
     : kind === 'tp'
       ? 'TP'
       : isOrder
-        ? (position.__orderType === 'STOP' ? 'STOP' : 'LIMIT')
+        ? (isPreview ? 'PREVIEW' : (position.__orderType === 'STOP' ? 'STOP' : 'LIMIT'))
         : null;
 
   return (
@@ -3417,7 +3572,7 @@ function PositionPill({
           // into place on the next frame. Live drags suppress the spring
           // so the pill tracks the cursor 1:1.
           transform: `translateX(-50%) translateY(${mounted ? 0 : -4}px) ${active ? 'scale(1.02)' : 'scale(1)'}`,
-          opacity: mounted ? 1 : 0,
+          opacity: mounted ? (isPreview ? 0.72 : 1) : 0,
           transformOrigin: 'center center',
           transition: isDragging
             ? 'none'

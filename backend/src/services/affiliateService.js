@@ -3,6 +3,7 @@ const { Commission } = require('../models/Compliance');
 const { Wallet } = require('../models/Wallet');
 const walletService = require('./walletService');
 const subscriptionWalletService = require('./subscriptionWalletService');
+const bonusWalletService = require('./bonusWalletService');
 const { D, mul, gt } = require('../utils/decimal');
 const { WALLET_TX_TYPE } = require('../config/constants');
 
@@ -94,13 +95,13 @@ const distributeCommissions = async ({ tradeId, userId, feeAmount, currency }) =
 
 /**
  * Run the daily payout batch — sweep PENDING commissions to the referrer's
- * SUBSCRIPTION wallet. Cron-invoked (e.g. once a day at 00:05 UTC).
+ * BONUS wallet. Cron-invoked (e.g. once a day at 00:05 UTC).
  *
- * Referral bonuses land in the subscription wallet (not the trading wallet)
- * so the user can spend them on plan purchases / renewals but they don't
- * affect trading margin / equity. One wallet per user — no trading-account
- * lookup needed, and the user doesn't have to own a REAL account to receive
- * a bonus.
+ * Referral/partner earnings land in the dedicated Bonus Wallet (not the
+ * trading wallet) — they can be transferred to a spendable wallet but can
+ * never be withdrawn directly. One wallet per user, no trading-account
+ * lookup needed. The `commission:<id>` paymentRef makes each payout
+ * idempotent (safe re-runs).
  */
 const runPayoutBatch = async () => {
   const pending = await Commission.find({ status: 'PENDING' }).limit(500);
@@ -108,12 +109,11 @@ const runPayoutBatch = async () => {
 
   for (const c of pending) {
     try {
-      await subscriptionWalletService.credit({
+      await bonusWalletService.credit({
         userId: c.referrerId,
         amount: c.amount,
-        reason: 'REFERRAL_BONUS',
+        reason: 'REFERRAL_COMMISSION',
         note: `Affiliate commission L${c.level}`,
-        paymentMethod: 'manual',
         paymentRef: `commission:${c._id}`,
       });
       c.status = 'PAID';
@@ -207,16 +207,15 @@ const creditManual = async ({ userId, amount, currency, note, adminId }) => {
     note:       note || 'Admin-credited referral bonus',
   });
 
-  // 2. Credit the subscription wallet — this is the actual money movement.
+  // 2. Credit the Bonus Wallet — this is the actual money movement.
   try {
-    await subscriptionWalletService.credit({
+    await bonusWalletService.credit({
       userId,
-      amount:        String(amount),
-      reason:        'REFERRAL_BONUS',
-      note:          note || 'Referral bonus (admin)',
-      paymentMethod: 'manual',
-      paymentRef:    `commission:${commission._id}`,
-      adminUserId:   adminId || null,
+      amount:      String(amount),
+      reason:      'BONUS_REWARD',
+      note:        note || 'Referral bonus (admin)',
+      paymentRef:  `commission:${commission._id}`,
+      adminUserId: adminId || null,
     });
     commission.status = 'PAID';
     commission.paidAt = new Date();

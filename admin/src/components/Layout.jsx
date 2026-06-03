@@ -25,6 +25,10 @@ const I = {
 // Sectioned nav — matches the client's premium sidebar pattern. TRADE
 // (operational pulse) goes first, MONEY (deposits/withdrawals) second,
 // AUDIT/REPORTS third, INFRA last.
+// Items without an explicit `roles` are legacy admin pages → visible to
+// ADMIN + SUPER_ADMIN only (managers never see them; most hit the
+// requireAdmin-gated /api/admin/* anyway). Items WITH `roles` are shown
+// only to those roles. SUPER_ADMIN always sees everything (see canSee).
 const NAV_SECTIONS = [
   {
     title: 'Operations',
@@ -35,6 +39,16 @@ const NAV_SECTIONS = [
     ],
   },
   {
+    title: 'Hierarchy',
+    items: [
+      { to: '/admins',         icon: I.users, label: 'Admins',         roles: ['SUPER_ADMIN'] },
+      { to: '/managers',       icon: I.users, label: 'Managers',       roles: ['SUPER_ADMIN', 'ADMIN'] },
+      { to: '/assignments',    icon: I.users, label: 'Assignments',    roles: ['SUPER_ADMIN', 'ADMIN'] },
+      { to: '/hierarchy-tree', icon: I.dashboard, label: 'Hierarchy Tree', roles: ['SUPER_ADMIN'] },
+      { to: '/my-users',       icon: I.users, label: 'My Users',       roles: ['MANAGER'] },
+    ],
+  },
+  {
     title: 'Money',
     items: [
       { to: '/deposits', icon: I.deposit, label: 'Deposits' },
@@ -42,8 +56,15 @@ const NAV_SECTIONS = [
       { to: '/plans', icon: I.plans, label: 'Plans' },
       { to: '/account-plans', icon: I.plans, label: 'Account Plans' },
       { to: '/subscription-wallets', icon: I.plans, label: 'Sub. Wallets' },
+      { to: '/bonus-wallets', icon: I.plans, label: 'Bonus Wallets' },
       { to: '/user-transfers', icon: I.deposit, label: 'User Transfers' },
       { to: '/partners', icon: I.plans, label: 'Partners' },
+    ],
+  },
+  {
+    title: 'Support',
+    items: [
+      { to: '/support-chats', icon: I.users, label: 'Support Chats', roles: ['SUPER_ADMIN', 'ADMIN', 'MANAGER'] },
     ],
   },
   {
@@ -63,9 +84,21 @@ const NAV_SECTIONS = [
   },
 ];
 
+// Visibility rule: SUPER_ADMIN sees all; items with `roles` are limited to
+// those roles; legacy items (no `roles`) are ADMIN+SUPER_ADMIN only.
+const canSee = (item, role) => {
+  if (role === 'SUPER_ADMIN') return true;
+  if (item.roles) return item.roles.includes(role);
+  return role === 'ADMIN';
+};
+
 export default function Layout({ children }) {
   const { user, logout } = useAuthStore();
   const navigate = useNavigate();
+  const role = user?.role;
+  const navSections = NAV_SECTIONS
+    .map((s) => ({ ...s, items: s.items.filter((it) => canSee(it, role)) }))
+    .filter((s) => s.items.length);
 
   const handleLogout = async () => {
     await logout();
@@ -96,7 +129,7 @@ export default function Layout({ children }) {
 
         {/* Sectioned nav */}
         <nav className="flex-1 overflow-y-auto py-3 px-3 space-y-4">
-          {NAV_SECTIONS.map((section) => (
+          {navSections.map((section) => (
             <div key={section.title}>
               <div className="px-3 pb-1.5 text-[10px] uppercase tracking-[0.2em] font-bold text-text-muted">
                 {section.title}

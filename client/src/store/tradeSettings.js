@@ -15,6 +15,7 @@ const DEFAULTS = {
     tpsl:           true,   // TP / SL lines on open positions
     stopLimit:      true,   // pending STOP / LIMIT order lines
     calendar:       false,
+    orderPreview:   true,   // live Entry/TP/SL preview lines while filling the order form
   },
   calendarFilters: {
     high:    true,

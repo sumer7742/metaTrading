@@ -286,21 +286,28 @@ const renew = asyncHandler(async (req, res) => {
 
   // Free / Post-Paid don't move money on activation.
   if (priceNum > 0) {
-    const { tx } = await subscriptionWalletService.debit({
-      userId: req.userId,
-      amount: price,
-      reason: 'RENEWAL',
-      planCode: plan.code,
-      billingCycle,
-      note: `${plan.name} · ${billingCycle.toLowerCase()} renewal`,
-    });
+    const bonusWalletService = require('../services/bonusWalletService');
+    let tx;
+    try {
+      ({ tx } = await bonusWalletService.debit({
+        userId: req.userId,
+        amount: price,
+        reason: 'RENEWAL',
+        note: `${plan.name} · ${billingCycle.toLowerCase()} renewal`,
+      }));
+    } catch (err) {
+      if (err.code === 'INSUFFICIENT_BONUS_BALANCE') {
+        throw new AppError(err.message, 402, 'INSUFFICIENT_SUBSCRIPTION_BALANCE');
+      }
+      throw err;
+    }
 
     const sub = await subscriptionService.subscribe({
       userId: req.userId,
       planCode: plan.code,
       billingCycle,
       paymentRef: {
-        provider: 'SUB_WALLET',
+        provider: 'BONUS_WALLET',
         transactionId: String(tx._id),
         amount: price,
         currency: tx.currency,

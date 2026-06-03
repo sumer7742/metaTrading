@@ -25,7 +25,10 @@ const NAV_ITEMS = [
   // Subscription Wallet is a SEPARATE page (its own balance, plan
   // charges only). Always navigate via Link even when the sidebar is
   // in onSelect-callback mode on the Wallet page.
-  { id: 'subscription', label: 'Subscription Wallet', icon: <NISubscription />, to: '/subscription-wallet' },
+  { id: 'subscription', label: 'Main Wallet', icon: <NISubscription />, to: '/subscription-wallet' },
+  // Bonus Wallet — referral/partner earnings land here. Separate page;
+  // always navigates via Link (no withdraw, transfer-only out).
+  { id: 'bonus', label: 'Bonus Wallet', icon: <NIBonus />, to: '/bonus-wallet' },
   { id: 'history',  label: 'Transaction History',  icon: <NIHistory /> },
   { id: 'details',  label: 'Account Details',      icon: <NIDetails /> },
 ];

@@ -3,23 +3,9 @@ import { api } from '../services/api';
 import { wsClient } from '../services/ws';
 import { fmtNum, fmtPriceDual } from '../utils/format';
 import { useFxRate } from '../hooks/useFxRate';
+import { useWatchlists } from '../hooks/useWatchlists';
 import CountryFlag from './CountryFlag';
 import AssetIcon from './AssetIcon';
-
-const FAVS_KEY = 'tradepro:favorites';
-
-const readFavs = () => {
-  if (typeof window === 'undefined') return new Set();
-  try {
-    return new Set(JSON.parse(localStorage.getItem(FAVS_KEY) || '[]'));
-  } catch (_) {
-    return new Set();
-  }
-};
-
-const writeFavs = (set) => {
-  try { localStorage.setItem(FAVS_KEY, JSON.stringify([...set])); } catch (_) {}
-};
 
 // Currency code → flag emoji. Used as the right-side mini-icon for forex
 // pairs and for single-asset avatars on commodities/forex.
@@ -102,7 +88,9 @@ export default function MarketWatch({ activeSymbol, onSelect, search = '' }) {
   const [rows, setRows] = useState([]);
   const [spreadRules, setSpreadRules] = useState({});
   const [tab, setTab] = useState('favourite');
-  const [favs, setFavs] = useState(() => readFavs());
+  // Server-backed Favorites — the ★ always adds/removes from the
+  // Favorites (default) watchlist, shared across the whole platform.
+  const { has: isFavSym, toggleFavorite, favCount: totalFavs } = useWatchlists();
   const fxRate = useFxRate();
 
   // Initial fetch
@@ -162,22 +150,16 @@ export default function MarketWatch({ activeSymbol, onSelect, search = '' }) {
 
   const toggleFav = (symbol, e) => {
     if (e) { e.stopPropagation(); e.preventDefault(); }
-    setFavs((prev) => {
-      const next = new Set(prev);
-      if (next.has(symbol)) next.delete(symbol);
-      else next.add(symbol);
-      writeFavs(next);
-      return next;
-    });
+    toggleFavorite(symbol);
   };
 
   const visibleRows = useMemo(() => {
     const q = (search || '').trim().toUpperCase();
     let r = rows;
-    if (tab === 'favourite') r = r.filter((row) => favs.has(row.symbol));
+    if (tab === 'favourite') r = r.filter((row) => isFavSym(row.symbol));
     if (q) r = r.filter((row) => row.symbol.includes(q) || (row.name || '').toUpperCase().includes(q));
     return r;
-  }, [rows, search, tab, favs]);
+  }, [rows, search, tab, isFavSym]);
 
   const allCount = useMemo(() => {
     const q = (search || '').trim().toUpperCase();
@@ -187,10 +169,10 @@ export default function MarketWatch({ activeSymbol, onSelect, search = '' }) {
 
   const favCount = useMemo(() => {
     const q = (search || '').trim().toUpperCase();
-    const fav = rows.filter((row) => favs.has(row.symbol));
+    const fav = rows.filter((row) => isFavSym(row.symbol));
     if (!q) return fav.length;
     return fav.filter((row) => row.symbol.includes(q) || (row.name || '').toUpperCase().includes(q)).length;
-  }, [rows, favs, search]);
+  }, [rows, isFavSym, search]);
 
   if (!rows.length) {
     return <div className="p-4 text-sm text-text-muted">Loading watchlist…</div>;
@@ -239,7 +221,7 @@ export default function MarketWatch({ activeSymbol, onSelect, search = '' }) {
             key={r.symbol}
             row={r}
             isActive={r.symbol === activeSymbol}
-            isFav={favs.has(r.symbol)}
+            isFav={isFavSym(r.symbol)}
             fxRate={fxRate}
             onSelect={() => onSelect?.(r.symbol)}
             onToggleFav={(e) => toggleFav(r.symbol, e)}
@@ -247,7 +229,7 @@ export default function MarketWatch({ activeSymbol, onSelect, search = '' }) {
         ))}
         {!visibleRows.length && (
           <div className="px-3 py-10 text-center">
-            {tab === 'favourite' && !favs.size ? (
+            {tab === 'favourite' && !totalFavs ? (
               <div className="text-text-secondary text-sm">
                 <div className="mb-1">No favourites yet</div>
                 <div className="text-[11px] text-text-muted">

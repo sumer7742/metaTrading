@@ -11,6 +11,16 @@ export default function OrderForm({
   account,
   onPlaced,
   onPendingPriceChange,
+  // Live order-preview callback — fires the full { side, mode, entry, tp,
+  // sl } shape so the chart can draw Entry/TP/SL preview lines as the user
+  // fills the form (gated behind the Show-on-Chart > Order preview toggle).
+  // Purely visual — never places an order.
+  onPreviewChange,
+  // Drag-to-form sync: when the user drags an Entry/TP/SL preview pill on
+  // the chart, the parent pushes the new absolute price here as
+  // { price?, stopLoss?, takeProfit?, nonce }. A fresh nonce triggers a
+  // one-shot apply into the form's state (display auto-syncs).
+  externalLevels = null,
   // Optional controlled side — when the parent (Trade page) provides a
   // `side` value, the inline BUY / SELL toggle inside the form is hidden
   // because the parent's chart-top Sell/Buy chip drives the side instead.
@@ -269,6 +279,29 @@ export default function OrderForm({
     onPendingPriceChange(price ? { side, type: 'LIMIT', price } : null);
   }, [orderMode, side, price, onPendingPriceChange]);
 
+  // Rich order-preview for the chart's Entry / TP / SL lines. Emits the
+  // full level set live as the user edits volume / price / TP / SL. For
+  // MARKET the entry tracks the live market price; for LIMIT it's the
+  // limit price. Purely visual — no order is placed here.
+  useEffect(() => {
+    if (!onPreviewChange) return undefined;
+    const mkt = Number(instrument?.lastPrice);
+    const entry = orderMode === 'LIMIT'
+      ? (Number(price) > 0 ? Number(price) : null)
+      : (Number.isFinite(mkt) && mkt > 0 ? mkt : null);
+    onPreviewChange({
+      side,
+      mode: orderMode,
+      entry,
+      tp: Number(takeProfit) > 0 ? Number(takeProfit) : null,
+      sl: Number(stopLoss) > 0 ? Number(stopLoss) : null,
+    });
+  }, [side, orderMode, price, takeProfit, stopLoss, instrument?.lastPrice, onPreviewChange]);
+
+  // Clear the preview when the form unmounts (panel closed / instrument
+  // switch tears it down) so stale lines never linger on the chart.
+  useEffect(() => () => { onPreviewChange && onPreviewChange(null); }, [onPreviewChange]);
+
   // sideOverride lets the one-click Sell/Buy price cards fire an order
   // with the clicked side without first waiting for `side` state to flush.
   // When called from the form's onSubmit it stays undefined and we use
@@ -417,6 +450,28 @@ export default function OrderForm({
     setSlInput(_fromPrice(slMode, stopLoss, false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stopLoss, slMode, refPrice, qtyNum, free, side]);
+
+  // Apply a drag-originated level update from the chart preview pill. Force
+  // the affected field back to 'price' mode so the dragged absolute price
+  // shows verbatim, then write it — the _fromPrice effects above mirror it
+  // into the display input. One-shot, keyed by nonce.
+  const lastExtNonceRef = useRef(null);
+  useEffect(() => {
+    if (!externalLevels || externalLevels.nonce == null) return;
+    if (externalLevels.nonce === lastExtNonceRef.current) return;
+    lastExtNonceRef.current = externalLevels.nonce;
+    if ('price' in externalLevels && externalLevels.price != null) {
+      setPrice(String(externalLevels.price));
+    }
+    if ('takeProfit' in externalLevels) {
+      setTpMode('price');
+      setTakeProfit(externalLevels.takeProfit == null ? '' : String(externalLevels.takeProfit));
+    }
+    if ('stopLoss' in externalLevels) {
+      setSlMode('price');
+      setStopLoss(externalLevels.stopLoss == null ? '' : String(externalLevels.stopLoss));
+    }
+  }, [externalLevels]);
 
   // Short caption shown beneath each TP/SL row when a non-price mode is
   // active — surfaces the actual asset-price + a hint when the mode

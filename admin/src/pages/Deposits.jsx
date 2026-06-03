@@ -109,7 +109,12 @@ export default function Deposits() {
             {items.map((d) => (
               <tr key={d._id} className="table-row">
                 <td className="p-3 text-xs text-gray-400">{fmtDate(d.createdAt)}</td>
-                <td className="p-3 text-xs text-gray-400 font-mono">{d.userId.toString().slice(-6)}</td>
+                <td className="p-3 text-xs">
+                  {d.user?.userUid
+                    ? <span className="font-mono font-bold text-primary-500">{d.user.userUid}</span>
+                    : <span className="font-mono text-gray-400">{d.userId?.toString().slice(-6)}</span>}
+                  {d.user?.name && <div className="text-[10px] text-gray-500 truncate max-w-[160px]">{d.user.name}</div>}
+                </td>
                 <td className="p-3 text-xs">
                   <div className="text-white">{d.senderName || '-'}</div>
                   {d.senderUpiId && <div className="text-gray-500 font-mono">{d.senderUpiId}</div>}
@@ -220,7 +225,9 @@ function DepositDetailModal({ deposit, onClose, onConfirm, onReject }) {
 
             <div>
               <div className="text-xs text-gray-500 uppercase mb-1">User ID</div>
-              <div className="text-white font-mono text-sm">{deposit.userId}</div>
+              <div className="text-white font-mono text-sm">{deposit.user?.userUid || '—'}</div>
+              {deposit.user?.name && <div className="text-[11px] text-gray-500 mt-0.5">{deposit.user.name}</div>}
+              <div className="text-[10px] text-gray-600 font-mono mt-0.5 break-all">{deposit.userId}</div>
             </div>
 
             <div>

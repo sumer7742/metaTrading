@@ -45,6 +45,10 @@ const subscriptionWalletRoutes = require('./routes/subscriptionWallet');
 const accountPlansRoutes = require('./routes/accountPlans');
 const copyTradingRoutes = require('./routes/copyTrading');
 const fxRoutes = require('./routes/fx');
+const watchlistRoutes = require('./routes/watchlist');
+const bonusWalletRoutes = require('./routes/bonusWallet');
+const hierarchyRoutes = require('./routes/hierarchy');
+const chatRoutes = require('./routes/chat');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -198,6 +202,13 @@ app.use('/api/subscription-wallet', subscriptionWalletRoutes);
 app.use('/api/account-plans', accountPlansRoutes);
 app.use('/api/copy-trading', copyTradingRoutes);
 app.use('/api/fx', fxRoutes);
+app.use('/api/watchlists', watchlistRoutes);
+app.use('/api/bonus-wallet', bonusWalletRoutes);
+// Mounted at /api/hierarchy (NOT under /api/admin) so it doesn't inherit
+// the admin router's blanket requireAdmin (2FA + admin-only) gate — that
+// would lock MANAGERs out of their scoped read endpoints.
+app.use('/api/hierarchy', hierarchyRoutes);
+app.use('/api/chat', chatRoutes);
 
 // ─── Serve frontend SPAs out of backend/public ─────────────────────
 // Production flow: `vite build` in client/ + admin/ produces dist/

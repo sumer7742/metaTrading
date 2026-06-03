@@ -1,0 +1,188 @@
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { Link } from 'react-router-dom';
+import toast from 'react-hot-toast';
+import { api, errorMessage } from '../services/api';
+import { wsClient } from '../services/ws';
+
+/**
+ * Helpdesk Chat — live conversation with the user's ASSIGNED manager.
+ * No manager picker: the backend resolves it from user.managerId. Realtime
+ * over the existing ws stack (channel 'user:chat'). Light/white theme.
+ */
+const MAX_ATTACH_BYTES = 1024 * 1024;
+
+export default function HelpdeskChat({ embedded = false }) {
+  const [conv, setConv] = useState(null);
+  const [counterpart, setCounterpart] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [text, setText] = useState('');
+  const [sending, setSending] = useState(false);
+  const [theyTyping, setTheyTyping] = useState(false);
+  const scrollRef = useRef(null);
+  const typingTimer = useRef(null);
+  const lastTypingSent = useRef(0);
+  const fileRef = useRef(null);
+
+  const scrollToBottom = () => requestAnimationFrame(() => { const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight; });
+
+  const markSeen = useCallback((id) => { if (id) api.post(`/chat/conversations/${id}/seen`).catch(() => {}); }, []);
+
+  const load = useCallback(async () => {
+    try {
+      const { data } = await api.get('/chat/conversation');
+      setConv(data.data.conversation);
+      setCounterpart(data.data.counterpart);
+      setMessages(data.data.messages || []);
+      if (data.data.conversation?._id) markSeen(data.data.conversation._id);
+      scrollToBottom();
+    } catch (e) { toast.error(errorMessage(e)); }
+    finally { setLoading(false); }
+  }, [markSeen]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Realtime — subscribe to the user's chat channel.
+  useEffect(() => {
+    const unsub = wsClient.subscribe('user:chat', (d) => {
+      if (!d) return;
+      if (d.event === 'message') {
+        setMessages((prev) => (prev.some((m) => m._id === d.message._id) ? prev : [...prev, d.message]));
+        scrollToBottom();
+        // Inbound (from manager) → mark seen since we're looking at it.
+        if (d.message.senderRole !== 'USER' && conv?._id) markSeen(conv._id);
+      } else if (d.event === 'typing') {
+        if (d.by !== 'USER') {
+          setTheyTyping(true);
+          clearTimeout(typingTimer.current);
+          typingTimer.current = setTimeout(() => setTheyTyping(false), 3000);
+        }
+      } else if (d.event === 'seen') {
+        if (d.by !== 'USER') setMessages((prev) => prev.map((m) => (m.senderRole === 'USER' && !m.seenAt ? { ...m, seenAt: new Date().toISOString() } : m)));
+      } else if (d.event === 'presence') {
+        setCounterpart((c) => (c && String(c.id) === String(d.userId) ? { ...c, online: d.online } : c));
+      }
+    });
+    return () => { unsub && unsub(); clearTimeout(typingTimer.current); };
+  }, [conv?._id, markSeen]);
+
+  const onType = (v) => {
+    setText(v);
+    const now = Date.now();
+    if (conv?._id && counterpart && now - lastTypingSent.current > 1500) {
+      lastTypingSent.current = now;
+      api.post(`/chat/conversations/${conv._id}/typing`).catch(() => {});
+    }
+  };
+
+  const send = async (attachments) => {
+    const body = { text: text.trim(), attachments };
+    if (!body.text && !(attachments && attachments.length)) return;
+    setSending(true);
+    try {
+      await api.post(`/chat/conversations/${conv._id}/messages`, body);
+      setText('');
+      // The WS echo appends the message for us.
+    } catch (e) {
+      const code = e.response?.data?.error?.code;
+      toast.error(code === 'NO_MANAGER' ? 'No manager is assigned to you yet.' : errorMessage(e));
+    } finally { setSending(false); }
+  };
+
+  const onPickFile = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > MAX_ATTACH_BYTES) { toast.error('File must be ≤ 1MB'); return; }
+    const reader = new FileReader();
+    reader.onload = () => send([{ name: file.name, mimeType: file.type, dataUrl: String(reader.result) }]);
+    reader.readAsDataURL(file);
+  };
+
+  if (loading) {
+    return <div className={`${embedded ? '' : 'max-w-3xl mx-auto px-4 '}py-10 text-center text-text-muted`}>Loading chat…</div>;
+  }
+
+  const body = !counterpart ? (
+    <div className="bg-white border border-border-dark rounded-2xl p-10 text-center shadow-sm">
+      <div className="w-14 h-14 mx-auto rounded-2xl bg-primary-500/10 text-primary-600 flex items-center justify-center">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+      </div>
+      <h3 className="mt-3 text-base font-bold text-text-primary">A support manager will be assigned soon</h3>
+      <p className="mt-1 text-sm text-text-secondary">Once your account is assigned a manager, you can chat with them here in real time.</p>
+    </div>
+  ) : (
+    <div className="bg-white border border-border-dark rounded-2xl shadow-sm flex flex-col overflow-hidden" style={{ height: embedded ? '68vh' : '70vh' }}>
+      {/* Manager card / header */}
+      <div className="px-4 py-3 border-b border-border-subtle flex items-center gap-3 bg-bg-card">
+        <div className="relative">
+          <span className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold" style={{ background: 'linear-gradient(135deg,#3B82F6,#1D4ED8)' }}>
+            {(counterpart.name || 'M').slice(0, 1).toUpperCase()}
+          </span>
+          <span className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full ring-2 ring-white ${counterpart.online ? 'bg-bull' : 'bg-text-muted'}`} />
+        </div>
+        <div className="min-w-0">
+          <div className="text-sm font-bold text-text-primary truncate">{counterpart.name}</div>
+          <div className="text-[11px] text-text-muted">{counterpart.online ? 'Online' : 'Offline'} · Your support manager</div>
+        </div>
+      </div>
+
+      {/* Thread */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-2 bg-bg-dark">
+        {messages.length === 0 && <div className="text-center text-xs text-text-muted py-8">Say hello to your support manager 👋</div>}
+        {messages.map((m) => <Bubble key={m._id} m={m} mine={m.senderRole === 'USER'} />)}
+        {theyTyping && <div className="text-[11px] text-text-muted px-2">{counterpart.name} is typing…</div>}
+      </div>
+
+      {/* Composer */}
+      <div className="border-t border-border-subtle p-2.5 flex items-end gap-2 bg-white">
+        <button type="button" onClick={() => fileRef.current?.click()} title="Attach (≤1MB)" className="p-2 rounded-lg text-text-muted hover:text-primary-600 hover:bg-bg-hover transition-colors shrink-0">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" /></svg>
+        </button>
+        <input ref={fileRef} type="file" accept="image/*,.pdf" className="hidden" onChange={onPickFile} />
+        <textarea
+          value={text} onChange={(e) => onType(e.target.value)} rows={1} placeholder="Type a message…"
+          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
+          className="flex-1 resize-none px-3 py-2 rounded-xl border border-border-dark bg-white text-sm text-text-primary placeholder:text-text-muted focus:border-primary-500 focus:outline-none max-h-28"
+        />
+        <button onClick={() => send()} disabled={sending || !text.trim()} className="shrink-0 px-4 py-2 rounded-xl bg-primary-500 hover:bg-primary-600 disabled:opacity-50 text-white text-sm font-bold transition-colors">Send</button>
+      </div>
+    </div>
+  );
+
+  // Embedded inside the Helpdesk page's "Live Chat" tab → render the panel
+  // only (the page already supplies the heading + tab chrome).
+  if (embedded) return <div className="space-y-4">{body}</div>;
+
+  // Standalone /helpdesk/chat route → full page with its own header.
+  return (
+    <div className="max-w-3xl mx-auto px-3 sm:px-4 py-5 space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="text-xl sm:text-2xl font-bold text-text-primary">Support Chat</h1>
+        <Link to="/helpdesk" className="text-sm font-semibold text-primary-600 hover:underline">Tickets &amp; FAQ →</Link>
+      </div>
+      {body}
+    </div>
+  );
+}
+
+function Bubble({ m, mine }) {
+  return (
+    <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
+      <div className={`max-w-[78%] rounded-2xl px-3.5 py-2 text-sm shadow-sm ${mine ? 'bg-primary-500 text-white rounded-br-sm' : 'bg-white border border-border-dark text-text-primary rounded-bl-sm'}`}>
+        {(m.attachments || []).map((a, i) => (
+          <div key={i} className="mb-1.5">
+            {a.mimeType?.startsWith('image/')
+              ? <a href={a.dataUrl} target="_blank" rel="noreferrer"><img src={a.dataUrl} alt={a.name} className="rounded-lg max-h-48 max-w-full" /></a>
+              : <a href={a.dataUrl} download={a.name} className={`inline-flex items-center gap-1.5 underline ${mine ? 'text-white/90' : 'text-primary-600'}`}>📎 {a.name || 'file'}</a>}
+          </div>
+        ))}
+        {m.text && <div className="whitespace-pre-wrap break-words">{m.text}</div>}
+        <div className={`mt-0.5 text-[10px] flex items-center gap-1 justify-end ${mine ? 'text-white/70' : 'text-text-muted'}`}>
+          {new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          {mine && (m.seenAt ? <span title="Seen">✓✓</span> : <span title="Sent">✓</span>)}
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -17,6 +17,16 @@ const userSchema = new mongoose.Schema(
     // earlier with a friendlier error; this index is the safety net for
     // race conditions / direct DB writes.
     phone: { type: String, sparse: true, unique: true, index: true },
+
+    // ─── Permanent public User ID (additive, immutable) ────────────────
+    // Human-readable, platform-unique handle shown in the user's profile
+    // and throughout the admin system (e.g. "USR100245"). Generated exactly
+    // once on creation by the pre-save hook below and never changed.
+    // `sparse` so the unique index tolerates legacy docs in the brief window
+    // before the backfill migration assigns them one. Read-only everywhere —
+    // no controller ever overwrites it.
+    userUid: { type: String, unique: true, sparse: true, index: true },
+
     passwordHash: { type: String, required: true },
     firstName: { type: String, default: '' },
     lastName: { type: String, default: '' },
@@ -25,6 +35,18 @@ const userSchema = new mongoose.Schema(
     isActive: { type: Boolean, default: true },
     isEmailVerified: { type: Boolean, default: false },
     isPhoneVerified: { type: Boolean, default: false },
+
+    // Multi-watchlist: remembers which watchlist the user last had open so
+    // it re-opens automatically on next login. Null until they own a list.
+    lastSelectedWatchlistId: { type: mongoose.Schema.Types.ObjectId, ref: 'Watchlist', default: null },
+
+    // ─── Management hierarchy (additive, optional) ──────────────────────
+    // Links a user (or a manager) up the SuperAdmin → Admin → Manager chain.
+    // null = "Unassigned". Never read by the user-facing app — purely
+    // internal management metadata. See config/hierarchy.js.
+    adminId:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+    managerId:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+    assignedAt: { type: Date, default: null },
 
     // 2FA
     twoFactorEnabled: { type: Boolean, default: false },
@@ -112,6 +134,30 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Indexes to keep hierarchy queries fast at scale (100k+ users). email is
+// already unique-indexed; role/createdAt + the adminId/managerId field
+// indexes above cover the assignment/workload/list query patterns.
+userSchema.index({ role: 1 });
+userSchema.index({ createdAt: -1 });
+userSchema.index({ adminId: 1, managerId: 1 });
+
+// Assign a permanent public User ID exactly once, on first save. Guarded by
+// `isNew && !userUid` so it costs one atomic counter read per new account and
+// is a no-op on every subsequent update — the id can never change. Covers all
+// creation paths (registration, admin/manager creation, scripts) without
+// touching any call site.
+userSchema.pre('save', async function (next) {
+  if (this.isNew && !this.userUid) {
+    try {
+      const { nextUserUid } = require('../utils/userUid');
+      this.userUid = await nextUserUid();
+    } catch (err) {
+      return next(err);
+    }
+  }
+  next();
+});
 
 userSchema.methods.toSafeJSON = function () {
   const obj = this.toObject();

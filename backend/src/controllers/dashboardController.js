@@ -9,6 +9,28 @@ const { sendSuccess, asyncHandler } = require('../utils/errors');
 const { ACCOUNT_TYPES } = require('../config/constants');
 const { add } = require('../utils/decimal');
 
+// Resolve which account _ids a dashboard filter applies to. Supports the
+// special sentinels used by the Portfolio account dropdown:
+//   ''          → all of the user's accounts
+//   'ALL_REAL'  → every REAL account
+//   'ALL_DEMO'  → every DEMO / VIRTUAL (practice) account
+//   <accountId> → that single account
+const DEMO_TYPES = [ACCOUNT_TYPES.DEMO, ACCOUNT_TYPES.VIRTUAL];
+const isDemo = (a) => DEMO_TYPES.includes(a.accountType);
+function resolveAccountIds(accounts, accountId) {
+  if (accountId === 'ALL_REAL') {
+    // "Real" = any non-practice account (STANDARD / PRO / REAL / …).
+    return accounts.filter((a) => !isDemo(a)).map((a) => a._id);
+  }
+  if (accountId === 'ALL_DEMO') {
+    return accounts.filter(isDemo).map((a) => a._id);
+  }
+  if (accountId) {
+    return accounts.filter((a) => String(a._id) === String(accountId)).map((a) => a._id);
+  }
+  return accounts.map((a) => a._id);
+}
+
 /**
  * Returns dashboard metrics:
  *  - liveBalance, demoBalance
@@ -274,11 +296,8 @@ const getLifetimeStats = asyncHandler(async (req, res) => {
   const days = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.min(3650, Math.floor(daysRaw)) : 0;
   const accountId = req.query.accountId;
 
-  const accounts = await TradingAccount.find({ userId, isActive: true }).select('_id').lean();
-  let accountIds = accounts.map((a) => a._id);
-  if (accountId) {
-    accountIds = accountIds.filter((id) => String(id) === String(accountId));
-  }
+  const accounts = await TradingAccount.find({ userId, isActive: true }).select('_id accountType').lean();
+  let accountIds = resolveAccountIds(accounts, accountId);
   if (!accountIds.length) {
     return sendSuccess(res, {
       netProfit: '0.00', profit: '0.00', loss: '0.00', unrealizedPnl: '0.00',
@@ -413,9 +432,8 @@ const getMonthlySeries = asyncHandler(async (req, res) => {
   }
 
   const accountId = req.query.accountId;
-  const accounts = await TradingAccount.find({ userId, isActive: true }).select('_id').lean();
-  let accountIds = accounts.map((a) => a._id);
-  if (accountId) accountIds = accountIds.filter((id) => String(id) === String(accountId));
+  const accounts = await TradingAccount.find({ userId, isActive: true }).select('_id accountType').lean();
+  let accountIds = resolveAccountIds(accounts, accountId);
 
   if (!accountIds.length) {
     return sendSuccess(res, { grain, buckets: [] });

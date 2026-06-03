@@ -64,4 +64,31 @@ const requireAdmin = (req, res, next) => {
   });
 };
 
-module.exports = { authenticate, requireRole, requireAdmin };
+// ─── Hierarchy RBAC (additive — does NOT touch requireAdmin) ──────────
+// allowRoles / allowPermission gate the new /api/admin/hierarchy routes.
+// SUPER_ADMIN always bypasses. No 2FA enforcement here (managers must
+// stay usable); the legacy requireAdmin keeps its strict 2FA gate.
+const allowRoles = (...roles) => (req, res, next) => {
+  if (!req.user) return next(new AppError('Insufficient permissions', 403, 'FORBIDDEN'));
+  if (req.user.role === ROLES.SUPER_ADMIN) return next();
+  if (!roles.includes(req.user.role)) {
+    return next(new AppError('Insufficient permissions', 403, 'FORBIDDEN'));
+  }
+  next();
+};
+
+const allowPermission = (perm) => (req, res, next) => {
+  const { hasPermission } = require('../config/hierarchy');
+  if (req.user && hasPermission(req.user.role, perm)) return next();
+  next(new AppError('Insufficient permissions', 403, 'FORBIDDEN'));
+};
+
+// Feature flag gate — when ENABLE_HIERARCHY=false, hierarchy routes behave
+// as if they don't exist (404), so the rest of the platform is untouched.
+const requireHierarchy = (req, res, next) => {
+  const { FEATURE_ENABLED } = require('../config/hierarchy');
+  if (!FEATURE_ENABLED) return next(new AppError('Not found', 404, 'NOT_FOUND'));
+  next();
+};
+
+module.exports = { authenticate, requireRole, requireAdmin, allowRoles, allowPermission, requireHierarchy };

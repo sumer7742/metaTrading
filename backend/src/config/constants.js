@@ -2,6 +2,7 @@ module.exports = {
   ROLES: {
     USER: 'USER',
     AFFILIATE: 'AFFILIATE',
+    MANAGER: 'MANAGER',
     ADMIN: 'ADMIN',
     SUPER_ADMIN: 'SUPER_ADMIN',
   },

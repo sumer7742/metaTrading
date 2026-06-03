@@ -1,6 +1,7 @@
 const { Plan, Subscription } = require('../models/Subscription');
 const subscriptionService = require('../services/subscriptionService');
 const subscriptionWalletService = require('../services/subscriptionWalletService');
+const bonusWalletService = require('../services/bonusWalletService');
 const walletService = require('../services/walletService');
 const TradingAccount = require('../models/TradingAccount');
 const { Wallet } = require('../models/Wallet');
@@ -16,10 +17,10 @@ const mySubscription = asyncHandler(async (req, res) => {
   const sub = await Subscription.findOne({ userId: req.userId }).populate('planId').lean();
   const plan = await subscriptionService.getEffectivePlan(req.userId);
 
-  // Surface BOTH the Subscription Wallet (the authoritative source for
-  // plan charges) AND the primary trading wallet snapshot (kept for
-  // back-compat with older FE bundles that still read `wallet`).
-  const subWallet = await subscriptionWalletService.getOrCreate(req.userId);
+  // Plan charges are now billed from the Bonus Wallet. We still expose it
+  // under the `subscriptionWallet` response key for FE back-compat (the
+  // Plans page reads balance / isLowBalance from there).
+  const subWallet = await bonusWalletService.getOrCreate(req.userId);
 
   // "Real" for billing = anything that isn't a practice/demo bucket.
   const account = await TradingAccount.findOne({
@@ -53,7 +54,7 @@ const mySubscription = asyncHandler(async (req, res) => {
       autoRenew: subWallet.autoRenew,
       gracePeriodDays: subWallet.gracePeriodDays,
       lowBalanceThreshold: subWallet.lowBalanceThreshold,
-      isLowBalance: subscriptionWalletService.isLowBalance(subWallet),
+      isLowBalance: bonusWalletService.isLowBalance(subWallet),
     },
   });
 });
@@ -82,27 +83,26 @@ const subscribe = asyncHandler(async (req, res) => {
 
   let effectivePaymentRef = paymentRef || null;
 
-  // ── Subscription Wallet debit (default + only in-app path) ─────────
-  // Plan charges are isolated to the Subscription Wallet. Trading
-  // wallets are NEVER touched. Older `paymentMethod === 'wallet'`
-  // calls are silently redirected here so the FE doesn't break.
+  // ── Bonus Wallet debit (default + only in-app path) ────────────────
+  // Plan charges are billed from the Bonus Wallet. Trading + Main wallets
+  // are NEVER touched. Older `paymentMethod === 'wallet' / 'subscription_
+  // wallet'` calls are redirected here so the FE doesn't break.
   const wantsWalletDebit =
     paymentMethod === 'wallet' ||
     paymentMethod === 'subscription_wallet' ||
+    paymentMethod === 'bonus_wallet' ||
     (!paymentMethod && !effectivePaymentRef && price > 0);
 
   if (wantsWalletDebit && price > 0) {
     try {
-      const { tx } = await subscriptionWalletService.debit({
+      const { tx } = await bonusWalletService.debit({
         userId: req.userId,
         amount: String(price),
         reason: 'SUBSCRIPTION_CHARGE',
-        planCode: plan.code,
-        billingCycle,
         note: `Subscription · ${plan.name} (${billingCycle.toLowerCase()})`,
       });
       effectivePaymentRef = {
-        provider:      'SUB_WALLET',
+        provider:      'BONUS_WALLET',
         transactionId: String(tx._id),
         amount:        String(price),
         currency:      tx.currency,
@@ -110,8 +110,9 @@ const subscribe = asyncHandler(async (req, res) => {
       };
     } catch (err) {
       // Surface a structured 402 so the FE can pop the recharge modal.
-      if (err.code === 'INSUFFICIENT_SUBSCRIPTION_BALANCE') {
-        const snap = await subscriptionWalletService.canAfford(req.userId, String(price));
+      // Keep the FE-facing code stable (INSUFFICIENT_SUBSCRIPTION_BALANCE).
+      if (err.code === 'INSUFFICIENT_BONUS_BALANCE') {
+        const snap = await bonusWalletService.canAfford(req.userId, String(price));
         throw new AppError(
           err.message,
           402,
@@ -123,7 +124,7 @@ const subscribe = asyncHandler(async (req, res) => {
     }
   } else if (price > 0 && !effectivePaymentRef) {
     throw new AppError(
-      'Paid plans require a payment method. Use the Subscription Wallet or pass a paymentRef from your payment provider.',
+      'Paid plans require a payment method. Use the Bonus Wallet or pass a paymentRef from your payment provider.',
       402,
       'PAYMENT_REQUIRED'
     );

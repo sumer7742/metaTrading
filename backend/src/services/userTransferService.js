@@ -59,27 +59,35 @@ const getTransferSettings = async () => {
  * Excludes the calling user and blocked accounts. Returns a slim shape
  * the recipient picker can render without loading other PII.
  */
-const searchRecipients = async (callerUserId, q, limit = 10) => {
+const searchRecipients = async (callerUserId, q, limit = 10, opts = {}) => {
   const term = String(q || '').trim();
   if (term.length < 2) return [];
 
   const ors = [];
   const lower = term.toLowerCase();
-  const looksLikeObjectId = /^[a-f0-9]{24}$/i.test(term);
 
-  if (looksLikeObjectId) ors.push({ _id: term });
-  ors.push({ referralCode: new RegExp(`^${escapeRegex(term)}$`, 'i') });
-  ors.push({ email: new RegExp(`^${escapeRegex(lower)}$`, 'i') });
-  const rxLoose = new RegExp(escapeRegex(term), 'i');
-  ors.push({ firstName: rxLoose });
-  ors.push({ lastName: rxLoose });
-  // "first last" combined
-  const parts = term.split(/\s+/).filter(Boolean);
-  if (parts.length >= 2) {
-    ors.push({
-      firstName: new RegExp(`^${escapeRegex(parts[0])}`, 'i'),
-      lastName:  new RegExp(`^${escapeRegex(parts.slice(1).join(' '))}`, 'i'),
-    });
+  if (opts.uidOnly) {
+    // Restrict matching to the permanent public User ID ONLY (e.g.
+    // USR100245). Contains-match (case-insensitive) so partial typing
+    // progressively narrows the list — no email / name / referral fallback.
+    ors.push({ userUid: new RegExp(escapeRegex(term), 'i') });
+  } else {
+    const looksLikeObjectId = /^[a-f0-9]{24}$/i.test(term);
+    if (looksLikeObjectId) ors.push({ _id: term });
+    ors.push({ userUid: new RegExp(`^${escapeRegex(term)}$`, 'i') });   // permanent User ID (USR100245)
+    ors.push({ referralCode: new RegExp(`^${escapeRegex(term)}$`, 'i') });
+    ors.push({ email: new RegExp(`^${escapeRegex(lower)}$`, 'i') });
+    const rxLoose = new RegExp(escapeRegex(term), 'i');
+    ors.push({ firstName: rxLoose });
+    ors.push({ lastName: rxLoose });
+    // "first last" combined
+    const parts = term.split(/\s+/).filter(Boolean);
+    if (parts.length >= 2) {
+      ors.push({
+        firstName: new RegExp(`^${escapeRegex(parts[0])}`, 'i'),
+        lastName:  new RegExp(`^${escapeRegex(parts.slice(1).join(' '))}`, 'i'),
+      });
+    }
   }
 
   const users = await User.find({
@@ -87,7 +95,7 @@ const searchRecipients = async (callerUserId, q, limit = 10) => {
     _id: { $ne: callerUserId },
     isActive: { $ne: false },
   })
-    .select('_id email firstName lastName referralCode avatarUrl')
+    .select('_id email firstName lastName referralCode userUid avatarUrl')
     .limit(Math.min(50, Math.max(1, Number(limit) || 10)))
     .lean();
 
@@ -95,6 +103,7 @@ const searchRecipients = async (callerUserId, q, limit = 10) => {
     _id:          String(u._id),
     name:         [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email,
     email:        u.email,
+    userUid:      u.userUid || null,
     referralCode: u.referralCode || null,
     avatarUrl:    u.avatarUrl || null,
   }));
@@ -108,14 +117,16 @@ function escapeRegex(s) {
  * Resolve a recipient by any of the supported identifiers. Returns
  * the full User doc (lean) or throws.
  */
-const resolveRecipient = async ({ recipientUserId, recipientUsername, recipientReferralCode }) => {
+const resolveRecipient = async ({ recipientUserId, recipientUsername, recipientReferralCode, recipientUserUid }) => {
   const ors = [];
   if (recipientUserId && /^[a-f0-9]{24}$/i.test(recipientUserId)) ors.push({ _id: recipientUserId });
   if (recipientReferralCode) ors.push({ referralCode: new RegExp(`^${escapeRegex(recipientReferralCode)}$`, 'i') });
+  if (recipientUserUid) ors.push({ userUid: new RegExp(`^${escapeRegex(recipientUserUid)}$`, 'i') });
   if (recipientUsername) {
-    // Username treated as email OR referralCode OR exact firstName match.
+    // Username treated as email OR referralCode OR permanent User ID.
     ors.push({ email: new RegExp(`^${escapeRegex(recipientUsername.toLowerCase())}$`, 'i') });
     ors.push({ referralCode: new RegExp(`^${escapeRegex(recipientUsername)}$`, 'i') });
+    ors.push({ userUid: new RegExp(`^${escapeRegex(recipientUsername)}$`, 'i') });
   }
   if (!ors.length) throw new AppError('Recipient identifier required', 400);
 
@@ -208,9 +219,17 @@ const transferToUser = async ({
     throw new AppError('Cannot transfer to yourself', 400, 'SELF_TRANSFER');
   }
 
-  // Verify sender's account belongs to them.
-  const fromAcct = await TradingAccount.findOne({ _id: fromAccountId, userId: fromUserId }).lean();
-  if (!fromAcct) throw new AppError('Source account not found', 404);
+  // Source can be a trading account OR the user-level Main Wallet
+  // (sentinel 'subscription'). The Main Wallet is USD-only.
+  const isMainFrom = String(fromAccountId) === 'subscription';
+  const subscriptionWalletService = require('./subscriptionWalletService');
+  if (isMainFrom) {
+    if (currency !== 'USD') throw new AppError('Main Wallet transfers must be in USD', 400, 'MAIN_USD_ONLY');
+  } else {
+    // Verify sender's trading account belongs to them.
+    const fromAcct = await TradingAccount.findOne({ _id: fromAccountId, userId: fromUserId }).lean();
+    if (!fromAcct) throw new AppError('Source account not found', 404);
+  }
 
   // Pick recipient account.
   const toAcct = await pickRecipientAccount(recipientDoc._id, currency);
@@ -225,18 +244,33 @@ const transferToUser = async ({
   const recipName   = displayName(recipientDoc) || 'a user';
 
   // ── 1) Debit sender (amount + fee) ──
-  await walletService.debit({
-    userId:        fromUserId,
-    accountId:     fromAccountId,
-    currency,
-    amount:        senderTotal.toString(),
-    type:          WALLET_TX_TYPE.INTERNAL_TRANSFER_OUT,
-    referenceType,
-    referenceId,
-    note:          note
-      ? `To ${recipName}: ${note}` + (fee.gt(0) ? ` · fee ${fee.toString()}` : '')
-      : `Transfer to ${recipName}` + (fee.gt(0) ? ` · fee ${fee.toString()}` : ''),
-  });
+  const debitNote = note
+    ? `To ${recipName}: ${note}` + (fee.gt(0) ? ` · fee ${fee.toString()}` : '')
+    : `Transfer to ${recipName}` + (fee.gt(0) ? ` · fee ${fee.toString()}` : '');
+  if (isMainFrom) {
+    try {
+      await subscriptionWalletService.debit({
+        userId: fromUserId,
+        amount: senderTotal.toString(),
+        reason: 'ADMIN_DEBIT',
+        note:   debitNote,
+      });
+    } catch (err) {
+      if (err.code === 'INSUFFICIENT_SUBSCRIPTION_BALANCE') throw new AppError(err.message, 402, err.code);
+      throw err;
+    }
+  } else {
+    await walletService.debit({
+      userId:        fromUserId,
+      accountId:     fromAccountId,
+      currency,
+      amount:        senderTotal.toString(),
+      type:          WALLET_TX_TYPE.INTERNAL_TRANSFER_OUT,
+      referenceType,
+      referenceId,
+      note:          debitNote,
+    });
+  }
 
   // ── 2) Credit recipient — rollback on failure ──
   try {
@@ -255,16 +289,25 @@ const transferToUser = async ({
   } catch (creditErr) {
     // Compensating refund on sender.
     try {
-      await walletService.credit({
-        userId:    fromUserId,
-        accountId: fromAccountId,
-        currency,
-        amount:    senderTotal.toString(),
-        type:      WALLET_TX_TYPE.INTERNAL_TRANSFER_OUT,
-        referenceType,
-        referenceId,
-        note:      'Rollback: peer transfer credit failed',
-      });
+      if (isMainFrom) {
+        await subscriptionWalletService.credit({
+          userId: fromUserId,
+          amount: senderTotal.toString(),
+          reason: 'REFUND',
+          note:   'Rollback: peer transfer credit failed',
+        });
+      } else {
+        await walletService.credit({
+          userId:    fromUserId,
+          accountId: fromAccountId,
+          currency,
+          amount:    senderTotal.toString(),
+          type:      WALLET_TX_TYPE.INTERNAL_TRANSFER_OUT,
+          referenceType,
+          referenceId,
+          note:      'Rollback: peer transfer credit failed',
+        });
+      }
     } catch (rbErr) {
       console.error(
         `[userTransfer] CRITICAL: rollback failed from=${fromUserId} to=${recipientDoc._id} ` +
@@ -331,7 +374,7 @@ const transferToUser = async ({
     referenceId: String(referenceId),
     fromUserId:  String(fromUserId),
     toUserId:    String(recipientDoc._id),
-    recipient:   { name: recipName, referralCode: recipientDoc.referralCode || null },
+    recipient:   { name: recipName, userUid: recipientDoc.userUid || null, referralCode: recipientDoc.referralCode || null },
     currency,
     amount:      amt.toString(),
     fee:         fee.toString(),

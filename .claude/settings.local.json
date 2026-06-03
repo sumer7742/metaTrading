@@ -12,7 +12,26 @@
       "Bash(timeout 60 npx vite build)",
       "Bash(timeout 30 node src/utils/seed.js)",
       "Bash(curl -s \"http://localhost:5000/api/instruments/USDJPY/candles?timeframe=1m&limit=3\")",
-      "Bash(curl -s \"http://localhost:5000/api/instruments/EURGBP/candles?timeframe=1m&limit=3\")"
+      "Bash(curl -s \"http://localhost:5000/api/instruments/EURGBP/candles?timeframe=1m&limit=3\")",
+      "Bash(node -e ' *)",
+      "Bash(node -e \"require\\('./src/models/index'\\); require\\('./src/models/BonusWallet'\\); require\\('./src/controllers/bonusWalletController'\\); require\\('./src/routes/bonusWallet'\\); require\\('./src/controllers/adminController'\\); console.log\\('backend deposit-path modules load OK'\\);\")",
+      "PowerShell($p = \"client/src/pages/BonusWallet.jsx\"; \\(Get-Content $p -TotalCount 201\\) | Set-Content $p -Encoding utf8; \"kept $\\(\\(Get-Content $p\\).Count\\) lines; last line: '$\\(\\(Get-Content $p\\)[-1]\\)'\")",
+      "PowerShell($p = \"C:\\\\Users\\\\rijju\\\\OneDrive\\\\Desktop\\\\trading-platform  last and\\\\client\\\\src\\\\pages\\\\BonusWallet.jsx\"; \\(Get-Content $p -TotalCount 201\\) | Set-Content $p -Encoding utf8; \"kept $\\(\\(Get-Content $p\\).Count\\) lines; last: '$\\(\\(Get-Content $p\\)[-1]\\)'\")",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\rijju\\\\OneDrive\\\\Desktop\\\\trading-platform  last and\\\\backend\\\\src\" -Recurse -Directory)",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(xargs grep -l \"schedule\\\\|cron\\\\|interval\\\\|renewal\\\\|expire\")",
+      "Bash(node -e \"require\\('./src/models/BonusWallet'\\);require\\('./src/services/bonusWalletService'\\);require\\('./src/controllers/bonusWalletController'\\);require\\('./src/routes/bonusWallet'\\);require\\('./src/controllers/subscriptionController'\\);require\\('./src/controllers/subscriptionWalletController'\\);console.log\\('backend billing-repoint modules load OK'\\);\")",
+      "Bash(node -e \"require\\('./src/controllers/dashboardController'\\); console.log\\('dashboardController loads OK'\\);\")",
+      "Bash(node src/utils/testHierarchy.js)",
+      "Bash(ENABLE_HIERARCHY=false node -e \"const {FEATURE_ENABLED}=require\\('./src/config/hierarchy'\\); console.log\\('FEATURE_ENABLED when env=false:', FEATURE_ENABLED\\);\")",
+      "Bash(node -e \"process.env.SKIP_LISTEN=1; try { require\\('./src/routes/admin'\\); require\\('./src/routes/hierarchy'\\); require\\('./src/middleware/auth'\\); console.log\\('admin + hierarchy routers load OK together'\\); } catch\\(e\\){ console.error\\('LOAD FAIL', e.message\\); process.exit\\(1\\);}\")",
+      "Bash(node src/utils/testChat.js)",
+      "Bash(node -e \"const u=process.env.MONGODB_URI||require\\('dotenv'\\).config\\(\\)&&process.env.MONGODB_URI; console.log\\('URI host:', \\(process.env.MONGODB_URI||''\\).replace\\(/\\\\/\\\\/[^@]*@/,'//***@'\\)\\)\")",
+      "Bash(node src/utils/diagHierarchy.js)",
+      "Bash(node -e \"require\\('./src/controllers/hierarchyController'\\); require\\('./src/services/hierarchyService'\\); require\\('./src/routes/hierarchy'\\); console.log\\('backend hierarchy modules load OK'\\);\")",
+      "Bash(node -e \"console.log\\('version:', require\\('lightweight-charts/package.json'\\).version\\)\")",
+      "Bash(node -e \"require\\('./src/models/User'\\); require\\('./src/models/Counter'\\); require\\('./src/utils/userUid'\\); require\\('./src/controllers/adminController'\\); require\\('./src/services/userTransferService'\\); require\\('./src/services/chatService'\\); console.log\\('backend modules load OK'\\);\")",
+      "Bash(node src/utils/backfillUserUid.js)"
     ]
   }
 }

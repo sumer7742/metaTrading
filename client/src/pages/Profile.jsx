@@ -77,6 +77,23 @@ export default function Profile() {
             </h1>
             <div className="text-sm text-text-secondary mt-1 truncate">{user?.email || '—'}</div>
 
+            {/* Permanent public User ID — prominent + copyable */}
+            {user?.userUid && (
+              <button
+                type="button"
+                onClick={() => { navigator.clipboard.writeText(user.userUid); toast.success('User ID copied'); }}
+                title="Copy your User ID"
+                className="mt-3 inline-flex items-center gap-2.5 rounded-xl border border-primary-500/30 bg-primary-500/5 pl-3 pr-2.5 py-1.5 hover:border-primary-500/60 hover:bg-primary-500/10 transition-colors group/uid"
+              >
+                <span className="text-[10px] uppercase tracking-[0.15em] font-bold text-text-muted">User ID</span>
+                <span className="font-mono font-extrabold text-primary-600 text-sm tracking-wide">{user.userUid}</span>
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-text-muted group-hover/uid:text-primary-600 transition-colors">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                  Copy
+                </span>
+              </button>
+            )}
+
             {/* Status chips */}
             <div className="flex flex-wrap items-center gap-1.5 mt-4">
               <StatusPill

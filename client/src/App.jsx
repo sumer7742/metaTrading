@@ -30,9 +30,11 @@ const Partner   = lazy(() => import('./pages/Partner'));
 const PriceAlerts = lazy(() => import('./pages/PriceAlerts'));
 const Plans = lazy(() => import('./pages/Plans'));
 const SubscriptionWallet = lazy(() => import('./pages/SubscriptionWallet'));
+const BonusWallet = lazy(() => import('./pages/BonusWallet'));
 const CopyTrade = lazy(() => import('./pages/CopyTrade'));
 const Feedback = lazy(() => import('./pages/Feedback'));
 const Helpdesk = lazy(() => import('./pages/Helpdesk'));
+const HelpdeskChat = lazy(() => import('./pages/HelpdeskChat'));
 const Explore = lazy(() => import('./pages/Explore'));
 const MarketList = lazy(() => import('./pages/MarketList'));
 const Watchlist = lazy(() => import('./pages/Watchlist'));
@@ -89,6 +91,7 @@ export default function App() {
         <Route path="/partner" element={<Page><Partner /></Page>} />
         <Route path="/plans" element={<Page><Plans /></Page>} />
         <Route path="/subscription-wallet" element={<Page><SubscriptionWallet /></Page>} />
+        <Route path="/bonus-wallet" element={<Page><BonusWallet /></Page>} />
         <Route path="/copy-trading" element={<Page><CopyTrade /></Page>} />
         <Route path="/wallet" element={<Page><Wallet /></Page>} />
         <Route path="/accounts/new" element={<Page><NewAccountTiers /></Page>} />
@@ -99,6 +102,7 @@ export default function App() {
         <Route path="/ib-room" element={<Page><Partner /></Page>} />
         <Route path="/bonuses" element={<Page><Plans /></Page>} />
         <Route path="/helpdesk" element={<Page><Helpdesk /></Page>} />
+        <Route path="/helpdesk/chat" element={<Page><HelpdeskChat /></Page>} />
         <Route path="/feedback" element={<Page><Feedback /></Page>} />
         <Route
           path="/download"

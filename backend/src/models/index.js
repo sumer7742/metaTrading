@@ -7,7 +7,7 @@ const depositSchema = new mongoose.Schema(
     //   'trading'      → credit the user's trading-account wallet (default; legacy behaviour)
     //   'subscription' → credit the user's standalone Subscription Wallet
     // The admin verification flow checks this field to route the credit.
-    targetWallet: { type: String, enum: ['trading', 'subscription'], default: 'trading', index: true },
+    targetWallet: { type: String, enum: ['trading', 'subscription', 'bonus'], default: 'trading', index: true },
     // accountId is REQUIRED for trading-wallet deposits but ignored for
     // subscription-wallet deposits (the Subscription Wallet is per-user,
     // not per-account). We leave it optional at the schema level and
