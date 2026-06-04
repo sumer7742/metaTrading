@@ -154,6 +154,72 @@ const users = asyncHandler(async (req, res) => {
   sendSuccess(res, result);
 });
 
+/* ── SuperAdmin: capacity-validated transfers ───────────────────────── */
+const transferUser = asyncHandler(async (req, res) => {
+  if (!isSuper(req)) throw new AppError('Only SuperAdmin can transfer users', 403, 'FORBIDDEN');
+  const { userId, adminId, managerId } = req.body;
+  if (!userId) throw new AppError('userId required', 400);
+  if (!adminId && !managerId) throw new AppError('adminId or managerId required', 400);
+  const user = await svc.transferUser(userId, { adminId, managerId }, ctxOf(req));
+  await audit(req, 'USER_TRANSFERRED', { type: 'USER', id: userId }, { adminId, managerId });
+  sendSuccess(res, user);
+});
+
+const bulkTransfer = asyncHandler(async (req, res) => {
+  if (!isSuper(req)) throw new AppError('Only SuperAdmin can bulk-transfer users', 403, 'FORBIDDEN');
+  const { userIds, adminId, managerId } = req.body;
+  if (!Array.isArray(userIds) || !userIds.length) throw new AppError('userIds[] required', 400);
+  if (!adminId && !managerId) throw new AppError('adminId or managerId required', 400);
+  const out = await svc.bulkTransfer(userIds, { adminId, managerId }, ctxOf(req));
+  await audit(req, 'USER_BULK_TRANSFERRED', { type: 'USER', id: 'bulk' }, { count: userIds.length, adminId, managerId, ok: out.ok, failed: out.failed });
+  sendSuccess(res, out);
+});
+
+const transferManager = asyncHandler(async (req, res) => {
+  if (!isSuper(req)) throw new AppError('Only SuperAdmin can transfer managers', 403, 'FORBIDDEN');
+  const { managerId, adminId } = req.body;
+  if (!managerId || !adminId) throw new AppError('managerId and adminId required', 400);
+  const out = await svc.transferManager(managerId, adminId, ctxOf(req));
+  await audit(req, 'MANAGER_TRANSFERRED', { type: 'USER', id: managerId }, out);
+  sendSuccess(res, out);
+});
+
+/* ── SuperAdmin: auto-created staff account control ──────────────────── */
+const listAutoCreated = asyncHandler(async (req, res) => {
+  sendSuccess(res, await svc.listAutoCreated(listOpts(req)));
+});
+
+const renameStaff = asyncHandler(async (req, res) => {
+  const u = await svc.renameStaff(req.params.id, req.body, ctxOf(req));
+  await audit(req, 'STAFF_RENAMED', { type: 'USER', id: req.params.id }, { firstName: u.firstName, lastName: u.lastName });
+  sendSuccess(res, u.toSafeJSON ? u.toSafeJSON() : u);
+});
+
+const changeStaffEmail = asyncHandler(async (req, res) => {
+  const u = await svc.changeStaffEmail(req.params.id, req.body.email, ctxOf(req));
+  await audit(req, 'STAFF_EMAIL_CHANGED', { type: 'USER', id: req.params.id }, { email: u.email });
+  sendSuccess(res, u.toSafeJSON ? u.toSafeJSON() : u);
+});
+
+const resetStaffPassword = asyncHandler(async (req, res) => {
+  const out = await svc.resetStaffPassword(req.params.id, req.body.password, ctxOf(req));
+  await audit(req, 'STAFF_PASSWORD_RESET', { type: 'USER', id: req.params.id }, {});
+  sendSuccess(res, { user: out.user.toSafeJSON ? out.user.toSafeJSON() : out.user, generatedPassword: out.generatedPassword });
+});
+
+const setLoginEnabled = asyncHandler(async (req, res) => {
+  const enabled = req.body.enabled === true || req.body.enabled === 'true';
+  const u = await svc.setLoginEnabled(req.params.id, enabled, ctxOf(req));
+  await audit(req, enabled ? 'STAFF_LOGIN_ENABLED' : 'STAFF_LOGIN_DISABLED', { type: 'USER', id: req.params.id }, {});
+  sendSuccess(res, u.toSafeJSON ? u.toSafeJSON() : u);
+});
+
+const claimStaff = asyncHandler(async (req, res) => {
+  const out = await svc.claimAutoCreated(req.params.id, req.body, ctxOf(req));
+  await audit(req, 'STAFF_CLAIMED', { type: 'USER', id: req.params.id }, { email: out.user.email });
+  sendSuccess(res, { user: out.user.toSafeJSON ? out.user.toSafeJSON() : out.user, generatedPassword: out.generatedPassword });
+});
+
 const workload = asyncHandler(async (req, res) => {
   const scope = req.user.role === ROLES.MANAGER ? { managerId: req.user._id }
     : req.user.role === ROLES.ADMIN ? { adminId: req.user._id }
@@ -172,4 +238,7 @@ module.exports = {
   listManagers, createManager, deactivateManager,
   assignAdmin, assignManager, reassign, unassign, bulkAssign,
   unassigned, users, workload, tree,
+  // SuperAdmin transfers + auto-created staff account control
+  transferUser, bulkTransfer, transferManager,
+  listAutoCreated, renameStaff, changeStaffEmail, resetStaffPassword, setLoginEnabled, claimStaff,
 };

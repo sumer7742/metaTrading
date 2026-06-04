@@ -26,6 +26,19 @@ router.post('/reassign',       allowPermission('hierarchy.assign'), c.reassign);
 router.post('/unassign',       allowPermission('hierarchy.assign'), c.unassign);
 router.post('/bulk',           allowPermission('hierarchy.assign'), c.bulkAssign);
 
+// ── SuperAdmin: capacity-validated transfers ────────────────────────
+router.post('/transfer-user',    allowPermission('hierarchy.superadmin'), c.transferUser);
+router.post('/bulk-transfer',    allowPermission('hierarchy.superadmin'), c.bulkTransfer);
+router.post('/transfer-manager', allowPermission('hierarchy.superadmin'), c.transferManager);
+
+// ── SuperAdmin: auto-created staff account control ──────────────────
+router.get('/auto-created',                allowPermission('hierarchy.superadmin'), c.listAutoCreated);
+router.patch('/staff/:id',                 allowPermission('hierarchy.superadmin'), c.renameStaff);
+router.patch('/staff/:id/email',           allowPermission('hierarchy.superadmin'), c.changeStaffEmail);
+router.post('/staff/:id/reset-password',   allowPermission('hierarchy.superadmin'), c.resetStaffPassword);
+router.post('/staff/:id/login',            allowPermission('hierarchy.superadmin'), c.setLoginEnabled);
+router.post('/staff/:id/claim',            allowPermission('hierarchy.superadmin'), c.claimStaff);
+
 // ── Scoped reads — SuperAdmin + Admin + Manager ─────────────────────
 router.get('/unassigned', allowPermission('hierarchy.view'), c.unassigned);
 router.get('/users',      allowPermission('hierarchy.view'), c.users);

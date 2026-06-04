@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { EconomicCalendarSection } from '../components/EconomicCalendar';
 import AssetIcon from '../components/AssetIcon';
+import WatchlistButton from '../components/WatchlistButton';
 import { useInstruments } from '../hooks/useInstruments';
 import { useRecentlyViewed } from '../hooks/useRecentlyViewed';
 import { wsClient } from '../services/ws';
@@ -599,6 +600,7 @@ export default function Explore() {
                     onClick={() => openTrade(a.symbol)}
                     className="group relative text-left bg-white border border-border-dark rounded-[20px] p-5 hover:shadow-card hover:border-primary-500/30 hover:-translate-y-0.5 transition-all"
                   >
+                    <WatchlistButton symbol={a.symbol} row={a} className="absolute top-3 right-3" />
                     <AssetGlyph sym={a.symbol} row={a} size={44} />
                     <div className="mt-4 text-sm font-medium text-text-primary truncate">
                       {a.name || a.symbol}
@@ -669,17 +671,18 @@ export default function Explore() {
                 <th className="text-right font-medium px-5 py-3">Price</th>
                 <th className="text-right font-medium px-5 py-3">24h %</th>
                 <th className="text-right font-medium px-5 py-3 hidden sm:table-cell">Volume</th>
+                <th className="px-3 py-3 w-px"><span className="sr-only">Watchlist</span></th>
               </tr>
             </thead>
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan={5} className="px-5 py-8 text-center text-sm text-text-muted">Loading market data…</td>
+                  <td colSpan={6} className="px-5 py-8 text-center text-sm text-text-muted">Loading market data…</td>
                 </tr>
               )}
               {!loading && movers.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-5 py-8 text-center text-sm text-text-muted">
+                  <td colSpan={6} className="px-5 py-8 text-center text-sm text-text-muted">
                     No assets match this filter.
                   </td>
                 </tr>
@@ -690,7 +693,7 @@ export default function Explore() {
                   <tr
                     key={m.symbol}
                     onClick={() => openTrade(m.symbol)}
-                    className={`border-t border-border-subtle hover:bg-bg-hover transition-colors cursor-pointer ${idx === 0 ? 'border-t-0' : ''}`}
+                    className={`group border-t border-border-subtle hover:bg-bg-hover transition-colors cursor-pointer ${idx === 0 ? 'border-t-0' : ''}`}
                   >
                     <td className="px-5 py-3.5">
                       <div className="flex items-center gap-3">
@@ -712,6 +715,9 @@ export default function Explore() {
                     </td>
                     <td className="px-5 py-3.5 text-right font-mono text-xs text-text-secondary hidden sm:table-cell">
                       {fmtVolume(m.volume24h)}
+                    </td>
+                    <td className="px-3 py-3.5 text-right align-middle">
+                      <WatchlistButton symbol={m.symbol} row={m} variant="ghost" />
                     </td>
                   </tr>
                 );

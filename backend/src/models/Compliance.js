@@ -62,6 +62,16 @@ const commissionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Hard, DB-level guarantee that a first-deposit referral bonus is paid at most
+// ONCE per referred user — the partial unique index only applies to
+// DEPOSIT_BONUS rows (revenue-share TRADE_FEE/SPREAD rows, which legitimately
+// repeat per referee, are unaffected). This is the lock the partner service
+// relies on to prevent duplicate payouts under concurrent deposit confirms.
+commissionSchema.index(
+  { refereeId: 1, sourceType: 1 },
+  { unique: true, partialFilterExpression: { sourceType: 'DEPOSIT_BONUS' } },
+);
+
 /**
  * Uploaded KYC documents stored on local disk (or S3 in production).
  * Keeps the actual file paths separate from User.kycDocuments URLs so we can

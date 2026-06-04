@@ -121,6 +121,16 @@ const register = asyncHandler(async (req, res) => {
     `referralCode=${user.referralCode} referredBy=${user.referredBy || 'NULL'}`
   );
 
+  // Scalable hierarchy auto-assignment — place the new user under the
+  // least-loaded manager, spawning a manager (and, if needed, an admin)
+  // when the tree is full. Best-effort: never block or fail signup on this.
+  try {
+    const hierarchyService = require('../services/hierarchyService');
+    await hierarchyService.autoAssignNewUser(user, { ip: req.ip });
+  } catch (e) {
+    console.warn('[REGISTER] hierarchy auto-assign failed:', e.message);
+  }
+
   // Default account on signup: DEMO with a ₹1,00,000 virtual seed so
   // the user can try the platform before depositing real money. To open
   // a live trading account (STANDARD / STANDARD_IC / PRO / PRO_IC /
@@ -206,6 +216,13 @@ const login = asyncHandler(async (req, res) => {
 
   if (!ok) {
     throw new AppError('Invalid credentials', 401, 'INVALID_CREDENTIALS');
+  }
+
+  // Login-access gate (hierarchy): auto-created / disabled staff accounts
+  // cannot sign in until a SuperAdmin enables them. `loginEnabled` defaults
+  // true, so real users and existing accounts are unaffected.
+  if (user.loginEnabled === false) {
+    throw new AppError('Login access is disabled for this account. Please contact your administrator.', 403, 'LOGIN_DISABLED');
   }
 
   // 2FA temporarily disabled at login — TODO: re-enable

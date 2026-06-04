@@ -1,5 +1,6 @@
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
+import { canAccessPath } from '../config/roles';
 
 // Inline SVG icons — keeps bundle slim and theme-tinted via currentColor.
 const Icon = ({ d, ...p }) => (
@@ -25,10 +26,11 @@ const I = {
 // Sectioned nav — matches the client's premium sidebar pattern. TRADE
 // (operational pulse) goes first, MONEY (deposits/withdrawals) second,
 // AUDIT/REPORTS third, INFRA last.
-// Items without an explicit `roles` are legacy admin pages → visible to
-// ADMIN + SUPER_ADMIN only (managers never see them; most hit the
-// requireAdmin-gated /api/admin/* anyway). Items WITH `roles` are shown
-// only to those roles. SUPER_ADMIN always sees everything (see canSee).
+// Visibility is NOT encoded per-item here — it's derived from the SAME
+// central route-access config the route guards use (config/roles), keyed by
+// each item's `to`. That guarantees the sidebar and the guards can never
+// disagree: a MANAGER only ever sees My Users + Support Chats, admins also
+// see My Users, and pages not in the config default to admins-only.
 const NAV_SECTIONS = [
   {
     title: 'Operations',
@@ -41,11 +43,11 @@ const NAV_SECTIONS = [
   {
     title: 'Hierarchy',
     items: [
-      { to: '/admins',         icon: I.users, label: 'Admins',         roles: ['SUPER_ADMIN'] },
-      { to: '/managers',       icon: I.users, label: 'Managers',       roles: ['SUPER_ADMIN', 'ADMIN'] },
-      { to: '/assignments',    icon: I.users, label: 'Assignments',    roles: ['SUPER_ADMIN', 'ADMIN'] },
-      { to: '/hierarchy-tree', icon: I.dashboard, label: 'Hierarchy Tree', roles: ['SUPER_ADMIN'] },
-      { to: '/my-users',       icon: I.users, label: 'My Users',       roles: ['MANAGER'] },
+      { to: '/admins',         icon: I.users, label: 'Admins' },
+      { to: '/managers',       icon: I.users, label: 'Managers' },
+      { to: '/assignments',    icon: I.users, label: 'Assignments' },
+      { to: '/hierarchy-tree', icon: I.dashboard, label: 'Hierarchy Tree' },
+      { to: '/my-users',       icon: I.users, label: 'My Users' },
     ],
   },
   {
@@ -64,7 +66,7 @@ const NAV_SECTIONS = [
   {
     title: 'Support',
     items: [
-      { to: '/support-chats', icon: I.users, label: 'Support Chats', roles: ['SUPER_ADMIN', 'ADMIN', 'MANAGER'] },
+      { to: '/support-chats', icon: I.users, label: 'Support Chats' },
     ],
   },
   {
@@ -84,13 +86,10 @@ const NAV_SECTIONS = [
   },
 ];
 
-// Visibility rule: SUPER_ADMIN sees all; items with `roles` are limited to
-// those roles; legacy items (no `roles`) are ADMIN+SUPER_ADMIN only.
-const canSee = (item, role) => {
-  if (role === 'SUPER_ADMIN') return true;
-  if (item.roles) return item.roles.includes(role);
-  return role === 'ADMIN';
-};
+// Visibility is driven by the central route-access config (keyed by path), so
+// the sidebar and the route guards always agree. SUPER_ADMIN sees everything;
+// managers only see routes whose allow-list includes MANAGER.
+const canSee = (item, role) => canAccessPath(role, item.to);
 
 export default function Layout({ children }) {
   const { user, logout } = useAuthStore();

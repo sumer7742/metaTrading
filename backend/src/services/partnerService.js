@@ -20,8 +20,10 @@
  * decimal strings — same convention the rest of the wallet uses.
  */
 
+const mongoose = require('mongoose');
 const { Commission } = require('../models/Compliance');
 const User = require('../models/User');
+const Trade = require('../models/Trade');
 const { Deposit, Notification } = require('../models');
 const systemSettings = require('./systemSettings.service');
 const subscriptionWalletService = require('./subscriptionWalletService');
@@ -33,6 +35,7 @@ const getSettings = async () => {
   const enabled = await systemSettings.getSetting('partner.enabled');
   const bonusAmount = await systemSettings.getSetting('partner.bonusAmount');
   const minDeposit = await systemSettings.getSetting('partner.minDeposit');
+  const bonusCurrency = await systemSettings.getSetting('partner.bonusCurrency');
   let tiers = await systemSettings.getSetting('partner.tiers');
   if (!Array.isArray(tiers)) tiers = systemSettings.DEFAULTS['partner.tiers'];
   // Defensive normalisation — admin may submit tiers as strings.
@@ -48,6 +51,7 @@ const getSettings = async () => {
     enabled: enabled !== false,
     bonusAmount: String(bonusAmount || '0'),
     minDeposit:  String(minDeposit  || '0'),
+    bonusCurrency: String(bonusCurrency || 'USD').toUpperCase(),
     tiers,
   };
 };
@@ -176,31 +180,44 @@ const handleFirstQualifyingDeposit = async ({ userId, deposit }) => {
     const referrer = await User.findById(user.referredBy).select('_id isActive partnerBlocked').lean();
     if (!referrer || referrer.isActive === false || referrer.partnerBlocked) return null;
 
-    // One-bonus-per-referee guard.
+    // One-bonus-per-referee guard (fast path). The unique partial index on
+    // (refereeId, sourceType=DEPOSIT_BONUS) is the authoritative, DB-level
+    // guarantee — this findOne just avoids a wasted insert in the common case.
     const existing = await Commission.findOne({
-      referrerId: referrer._id,
-      refereeId: user.referredBy && userId,
+      refereeId: userId,
       sourceType: 'DEPOSIT_BONUS',
     });
     if (existing) return existing;
 
     const bonus = D(settings.bonusAmount);
     if (bonus.lte(0)) return null;
+    const bonusCurrency = settings.bonusCurrency || deposit.baseCurrency || 'USD';
 
-    // 1. Record Commission row first so the audit trail exists even if
-    //    the wallet credit fails.
-    const commission = await Commission.create({
-      referrerId: referrer._id,
-      refereeId:  userId,
-      level:      0,
-      sourceType: 'DEPOSIT_BONUS',
-      sourceId:   deposit._id,
-      currency:   deposit.baseCurrency || 'USD',
-      amount:     bonus.toString(),
-      rate:       null,
-      status:     'PENDING',
-      note:       `Instant bonus for first qualifying deposit by referee`,
-    });
+    // 1. Record the Commission row FIRST so the audit trail exists even if
+    //    the wallet credit fails — and so the unique index is the lock that
+    //    prevents a duplicate payout under concurrent deposit confirmations.
+    //    A racing second insert hits E11000; we treat it as "already paid"
+    //    and never credit twice.
+    let commission;
+    try {
+      commission = await Commission.create({
+        referrerId: referrer._id,
+        refereeId:  userId,
+        level:      0,
+        sourceType: 'DEPOSIT_BONUS',
+        sourceId:   deposit._id,
+        currency:   bonusCurrency,
+        amount:     bonus.toString(),
+        rate:       null,
+        status:     'PENDING',
+        note:       `First-deposit referral bonus`,
+      });
+    } catch (e) {
+      if (e && e.code === 11000) {
+        return Commission.findOne({ refereeId: userId, sourceType: 'DEPOSIT_BONUS' });
+      }
+      throw e;
+    }
 
     // 2. Credit the referrer's Bonus Wallet.
     try {
@@ -208,12 +225,32 @@ const handleFirstQualifyingDeposit = async ({ userId, deposit }) => {
         userId:     referrer._id,
         amount:     bonus.toString(),
         reason:     'PARTNER_COMMISSION',
-        note:       'Partner program: first deposit bonus',
+        note:       `Partner program: first-deposit referral bonus (${bonusCurrency})`,
         paymentRef: `commission:${commission._id}`,
       });
       commission.status = 'PAID';
       commission.paidAt = new Date();
       await commission.save();
+
+      // Full audit trail for the payout (in addition to the Commission row).
+      try {
+        const { AuditLog } = require('../models');
+        await AuditLog.create({
+          actorId:    referrer._id,       // beneficiary; SYSTEM-initiated credit
+          actorRole:  'SYSTEM',
+          action:     'PARTNER_FIRST_DEPOSIT_BONUS',
+          targetType: 'COMMISSION',
+          targetId:   String(commission._id),
+          metadata: {
+            referrerId: String(referrer._id),
+            refereeId:  String(userId),
+            depositId:  String(deposit._id),
+            amount:     bonus.toString(),
+            currency:   bonusCurrency,
+            minDeposit: settings.minDeposit,
+          },
+        });
+      } catch (e) { console.error('[partner] first-deposit bonus audit log failed:', e.message); }
     } catch (e) {
       console.error('[partner] bonus wallet credit failed:', e.message);
       // Leave commission PENDING so an admin retry can sweep it.
@@ -365,6 +402,7 @@ const getDashboardData = async (userId) => {
       enabled: settings.enabled,
       bonusAmount: settings.bonusAmount,
       minDeposit:  settings.minDeposit,
+      bonusCurrency: settings.bonusCurrency,
       tiers: settings.tiers,
     },
     level: {
@@ -402,6 +440,247 @@ const getDashboardData = async (userId) => {
 };
 
 function round2(n) { return Number(n || 0).toFixed(2); }
+
+// ─── Volume-based partner tiers ──────────────────────────────────────
+//
+// A SEPARATE, read-only progression model layered on top of the existing
+// count-based commission engine: partner level + revenue-share % are driven
+// by the TOTAL TRADING VOLUME generated by a user's referrals (not the
+// referral count). This powers the redesigned partner dashboard without
+// touching the live payout logic in distributeRevenueShare() — money still
+// moves exactly as before; this only changes how progression is *presented*.
+//
+// Thresholds are fixed per product spec (USD notional). Kept here as the
+// single source of truth so the API and UI never drift.
+const VOLUME_TIERS = [
+  { name: 'BRONZE',   minVolume: 0,          percent: 10 },
+  { name: 'SILVER',   minVolume: 100000,     percent: 15 },
+  { name: 'GOLD',     minVolume: 500000,     percent: 20 },
+  { name: 'PLATINUM', minVolume: 2000000,    percent: 25 },
+  { name: 'ELITE',    minVolume: 10000000,   percent: 30 },
+];
+
+const resolveVolumeTier = (totalVolume, tiers = VOLUME_TIERS) => {
+  let current = tiers[0] || VOLUME_TIERS[0];
+  for (const t of tiers) if (totalVolume >= t.minVolume) current = t;
+  return current;
+};
+const nextVolumeTier = (totalVolume, tiers = VOLUME_TIERS) => {
+  for (const t of tiers) if (t.minVolume > totalVolume) return t;
+  return null; // already at the top tier
+};
+
+// Admin-configurable volume tiers (falls back to the built-in defaults).
+// Normalised to numeric minVolume/percent and sorted ascending so the
+// resolver and the dashboard never have to trust raw stored shapes.
+const getVolumeTiers = async () => {
+  let tiers = await systemSettings.getSetting('partner.volumeTiers');
+  if (!Array.isArray(tiers) || !tiers.length) {
+    tiers = systemSettings.DEFAULTS['partner.volumeTiers'] || VOLUME_TIERS;
+  }
+  return tiers
+    .map((t) => ({
+      name: String(t.name || '').toUpperCase(),
+      minVolume: Number(t.minVolume) || 0,
+      percent: Number(t.percent) || 0,
+    }))
+    .sort((a, b) => a.minVolume - b.minVolume);
+};
+
+const oid = (id) => mongoose.Types.ObjectId.createFromHexString(String(id));
+const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+// Aggregate one side (buy or sell) of the Trade collection for a set of
+// referees: notional volume (price × quantity) per user + per calendar
+// month, all in one pass via $facet.
+async function volumeForSide(field, refIds, startOfMonth, sinceMonth) {
+  return Trade.aggregate([
+    { $match: { [field]: { $in: refIds } } },
+    { $addFields: { vol: { $multiply: [{ $toDouble: '$price' }, { $toDouble: '$quantity' }] } } },
+    {
+      $facet: {
+        byUser: [
+          {
+            $group: {
+              _id: `$${field}`,
+              volume:  { $sum: '$vol' },
+              monthly: { $sum: { $cond: [{ $gte: ['$executedAt', startOfMonth] }, '$vol', 0] } },
+              trades:  { $sum: 1 },
+              lastAt:  { $max: '$executedAt' },
+            },
+          },
+        ],
+        byMonth: [
+          { $match: { executedAt: { $gte: sinceMonth } } },
+          {
+            $group: {
+              _id: { y: { $year: '$executedAt' }, m: { $month: '$executedAt' } },
+              volume: { $sum: '$vol' },
+            },
+          },
+        ],
+      },
+    },
+  ]);
+}
+
+// ─── Volume-based dashboard payload ──────────────────────────────────
+//
+// Returns the full data structure the redesigned partner dashboard needs.
+// Reuses getDashboardData() for the (unchanged) commission/earnings numbers
+// and referral code, then layers real referral trading-volume aggregates and
+// volume-tier progression on top. Defensive throughout: if the trade
+// aggregation fails or there are no referees, volume fields fall back to 0 so
+// the endpoint never breaks the page.
+const getVolumeDashboard = async (userId) => {
+  const base = await getDashboardData(userId);
+
+  const referees = await User.find({ referredBy: userId })
+    .select('_id firstName lastName email createdAt')
+    .lean();
+  const refIds = referees.map((r) => r._id);
+
+  const now = new Date();
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  const sinceMonth   = new Date(now.getFullYear(), now.getMonth() - 5, 1); // 6-month window
+
+  let totalVolume = 0;
+  let monthlyVolume = 0;
+  const volByUser  = new Map(); // userId -> { volume, monthly, trades, lastAt }
+  const volByMonth = new Map(); // 'YYYY-MM' -> volume
+  const commByUser = new Map(); // userId -> total commission
+  const commByMonth = new Map();
+
+  if (refIds.length) {
+    try {
+      const [buy, sell] = await Promise.all([
+        volumeForSide('buyUserId', refIds, startOfMonth, sinceMonth),
+        volumeForSide('sellUserId', refIds, startOfMonth, sinceMonth),
+      ]);
+      const mergeUser = (rows) => {
+        for (const r of rows || []) {
+          const k = String(r._id);
+          const prev = volByUser.get(k) || { volume: 0, monthly: 0, trades: 0, lastAt: null };
+          prev.volume  += r.volume  || 0;
+          prev.monthly += r.monthly || 0;
+          prev.trades  += r.trades  || 0;
+          if (r.lastAt && (!prev.lastAt || r.lastAt > prev.lastAt)) prev.lastAt = r.lastAt;
+          volByUser.set(k, prev);
+        }
+      };
+      const mergeMonth = (rows) => {
+        for (const r of rows || []) {
+          const key = `${r._id.y}-${String(r._id.m).padStart(2, '0')}`;
+          volByMonth.set(key, (volByMonth.get(key) || 0) + (r.volume || 0));
+        }
+      };
+      mergeUser(buy[0]?.byUser);  mergeUser(sell[0]?.byUser);
+      mergeMonth(buy[0]?.byMonth); mergeMonth(sell[0]?.byMonth);
+      for (const v of volByUser.values()) { totalVolume += v.volume; monthlyVolume += v.monthly; }
+    } catch (e) {
+      console.error('[partner] volume aggregation failed:', e.message);
+    }
+
+    try {
+      const commGroups = await Commission.aggregate([
+        { $match: { referrerId: oid(userId), refereeId: { $in: refIds } } },
+        { $addFields: { amtNum: { $toDouble: '$amount' } } },
+        { $group: { _id: '$refereeId', total: { $sum: '$amtNum' } } },
+      ]);
+      for (const g of commGroups) commByUser.set(String(g._id), g.total);
+    } catch (e) { console.error('[partner] referee commission agg failed:', e.message); }
+  }
+
+  try {
+    const cm = await Commission.aggregate([
+      { $match: { referrerId: oid(userId), createdAt: { $gte: sinceMonth } } },
+      { $addFields: { amtNum: { $toDouble: '$amount' } } },
+      { $group: { _id: { y: { $year: '$createdAt' }, m: { $month: '$createdAt' } }, total: { $sum: '$amtNum' } } },
+    ]);
+    for (const r of cm) commByMonth.set(`${r._id.y}-${String(r._id.m).padStart(2, '0')}`, r.total);
+  } catch (e) { console.error('[partner] commission month agg failed:', e.message); }
+
+  // 6-month series for the growth / earnings charts (gaps filled with 0).
+  const monthlySeries = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    monthlySeries.push({
+      key,
+      label: MONTH_LABELS[d.getMonth()],
+      volume: Math.round(volByMonth.get(key) || 0),
+      commission: Number(round2(commByMonth.get(key) || 0)),
+    });
+  }
+
+  // Per-referral performance, ranked by trading volume (no count ranking).
+  const referralPerformance = referees
+    .map((r) => {
+      const v = volByUser.get(String(r._id)) || { volume: 0, trades: 0, lastAt: null };
+      return {
+        id: String(r._id),
+        name: [r.firstName, r.lastName].filter(Boolean).join(' ') || r.email,
+        email: r.email,
+        volume: Math.round(v.volume),
+        commission: Number(round2(commByUser.get(String(r._id)) || 0)),
+        trades: v.trades || 0,
+        lastActivityAt: v.lastAt || null,
+        joinedAt: r.createdAt,
+        status: v.volume > 0 ? 'ACTIVE' : 'INACTIVE',
+      };
+    })
+    .sort((a, b) => b.volume - a.volume);
+
+  const activeTraders = referralPerformance.filter((r) => r.volume > 0).length;
+
+  const volumeTiers = await getVolumeTiers();
+  const current = resolveVolumeTier(totalVolume, volumeTiers);
+  const next = nextVolumeTier(totalVolume, volumeTiers);
+  const bandStart = current.minVolume;
+  const bandEnd = next ? next.minVolume : current.minVolume;
+  const progressPercent = next
+    ? Math.min(100, Math.max(0, ((totalVolume - bandStart) / (bandEnd - bandStart)) * 100))
+    : 100;
+
+  return {
+    enabled: base.settings.enabled,
+    // ── First-deposit referral bonus (campaign config for the dashboard card) ──
+    firstDepositBonus: {
+      enabled: base.settings.enabled,
+      amount: base.settings.bonusAmount,
+      minDeposit: base.settings.minDeposit,
+      currency: base.settings.bonusCurrency || 'USD',
+    },
+    // ── Level + progression (volume-driven) ──
+    partnerLevel: current.name,
+    revenueSharePercent: current.percent,
+    totalReferralVolume: Math.round(totalVolume),
+    monthlyVolume: Math.round(monthlyVolume),
+    nextLevel: next ? { name: next.name, percent: next.percent, minVolume: next.minVolume } : null,
+    nextLevelVolume: next ? next.minVolume : null,
+    volumeToNextLevel: next ? Math.max(0, Math.round(next.minVolume - totalVolume)) : 0,
+    progressPercent: Number(progressPercent.toFixed(2)),
+    tiers: volumeTiers,
+    // ── Headline stats ──
+    activeTraders,
+    totalReferrals: base.stats.totalReferrals,
+    // ── Commission overview (reused, unchanged engine) ──
+    totalCommissionEarned: base.stats.lifetimeEarnings,
+    revenueShareEarned: base.stats.totalRevenueShare,
+    totalBonus: base.stats.totalBonus,
+    pendingCommission: base.stats.pendingCommission,
+    paidCommission: base.stats.paidCommission,
+    monthlyCommission: base.stats.monthlyEarnings,
+    todayCommission: base.stats.todayEarnings,
+    availableBalance: base.stats.availableBalance,
+    walletCurrency: base.stats.walletCurrency,
+    // ── Referral identity ──
+    referralCode: base.user.referralCode,
+    // ── Detail collections ──
+    referralPerformance,
+    monthlySeries,
+  };
+};
 
 // ─── Referral / referee list ────────────────────────────────────────
 const getReferrals = async (userId, { limit = 100 } = {}) => {
@@ -508,6 +787,9 @@ module.exports = {
   handleFirstQualifyingDeposit,
   distributeRevenueShare,
   getDashboardData,
+  getVolumeDashboard,
+  getVolumeTiers,
   getReferrals,
   getCommissionHistory,
+  VOLUME_TIERS,
 };

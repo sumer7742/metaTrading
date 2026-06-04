@@ -5,6 +5,7 @@ import ProtectedRoute from './components/ProtectedRoute';
 import Layout from './components/Layout';
 import ComingSoon from './components/ComingSoon';
 import ErrorBoundary from './components/ErrorBoundary';
+import WatchlistModalProvider from './components/WatchlistModalProvider';
 
 // Auth pages are eager-loaded — they're the first thing a logged-out
 // user sees, and they're small.
@@ -68,6 +69,7 @@ export default function App() {
 
   return (
     <ErrorBoundary>
+      <WatchlistModalProvider>
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
@@ -119,6 +121,7 @@ export default function App() {
 
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
+      </WatchlistModalProvider>
     </ErrorBoundary>
   );
 }

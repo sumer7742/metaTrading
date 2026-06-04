@@ -21,6 +21,14 @@ router.get('/dashboard', asyncHandler(async (req, res) => {
   sendSuccess(res, data);
 }));
 
+// Volume-based partner dashboard — level + revenue-share progression driven
+// by total referral TRADING VOLUME (read-only; reuses the same commission
+// numbers as /dashboard). Powers the redesigned partner UI.
+router.get('/volume-dashboard', asyncHandler(async (req, res) => {
+  const data = await partnerService.getVolumeDashboard(req.userId);
+  sendSuccess(res, data);
+}));
+
 router.get('/referrals', asyncHandler(async (req, res) => {
   const data = await partnerService.getReferrals(req.userId, { limit: Number(req.query.limit) || 100 });
   sendSuccess(res, data);

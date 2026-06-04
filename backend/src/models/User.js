@@ -48,6 +48,17 @@ const userSchema = new mongoose.Schema(
     managerId:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
     assignedAt: { type: Date, default: null },
 
+    // ─── Auto-provisioning / staff lifecycle (additive) ─────────────────
+    // When the scalable auto-assignment engine runs out of capacity it spawns
+    // ADMIN / MANAGER accounts on the fly. Those are flagged `autoCreated` and
+    // start with `loginEnabled: false` — they hold users but CANNOT sign in
+    // until a SuperAdmin "claims" them (sets real credentials + enables login).
+    // `loginEnabled` defaults true so every existing/real account is unaffected.
+    autoCreated:  { type: Boolean, default: false, index: true },
+    loginEnabled: { type: Boolean, default: true },
+    claimedAt:    { type: Date, default: null },
+    claimedBy:    { type: String, default: null }, // SuperAdmin email/id who claimed it
+
     // 2FA
     twoFactorEnabled: { type: Boolean, default: false },
     twoFactorSecret: { type: String, default: null },

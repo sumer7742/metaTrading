@@ -13,8 +13,10 @@ const mongoose = require('mongoose');
 const User = require('../models/User');
 const AssignmentLog = require('../models/AssignmentLog');
 const { ROLES } = require('../config/constants');
-const { ROLE_REGISTRY } = require('../config/hierarchy');
+const { ROLE_REGISTRY, AUTO } = require('../config/hierarchy');
 const { AppError } = require('../utils/errors');
+
+const STAFF_ROLES = [ROLES.ADMIN, ROLES.MANAGER];
 
 const DEMO_TYPES = ['DEMO', 'VIRTUAL'];
 const STAFF_SELECT = '-passwordHash -twoFactorSecret -refreshTokens -twoFactorBackupCodes';
@@ -22,11 +24,13 @@ const STAFF_SELECT = '-passwordHash -twoFactorSecret -refreshTokens -twoFactorBa
 // ─── helpers ─────────────────────────────────────────────────────────
 const oid = (id) => mongoose.Types.ObjectId.createFromHexString(String(id));
 
-function buildUserFilter({ search, status, role } = {}) {
+function buildUserFilter({ search, status, role, autoCreated } = {}) {
   const f = {};
   if (role) f.role = role;
   if (status === 'active') f.isActive = true;
   else if (status === 'inactive') f.isActive = false;
+  if (autoCreated === true || autoCreated === 'true') f.autoCreated = true;
+  else if (autoCreated === false || autoCreated === 'false') f.autoCreated = false;
   if (search) {
     const rx = new RegExp(String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
     f.$or = [{ email: rx }, { firstName: rx }, { lastName: rx }, { phone: rx }];
@@ -113,6 +117,9 @@ async function createRole(roleKey, payload = {}, actor) {
       role: roleKey,
       isEmailVerified: true,
       referralCode: uuidv4().slice(0, 8).toUpperCase(),
+      // Auto-provisioned staff start locked out of login until claimed.
+      autoCreated: !!payload.autoCreated,
+      loginEnabled: payload.loginEnabled !== undefined ? !!payload.loginEnabled : true,
       ...(cfg.parentField ? { [cfg.parentField]: parentId } : {}),
     });
     user._generatedPassword = payload.password ? undefined : password; // surfaced once to the creator
@@ -385,10 +392,309 @@ async function tree(scope = {}) {
   };
 }
 
+// ─── system audit (staff lifecycle → platform AuditLog) ──────────────
+// Movement events (assign/reassign/transfer) already write the user-centric
+// AssignmentLog; this records staff lifecycle events (auto-create, credential
+// change, login toggle, claim, manager transfer) to the platform AuditLog so
+// there's one complete history. Best-effort — never blocks the action.
+async function systemAudit(action, targetId, metadata = {}, ctx = {}) {
+  try {
+    const { AuditLog } = require('../models');
+    if (!AuditLog) return;
+    await AuditLog.create({
+      actorId:   ctx.actor?._id || targetId, // SYSTEM events fall back to the target
+      actorRole: ctx.actor?.role || 'SYSTEM',
+      action,
+      targetType: 'USER',
+      targetId:  String(targetId),
+      metadata,
+      ip: ctx.ip,
+    });
+  } catch (_) { /* non-fatal */ }
+}
+
+// ─── capacity helpers ────────────────────────────────────────────────
+const managerCap = () => AUTO.maxUsersPerManager;
+const adminMgrCap = () => ROLE_REGISTRY[ROLES.MANAGER].cap;   // managers per admin (10)
+const adminCap   = () => ROLE_REGISTRY[ROLES.ADMIN].cap;      // admins platform-wide (4)
+
+/** Count USERs currently held by a manager. */
+function managerUserCount(managerId) {
+  return User.countDocuments({ role: ROLES.USER, managerId: oid(managerId) });
+}
+
+/** Least-loaded ACTIVE manager that still has room (< maxUsersPerManager). */
+async function pickManagerWithCapacity({ adminId } = {}) {
+  const f = { role: ROLES.MANAGER, isActive: true };
+  if (adminId) f.adminId = oid(adminId);
+  const managers = await User.find(f).select('_id adminId').lean();
+  if (!managers.length) return null;
+  const ids = managers.map((m) => m._id);
+  const counts = await User.aggregate([
+    { $match: { role: ROLES.USER, managerId: { $in: ids } } },
+    { $group: { _id: '$managerId', n: { $sum: 1 } } },
+  ]);
+  const countBy = new Map(counts.map((c) => [String(c._id), c.n]));
+  const cap = managerCap();
+  let best = null; let bestN = Infinity;
+  for (const m of managers) {
+    const n = countBy.get(String(m._id)) || 0;
+    if (n < cap && n < bestN) { best = m; bestN = n; }
+  }
+  return best ? { manager: best, count: bestN } : null;
+}
+
+/** An ACTIVE admin that can still take another manager (< managers-per-admin cap). */
+async function pickAdminWithManagerSlot() {
+  const admins = await User.find({ role: ROLES.ADMIN, isActive: true }).select('_id').lean();
+  if (!admins.length) return null;
+  const ids = admins.map((a) => a._id);
+  const counts = await User.aggregate([
+    { $match: { role: ROLES.MANAGER, adminId: { $in: ids } } },
+    { $group: { _id: '$adminId', n: { $sum: 1 } } },
+  ]);
+  const countBy = new Map(counts.map((c) => [String(c._id), c.n]));
+  const cap = adminMgrCap();
+  let best = null; let bestN = Infinity;
+  for (const a of admins) {
+    const n = countBy.get(String(a._id)) || 0;
+    if (n < cap && n < bestN) { best = a; bestN = n; }
+  }
+  return best || null;
+}
+
+// ─── auto-provisioning (the scalable core) ───────────────────────────
+const SUPER_ACTOR = { role: ROLES.SUPER_ADMIN }; // synthetic actor so createRole honors parentId
+
+async function createAutoManager(adminId, ctx = {}) {
+  const manager = await createRole(ROLES.MANAGER, {
+    parentId: adminId,
+    email: `auto.manager.${uuidv4().slice(0, 8)}@system.local`,
+    firstName: 'Auto', lastName: 'Manager',
+    autoCreated: true, loginEnabled: false,
+  }, SUPER_ACTOR);
+  await systemAudit('MANAGER_AUTO_CREATED', manager._id, { adminId: String(adminId) }, ctx);
+  return manager;
+}
+
+async function createAutoAdmin(ctx = {}) {
+  const admin = await createRole(ROLES.ADMIN, {
+    email: `auto.admin.${uuidv4().slice(0, 8)}@system.local`,
+    firstName: 'Auto', lastName: 'Admin',
+    autoCreated: true, loginEnabled: false,
+  }, SUPER_ACTOR);
+  await systemAudit('ADMIN_AUTO_CREATED', admin._id, {}, ctx);
+  return admin;
+}
+
+/**
+ * Place a freshly-registered USER into the hierarchy, auto-scaling as needed:
+ *   1. assign to the least-loaded manager that has room;
+ *   2. else create a manager under an admin that has a free manager slot;
+ *   3. else (all managers full, every admin at the manager cap) create a new
+ *      admin (within the admin cap) + its first manager, then assign.
+ * If the whole platform is at its configured ceiling the user is left
+ * Unassigned (a SuperAdmin can raise caps / place them manually). Best-effort:
+ * never throws into the registration flow.
+ */
+async function autoAssignNewUser(user, ctx = {}) {
+  try {
+    if (!user || user.role !== ROLES.USER) return null;
+    if (user.managerId || user.adminId) return user; // already placed
+
+    // 1 — existing manager with room.
+    const pick = await pickManagerWithCapacity();
+    if (pick) return assignUserToManager(user._id, pick.manager._id, { ...ctx, reason: 'auto-assignment' });
+
+    // 2 — an admin that can take a new manager.
+    let admin = await pickAdminWithManagerSlot();
+
+    // 3 — no admin has a free manager slot → create a new admin (within cap).
+    if (!admin) {
+      const adminCount = await User.countDocuments({ role: ROLES.ADMIN });
+      if (adminCount < adminCap()) admin = await createAutoAdmin(ctx);
+    }
+
+    if (admin) {
+      const manager = await createAutoManager(admin._id, ctx);
+      return assignUserToManager(user._id, manager._id, { ...ctx, reason: 'auto-assignment (auto-created manager)' });
+    }
+
+    // 4 — platform at capacity. Leave unassigned; surfaced for ops.
+    console.warn(`[hierarchy] auto-assign: platform at capacity — user ${user._id} left unassigned`);
+    return null;
+  } catch (e) {
+    console.error('[hierarchy] autoAssignNewUser failed:', e.message);
+    return null;
+  }
+}
+
+// ─── capacity-validated transfers (SuperAdmin) ───────────────────────
+async function assertManagerCapacity(managerId, incoming = 1) {
+  const cap = managerCap();
+  const current = await managerUserCount(managerId);
+  if (current + incoming > cap) {
+    throw new AppError(`Manager is at capacity (${current}/${cap}); cannot accept ${incoming} more user(s).`, 409, 'MANAGER_FULL');
+  }
+}
+
+/** Transfer a single user to another manager (capacity-checked) or admin pool. */
+async function transferUser(userId, { adminId, managerId } = {}, ctx = {}) {
+  if (managerId) {
+    const already = await User.exists({ _id: oid(userId), managerId: oid(managerId) });
+    if (!already) await assertManagerCapacity(managerId, 1);
+    return assignUserToManager(userId, managerId, { ...ctx, reason: ctx.reason || 'SuperAdmin transfer' });
+  }
+  if (adminId) return assignUserToAdmin(userId, adminId, { ...ctx, reason: ctx.reason || 'SuperAdmin transfer' });
+  throw new AppError('adminId or managerId required', 400);
+}
+
+/** Move many users to a manager (whole-batch capacity check) or an admin pool. */
+async function bulkTransfer(userIds = [], { adminId, managerId } = {}, ctx = {}) {
+  if (!Array.isArray(userIds) || !userIds.length) throw new AppError('userIds[] required', 400);
+  if (managerId) {
+    const ids = userIds.map(oid);
+    const already = await User.countDocuments({ role: ROLES.USER, managerId: oid(managerId), _id: { $in: ids } });
+    await assertManagerCapacity(managerId, Math.max(0, userIds.length - already));
+    const results = [];
+    for (const id of userIds) {
+      try { await assignUserToManager(id, managerId, { ...ctx, reason: ctx.reason || 'SuperAdmin bulk transfer' }); results.push({ userId: id, ok: true }); }
+      catch (e) { results.push({ userId: id, ok: false, error: e.message }); }
+    }
+    return { results, ok: results.filter((r) => r.ok).length, failed: results.filter((r) => !r.ok).length };
+  }
+  if (adminId) return bulkAssign(userIds, { adminId }, ctx); // admin pool — no per-manager cap
+  throw new AppError('adminId or managerId required', 400);
+}
+
+/**
+ * Move an ENTIRE manager (and all the users under them) to another admin.
+ * Updates manager.adminId + every child user's adminId in one consistent
+ * operation. Validates the target admin still has a manager slot.
+ */
+async function transferManager(managerId, targetAdminId, ctx = {}) {
+  const manager = await User.findById(managerId);
+  if (!manager || manager.role !== ROLES.MANAGER) throw new AppError('Manager not found', 404);
+  const target = await User.findById(targetAdminId).select('_id role').lean();
+  if (!target || target.role !== ROLES.ADMIN) throw new AppError('Target is not an admin', 400, 'BAD_ADMIN');
+  if (String(manager.adminId) === String(target._id)) return { managerId, movedUsers: 0, note: 'already under target admin' };
+
+  const targetMgrCount = await User.countDocuments({ role: ROLES.MANAGER, adminId: target._id });
+  if (targetMgrCount >= adminMgrCap()) {
+    throw new AppError(`Target admin already has the maximum ${adminMgrCap()} managers.`, 409, 'ADMIN_MANAGER_CAP');
+  }
+
+  const fromAdminId = manager.adminId || null;
+  manager.adminId = target._id;
+  await manager.save();
+  // Keep every child user's ownership consistent (manager moves → users move).
+  const res = await User.updateMany({ role: ROLES.USER, managerId: manager._id }, { $set: { adminId: target._id } });
+  const movedUsers = res.modifiedCount ?? res.nModified ?? 0;
+
+  await AssignmentLog.create({
+    userId: manager._id, action: 'MANAGER_TRANSFER',
+    fromAdminId, toAdminId: target._id, fromManagerId: null, toManagerId: null,
+    reason: ctx.reason || 'Manager transferred to another admin',
+    actorId: ctx.actor?._id, actorRole: ctx.actor?.role, ip: ctx.ip,
+  });
+  await systemAudit('MANAGER_TRANSFERRED', manager._id, { fromAdminId: String(fromAdminId || ''), toAdminId: String(target._id), movedUsers }, ctx);
+  return { managerId, fromAdminId, toAdminId: target._id, movedUsers };
+}
+
+// ─── staff account control (SuperAdmin) ──────────────────────────────
+async function getStaffOrThrow(id) {
+  const u = await User.findById(id);
+  if (!u || !STAFF_ROLES.includes(u.role)) throw new AppError('Staff account not found', 404, 'NOT_STAFF');
+  return u;
+}
+
+async function renameStaff(id, { firstName, lastName } = {}, ctx = {}) {
+  const u = await getStaffOrThrow(id);
+  if (firstName !== undefined) u.firstName = String(firstName);
+  if (lastName !== undefined) u.lastName = String(lastName);
+  await u.save();
+  await systemAudit('STAFF_RENAMED', u._id, { firstName: u.firstName, lastName: u.lastName }, ctx);
+  return u;
+}
+
+async function changeStaffEmail(id, email, ctx = {}) {
+  const u = await getStaffOrThrow(id);
+  const e = String(email || '').toLowerCase().trim();
+  if (!e) throw new AppError('email required', 400);
+  const taken = await User.findOne({ email: e, _id: { $ne: u._id } }).select('_id').lean();
+  if (taken) throw new AppError('Email already in use', 409, 'EMAIL_TAKEN');
+  const from = u.email;
+  u.email = e;
+  await u.save();
+  await systemAudit('STAFF_EMAIL_CHANGED', u._id, { from, to: e }, ctx);
+  return u;
+}
+
+async function resetStaffPassword(id, newPassword, ctx = {}) {
+  const u = await getStaffOrThrow(id);
+  const pwd = newPassword || uuidv4().slice(0, 12);
+  u.passwordHash = await bcrypt.hash(pwd, 12);
+  u.refreshTokens = []; // revoke all sessions
+  await u.save();
+  await systemAudit('STAFF_PASSWORD_RESET', u._id, {}, ctx);
+  return { user: u, generatedPassword: newPassword ? undefined : pwd };
+}
+
+async function setLoginEnabled(id, enabled, ctx = {}) {
+  const u = await getStaffOrThrow(id);
+  u.loginEnabled = !!enabled;
+  if (!enabled) u.refreshTokens = []; // disabling kills active sessions
+  await u.save();
+  await systemAudit(enabled ? 'STAFF_LOGIN_ENABLED' : 'STAFF_LOGIN_DISABLED', u._id, {}, ctx);
+  return u;
+}
+
+/**
+ * Convert an auto-created account into a real operational one: optionally set
+ * a real email/name/password, enable login, and stamp who claimed it & when.
+ */
+async function claimAutoCreated(id, { email, password, firstName, lastName, loginEnabled = true } = {}, ctx = {}) {
+  const u = await getStaffOrThrow(id);
+  if (!u.autoCreated) throw new AppError('Account is already a claimed/real account', 400, 'NOT_AUTO');
+  if (email) {
+    const e = String(email).toLowerCase().trim();
+    const taken = await User.findOne({ email: e, _id: { $ne: u._id } }).select('_id').lean();
+    if (taken) throw new AppError('Email already in use', 409, 'EMAIL_TAKEN');
+    u.email = e;
+  }
+  if (firstName !== undefined) u.firstName = String(firstName);
+  if (lastName !== undefined) u.lastName = String(lastName);
+  let generatedPassword;
+  if (password) { u.passwordHash = await bcrypt.hash(password, 12); }
+  else { generatedPassword = uuidv4().slice(0, 12); u.passwordHash = await bcrypt.hash(generatedPassword, 12); }
+  u.autoCreated = false;
+  u.loginEnabled = loginEnabled !== false;
+  u.claimedAt = new Date();
+  u.claimedBy = String(ctx.actor?.email || ctx.actor?._id || 'SUPER_ADMIN');
+  u.refreshTokens = [];
+  await u.save();
+  await systemAudit('STAFF_CLAIMED', u._id, { email: u.email, loginEnabled: u.loginEnabled }, ctx);
+  return { user: u, generatedPassword };
+}
+
+/** List auto-created staff (admins + managers) for the SuperAdmin console. */
+function listAutoCreated(opts = {}) {
+  const f = {
+    ...buildUserFilter({ ...opts, autoCreated: true }),
+    role: opts.role && STAFF_ROLES.includes(opts.role) ? opts.role : { $in: STAFF_ROLES },
+  };
+  return paginate(f, opts);
+}
+
 module.exports = {
   createRole,
   assignUserToAdmin, assignUserToManager, reassign, unassign, bulkAssign,
   deactivateManager, deactivateAdmin,
   listAdmins, listManagers, listUnassigned, listUsersForAdmin, listUsersForManager,
   workload, tree,
+  // auto-scaling + transfers + staff account control
+  autoAssignNewUser, createAutoManager, createAutoAdmin,
+  transferUser, bulkTransfer, transferManager,
+  renameStaff, changeStaffEmail, resetStaffPassword, setLoginEnabled, claimAutoCreated,
+  listAutoCreated,
 };

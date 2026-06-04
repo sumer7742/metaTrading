@@ -5,6 +5,7 @@ import { wsClient } from '../services/ws';
 import { useTradeSettings } from '../store/tradeSettings';
 import { useThemeStore } from '../store/theme';
 import AssetIcon from './AssetIcon';
+import WatchlistButton from './WatchlistButton';
 
 export default function OrderForm({
   instrument,
@@ -699,13 +700,20 @@ export default function OrderForm({
       className="op-shell relative max-h-full overflow-x-hidden overflow-y-auto rounded-md p-3"
       style={{ background: C.pageBg, border: `1px solid ${C.border}` }}
     >
-      {/* ── Top header: icon + symbol + close ───────────────────── */}
+      {/* ── Top header: icon + symbol + watchlist + close ───────────
+          The bookmark sits right next to the symbol, directly above the
+          Sell/Buy cards — i.e. the [Symbol] [Bookmark] [Buy] [Sell] layout.
+          Opens the shared "Add to Watchlist" modal for the active instrument
+          and shows a filled/active state when it's already saved. */}
       <div className="flex items-center justify-between gap-3 mb-3">
         <div className="flex items-center gap-2.5 min-w-0">
           <AssetIcon row={instrument} size={24} round />
           <div className="text-[16px] font-bold tracking-tight truncate" style={{ color: C.text }}>
             {instrument?.baseCurrency || instrument?.symbol}
           </div>
+          {instrument?.symbol && (
+            <WatchlistButton symbol={instrument.symbol} row={instrument} variant="ghost" size={18} persistent className="shrink-0" />
+          )}
         </div>
         {onClose && (
           <button

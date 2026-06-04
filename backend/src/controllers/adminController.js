@@ -919,6 +919,9 @@ const updateSystemSettings = asyncHandler(async (req, res) => {
     if (partner.minDeposit !== undefined && !(Number.isFinite(Number(partner.minDeposit)) && Number(partner.minDeposit) >= 0)) {
       throw new AppError('partner.minDeposit must be a non-negative number', 400);
     }
+    if (partner.bonusCurrency !== undefined && (typeof partner.bonusCurrency !== 'string' || !partner.bonusCurrency.trim())) {
+      throw new AppError('partner.bonusCurrency must be a non-empty string', 400);
+    }
     if (partner.tiers !== undefined) {
       if (!Array.isArray(partner.tiers) || partner.tiers.length === 0) {
         throw new AppError('partner.tiers must be a non-empty array', 400);
@@ -936,6 +939,22 @@ const updateSystemSettings = asyncHandler(async (req, res) => {
         }
       }
     }
+    if (partner.volumeTiers !== undefined) {
+      if (!Array.isArray(partner.volumeTiers) || partner.volumeTiers.length === 0) {
+        throw new AppError('partner.volumeTiers must be a non-empty array', 400);
+      }
+      const sorted = [...partner.volumeTiers].sort((a, b) => Number(a.minVolume) - Number(b.minVolume));
+      for (let i = 0; i < sorted.length; i++) {
+        const t = sorted[i];
+        if (!t.name || typeof t.name !== 'string') throw new AppError(`partner.volumeTiers[${i}].name is required`, 400);
+        if (!Number.isFinite(Number(t.minVolume)) || Number(t.minVolume) < 0) throw new AppError(`partner.volumeTiers[${i}].minVolume must be ≥ 0`, 400);
+        const pct = Number(t.percent);
+        if (!Number.isFinite(pct) || pct < 0 || pct > 100) throw new AppError(`partner.volumeTiers[${i}].percent must be 0–100`, 400);
+        if (i > 0 && Number(t.minVolume) <= Number(sorted[i - 1].minVolume)) {
+          throw new AppError('partner.volumeTiers thresholds must be strictly increasing', 400);
+        }
+      }
+    }
   }
 
   if (routingMode !== undefined) await systemSettings.setSetting('routingMode', routingMode, req.userId);
@@ -944,6 +963,7 @@ const updateSystemSettings = asyncHandler(async (req, res) => {
     if (partner.enabled     !== undefined) await systemSettings.setSetting('partner.enabled',     !!partner.enabled, req.userId);
     if (partner.bonusAmount !== undefined) await systemSettings.setSetting('partner.bonusAmount', String(partner.bonusAmount), req.userId);
     if (partner.minDeposit  !== undefined) await systemSettings.setSetting('partner.minDeposit',  String(partner.minDeposit),  req.userId);
+    if (partner.bonusCurrency !== undefined) await systemSettings.setSetting('partner.bonusCurrency', String(partner.bonusCurrency).trim().toUpperCase(), req.userId);
     if (partner.tiers       !== undefined) {
       const normalized = [...partner.tiers]
         .map((t) => ({
@@ -954,6 +974,16 @@ const updateSystemSettings = asyncHandler(async (req, res) => {
         }))
         .sort((a, b) => a.minActive - b.minActive);
       await systemSettings.setSetting('partner.tiers', normalized, req.userId);
+    }
+    if (partner.volumeTiers !== undefined) {
+      const normalizedVol = [...partner.volumeTiers]
+        .map((t) => ({
+          name:      String(t.name).toUpperCase(),
+          minVolume: Number(t.minVolume),
+          percent:   String(t.percent),
+        }))
+        .sort((a, b) => a.minVolume - b.minVolume);
+      await systemSettings.setSetting('partner.volumeTiers', normalizedVol, req.userId);
     }
   }
   if (userTransfer && typeof userTransfer === 'object') {

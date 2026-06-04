@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { useAuthStore, errorMessage } from '../store/auth';
+import { redirectAfterLogin } from '../config/roles';
 
 export default function Login() {
   const [email, setEmail] = useState('');
@@ -14,15 +15,17 @@ export default function Login() {
   const { login } = useAuthStore();
   const navigate = useNavigate();
   const location = useLocation();
-  const from = location.state?.from?.pathname || '/dashboard';
+  // Where the user was originally headed (deep link), if any. The final
+  // destination is resolved by role so MANAGERs never land on /dashboard.
+  const from = location.state?.from?.pathname;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
-      await login(email, password, twoFactorCode || undefined);
-      toast.success('Welcome, admin');
-      navigate(from, { replace: true });
+      const user = await login(email, password, twoFactorCode || undefined);
+      toast.success('Welcome back');
+      navigate(redirectAfterLogin(user.role, from), { replace: true });
     } catch (err) {
       const code = err.response?.data?.error?.code;
       if (code === '2FA_REQUIRED') {

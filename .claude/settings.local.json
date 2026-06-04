@@ -31,7 +31,26 @@
       "Bash(node -e \"require\\('./src/controllers/hierarchyController'\\); require\\('./src/services/hierarchyService'\\); require\\('./src/routes/hierarchy'\\); console.log\\('backend hierarchy modules load OK'\\);\")",
       "Bash(node -e \"console.log\\('version:', require\\('lightweight-charts/package.json'\\).version\\)\")",
       "Bash(node -e \"require\\('./src/models/User'\\); require\\('./src/models/Counter'\\); require\\('./src/utils/userUid'\\); require\\('./src/controllers/adminController'\\); require\\('./src/services/userTransferService'\\); require\\('./src/services/chatService'\\); console.log\\('backend modules load OK'\\);\")",
-      "Bash(node src/utils/backfillUserUid.js)"
+      "Bash(node src/utils/backfillUserUid.js)",
+      "Bash(Get-ChildItem \"c:\\\\Users\\\\rijju\\\\OneDrive\\\\Desktop\\\\trading-platform  last and\" -Force)",
+      "Bash(Select-Object Name, FullName)",
+      "Bash(ls -la \"c:\\\\Users\\\\rijju\\\\OneDrive\\\\Desktop\\\\trading-platform  last and\\\\client\\\\src\" 2>/dev/null | head -20)",
+      "Read(//c/Users/rijju/OneDrive/Desktop/trading-platform last and/client/**)",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\(p.scripts,null,2\\)\\)\")",
+      "Bash(npm run *)",
+      "Bash(node --check src/models/Watchlist.js)",
+      "Bash(node --check src/controllers/watchlistController.js)",
+      "Bash(ls .eslintrc* eslint.config.*)",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\('lint script:', p.scripts.lint || 'none'\\); console.log\\('eslint dep:', \\(p.devDependencies&&p.devDependencies.eslint\\)||'none'\\)\")",
+      "Bash(node -e \"const p=require\\('./package.json'\\); const d={...p.dependencies,...p.devDependencies}; console.log\\('framer-motion:', d['framer-motion']||'NOT INSTALLED'\\); console.log\\('react:', d['react']\\);\")",
+      "Bash(Get-ChildItem -Path . -Directory)",
+      "Bash(npm install *)",
+      "Bash(node --check src/services/partnerService.js)",
+      "Bash(node --check src/routes/partner.js)",
+      "Bash(node -e \"console.log\\(JSON.stringify\\(require\\('./package.json'\\).scripts\\)\\)\")",
+      "Bash(node --check src/controllers/adminController.js)",
+      "Bash(node --check src/models/Compliance.js)",
+      "Bash(node --check src/services/systemSettings.service.js)"
     ]
   }
 }

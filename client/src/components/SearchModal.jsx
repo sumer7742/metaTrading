@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useInstruments } from '../hooks/useInstruments';
 import AssetIcon from './AssetIcon';
+import WatchlistButton from './WatchlistButton';
 
 /**
  * SearchModal — Groww-style search sheet. Opens from the header search bar
@@ -19,13 +20,6 @@ const CATEGORIES = [
   { key: 'INDEX',     label: 'Indices' },
   { key: 'STOCK',     label: 'Stocks' },
 ];
-
-const TrendIcon = (props) => (
-  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
-    <path d="M3 17l6-6 4 4 8-8" />
-    <path d="M14 7h7v7" />
-  </svg>
-);
 
 const SearchIcon = (props) => (
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -186,25 +180,30 @@ export default function SearchModal({ open, onClose }) {
           <ul className="pb-3">
             {list.map((r) => (
               <li key={r.symbol}>
-                <button
-                  type="button"
-                  onClick={() => handlePick(r.symbol)}
-                  className="w-full flex items-center gap-3 px-5 py-3 hover:bg-bg-hover transition-colors text-left"
-                >
-                  <AssetIcon row={r} size={28} round />
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm text-text-primary truncate">
-                      {r.name || r.symbol}
+                {/* `group` enables the bookmark's desktop hover-reveal; on
+                    mobile (and when saved) it stays visible. The bookmark is a
+                    focusable <span role="button"> so nesting it inside this row
+                    <button> stays valid, and it stops click propagation so
+                    tapping it opens the watchlist modal instead of navigating. */}
+                <div className="group flex items-center gap-3 px-5 py-3 hover:bg-bg-hover transition-colors">
+                  <button
+                    type="button"
+                    onClick={() => handlePick(r.symbol)}
+                    className="flex items-center gap-3 min-w-0 flex-1 text-left"
+                  >
+                    <AssetIcon row={r} size={28} round />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm text-text-primary truncate">
+                        {r.name || r.symbol}
+                      </span>
+                      <span className="block text-[11px] text-text-muted truncate">
+                        {r.symbol}
+                        {r.category ? ` · ${formatCategory(r.category)}` : ''}
+                      </span>
                     </span>
-                    <span className="block text-[11px] text-text-muted truncate">
-                      {r.symbol}
-                      {r.category ? ` · ${formatCategory(r.category)}` : ''}
-                    </span>
-                  </span>
-                  <span className="text-text-muted shrink-0">
-                    <TrendIcon />
-                  </span>
-                </button>
+                  </button>
+                  <WatchlistButton symbol={r.symbol} row={r} variant="ghost" size={18} className="shrink-0" />
+                </div>
               </li>
             ))}
           </ul>

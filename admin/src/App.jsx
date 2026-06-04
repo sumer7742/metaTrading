@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from './store/auth';
+import { accessForPath, canAccess, roleHome } from './config/roles';
 import ProtectedRoute from './components/ProtectedRoute';
 import Layout from './components/Layout';
 import Login from './pages/Login';
@@ -27,22 +28,37 @@ import ManagerDashboard from './pages/ManagerDashboard';
 import HierarchyTree from './pages/HierarchyTree';
 import ManagerChats from './pages/ManagerChats';
 
+// Centralized, path-driven role gate. Looks up the current route's allow-list
+// from the single source of truth (config/roles) and bounces a disallowed
+// role to ITS OWN home — never an error screen. This is what keeps a MANAGER
+// off /dashboard (→ /my-users) and admins off super-admin-only pages.
+function RoleGate({ children }) {
+  const { user } = useAuthStore();
+  const { pathname } = useLocation();
+  if (!user) return null; // ProtectedRoute handles the unauthenticated case
+  if (!canAccess(user.role, accessForPath(pathname))) {
+    return <Navigate to={roleHome(user.role)} replace />;
+  }
+  return children;
+}
+
+// Auth + chrome + role gate, applied uniformly to every protected route.
 const wrap = (el) => (
   <ProtectedRoute>
-    <Layout>{el}</Layout>
+    <Layout>
+      <RoleGate>{el}</RoleGate>
+    </Layout>
   </ProtectedRoute>
 );
 
-// Role-gated route — redirects to the role's home if the current user
-// isn't allowed. SUPER_ADMIN always passes.
-function RoleRoute({ roles, children }) {
-  const { user } = useAuthStore();
-  if (!user) return null; // ProtectedRoute handles the unauthenticated case
-  const allowed = user.role === 'SUPER_ADMIN' || roles.includes(user.role);
-  if (!allowed) return <Navigate to={user.role === 'MANAGER' ? '/my-users' : '/dashboard'} replace />;
-  return children;
+// Sends a signed-in user to their role home, and a signed-out user to login.
+// Used for "/" and any unknown path so nobody ever lands on a page they
+// can't use.
+function HomeRedirect() {
+  const { user, loading } = useAuthStore();
+  if (loading) return null;
+  return <Navigate to={user ? roleHome(user.role) : '/login'} replace />;
 }
-const wrapRole = (el, roles) => wrap(<RoleRoute roles={roles}>{el}</RoleRoute>);
 
 export default function App() {
   const { init } = useAuthStore();
@@ -51,7 +67,10 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
-      <Route path="/" element={wrap(<Navigate to="/dashboard" replace />)} />
+      <Route path="/" element={<ProtectedRoute><HomeRedirect /></ProtectedRoute>} />
+
+      {/* Operations / money / insights / infra — gated to admins by default
+          via ROUTE_ACCESS's DEFAULT_ROUTE_ROLES (managers are bounced home). */}
       <Route path="/dashboard" element={wrap(<Dashboard />)} />
       <Route path="/users" element={wrap(<Users />)} />
       <Route path="/instruments" element={wrap(<Instruments />)} />
@@ -66,16 +85,19 @@ export default function App() {
       <Route path="/bonus-wallets" element={wrap(<BonusWallets />)} />
       <Route path="/user-transfers" element={wrap(<UserTransfers />)} />
       <Route path="/partners" element={wrap(<Partners />)} />
-      {/* ── Hierarchy management (role-gated) ──────────────────────── */}
-      <Route path="/admins" element={wrapRole(<Admins />, ['SUPER_ADMIN'])} />
-      <Route path="/managers" element={wrapRole(<Managers />, ['SUPER_ADMIN', 'ADMIN'])} />
-      <Route path="/assignments" element={wrapRole(<Assignments />, ['SUPER_ADMIN', 'ADMIN'])} />
-      <Route path="/hierarchy-tree" element={wrapRole(<HierarchyTree />, ['SUPER_ADMIN'])} />
-      <Route path="/my-users" element={wrapRole(<ManagerDashboard />, ['SUPER_ADMIN', 'ADMIN', 'MANAGER'])} />
-      <Route path="/support-chats" element={wrapRole(<ManagerChats />, ['SUPER_ADMIN', 'ADMIN', 'MANAGER'])} />
+
+      {/* Hierarchy / manager scope — role-gated by ROUTE_ACCESS. */}
+      <Route path="/admins" element={wrap(<Admins />)} />
+      <Route path="/managers" element={wrap(<Managers />)} />
+      <Route path="/assignments" element={wrap(<Assignments />)} />
+      <Route path="/hierarchy-tree" element={wrap(<HierarchyTree />)} />
+      <Route path="/my-users" element={wrap(<ManagerDashboard />)} />
+      <Route path="/support-chats" element={wrap(<ManagerChats />)} />
+
       <Route path="/settings" element={wrap(<Settings />)} />
       <Route path="/security" element={wrap(<Security />)} />
-      <Route path="*" element={<Navigate to="/dashboard" replace />} />
+
+      <Route path="*" element={<HomeRedirect />} />
     </Routes>
   );
 }

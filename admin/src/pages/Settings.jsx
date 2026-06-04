@@ -356,18 +356,19 @@ function PartnerSettingsCard({ settings, save, saving }) {
     enabled:     settings['partner.enabled'] !== false,
     bonusAmount: String(settings['partner.bonusAmount'] ?? '10'),
     minDeposit:  String(settings['partner.minDeposit']  ?? '50'),
-    tiers:       Array.isArray(settings['partner.tiers']) && settings['partner.tiers'].length
-      ? settings['partner.tiers'].map((t) => ({
+    bonusCurrency: String(settings['partner.bonusCurrency'] ?? 'USD').toUpperCase(),
+    volumeTiers: Array.isArray(settings['partner.volumeTiers']) && settings['partner.volumeTiers'].length
+      ? settings['partner.volumeTiers'].map((t) => ({
           name:      String(t.name),
-          minActive: Number(t.minActive),
-          maxActive: Number(t.maxActive),
+          minVolume: Number(t.minVolume),
           percent:   String(t.percent),
         }))
       : [
-          { name: 'BRONZE',  minActive:   1, maxActive:  20, percent: '10' },
-          { name: 'SILVER',  minActive:  21, maxActive:  50, percent: '15' },
-          { name: 'GOLD',    minActive:  51, maxActive: 200, percent: '20' },
-          { name: 'DIAMOND', minActive: 201, maxActive:   0, percent: '25' },
+          { name: 'BRONZE',   minVolume: 0,         percent: '10' },
+          { name: 'SILVER',   minVolume: 100000,    percent: '15' },
+          { name: 'GOLD',     minVolume: 500000,    percent: '20' },
+          { name: 'PLATINUM', minVolume: 2000000,   percent: '25' },
+          { name: 'ELITE',    minVolume: 10000000,  percent: '30' },
         ],
   };
   const [draft, setDraft] = useState(initial);
@@ -375,14 +376,15 @@ function PartnerSettingsCard({ settings, save, saving }) {
     settings['partner.enabled'],
     settings['partner.bonusAmount'],
     settings['partner.minDeposit'],
-    JSON.stringify(settings['partner.tiers']),
+    settings['partner.bonusCurrency'],
+    JSON.stringify(settings['partner.volumeTiers']),
   ]);
 
   const dirty = JSON.stringify(draft) !== JSON.stringify(initial);
 
-  const updateTier = (i, patch) => {
-    const next = draft.tiers.map((t, idx) => idx === i ? { ...t, ...patch } : t);
-    setDraft({ ...draft, tiers: next });
+  const updateVolumeTier = (i, patch) => {
+    const next = draft.volumeTiers.map((t, idx) => idx === i ? { ...t, ...patch } : t);
+    setDraft({ ...draft, volumeTiers: next });
   };
 
   return (
@@ -391,9 +393,9 @@ function PartnerSettingsCard({ settings, save, saving }) {
         <div>
           <h2 className="text-base font-semibold text-white">Partner / Referral Program</h2>
           <p className="text-xs text-text-muted mt-1 max-w-md">
-            Instant bonus on referee's first qualifying deposit + tier-based revenue share on
-            trade fees. Tiers are computed from active referral count (active = first deposit
-            ≥ Min deposit). All earnings credit the subscription wallet.
+            Instant bonus on referee's first qualifying deposit + a partner level that
+            progresses on TOTAL referral trading volume (shown on the partner dashboard).
+            Tier thresholds below are by volume. All earnings credit the subscription wallet.
           </p>
         </div>
         <button
@@ -407,19 +409,19 @@ function PartnerSettingsCard({ settings, save, saving }) {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
         <div>
-          <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1">Bonus amount (USD)</label>
+          <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1">First-deposit bonus ({draft.bonusCurrency})</label>
           <input
             type="number" min="0" step="0.01"
             value={draft.bonusAmount}
             onChange={(e) => setDraft({ ...draft, bonusAmount: e.target.value })}
             className="w-full px-3 py-2 rounded bg-bg-dark border border-border-dark text-sm font-mono text-white focus:border-primary-500 focus:outline-none"
           />
-          <div className="mt-1 text-[10px] text-text-muted">Paid once per referee on their first qualifying deposit</div>
+          <div className="mt-1 text-[10px] text-text-muted">Paid to the referrer, once per referee, on their first qualifying deposit</div>
         </div>
         <div>
-          <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1">Min qualifying deposit (USD)</label>
+          <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1">Min first deposit ({draft.bonusCurrency})</label>
           <input
             type="number" min="0" step="0.01"
             value={draft.minDeposit}
@@ -428,43 +430,46 @@ function PartnerSettingsCard({ settings, save, saving }) {
           />
           <div className="mt-1 text-[10px] text-text-muted">Below this, deposit doesn't trigger bonus or count toward tier</div>
         </div>
+        <div>
+          <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1">Reward currency</label>
+          <select
+            value={draft.bonusCurrency}
+            onChange={(e) => setDraft({ ...draft, bonusCurrency: e.target.value })}
+            className="w-full px-3 py-2 rounded bg-bg-dark border border-border-dark text-sm font-mono text-white focus:border-primary-500 focus:outline-none"
+          >
+            {['USD', 'EUR', 'GBP', 'INR', 'AUD', 'CAD', 'AED'].map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <div className="mt-1 text-[10px] text-text-muted">Currency recorded on the bonus payout & audit trail</div>
+        </div>
       </div>
 
-      <div className="mb-2 text-[11px] uppercase tracking-wider font-bold text-text-muted">Tier thresholds</div>
+      <div className="mb-2 text-[11px] uppercase tracking-wider font-bold text-text-muted">Tier thresholds (by total referral volume)</div>
       <div className="space-y-2">
-        {draft.tiers.map((t, i) => (
+        {draft.volumeTiers.map((t, i) => (
           <div key={i} className="grid grid-cols-12 gap-2 items-center bg-bg-dark border border-border-dark rounded p-2">
-            <div className="col-span-3">
+            <div className="col-span-4">
+              <label className="block text-[10px] text-text-muted mb-0.5">Tier</label>
               <input
                 value={t.name}
-                onChange={(e) => updateTier(i, { name: e.target.value.toUpperCase() })}
+                onChange={(e) => updateVolumeTier(i, { name: e.target.value.toUpperCase() })}
                 className="w-full px-2 py-1.5 rounded bg-bg-panel border border-border-dark text-xs font-bold text-white focus:border-primary-500 focus:outline-none"
               />
             </div>
-            <div className="col-span-3">
-              <label className="block text-[10px] text-text-muted mb-0.5">Min active</label>
+            <div className="col-span-5">
+              <label className="block text-[10px] text-text-muted mb-0.5">Min volume (USD)</label>
               <input
-                type="number" min="0"
-                value={t.minActive}
-                onChange={(e) => updateTier(i, { minActive: Number(e.target.value) })}
+                type="number" min="0" step="1000"
+                value={t.minVolume}
+                onChange={(e) => updateVolumeTier(i, { minVolume: Number(e.target.value) })}
                 className="w-full px-2 py-1.5 rounded bg-bg-panel border border-border-dark text-xs font-mono text-white focus:border-primary-500 focus:outline-none"
               />
             </div>
             <div className="col-span-3">
-              <label className="block text-[10px] text-text-muted mb-0.5">Max active (0 = ∞)</label>
-              <input
-                type="number" min="0"
-                value={t.maxActive}
-                onChange={(e) => updateTier(i, { maxActive: Number(e.target.value) })}
-                className="w-full px-2 py-1.5 rounded bg-bg-panel border border-border-dark text-xs font-mono text-white focus:border-primary-500 focus:outline-none"
-              />
-            </div>
-            <div className="col-span-3">
-              <label className="block text-[10px] text-text-muted mb-0.5">% of fee</label>
+              <label className="block text-[10px] text-text-muted mb-0.5">% rev share</label>
               <input
                 type="number" min="0" max="100" step="0.1"
                 value={t.percent}
-                onChange={(e) => updateTier(i, { percent: e.target.value })}
+                onChange={(e) => updateVolumeTier(i, { percent: e.target.value })}
                 className="w-full px-2 py-1.5 rounded bg-bg-panel border border-border-dark text-xs font-mono text-white focus:border-primary-500 focus:outline-none"
               />
             </div>
@@ -487,10 +492,11 @@ function PartnerSettingsCard({ settings, save, saving }) {
           type="button"
           disabled={!dirty || saving}
           onClick={() => save({ partner: {
-            enabled:     draft.enabled,
-            bonusAmount: draft.bonusAmount,
-            minDeposit:  draft.minDeposit,
-            tiers:       draft.tiers,
+            enabled:       draft.enabled,
+            bonusAmount:   draft.bonusAmount,
+            minDeposit:    draft.minDeposit,
+            bonusCurrency: draft.bonusCurrency,
+            volumeTiers:   draft.volumeTiers,
           }})}
           className="px-4 py-1.5 rounded text-xs font-bold bg-primary-500 text-white disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary-600 transition-colors"
         >

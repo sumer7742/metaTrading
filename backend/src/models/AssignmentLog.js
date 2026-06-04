@@ -11,7 +11,7 @@ const mongoose = require('mongoose');
 const assignmentLogSchema = new mongoose.Schema(
   {
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    action: { type: String, enum: ['ASSIGN', 'REASSIGN', 'UNASSIGN'], required: true },
+    action: { type: String, enum: ['ASSIGN', 'REASSIGN', 'UNASSIGN', 'MANAGER_TRANSFER'], required: true },
 
     // Ownership before/after the change (null = none).
     fromAdminId:   { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },

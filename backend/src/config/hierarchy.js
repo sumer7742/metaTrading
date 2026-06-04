@@ -44,6 +44,15 @@ const PERMISSIONS = {
   'hierarchy.manager.manage': [ROLES.SUPER_ADMIN, ROLES.ADMIN],
   'hierarchy.assign':         [ROLES.SUPER_ADMIN, ROLES.ADMIN],
   'hierarchy.view':           [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.MANAGER],
+  // SuperAdmin-only powers: cross-tree transfers + staff account control.
+  'hierarchy.superadmin':     [ROLES.SUPER_ADMIN],
+};
+
+// Auto-assignment / auto-scaling knobs. maxUsersPerManager is the hard
+// capacity used by the auto-assignment engine + transfer validation; the
+// admin (4) and manager (10) ceilings come from ROLE_REGISTRY caps above.
+const AUTO = {
+  maxUsersPerManager: Number(process.env.MAX_USERS_PER_MANAGER) || 500,
 };
 
 /** SuperAdmin always passes; otherwise the role must be in the permission's list. */
@@ -60,4 +69,4 @@ const MANAGEMENT_ROLES = [ROLES.SUPER_ADMIN, ...Object.keys(ROLE_REGISTRY)];
 // make every hierarchy route 404 with zero impact on the rest of the platform.
 const FEATURE_ENABLED = String(process.env.ENABLE_HIERARCHY || 'true').toLowerCase() !== 'false';
 
-module.exports = { ROLE_REGISTRY, PERMISSIONS, hasPermission, MANAGEMENT_ROLES, FEATURE_ENABLED };
+module.exports = { ROLE_REGISTRY, PERMISSIONS, hasPermission, MANAGEMENT_ROLES, FEATURE_ENABLED, AUTO };

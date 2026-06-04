@@ -8,7 +8,8 @@ import OrderForm from '../components/OrderForm';
 import NotificationCenter from '../components/NotificationCenter';
 import MarketWatch from '../components/MarketWatch';
 import { fmtNum, fmtPnlSimple, fmtMoney, fmtPriceDual, fmtMoneyDual, currencySymbol } from '../utils/format';
-import Modal from '../components/Modal';
+import WatchlistButton from '../components/WatchlistButton';
+import { useWatchlistModal } from '../components/watchlistModalContext';
 import { useFxRate } from '../hooks/useFxRate';
 import { useWatchlists } from '../hooks/useWatchlists';
 import { useThemeStore } from '../store/theme';
@@ -18,127 +19,6 @@ import AssetIcon from '../components/AssetIcon';
 import TradeSettingsPanel from '../components/settings/TradeSettingsPanel';
 import { useTradeSettings } from '../store/tradeSettings';
 import { getMarketSession } from '../utils/marketSession';
-
-// ─── Add-to-watchlists manager ───────────────────────────────────────
-// Multi-select sheet for putting a symbol into any combination of
-// watchlists at once. Built on the shared <Modal> (portal + focus-trap +
-// scroll-lock + safe-area). Diffs on Save and fans out add/remove calls.
-function WatchlistManagerSheet({ open, symbol, instrumentRow, watchlists, addSymbol, removeSymbol, onClose }) {
-  const initial = useMemo(() => {
-    const s = new Set();
-    for (const w of watchlists) if (w.items?.some((it) => it.symbol === symbol)) s.add(w._id);
-    return s;
-  }, [watchlists, symbol]);
-  const [checked, setChecked] = useState(initial);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => { setChecked(initial); }, [initial]);
-
-  const toggle = (id) => setChecked((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
-
-  const save = async () => {
-    setBusy(true);
-    const ops = [];
-    for (const w of watchlists) {
-      const was = initial.has(w._id);
-      const now = checked.has(w._id);
-      if (now && !was) ops.push(addSymbol(w._id, symbol));
-      else if (!now && was) {
-        const item = w.items.find((it) => it.symbol === symbol);
-        if (item) ops.push(removeSymbol(w._id, item._id));
-      }
-    }
-    try {
-      if (ops.length) await Promise.all(ops);
-      toast.success(ops.length ? `Updated watchlists for ${symbol}` : 'No changes');
-      onClose();
-    } catch (_) { /* per-op toasts handled in the hook */ }
-    finally { setBusy(false); }
-  };
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      maxW="max-w-sm"
-      bodyClassName="p-2"
-      title={(
-        <div className="flex items-center gap-2.5 min-w-0">
-          <AssetIcon row={instrumentRow || { symbol }} size={28} round />
-          <div className="min-w-0">
-            <div className="text-sm font-bold text-text-primary truncate">Add to watchlists</div>
-            <div className="text-[11px] text-text-muted truncate">{symbol}</div>
-          </div>
-        </div>
-      )}
-      footer={(
-        <div className="flex items-center gap-2">
-          <button onClick={onClose} className="py-2.5 px-4 rounded-xl border border-border-dark text-sm font-semibold text-text-primary hover:bg-bg-hover transition-colors">Cancel</button>
-          <button onClick={save} disabled={busy} className="flex-1 py-2.5 rounded-xl bg-primary-500 hover:bg-primary-600 disabled:opacity-50 text-white text-sm font-bold transition-colors">{busy ? 'Saving…' : 'Save'}</button>
-        </div>
-      )}
-    >
-      {watchlists.length === 0 && <div className="px-3 py-6 text-center text-sm text-text-muted">No watchlists yet.</div>}
-      {watchlists.map((w) => {
-        const on = checked.has(w._id);
-        return (
-          <button key={w._id} type="button" onClick={() => toggle(w._id)} className={`w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left transition-colors ${on ? 'bg-primary-500/5' : 'hover:bg-bg-hover'}`}>
-            <span className="text-lg shrink-0">{w.emoji || '📋'}</span>
-            <span className="flex-1 text-[15px] font-semibold text-text-primary truncate">{w.name}</span>
-            <span className="text-xs text-text-muted tabular-nums">{w.items?.length || 0}</span>
-            <span className={`w-6 h-6 rounded-md border-2 flex items-center justify-center shrink-0 ${on ? 'bg-primary-500 border-primary-500' : 'border-border-dark'}`}>
-              {on && <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round"><path d="M20 6 9 17l-5-5" /></svg>}
-            </span>
-          </button>
-        );
-      })}
-    </Modal>
-  );
-}
-
-// ─── Create-watchlist sheet (from the Trade dropdown) ────────────────
-const NEW_LIST_EMOJIS = ['⭐', '📈', '🔥', '💎', '🚀', '📊', '⚡', '🌙'];
-function CreateListSheet({ open, onClose, onCreate }) {
-  const [name, setName] = useState('');
-  const [emoji, setEmoji] = useState('📈');
-  const [busy, setBusy] = useState(false);
-  const nameRef = useRef(null);
-  useEffect(() => { if (open) { setName(''); setEmoji('📈'); setBusy(false); } }, [open]);
-
-  const submit = async (e) => {
-    if (e) e.preventDefault();
-    const trimmed = name.trim();
-    if (!trimmed) return;
-    setBusy(true);
-    try { await onCreate({ name: trimmed, emoji }); onClose(); }
-    catch (_) { /* toast handled in the hook */ }
-    finally { setBusy(false); }
-  };
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title="New watchlist"
-      maxW="max-w-sm"
-      initialFocus={nameRef}
-      footer={(
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-border-dark text-sm font-semibold text-text-primary hover:bg-bg-hover transition-colors">Cancel</button>
-          <button type="submit" form="trade-create-wl" disabled={busy || !name.trim()} className="flex-1 py-2.5 rounded-xl bg-primary-500 hover:bg-primary-600 disabled:opacity-50 text-white text-sm font-bold transition-colors">{busy ? 'Creating…' : 'Create'}</button>
-        </div>
-      )}
-    >
-      <form id="trade-create-wl" onSubmit={submit} className="space-y-4">
-        <div className="flex flex-wrap gap-1.5">
-          {NEW_LIST_EMOJIS.map((em) => (
-            <button key={em} type="button" onClick={() => setEmoji(em)} className={`w-9 h-9 rounded-lg text-lg flex items-center justify-center border transition-all ${emoji === em ? 'border-primary-500 bg-primary-500/10 scale-105' : 'border-border-dark hover:border-primary-500/40'}`}>{em}</button>
-          ))}
-        </div>
-        <input ref={nameRef} value={name} onChange={(e) => setName(e.target.value)} maxLength={40} placeholder="e.g. Scalping, Futures, Long Term" className="w-full px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm text-text-primary placeholder:text-text-muted focus:border-primary-500 focus:outline-none" />
-      </form>
-    </Modal>
-  );
-}
 
 export default function Trade() {
   const [params, setParams] = useSearchParams();
@@ -216,12 +96,12 @@ export default function Trade() {
   // always targets the Favorites (default) list; the category dropdown can
   // also filter by any custom watchlist.
   const {
-    has: isFavSym, toggleFavorite,
-    watchlists, setActiveId, addSymbol, removeSymbol, favoritesList, createList,
+    watchlists, setActiveId, favoritesList,
   } = useWatchlists();
-  // Symbol whose "Add to watchlists" manager sheet is open (null = closed).
-  const [manageSymbol, setManageSymbol] = useState(null);
-  const [showCreateList, setShowCreateList] = useState(false); // "New watchlist" sheet
+  // Shared "Add to Watchlist" modal — single app-wide instance via the
+  // provider, reused by the rail bookmark, right-click / long-press, and the
+  // order-panel header button.
+  const { open: openWatchlistModal } = useWatchlistModal();
   const longPressTimer = useRef(null); // mobile long-press → open manager
   // Chart layout mode — independent flags for each side panel + a
   // fullscreen toggle. The "Expand" toolbar button collapses both side
@@ -1786,18 +1666,13 @@ export default function Trade() {
             />
             {/* Watchlist / category filter + a dedicated "New list" button.
                 Native <select> picks up the app's input styling; the +
-                button opens the create sheet directly (more discoverable
-                than the in-dropdown "New watchlist…" option, which also
-                still works). */}
+                button beside it opens the create sheet. */}
             <div className="flex items-center gap-1.5">
               <div className="relative flex-1 min-w-0">
                 <select
                   value={instrumentCategory}
                   onChange={(e) => {
                     const v = e.target.value;
-                    // "New watchlist…" sentinel — open the create sheet and
-                    // leave the current filter unchanged (controlled select).
-                    if (v === '__new__') { setShowCreateList(true); return; }
                     setInstrumentCategory(v);
                     // Selecting a watchlist makes it the active list everywhere
                     // (single source of truth across MarketWatch / Watchlist).
@@ -1813,7 +1688,6 @@ export default function Trade() {
                         {w.emoji ? `${w.emoji} ` : ''}{w.name} ({w.items?.length || 0})
                       </option>
                     ))}
-                    <option value="__new__">➕ New watchlist…</option>
                   </optgroup>
                   {instrumentCategories.length > 0 && (
                     <optgroup label="Categories">
@@ -1834,15 +1708,6 @@ export default function Trade() {
                   <polyline points="6 9 12 15 18 9" />
                 </svg>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowCreateList(true)}
-                title="New watchlist"
-                aria-label="New watchlist"
-                className="shrink-0 inline-flex items-center justify-center w-8 h-8 rounded-lg bg-primary-500 hover:bg-primary-600 text-white transition-colors"
-              >
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
-              </button>
             </div>
           </div>
           <div className="px-3 py-2 grid grid-cols-12 gap-2 text-[10px] uppercase tracking-wider font-bold text-text-secondary bg-bg-card border-b border-border-subtle">
@@ -1862,9 +1727,8 @@ export default function Trade() {
                 const change = Number(r.change24h);
                 const positive = Number.isFinite(change) ? change >= 0 : null;
                 const prec = Math.min(r.pricePrecision || 2, 5);
-                const isFav = isFavSym(r.symbol);
                 const open = () => openTab(r.symbol);
-                const openManager = () => setManageSymbol(r.symbol);
+                const openManager = () => openWatchlistModal(r.symbol, r);
                 return (
                   <div
                     key={r.symbol}
@@ -1883,24 +1747,11 @@ export default function Trade() {
                     }`}
                   >
                     <div className="col-span-5 min-w-0 flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); toggleFavorite(r.symbol); }}
-                        title={isFav ? 'Remove from Favorites' : 'Add to Favorites'}
-                        aria-label={isFav ? 'Remove from Favorites' : 'Add to Favorites'}
-                        className={`shrink-0 p-0.5 rounded transition-colors ${
-                          isFav ? 'text-primary-500' : 'text-text-muted hover:text-primary-500'
-                        }`}
-                      >
-                        <svg
-                          width="14" height="14" viewBox="0 0 24 24"
-                          fill={isFav ? 'currentColor' : 'none'}
-                          stroke="currentColor" strokeWidth="2"
-                          strokeLinecap="round" strokeLinejoin="round"
-                        >
-                          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-                        </svg>
-                      </button>
+                      {/* Watchlist bookmark — replaces the old ★ favourites
+                          star. Opens the shared "Add to Watchlist" modal and
+                          shows a filled state when the symbol is in any list.
+                          Right-click / long-press on the row also opens it. */}
+                      <WatchlistButton symbol={r.symbol} row={r} variant="ghost" size={14} persistent className="shrink-0" />
                       <AssetIcon row={r} size={22} round />
                       <div className="min-w-0">
                         <div className="text-sm font-medium text-text-primary truncate">{r.symbol}</div>
@@ -1913,16 +1764,6 @@ export default function Trade() {
                         </div>
                       )}
                       </div>
-                      {/* Manage watchlists — also via right-click / long-press */}
-                      <button
-                        type="button"
-                        onClick={(e) => { e.stopPropagation(); openManager(); }}
-                        title="Add to watchlists"
-                        aria-label="Add to watchlists"
-                        className="ml-auto shrink-0 p-0.5 rounded text-text-muted hover:text-primary-500 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" /></svg>
-                      </button>
                     </div>
                     <div
                       className="col-span-3 text-right font-mono text-[11px]"
@@ -3210,29 +3051,6 @@ function SidebarPositions({ positions, activeSymbol, onSelect, onClose, instrume
           );
         })}
       </div>
-
-      {manageSymbol && (
-        <WatchlistManagerSheet
-          open
-          symbol={manageSymbol}
-          instrumentRow={instruments.find((i) => i.symbol === manageSymbol)}
-          watchlists={watchlists}
-          addSymbol={addSymbol}
-          removeSymbol={removeSymbol}
-          onClose={() => setManageSymbol(null)}
-        />
-      )}
-
-      <CreateListSheet
-        open={showCreateList}
-        onClose={() => setShowCreateList(false)}
-        onCreate={async ({ name, emoji }) => {
-          const list = await createList({ name, emoji });
-          // Jump the instruments panel straight to the new list.
-          if (list?._id) setInstrumentCategory(`wl:${list._id}`);
-          toast.success(`Created ${emoji} ${name}`);
-        }}
-      />
     </div>
   );
 }

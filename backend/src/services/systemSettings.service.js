@@ -32,14 +32,26 @@ const DEFAULTS = {
   // thresholds inline without a schema migration. Tier with maxActive=0
   // means "no upper bound" (Diamond). Tiers must be sorted ascending
   // by `minActive`.
-  'partner.enabled':     true,
-  'partner.bonusAmount': '10',      // instant credit on referee's first qualifying deposit
-  'partner.minDeposit':  '50',      // deposit threshold that "activates" a referee
+  'partner.enabled':      true,
+  'partner.bonusAmount':  '10',     // instant credit on referee's first qualifying deposit
+  'partner.minDeposit':   '50',     // deposit threshold that "activates" a referee
+  'partner.bonusCurrency': 'USD',   // currency recorded for the first-deposit bonus
   'partner.tiers': [
     { name: 'BRONZE',  minActive:   1, maxActive:  20, percent: '10' },
     { name: 'SILVER',  minActive:  21, maxActive:  50, percent: '15' },
     { name: 'GOLD',    minActive:  51, maxActive: 200, percent: '20' },
     { name: 'DIAMOND', minActive: 201, maxActive:   0, percent: '25' },
+  ],
+  // Volume-based tiers (USD notional of TOTAL referral trading volume) that
+  // drive the partner LEVEL + revenue-share % shown on the partner dashboard.
+  // Admin-configurable. `minVolume` is the floor to enter the tier; tiers must
+  // be sorted ascending. Independent of the count-based `partner.tiers` above.
+  'partner.volumeTiers': [
+    { name: 'BRONZE',   minVolume: 0,         percent: '10' },
+    { name: 'SILVER',   minVolume: 100000,    percent: '15' },
+    { name: 'GOLD',     minVolume: 500000,    percent: '20' },
+    { name: 'PLATINUM', minVolume: 2000000,   percent: '25' },
+    { name: 'ELITE',    minVolume: 10000000,  percent: '30' },
   ],
 };
 

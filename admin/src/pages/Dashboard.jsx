@@ -1,25 +1,48 @@
 import { useEffect, useState } from 'react';
+import { Navigate } from 'react-router-dom';
 import { api } from '../services/api';
 import { fmtNum } from '../utils/format';
+import { useAuthStore } from '../store/auth';
+import { ROLES, roleHome } from '../config/roles';
 import PageHero from '../components/PageHero';
 
 export default function Dashboard() {
-  const [stats, setStats] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const { user } = useAuthStore();
+  const role = user?.role;
+  const isManager = role === ROLES.MANAGER;
 
-  useEffect(() => {
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(!isManager);
+  const [error, setError] = useState(false);
+
+  const load = () => {
+    // Managers have no dashboard scope — never fire dashboard queries for them.
+    if (isManager) { setLoading(false); return undefined; }
+    let cancelled = false;
+    setLoading(true);
+    setError(false);
     (async () => {
       try {
         const { data } = await api.get('/admin/dashboard');
-        setStats(data.data);
+        if (!cancelled) setStats(data.data);
+      } catch {
+        if (!cancelled) setError(true);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
-  }, []);
+    return () => { cancelled = true; };
+  };
 
-  if (loading) return <div className="text-text-secondary p-4">Loading dashboard…</div>;
-  if (!stats) return <div className="text-bear p-4">Failed to load dashboard.</div>;
+  useEffect(() => load(), [isManager]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A manager should never see the dashboard — bounce to their home. The
+  // route guard already prevents this, but this keeps the component safe if
+  // it's ever rendered directly.
+  if (isManager) return <Navigate to={roleHome(role)} replace />;
+
+  if (loading) return <DashboardLoading />;
+  if (error || !stats) return <DashboardUnavailable onRetry={load} />;
 
   const today = new Date().toLocaleDateString('en-IN', {
     weekday: 'long', day: 'numeric', month: 'short', year: 'numeric',
@@ -142,6 +165,46 @@ function Empty({ hint }) {
     <div className="p-8 text-center">
       <div className="text-sm text-text-secondary">No data yet</div>
       <div className="text-xs text-text-muted mt-1 max-w-sm mx-auto">{hint}</div>
+    </div>
+  );
+}
+
+// Skeleton while the dashboard payload loads — calmer than a bare text line.
+function DashboardLoading() {
+  return (
+    <div className="space-y-6 max-w-[1600px] animate-pulse">
+      <div className="h-24 rounded-xl bg-bg-panel border border-border-dark" />
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+        {Array.from({ length: 6 }).map((_, i) => <div key={i} className="h-28 rounded-xl bg-bg-panel border border-border-dark" />)}
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <div className="h-64 rounded-xl bg-bg-panel border border-border-dark" />
+        <div className="h-64 rounded-xl bg-bg-panel border border-border-dark" />
+      </div>
+    </div>
+  );
+}
+
+// Friendly fallback when the dashboard payload can't be loaded — never a raw
+// "Failed to load" line. Offers a retry instead of dead-ending the user.
+function DashboardUnavailable({ onRetry }) {
+  return (
+    <div className="space-y-6 max-w-[1600px]">
+      <PageHero eyebrow="Admin" title="Admin Dashboard" subtitle="Real-time platform overview." />
+      <div className="card p-10 flex flex-col items-center text-center">
+        <div className="w-12 h-12 rounded-full bg-warn/10 text-warn border border-warn/30 flex items-center justify-center mb-4">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 9v4" /><path d="M12 17h.01" /><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+          </svg>
+        </div>
+        <h2 className="text-base font-semibold text-white">Dashboard data is unavailable right now</h2>
+        <p className="text-sm text-text-secondary mt-1.5 max-w-md">
+          We couldn't load the live metrics. This is usually temporary — please try again in a moment.
+        </p>
+        <button type="button" onClick={onRetry} className="btn-primary mt-5 px-5">
+          Retry
+        </button>
+      </div>
     </div>
   );
 }

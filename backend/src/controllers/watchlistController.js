@@ -7,15 +7,20 @@ const { sendSuccess, asyncHandler, AppError } = require('../utils/errors');
 // Watchlist add/bulk-add validate every symbol against the active
 // instrument catalogue. Hitting Mongo per symbol on a 50-symbol bulk add
 // is wasteful since the catalogue changes rarely. We cache the active
-// symbol set for a short TTL and fall back to a direct query on miss.
-let _symCache = { set: null, at: 0 };
+// symbol set + a symbol→category map for a short TTL (the category lets us
+// stamp each watchlist item with its instrument type at add-time).
+let _symCache = { set: null, byCat: null, at: 0 };
 const SYM_TTL_MS = 60 * 1000;
 
-async function activeSymbolSet() {
-  if (_symCache.set && Date.now() - _symCache.at < SYM_TTL_MS) return _symCache.set;
-  const docs = await Instrument.find({ isActive: true }).select('symbol').lean();
-  _symCache = { set: new Set(docs.map((d) => d.symbol)), at: Date.now() };
-  return _symCache.set;
+async function activeSymbolCatalog() {
+  if (_symCache.set && Date.now() - _symCache.at < SYM_TTL_MS) return _symCache;
+  const docs = await Instrument.find({ isActive: true }).select('symbol category').lean();
+  _symCache = {
+    set: new Set(docs.map((d) => d.symbol)),
+    byCat: new Map(docs.map((d) => [d.symbol, String(d.category || '').toUpperCase()])),
+    at: Date.now(),
+  };
+  return _symCache;
 }
 
 const norm = (s) => String(s || '').trim().toUpperCase();
@@ -142,6 +147,7 @@ const duplicate = asyncHandler(async (req, res) => {
     sortOrder: (last?.sortOrder ?? -1) + 1,
     items: src.items.map((it) => ({
       symbol: it.symbol,
+      type: it.type || '',
       sortOrder: it.sortOrder,
       pinned: it.pinned,
       addedAt: new Date(),
@@ -171,9 +177,11 @@ const listItems = asyncHandler(async (req, res) => {
 });
 
 // Validate + dedupe a batch of raw symbols against the active catalogue.
-// Returns the symbols not already present in the list, in input order.
+// Returns { symbol, type } for each symbol not already present in the list,
+// in input order. `type` is the instrument's category (STOCK/CRYPTO/…) so
+// the caller can stamp it onto the stored item.
 async function resolveNewSymbols(rawSymbols, wl) {
-  const valid = await activeSymbolSet();
+  const { set: valid, byCat } = await activeSymbolCatalog();
   const existing = new Set(wl.items.map((it) => it.symbol));
   const seen = new Set();
   const out = [];
@@ -182,7 +190,7 @@ async function resolveNewSymbols(rawSymbols, wl) {
     if (!sym || seen.has(sym) || existing.has(sym)) continue;
     if (!valid.has(sym)) throw new AppError(`Unknown or inactive symbol: ${sym}`, 404, 'UNKNOWN_SYMBOL');
     seen.add(sym);
-    out.push(sym);
+    out.push({ symbol: sym, type: byCat.get(sym) || '' });
   }
   return out;
 }
@@ -194,7 +202,7 @@ const addItem = asyncHandler(async (req, res) => {
   const toAdd = await resolveNewSymbols([sym], wl);
   if (toAdd.length) {
     let next = wl.items.reduce((m, it) => Math.max(m, it.sortOrder ?? 0), -1) + 1;
-    wl.items.push({ symbol: toAdd[0], sortOrder: next, pinned: false, addedAt: new Date() });
+    wl.items.push({ symbol: toAdd[0].symbol, type: toAdd[0].type, sortOrder: next, pinned: false, addedAt: new Date() });
     await wl.save();
   }
   sendSuccess(res, serialize(wl), 201);
@@ -208,8 +216,8 @@ const bulkAddItems = asyncHandler(async (req, res) => {
   if (!symbols.length) throw new AppError('symbols[] required', 400);
   const toAdd = await resolveNewSymbols(symbols, wl);
   let next = wl.items.reduce((m, it) => Math.max(m, it.sortOrder ?? 0), -1) + 1;
-  for (const sym of toAdd) {
-    wl.items.push({ symbol: sym, sortOrder: next++, pinned: false, addedAt: new Date() });
+  for (const it of toAdd) {
+    wl.items.push({ symbol: it.symbol, type: it.type, sortOrder: next++, pinned: false, addedAt: new Date() });
   }
   await wl.save();
   sendSuccess(res, serialize(wl), 201);
@@ -260,7 +268,7 @@ async function transferItem(req, { keepSource }) {
 
   if (!target.items.some((it) => it.symbol === item.symbol)) {
     const next = target.items.reduce((m, it) => Math.max(m, it.sortOrder ?? 0), -1) + 1;
-    target.items.push({ symbol: item.symbol, sortOrder: next, pinned: false, addedAt: new Date() });
+    target.items.push({ symbol: item.symbol, type: item.type || '', sortOrder: next, pinned: false, addedAt: new Date() });
     await target.save();
   }
   if (!keepSource) {

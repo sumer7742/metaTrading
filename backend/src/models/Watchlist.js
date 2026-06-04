@@ -8,6 +8,12 @@ const mongoose = require('mongoose');
 const watchlistItemSchema = new mongoose.Schema(
   {
     symbol: { type: String, required: true, uppercase: true },
+    // Instrument class captured at add-time so a watchlist can hold mixed
+    // assets (crypto + forex + stocks + commodities + indices) and the UI
+    // can badge/group them without a per-symbol catalogue lookup. Stamped
+    // automatically by the controller from the Instrument it validates
+    // against; '' for legacy rows added before this field existed.
+    type: { type: String, enum: ['STOCK', 'CRYPTO', 'FOREX', 'COMMODITY', 'INDEX', ''], default: '' },
     sortOrder: { type: Number, default: 0 },
     // Pinned items sort above unpinned ones regardless of sortOrder
     // (the "Pin to top" quick action).

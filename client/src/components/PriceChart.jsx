@@ -6,6 +6,7 @@ import { sma, ema, rsi, macd, bollinger, vwap, stochastic, atr, williamsR, cci, 
 import { useThemeStore } from '../store/theme';
 import { useChartDrawings } from '../hooks/useChartDrawings';
 import ChartDrawingToolbar from './ChartDrawingToolbar';
+import WatchlistButton from './WatchlistButton';
 
 // ─── Theme palette helpers ───────────────────────────────────────────
 // Resolve a CSS-variable RGB triplet into an `rgb(R, G, B)` string the
@@ -2701,7 +2702,7 @@ export default function PriceChart({
             <button
               type="button"
               onClick={() => setChartTypeOpen((o) => !o)}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border-dark bg-bg-panel hover:border-border-accent hover:bg-bg-hover text-xs font-semibold text-text-secondary hover:text-text-primary transition-colors"
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded border border-border-dark bg-white hover:border-border-accent hover:bg-bg-hover text-xs font-semibold text-text-secondary hover:text-text-primary transition-colors"
               title="Chart type"
             >
               <span className="text-text-muted">{currentType.glyph}</span>
@@ -2781,7 +2782,7 @@ export default function PriceChart({
                 <button
                   type="button"
                   onClick={() => { setIndicatorsOpen((o) => !o); setTimeframeOpen(false); setChartTypeOpen(false); }}
-                  className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-md border border-border-dark bg-white text-text-primary hover:bg-bg-hover transition-colors"
+                  className="inline-flex items-center gap-1.5 text-[11px] font-semibold h-8 px-3 rounded border border-border-dark bg-white text-text-primary hover:bg-bg-hover hover:border-border-accent transition-colors"
                 >
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18" /><path d="M7 15l4-4 4 4 6-7" /></svg>
                   Indicators
@@ -2837,7 +2838,7 @@ export default function PriceChart({
             <button
               type="button"
               onClick={() => { setTimeframeOpen((o) => !o); setIndicatorsOpen(false); setChartTypeOpen(false); }}
-              className="inline-flex items-center gap-1.5 text-[11px] font-bold px-3 py-1.5 rounded-md border border-border-dark bg-white text-text-primary hover:bg-bg-hover transition-colors"
+              className="inline-flex items-center gap-1.5 text-[11px] font-bold h-8 px-3 rounded border border-border-dark bg-white text-text-primary hover:bg-bg-hover hover:border-border-accent transition-colors"
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" /></svg>
               {timeframe}
@@ -2890,7 +2891,7 @@ export default function PriceChart({
                     : 'opacity-100 max-w-[260px] translate-x-0'
                 }`}
               >
-                <div className="flex items-stretch h-8 rounded-md overflow-hidden border border-border-dark">
+                <div className="flex items-stretch h-8 rounded overflow-hidden border border-border-dark">
                   <button
                     type="button"
                     onClick={() => onOrderSideChange('SELL')}
@@ -2933,7 +2934,7 @@ export default function PriceChart({
               type="button"
               onClick={onCloseAll}
               title={`Close all ${openPositionsCount} open position(s)`}
-              className="inline-flex items-center gap-1 h-8 px-2.5 rounded-md bg-bear/10 text-bear border border-bear/30 hover:bg-bear/20 text-[11px] font-bold tracking-wide transition-colors"
+              className="inline-flex items-center gap-1 h-8 px-2.5 rounded bg-bear/10 text-bear border border-bear/30 hover:bg-bear/20 text-[11px] font-bold tracking-wide transition-colors"
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M18 6L6 18" /><path d="M6 6l12 12" />
@@ -2945,6 +2946,13 @@ export default function PriceChart({
             </button>
           )}
 
+          {/* Add to Watchlist — saves the chart's current instrument. Sits
+              with the expand / fullscreen chart actions on the right; always
+              visible (persistent) with a filled/active state when saved. */}
+          {symbol && (
+            <WatchlistButton symbol={symbol} row={instrument} variant="toolbar" size={15} persistent />
+          )}
+
           {/* Expand / Fullscreen controls — moved into the toolbar from
               the floating overlay so they don't overlap the Sell/Buy chip. */}
           {onToggleExpand && (
@@ -2952,7 +2960,7 @@ export default function PriceChart({
               type="button"
               onClick={onToggleExpand}
               title={expanded ? 'Show panels (E)' : 'Expand chart — hide panels (E)'}
-              className="p-1.5 rounded-md border border-border-dark bg-white text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
+              className="inline-flex items-center justify-center h-8 w-8 rounded border border-border-dark bg-white text-text-secondary hover:text-text-primary hover:bg-bg-hover hover:border-border-accent transition-colors"
             >
               {expanded ? (
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 14h6v6" /><path d="M20 10h-6V4" /><path d="M14 10l7-7" /><path d="M3 21l7-7" /></svg>
@@ -2966,7 +2974,7 @@ export default function PriceChart({
               type="button"
               onClick={onToggleFullscreen}
               title={fullscreen ? 'Exit fullscreen (F or Esc)' : 'Fullscreen chart (F)'}
-              className="p-1.5 rounded-md border border-border-dark bg-white text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
+              className="inline-flex items-center justify-center h-8 w-8 rounded border border-border-dark bg-white text-text-secondary hover:text-text-primary hover:bg-bg-hover hover:border-border-accent transition-colors"
             >
               {fullscreen ? (
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3" /><path d="M21 8h-3a2 2 0 0 1-2-2V3" /><path d="M3 16h3a2 2 0 0 1 2 2v3" /><path d="M16 21v-3a2 2 0 0 1 2-2h3" /></svg>

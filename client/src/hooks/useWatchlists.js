@@ -233,6 +233,12 @@ const favHas = (symbol) => {
   return !!fav && fav.items.some((it) => it.symbol === symbol);
 };
 
+// True when `symbol` lives in ANY of the user's watchlists (not just
+// Favorites). Drives the "active bookmark" state on instrument cards, which
+// should light up regardless of which list the symbol was saved to.
+const inAnyListFn = (symbol, s = _state) =>
+  !!symbol && s.watchlists.some((w) => (w.items || []).some((it) => it.symbol === symbol));
+
 const toggleFavorite = async (symbol) => {
   await loadOnce().catch(() => {});
   let fav = favoritesList();
@@ -267,6 +273,9 @@ export function useWatchlists() {
 
   const fav = favoritesList(s);
   const has = useCallback((symbol) => favHas(symbol), [s]);
+  // Recomputed whenever the store changes (s in deps) so every subscribed
+  // bookmark button re-renders the instant a symbol is added/removed.
+  const inAnyList = useCallback((symbol) => inAnyListFn(symbol, s), [s]);
 
   return {
     // data
@@ -282,6 +291,8 @@ export function useWatchlists() {
     addSymbol, bulkAddSymbols, removeSymbol, reorderSymbols, pinSymbol, moveSymbol, copySymbol,
     // favorites shim (replaces useFavorites)
     has, toggleFavorite, favCount: fav ? fav.items.length : 0,
+    // "saved in any list" — active-bookmark state for instrument cards
+    inAnyList,
     reload: () => { _state = { ..._state, loaded: false }; return loadOnce(); },
   };
 }

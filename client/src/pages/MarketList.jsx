@@ -6,6 +6,7 @@ import { api } from '../services/api';
 import { fmtNum } from '../utils/format';
 import { EconomicCalendarCard } from '../components/EconomicCalendar';
 import AssetIcon from '../components/AssetIcon';
+import WatchlistButton from '../components/WatchlistButton';
 
 /**
  * MarketList — full-page list opened from "See more" / "See all" links on
@@ -233,7 +234,7 @@ export default function MarketList() {
                 key={r.symbol}
                 type="button"
                 onClick={() => navigate(`/trade?symbol=${encodeURIComponent(r.symbol)}`)}
-                className="w-full grid grid-cols-12 gap-4 items-center px-6 py-4 text-left border-b border-border-subtle last:border-b-0 hover:bg-bg-hover transition-colors"
+                className="group w-full grid grid-cols-12 gap-4 items-center px-6 py-4 text-left border-b border-border-subtle last:border-b-0 hover:bg-bg-hover transition-colors"
               >
                 <div className="col-span-5 flex items-center gap-3 min-w-0">
                   <AssetGlyph sym={r.symbol} row={r} />
@@ -241,6 +242,7 @@ export default function MarketList() {
                     <div className="text-sm text-text-primary truncate">{r.name || r.symbol}</div>
                     <div className="text-[11px] text-text-muted truncate">{r.symbol}</div>
                   </div>
+                  <WatchlistButton symbol={r.symbol} row={r} variant="ghost" className="ml-auto" />
                 </div>
 
                 <div className="col-span-4 text-right">
@@ -589,7 +591,7 @@ function TopMoversCard({ lived }) {
             <Link
               key={r.symbol}
               to={`/trade?symbol=${encodeURIComponent(r.symbol)}`}
-              className="flex items-center gap-3 -mx-2 px-2 py-2 rounded-lg hover:bg-bg-hover transition-colors"
+              className="group flex items-center gap-3 -mx-2 px-2 py-2 rounded-lg hover:bg-bg-hover transition-colors"
             >
               <AssetGlyph sym={r.symbol} row={r} size={28} />
               <div className="flex-1 min-w-0">
@@ -606,6 +608,7 @@ function TopMoversCard({ lived }) {
                   </div>
                 )}
               </div>
+              <WatchlistButton symbol={r.symbol} row={r} variant="ghost" size={14} className="shrink-0" />
             </Link>
           );
         })}
