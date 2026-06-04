@@ -15,7 +15,8 @@ const { Wallet } = require('../models/Wallet');
 const { WALLET_TX_TYPE } = require('../config/constants');
 const { Plan, Subscription } = require('../models/Subscription');
 const { SubscriptionTransaction } = require('../models/SubscriptionWallet');
-const { Deposit } = require('../models/index');
+const { Deposit, Withdrawal } = require('../models/index');
+const User = require('../models/User');
 
 /* ── User-facing ────────────────────────────────────────────────── */
 
@@ -246,6 +247,103 @@ const manualDeposit = asyncHandler(async (req, res) => {
   }, 201);
 });
 
+// POST /subscription-wallet/withdraw  { amount, method, + destination fields }
+//
+// Real Main-Wallet cash-out. The balance is DEBITED (held) up-front and a
+// PENDING Withdrawal (source='SUBSCRIPTION') is created for the admin queue.
+// Admin approve → payout is external, balance stays debited. Admin reject →
+// the balance is refunded (see adminController.rejectWithdrawal). KYC-gated
+// like trading withdrawals (AML).
+const requestWithdrawal = asyncHandler(async (req, res) => {
+  const n = Number(req.body.amount);
+  if (!Number.isFinite(n) || n <= 0) throw new AppError('amount must be a positive number', 400);
+  const M = String(req.body.method || '').toUpperCase();
+  if (!['UPI', 'BANK', 'CRYPTO'].includes(M)) throw new AppError('method must be UPI, BANK or CRYPTO', 400);
+
+  // Per-method destination details (stored on the Withdrawal for the admin).
+  const dest = {};
+  if (M === 'UPI') {
+    if (!req.body.upiId) throw new AppError('UPI ID is required', 400);
+    dest.upiId = String(req.body.upiId).trim();
+  } else if (M === 'BANK') {
+    if (!req.body.bankAccountNumber || !req.body.bankIFSC || !req.body.bankAccountHolderName) {
+      throw new AppError('Bank account number, IFSC and account holder name are required', 400);
+    }
+    dest.bankAccountNumber = String(req.body.bankAccountNumber).trim();
+    dest.bankIFSC = String(req.body.bankIFSC).trim();
+    dest.bankAccountHolderName = String(req.body.bankAccountHolderName).trim();
+    if (req.body.bankName) dest.bankName = String(req.body.bankName).trim();
+  } else {
+    if (!req.body.cryptoAddress || !req.body.cryptoNetwork) {
+      throw new AppError('Crypto address and network are required', 400);
+    }
+    dest.cryptoAddress = String(req.body.cryptoAddress).trim();
+    dest.cryptoNetwork = String(req.body.cryptoNetwork).trim();
+  }
+
+  // KYC gate — mirror trading withdrawals.
+  const user = await User.findById(req.userId).select('kycStatus').lean();
+  if (!user || user.kycStatus !== 'APPROVED') {
+    throw new AppError('KYC verification must be approved before withdrawing funds.', 403, 'KYC_REQUIRED');
+  }
+
+  const amtStr = String(n);
+
+  // 1. Debit (hold) the Main Wallet first — throws 402 if balance is short.
+  let walletAfter;
+  try {
+    const { wallet } = await subscriptionWalletService.debit({
+      userId: req.userId,
+      amount: amtStr,
+      reason: 'WITHDRAWAL',
+      note: `Withdrawal request · ${M}`,
+    });
+    walletAfter = wallet;
+  } catch (err) {
+    if (err.code === 'INSUFFICIENT_SUBSCRIPTION_BALANCE') {
+      throw new AppError(err.message, 402, 'INSUFFICIENT_BALANCE');
+    }
+    throw err;
+  }
+
+  // 2. Create the PENDING withdrawal. If this fails, refund the hold so the
+  //    user is never left short.
+  let wd;
+  try {
+    wd = await Withdrawal.create({
+      userId: req.userId,
+      source: 'SUBSCRIPTION',
+      currency: walletAfter.currency || 'USD',
+      amount: amtStr,
+      baseCurrency: 'USD',
+      baseAmount: amtStr,
+      fxRateUsed: 1,
+      method: M,
+      ...dest,
+      status: 'PENDING',
+    });
+  } catch (createErr) {
+    try {
+      await subscriptionWalletService.credit({
+        userId: req.userId, amount: amtStr, reason: 'REFUND',
+        note: 'Refund: withdrawal request could not be created',
+      });
+    } catch (refundErr) {
+      console.error('[subscriptionWallet.withdraw] CRITICAL: hold refund failed', refundErr.message);
+    }
+    throw createErr;
+  }
+
+  sendSuccess(res, {
+    withdrawalId: wd._id,
+    status: wd.status,
+    amount: wd.amount,
+    currency: wd.currency,
+    method: wd.method,
+    balance: walletAfter.balance,
+  }, 201);
+});
+
 // POST /subscription-wallet/auto-renew  { enabled }
 const toggleAutoRenew = asyncHandler(async (req, res) => {
   const wallet = await subscriptionWalletService.setAutoRenew(req.userId, !!req.body.enabled);
@@ -404,6 +502,7 @@ module.exports = {
   getWallet,
   deposit,
   manualDeposit,
+  requestWithdrawal,
   toggleAutoRenew,
   history,
   renew,

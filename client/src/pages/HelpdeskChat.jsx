@@ -23,10 +23,42 @@ export default function HelpdeskChat({ embedded = false }) {
   const typingTimer = useRef(null);
   const lastTypingSent = useRef(0);
   const fileRef = useRef(null);
+  // Mirror of `messages` so merge/poll logic can read the latest list
+  // synchronously (a closure over state would be stale inside intervals).
+  const messagesRef = useRef([]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
 
   const scrollToBottom = () => requestAnimationFrame(() => { const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight; });
+  // Only auto-scroll when the user is already near the bottom, so an incoming
+  // message never yanks them away from older history they're reading.
+  const isNearBottom = () => {
+    const el = scrollRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  };
 
   const markSeen = useCallback((id) => { if (id) api.post(`/chat/conversations/${id}/seen`).catch(() => {}); }, []);
+
+  // Single funnel for ALL new messages — optimistic send, WS echo, and the
+  // polling fallback all go through here. Dedupes by _id (so the optimistic
+  // message and the socket echo never double up), keeps the thread
+  // time-ordered, auto-scrolls when appropriate, and marks inbound seen.
+  const mergeIncoming = useCallback((incoming, { forceScroll = false } = {}) => {
+    const list = (Array.isArray(incoming) ? incoming : [incoming]).filter((m) => m && m._id);
+    if (!list.length) return;
+    const existing = new Set(messagesRef.current.map((m) => m._id));
+    const adds = list.filter((m) => !existing.has(m._id));
+    if (!adds.length) return; // everything already shown → no duplicates
+    const shouldScroll = forceScroll || isNearBottom();
+    setMessages((prev) => {
+      const seen = new Set(prev.map((m) => m._id));
+      const merged = [...prev, ...adds.filter((m) => !seen.has(m._id))];
+      merged.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+      return merged;
+    });
+    if (shouldScroll) scrollToBottom();
+    if (adds.some((m) => m.senderRole !== 'USER') && conv?._id) markSeen(conv._id);
+  }, [conv?._id, markSeen]);
 
   const load = useCallback(async () => {
     try {
@@ -47,10 +79,7 @@ export default function HelpdeskChat({ embedded = false }) {
     const unsub = wsClient.subscribe('user:chat', (d) => {
       if (!d) return;
       if (d.event === 'message') {
-        setMessages((prev) => (prev.some((m) => m._id === d.message._id) ? prev : [...prev, d.message]));
-        scrollToBottom();
-        // Inbound (from manager) → mark seen since we're looking at it.
-        if (d.message.senderRole !== 'USER' && conv?._id) markSeen(conv._id);
+        mergeIncoming(d.message); // deduped vs optimistic / poll
       } else if (d.event === 'typing') {
         if (d.by !== 'USER') {
           setTheyTyping(true);
@@ -64,7 +93,25 @@ export default function HelpdeskChat({ embedded = false }) {
       }
     });
     return () => { unsub && unsub(); clearTimeout(typingTimer.current); };
-  }, [conv?._id, markSeen]);
+  }, [conv?._id, markSeen, mergeIncoming]);
+
+  // Polling fallback — guarantees new messages appear without a refresh even
+  // if the socket is down or an echo is missed. Fetches ONLY messages created
+  // after the last one we hold (cheap; no re-downloading attachments), and
+  // pauses while the tab is hidden.
+  useEffect(() => {
+    if (!conv?._id) return undefined;
+    const id = setInterval(async () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      try {
+        const last = messagesRef.current[messagesRef.current.length - 1];
+        const params = last?.createdAt ? { after: last.createdAt } : { limit: 50 };
+        const { data } = await api.get(`/chat/conversations/${conv._id}/messages`, { params });
+        mergeIncoming(data.data || []);
+      } catch (_) { /* transient — retry next tick */ }
+    }, 5000);
+    return () => clearInterval(id);
+  }, [conv?._id, mergeIncoming]);
 
   const onType = (v) => {
     setText(v);
@@ -80,9 +127,11 @@ export default function HelpdeskChat({ embedded = false }) {
     if (!body.text && !(attachments && attachments.length)) return;
     setSending(true);
     try {
-      await api.post(`/chat/conversations/${conv._id}/messages`, body);
+      const { data } = await api.post(`/chat/conversations/${conv._id}/messages`, body);
       setText('');
-      // The WS echo appends the message for us.
+      // Optimistic: render instantly from the API response. Deduped by _id
+      // against the WS echo + polling, so it never appears twice.
+      mergeIncoming(data.data, { forceScroll: true });
     } catch (e) {
       const code = e.response?.data?.error?.code;
       toast.error(code === 'NO_MANAGER' ? 'No manager is assigned to you yet.' : errorMessage(e));

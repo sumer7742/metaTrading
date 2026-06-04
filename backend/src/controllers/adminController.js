@@ -478,27 +478,32 @@ const approveWithdrawal = asyncHandler(async (req, res) => {
   wd.payoutProofMimeType = payoutProofMimeType;
   await wd.save();
 
-  // Debit balance + unlock on the canonical base wallet. Use the
-  // pre-stored baseCurrency / baseAmount; fall back to currency /
-  // amount for legacy records written before the base columns existed.
-  const wdBaseCcy = wd.baseCurrency || 'USD';
-  const wdBaseAmt = wd.baseAmount && Number(wd.baseAmount) > 0 ? wd.baseAmount : wd.amount;
-  await walletService.unlock({
-    userId: wd.userId,
-    accountId: wd.accountId,
-    currency: wdBaseCcy,
-    amount: wdBaseAmt,
-  });
-  await walletService.debit({
-    userId: wd.userId,
-    accountId: wd.accountId,
-    currency: wdBaseCcy,
-    amount: wdBaseAmt,
-    type: WALLET_TX_TYPE.WITHDRAWAL,
-    referenceType: 'withdrawal',
-    referenceId: wd._id,
-    note: `Withdrawal paid out: ${payoutTxReference} · ${wd.amount} ${wd.currency} @ ${wd.fxRateUsed || 1}`,
-  });
+  // Main/Bonus-wallet withdrawals were already debited (held) at request
+  // time — nothing to unlock/debit on a trading wallet here; the admin made
+  // the external payout, so we just leave the balance debited.
+  if (wd.source !== 'SUBSCRIPTION' && wd.source !== 'BONUS') {
+    // Debit balance + unlock on the canonical base wallet. Use the
+    // pre-stored baseCurrency / baseAmount; fall back to currency /
+    // amount for legacy records written before the base columns existed.
+    const wdBaseCcy = wd.baseCurrency || 'USD';
+    const wdBaseAmt = wd.baseAmount && Number(wd.baseAmount) > 0 ? wd.baseAmount : wd.amount;
+    await walletService.unlock({
+      userId: wd.userId,
+      accountId: wd.accountId,
+      currency: wdBaseCcy,
+      amount: wdBaseAmt,
+    });
+    await walletService.debit({
+      userId: wd.userId,
+      accountId: wd.accountId,
+      currency: wdBaseCcy,
+      amount: wdBaseAmt,
+      type: WALLET_TX_TYPE.WITHDRAWAL,
+      referenceType: 'withdrawal',
+      referenceId: wd._id,
+      note: `Withdrawal paid out: ${payoutTxReference} · ${wd.amount} ${wd.currency} @ ${wd.fxRateUsed || 1}`,
+    });
+  }
 
   await logAction(req, 'WITHDRAWAL_COMPLETED', { type: 'WITHDRAWAL', id: wd._id, payoutRef: payoutTxReference });
 
@@ -541,13 +546,34 @@ const rejectWithdrawal = asyncHandler(async (req, res) => {
   wd.status = 'REJECTED';
   wd.rejectedReason = reason || 'Rejected by admin';
   await wd.save();
-  // Unlock the funds on the canonical base wallet.
-  await walletService.unlock({
-    userId: wd.userId,
-    accountId: wd.accountId,
-    currency: wd.baseCurrency || 'USD',
-    amount: wd.baseAmount && Number(wd.baseAmount) > 0 ? wd.baseAmount : wd.amount,
-  });
+  const wdRefundAmt = wd.baseAmount && Number(wd.baseAmount) > 0 ? wd.baseAmount : wd.amount;
+  if (wd.source === 'SUBSCRIPTION') {
+    // Main Wallet was debited up-front — refund it.
+    const subscriptionWalletService = require('../services/subscriptionWalletService');
+    await subscriptionWalletService.credit({
+      userId: wd.userId,
+      amount: wdRefundAmt,
+      reason: 'REFUND',
+      note: `Refund: withdrawal ${wd._id} rejected`,
+    });
+  } else if (wd.source === 'BONUS') {
+    // Bonus Wallet was debited up-front — refund it.
+    const bonusWalletService = require('../services/bonusWalletService');
+    await bonusWalletService.credit({
+      userId: wd.userId,
+      amount: wdRefundAmt,
+      reason: 'REFUND',
+      note: `Refund: withdrawal ${wd._id} rejected`,
+    });
+  } else {
+    // Trading withdrawal: release the lock so funds return to available.
+    await walletService.unlock({
+      userId: wd.userId,
+      accountId: wd.accountId,
+      currency: wd.baseCurrency || 'USD',
+      amount: wdRefundAmt,
+    });
+  }
   await logAction(req, 'WITHDRAWAL_REJECTED', { type: 'WITHDRAWAL', id: wd._id }, { reason });
   try {
     const broadcaster = require('../websocket/server');

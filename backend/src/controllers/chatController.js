@@ -60,7 +60,7 @@ const openConversation = asyncHandler(async (req, res) => {
 
 // GET /chat/conversations/:id/messages?before=&limit=
 const getMessages = asyncHandler(async (req, res) => {
-  const msgs = await chat.history(req.params.id, req.user, { before: req.query.before, limit: req.query.limit });
+  const msgs = await chat.history(req.params.id, req.user, { before: req.query.before, after: req.query.after, limit: req.query.limit });
   sendSuccess(res, msgs);
 });
 

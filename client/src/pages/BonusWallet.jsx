@@ -4,14 +4,14 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import PageHero from '../components/PageHero';
 import WalletSidebar from '../components/WalletSidebar';
-import DepositModal from '../components/DepositModal';
+import WithdrawModal from '../components/WithdrawModal';
 import { wsClient } from '../services/ws';
 
 /**
- * Bonus Wallet â€” standalone wallet that receives ALL referral & partner
- * earnings (commissions, multi-level, revenue share, bonuses). Funds here
- * can be transferred to a spendable wallet but CANNOT be withdrawn
- * directly, so this page intentionally has NO deposit / withdraw action.
+ * Bonus Wallet — standalone wallet that receives ALL referral & partner
+ * earnings (commissions, multi-level, revenue share, bonuses). Earnings are
+ * credited automatically; this page exposes a Withdraw action ONLY — never an
+ * Add-Funds / deposit one (you don't deposit into a rewards wallet).
  */
 const REASON_LABEL = {
   REFERRAL_COMMISSION: 'Referral Commission',
@@ -29,10 +29,10 @@ export default function BonusWallet() {
   const [wallet, setWallet] = useState(null);
   const [txns, setTxns] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [addOpen, setAddOpen] = useState(false);
   const [sub, setSub] = useState(null);
   const [effectivePlan, setEffectivePlan] = useState(null);
   const [savingAutoRenew, setSavingAutoRenew] = useState(false);
+  const [withdrawOpen, setWithdrawOpen] = useState(false);
 
   const refresh = async () => {
     try {
@@ -76,7 +76,7 @@ export default function BonusWallet() {
 
   if (loading) {
     return (
-      <div className="grid grid-cols-12 gap-6">
+      <div className="max-w-[1600px] grid grid-cols-12 gap-3 lg:-ml-4 xl:-ml-6">
         <WalletSidebar activeId="bonus" />
         <main className="col-span-12 lg:col-span-10 min-w-0">
           <div className="text-text-muted p-4">Loading walletâ€¦</div>
@@ -118,18 +118,18 @@ export default function BonusWallet() {
   }[status] || { bg: '#6B728018', fg: '#6B7280', label: status };
 
   return (
-    <div className="grid grid-cols-12 gap-6">
+    <div className="max-w-[1600px] grid grid-cols-12 gap-3 lg:-ml-4 xl:-ml-6">
       <WalletSidebar activeId="bonus" />
       <main className="col-span-12 lg:col-span-10 min-w-0 space-y-5">
         <PageHero
           eyebrow="Rewards"
           title="Bonus Wallet"
-          subtitle="All referral and partner earnings are credited here automatically. Transfer them to a spendable wallet â€” direct withdrawals are not available from this wallet."
+          subtitle="All referral and partner earnings are credited here automatically. Withdraw your earnings to your bank or crypto wallet anytime."
         />
 
         {/* â”€â”€ Balance card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
         <div className="bg-white border-2 border-border-dark rounded-3xl p-6 md:p-8 shadow-card relative overflow-hidden">
-          <div className="absolute -top-16 -right-16 w-48 h-48 rounded-full opacity-[0.07]"
+          <div className="absolute -top-16 -right-16 w-48 h-48 rounded-full opacity-[0.07] pointer-events-none"
                style={{ background: 'radial-gradient(circle, #16A34A 0%, transparent 70%)' }} />
           <div className="flex items-start justify-between gap-4 flex-wrap">
             <div>
@@ -143,12 +143,14 @@ export default function BonusWallet() {
               <div className="mt-1 text-xs text-text-muted">Lifetime earnings: <span className="font-semibold text-text-secondary">{sym}{fmt(wallet?.totalEarnings)}</span></div>
             </div>
 
-            {/* Actions â€” Add Funds + History. NO withdraw (transfer out
-                stays available via the link below the card). */}
+            {/* Actions — Withdraw only. A rewards wallet is credited
+                automatically and is never deposited into, so there is no
+                "Add Funds". Withdraw cashes out the Bonus Wallet balance
+                (admin-approved, refunded if rejected). */}
             <div className="flex items-center gap-2">
-              <button onClick={() => setAddOpen(true)} className="inline-flex items-center gap-2 bg-primary-500 hover:bg-primary-600 text-white text-sm font-bold px-4 py-2.5 rounded-xl transition-colors">
-                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
-                Add Funds
+              <button onClick={() => setWithdrawOpen(true)} className="inline-flex items-center gap-2 bg-primary-500 hover:bg-primary-600 text-white text-sm font-bold px-4 py-2.5 rounded-xl transition-colors">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7 7 7-7" /></svg>
+                Withdraw
               </button>
               <Link to="/plans" className="inline-flex items-center gap-2 border border-border-dark text-text-primary hover:bg-bg-hover text-sm font-bold px-4 py-2.5 rounded-xl transition-colors">
                 View Plans
@@ -209,9 +211,9 @@ export default function BonusWallet() {
 
           <div className="mt-4 text-[11px] text-text-muted inline-flex items-center gap-1.5 flex-wrap">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10" /><path d="M12 16v-4M12 8h.01" /></svg>
-            Bonus funds can't be withdrawn directly â€”
-            <Link to="/wallet?action=transfer" className="font-semibold text-primary-600 hover:underline">transfer them out</Link>
-            to your Main or trading wallet to spend.
+            Withdrawals are processed from your Main / trading wallet —
+            <Link to="/wallet?action=transfer" className="font-semibold text-primary-600 hover:underline">transfer your earnings</Link>
+            there first, then withdraw.
           </div>
         </div>
 
@@ -269,14 +271,14 @@ export default function BonusWallet() {
         </div>
       </main>
 
-      {addOpen && (
-        <DepositModal
+      {withdrawOpen && (
+        <WithdrawModal
+          endpoint="/bonus-wallet/withdraw"
+          title="Withdraw from Bonus Wallet"
           currency={ccy}
-          walletName="Bonus Wallet"
-          instantEndpoint="/bonus-wallet/deposit"
-          manualEndpoint="/bonus-wallet/manual-deposit"
-          onClose={() => setAddOpen(false)}
-          onSuccess={() => { setAddOpen(false); refresh(); }}
+          balance={Number(wallet?.balance || 0)}
+          onClose={() => setWithdrawOpen(false)}
+          onSuccess={() => { setWithdrawOpen(false); refresh(); }}
         />
       )}
     </div>

@@ -14,8 +14,9 @@ const walletService = require('../services/walletService');
 const TradingAccount = require('../models/TradingAccount');
 const { Wallet } = require('../models/Wallet');
 const { WALLET_TX_TYPE } = require('../config/constants');
-const { Deposit } = require('../models/index');
+const { Deposit, Withdrawal } = require('../models/index');
 const { BonusWallet, BonusTransaction } = require('../models/BonusWallet');
+const User = require('../models/User');
 
 /* ── User-facing ────────────────────────────────────────────────── */
 
@@ -36,6 +37,99 @@ const getWallet = asyncHandler(async (req, res) => {
     updatedAt: wallet.updatedAt,
     ...summary,
   });
+});
+
+// POST /bonus-wallet/withdraw  { amount, method, + destination fields }
+//
+// Real Bonus-Wallet cash-out. Balance is DEBITED (held) up-front and a PENDING
+// Withdrawal (source='BONUS') is created for the admin queue. Admin approve →
+// external payout, balance stays debited. Admin reject → balance refunded
+// (see adminController.rejectWithdrawal). KYC-gated like every withdrawal.
+const requestWithdrawal = asyncHandler(async (req, res) => {
+  const n = Number(req.body.amount);
+  if (!Number.isFinite(n) || n <= 0) throw new AppError('amount must be a positive number', 400);
+  const M = String(req.body.method || '').toUpperCase();
+  if (!['UPI', 'BANK', 'CRYPTO'].includes(M)) throw new AppError('method must be UPI, BANK or CRYPTO', 400);
+
+  const dest = {};
+  if (M === 'UPI') {
+    if (!req.body.upiId) throw new AppError('UPI ID is required', 400);
+    dest.upiId = String(req.body.upiId).trim();
+  } else if (M === 'BANK') {
+    if (!req.body.bankAccountNumber || !req.body.bankIFSC || !req.body.bankAccountHolderName) {
+      throw new AppError('Bank account number, IFSC and account holder name are required', 400);
+    }
+    dest.bankAccountNumber = String(req.body.bankAccountNumber).trim();
+    dest.bankIFSC = String(req.body.bankIFSC).trim();
+    dest.bankAccountHolderName = String(req.body.bankAccountHolderName).trim();
+    if (req.body.bankName) dest.bankName = String(req.body.bankName).trim();
+  } else {
+    if (!req.body.cryptoAddress || !req.body.cryptoNetwork) {
+      throw new AppError('Crypto address and network are required', 400);
+    }
+    dest.cryptoAddress = String(req.body.cryptoAddress).trim();
+    dest.cryptoNetwork = String(req.body.cryptoNetwork).trim();
+  }
+
+  const user = await User.findById(req.userId).select('kycStatus').lean();
+  if (!user || user.kycStatus !== 'APPROVED') {
+    throw new AppError('KYC verification must be approved before withdrawing funds.', 403, 'KYC_REQUIRED');
+  }
+
+  const amtStr = String(n);
+
+  // 1. Debit (hold) the Bonus Wallet — throws 402 if balance is short.
+  let walletAfter;
+  try {
+    const { wallet } = await bonusWalletService.debit({
+      userId: req.userId,
+      amount: amtStr,
+      reason: 'WITHDRAWAL',
+      note: `Withdrawal request · ${M}`,
+    });
+    walletAfter = wallet;
+  } catch (err) {
+    if (err.code === 'INSUFFICIENT_BONUS_BALANCE') {
+      throw new AppError(err.message, 402, 'INSUFFICIENT_BALANCE');
+    }
+    throw err;
+  }
+
+  // 2. Create PENDING withdrawal; refund the hold if the record can't be made.
+  let wd;
+  try {
+    wd = await Withdrawal.create({
+      userId: req.userId,
+      source: 'BONUS',
+      currency: walletAfter.currency || 'USD',
+      amount: amtStr,
+      baseCurrency: 'USD',
+      baseAmount: amtStr,
+      fxRateUsed: 1,
+      method: M,
+      ...dest,
+      status: 'PENDING',
+    });
+  } catch (createErr) {
+    try {
+      await bonusWalletService.credit({
+        userId: req.userId, amount: amtStr, reason: 'REFUND',
+        note: 'Refund: withdrawal request could not be created',
+      });
+    } catch (refundErr) {
+      console.error('[bonusWallet.withdraw] CRITICAL: hold refund failed', refundErr.message);
+    }
+    throw createErr;
+  }
+
+  sendSuccess(res, {
+    withdrawalId: wd._id,
+    status: wd.status,
+    amount: wd.amount,
+    currency: wd.currency,
+    method: wd.method,
+    balance: walletAfter.balance,
+  }, 201);
 });
 
 // POST /bonus-wallet/auto-renew  { enabled }
@@ -272,4 +366,4 @@ async function _audit(req, action, targetId, metadata) {
   } catch (_) { /* non-fatal */ }
 }
 
-module.exports = { getWallet, getSummary, history, toggleAutoRenew, deposit, manualDeposit, adminCredit, adminDebit, adminBalances, adminLogs };
+module.exports = { getWallet, getSummary, history, requestWithdrawal, toggleAutoRenew, deposit, manualDeposit, adminCredit, adminDebit, adminBalances, adminLogs };

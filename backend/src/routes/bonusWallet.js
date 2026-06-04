@@ -11,10 +11,12 @@ router.get('/', authenticate, c.getWallet);
 router.get('/summary', authenticate, c.getSummary);
 router.get('/history', authenticate, c.history);
 // "Add funds" — instant transfer from a trading account, or a manual
-// (UPI/Bank/Crypto/…) deposit that an admin verifies. Funds IN only;
-// there is still no withdrawal path.
+// (UPI/Bank/Crypto/…) deposit that an admin verifies.
 router.post('/deposit', authenticate, c.deposit);
 router.post('/manual-deposit', authenticate, c.manualDeposit);
+// Real cash-out: debit/hold the balance + create a PENDING withdrawal for the
+// admin queue (refunded on reject). KYC-gated.
+router.post('/withdraw', authenticate, c.requestWithdrawal);
 router.post('/auto-renew', authenticate, c.toggleAutoRenew);
 
 // Admin

@@ -1,9 +1,13 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
+import { wsClient } from '../services/ws';
 import { fmtDate } from '../utils/format';
 import HelpdeskChat from './HelpdeskChat';
+
+// Valid Helpdesk tabs — used to validate/restore the tab from the URL.
+const TABS = ['chat', 'faq', 'tickets', 'new'];
 
 /**
  * Helpdesk page — three panes:
@@ -73,10 +77,14 @@ const KB_ARTICLES = [
 ];
 
 export default function Helpdesk() {
-  const [tab, setTab] = useState('faq');
+  // Restore the exact tab + search from the URL so a refresh keeps the user
+  // where they were (no snap-back to the default tab).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [tab, setTab] = useState(() => (TABS.includes(searchParams.get('tab')) ? searchParams.get('tab') : 'faq'));
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
+  const [search, setSearch] = useState(() => searchParams.get('q') || '');
+  const [chatUnread, setChatUnread] = useState(0);
 
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
@@ -93,6 +101,29 @@ export default function Helpdesk() {
   };
 
   useEffect(() => { load(); }, []);
+
+  // Persist tab + search in the URL (replace, so we don't spam history).
+  // Rehydrated above on mount → exact Helpdesk state survives a refresh.
+  useEffect(() => {
+    const next = new URLSearchParams();
+    next.set('tab', tab);
+    if (search.trim()) next.set('q', search.trim());
+    setSearchParams(next, { replace: true });
+  }, [tab, search]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Real-time unread badge on the Live Chat tab. Increments on inbound
+  // messages while the user isn't on the chat tab; clears when they open it.
+  const tabRef = useRef(tab);
+  useEffect(() => { tabRef.current = tab; }, [tab]);
+  useEffect(() => { if (tab === 'chat') setChatUnread(0); }, [tab]);
+  useEffect(() => {
+    const unsub = wsClient.subscribe('user:chat', (d) => {
+      if (d?.event === 'message' && d.message?.senderRole !== 'USER') {
+        setChatUnread((n) => (tabRef.current === 'chat' ? 0 : n + 1));
+      }
+    });
+    return () => unsub && unsub();
+  }, []);
 
   const filteredKb = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -138,7 +169,7 @@ export default function Helpdesk() {
       {/* Tabs */}
       <div className="flex items-center border-b border-border-dark px-2 gap-1">
         {[
-          { k: 'chat', label: 'Live Chat', count: null },
+          { k: 'chat', label: 'Live Chat', count: chatUnread || null },
           { k: 'faq', label: 'Knowledge Base', count: KB_ARTICLES.length },
           { k: 'tickets', label: 'My Tickets', count: tickets.length },
           { k: 'new', label: 'New Ticket', count: null },

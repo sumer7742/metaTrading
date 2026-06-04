@@ -169,12 +169,20 @@ function serializeMessage(m) {
   };
 }
 
-async function history(conversationId, requester, { before, limit = 50 } = {}) {
+async function history(conversationId, requester, { before, after, limit = 50 } = {}) {
   const conv = await Conversation.findById(conversationId);
   authorize(conv, requester);
   const q = { conversationId: conv._id };
-  if (before) q.createdAt = { $lt: new Date(before) };
   const l = Math.min(100, Math.max(1, Number(limit) || 50));
+  // Incremental poll: messages strictly AFTER a timestamp, oldest-first.
+  // Lets the live-chat UI fetch only NEW messages (no re-downloading the
+  // full thread + attachment data URLs every few seconds).
+  if (after) {
+    q.createdAt = { $gt: new Date(after) };
+    const rows = await ChatMessage.find(q).sort({ createdAt: 1 }).limit(l).lean();
+    return rows.map(serializeMessage);
+  }
+  if (before) q.createdAt = { $lt: new Date(before) };
   const rows = await ChatMessage.find(q).sort({ createdAt: -1 }).limit(l).lean();
   return rows.reverse().map(serializeMessage); // oldest-first for rendering
 }

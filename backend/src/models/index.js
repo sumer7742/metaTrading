@@ -53,7 +53,18 @@ const depositSchema = new mongoose.Schema(
 const withdrawalSchema = new mongoose.Schema(
   {
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    accountId: { type: mongoose.Schema.Types.ObjectId, ref: 'TradingAccount', required: true },
+    // Trading-account withdrawals set this (funds locked on that account's
+    // wallet). Main/Subscription-wallet withdrawals (source='SUBSCRIPTION')
+    // have NO trading account — the balance is debited up-front instead.
+    accountId: { type: mongoose.Schema.Types.ObjectId, ref: 'TradingAccount' },
+    // Where the money comes from / how it's settled:
+    //   'TRADING'      → account base wallet: lock on request → unlock+debit
+    //                    on approve, unlock on reject (existing flow).
+    //   'SUBSCRIPTION' → Main Wallet: debited (held) on request → kept on
+    //                    approve, refunded on reject.
+    //   'BONUS'        → Bonus Wallet: same debit-on-request / refund-on-reject
+    //                    model as SUBSCRIPTION.
+    source: { type: String, enum: ['TRADING', 'SUBSCRIPTION', 'BONUS'], default: 'TRADING', index: true },
     // What the user requested (e.g. ₹500 to a UPI ID). Admin pays this
     // exact value via UPI / IMPS. The wallet, meanwhile, debits the
     // USD equivalent stored in `baseAmount`.

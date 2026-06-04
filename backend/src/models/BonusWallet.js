@@ -61,6 +61,8 @@ const bonusTransactionSchema = new mongoose.Schema(
         'TRANSFER_OUT',
         'ADMIN_CREDIT',
         'ADMIN_DEBIT',
+        'WITHDRAWAL',
+        'REFUND',
       ],
       required: true,
       index: true,

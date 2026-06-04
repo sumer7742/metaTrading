@@ -8,6 +8,7 @@ const router = express.Router();
 router.get('/', authenticate, c.getWallet);
 router.post('/deposit', authenticate, c.deposit);
 router.post('/manual-deposit', authenticate, c.manualDeposit);
+router.post('/withdraw', authenticate, c.requestWithdrawal);
 router.post('/auto-renew', authenticate, c.toggleAutoRenew);
 
 // Admin

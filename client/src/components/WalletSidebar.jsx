@@ -35,7 +35,7 @@ const NAV_ITEMS = [
 
 export default function WalletSidebar({ activeId = null, onSelect = null }) {
   return (
-    <aside className="col-span-12 lg:col-span-2 xl:col-span-2 flex flex-col gap-4 min-w-0 lg:sticky lg:top-40 lg:self-start lg:max-h-[calc(100vh-11rem)] lg:overflow-y-auto">
+    <aside className="col-span-12 lg:col-span-2 xl:col-span-2 flex flex-col gap-4 min-w-0 lg:sticky lg:top-40 lg:self-start">
       <nav className="bg-white border border-border-dark rounded-2xl p-2 flex flex-col gap-0.5">
         {NAV_ITEMS.map((n) => {
           const isActive = activeId === n.id;

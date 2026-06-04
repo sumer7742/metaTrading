@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import PageHero from '../components/PageHero';
 import WalletSidebar from '../components/WalletSidebar';
+import WithdrawModal from '../components/WithdrawModal';
 
 /**
  * Subscription Wallet — standalone wallet used exclusively for plan
@@ -17,6 +18,7 @@ export default function SubscriptionWallet() {
   const [txns, setTxns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [depositOpen, setDepositOpen] = useState(false);
+  const [withdrawOpen, setWithdrawOpen] = useState(false);
   const [savingAutoRenew, setSavingAutoRenew] = useState(false);
 
   const refresh = async () => {
@@ -65,7 +67,7 @@ export default function SubscriptionWallet() {
 
   if (loading) {
     return (
-      <div className="grid grid-cols-12 gap-6">
+      <div className="max-w-[1600px] grid grid-cols-12 gap-3 lg:-ml-4 xl:-ml-6">
         <WalletSidebar activeId="subscription" />
         <main className="col-span-12 lg:col-span-10 xl:col-span-10 min-w-0">
           <div className="text-text-muted p-4">Loading wallet…</div>
@@ -93,7 +95,7 @@ export default function SubscriptionWallet() {
   }[status] || { bg: '#6B728018', fg: '#6B7280', label: status };
 
   return (
-    <div className="grid grid-cols-12 gap-6">
+    <div className="max-w-[1600px] grid grid-cols-12 gap-3 lg:-ml-4 xl:-ml-6">
       <WalletSidebar activeId="subscription" />
       <main className="col-span-12 lg:col-span-10 xl:col-span-10 min-w-0 space-y-5">
       <PageHero
@@ -104,8 +106,8 @@ export default function SubscriptionWallet() {
 
       {/* ── Premium balance card ───────────────────────────────────── */}
       <div className="bg-white border-2 border-border-dark rounded-3xl p-6 md:p-8 shadow-card relative overflow-hidden">
-        {/* Decorative ribbon */}
-        <div className="absolute -top-16 -right-16 w-48 h-48 rounded-full opacity-[0.07]"
+        {/* Decorative ribbon — must NOT swallow clicks on the action buttons. */}
+        <div className="absolute -top-16 -right-16 w-48 h-48 rounded-full opacity-[0.07] pointer-events-none"
              style={{ background: 'radial-gradient(circle, #3B82F6 0%, transparent 70%)' }} />
 
         <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -132,7 +134,7 @@ export default function SubscriptionWallet() {
             >
               + Add Funds
             </button>
-            <Link to="/wallet?action=transfer" className="btn-secondary text-sm">Transfer</Link>
+            <button onClick={() => setWithdrawOpen(true)} className="btn-secondary text-sm">Withdraw</button>
           </div>
         </div>
       </div>
@@ -210,6 +212,17 @@ export default function SubscriptionWallet() {
             setDepositOpen(false);
             refresh();
           }}
+        />
+      )}
+
+      {withdrawOpen && (
+        <WithdrawModal
+          endpoint="/subscription-wallet/withdraw"
+          title="Withdraw from Main Wallet"
+          currency={ccy}
+          balance={balanceNum}
+          onClose={() => setWithdrawOpen(false)}
+          onSuccess={() => { setWithdrawOpen(false); refresh(); }}
         />
       )}
       </main>
