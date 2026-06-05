@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { useAuthStore } from '../store/auth';
 import PageHero from '../components/PageHero';
+import LimitsModal from '../components/LimitsModal';
 
 /**
  * Managers — SuperAdmin sees/creates all managers (must pick the parent
@@ -18,6 +19,7 @@ export default function Managers() {
   const [adminFilter, setAdminFilter] = useState('');
   const [loading, setLoading] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  const [limitsFor, setLimitsFor] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -97,7 +99,7 @@ export default function Managers() {
                   <td className="py-2 px-3 text-text-primary font-semibold">{[m.firstName, m.lastName].filter(Boolean).join(' ') || '—'}</td>
                   <td className="py-2 px-3 text-text-secondary">{m.email}</td>
                   {isSuper && <td className="py-2 px-3 text-text-secondary">{adminName.get(String(m.adminId)) || '—'}</td>}
-                  <td className="py-2 px-3 text-center font-mono">{wl.totalUsers || 0} / {wl.userCapacity || 100}</td>
+                  <td className="py-2 px-3 text-center font-mono">{wl.totalUsers || 0} / {m.hierarchyLimits?.maxUsers ?? (wl.userCapacity || 100)}</td>
                   <td className="py-2 px-3 text-center font-mono text-bull">{wl.verifiedUsers || 0}</td>
                   <td className="py-2 px-3 text-center font-mono text-warn">{wl.pendingKycUsers || 0}</td>
                   <td className="py-2 px-3 text-center">
@@ -105,7 +107,8 @@ export default function Managers() {
                       {m.isActive !== false ? 'Active' : 'Inactive'}
                     </span>
                   </td>
-                  <td className="py-2 px-3 text-right">
+                  <td className="py-2 px-3 text-right space-x-1">
+                    {isSuper && <button onClick={() => setLimitsFor(m)} className="btn-ghost text-xs text-primary-400">Limits</button>}
                     <button onClick={() => deactivate(m)} className="btn-ghost text-xs text-rose-400">Deactivate</button>
                   </td>
                 </tr>
@@ -116,6 +119,7 @@ export default function Managers() {
       </div>
 
       {createOpen && <CreateManagerModal isSuper={isSuper} admins={admins} onClose={() => setCreateOpen(false)} onSaved={() => { setCreateOpen(false); load(); }} />}
+      {limitsFor && <LimitsModal userId={limitsFor._id} onClose={() => { setLimitsFor(null); load(); }} />}
     </div>
   );
 }

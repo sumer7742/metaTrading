@@ -45,4 +45,10 @@ router.get('/users',      allowPermission('hierarchy.view'), c.users);
 router.get('/workload',   allowPermission('hierarchy.view'), c.workload);
 router.get('/tree',       allowPermission('hierarchy.view'), c.tree);
 
+// ── Hierarchical limits — SUPER ADMIN ONLY ──────────────────────────
+// Only the Super Admin can view or edit the Max Managers / Max Users
+// quotas. limitService.assertCanManage re-checks the role server-side.
+router.get('/limits/:id', allowPermission('hierarchy.superadmin'), c.getLimits);
+router.put('/limits/:id', allowPermission('hierarchy.superadmin'), c.setLimits);
+
 module.exports = router;

@@ -73,6 +73,7 @@ const NAV_SECTIONS = [
     title: 'Insights',
     items: [
       { to: '/reports', icon: I.reports, label: 'Reports' },
+      { to: '/execution', icon: I.instruments, label: 'Execution' },
       { to: '/audit', icon: I.audit, label: 'Audit Log' },
     ],
   },

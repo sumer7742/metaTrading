@@ -1,30 +1,267 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { fmtDate, fmtNum } from '../utils/format';
+import { useAuthStore } from '../store/auth';
 import PageHero from '../components/PageHero';
 
+// ── Column registry ──────────────────────────────────────────────────
+// Canonical, ordered list of every available column. `actions` is pinned
+// separately (always last, never toggled). `adminOnly` columns are hidden
+// from MANAGER role entirely. `sortBy` maps to the backend SORT_FIELDS.
+const ALL_COLUMNS = [
+  { key: 'userId',          label: 'User ID',          sortBy: null },
+  { key: 'email',           label: 'Email',            sortBy: 'email' },
+  { key: 'name',            label: 'Name',             sortBy: 'name' },
+  { key: 'role',            label: 'Role',             sortBy: 'role' },
+  { key: 'plan',            label: 'Plan',             sortBy: 'plan' },
+  { key: 'walletBalance',   label: 'Wallet Balance',   sortBy: 'walletBalance',   numeric: true },
+  { key: 'totalDeposit',    label: 'Total Deposit',    sortBy: 'totalDeposit',    numeric: true },
+  { key: 'totalWithdrawal', label: 'Total Withdrawal', sortBy: 'totalWithdrawal', numeric: true },
+  { key: 'totalPnl',        label: 'Total PnL',        sortBy: 'totalPnl',        numeric: true },
+  { key: 'kyc',             label: 'KYC',              sortBy: 'kyc' },
+  { key: 'referredBy',      label: 'Referred By',      sortBy: null },
+  { key: 'status',          label: 'Status',           sortBy: 'status' },
+  { key: 'joined',          label: 'Joined',           sortBy: 'joined' },
+  { key: 'lastLogin',       label: 'Last Login',       sortBy: 'lastLogin' },
+  { key: 'manager',         label: 'Manager',          sortBy: null, adminOnly: true },
+  { key: 'admin',           label: 'Admin',            sortBy: null, adminOnly: true },
+];
+const DEFAULT_ORDER = ALL_COLUMNS.map((c) => c.key);
+const LAYOUT_VERSION = 1;
+
+// Role-based DEFAULT visibility. Super Admin sees everything; Admin sees the
+// canonical set; Manager sees a limited subset (and no admin-only columns).
+function defaultVisibility(role) {
+  const vis = {};
+  ALL_COLUMNS.forEach((c) => { vis[c.key] = false; });
+  const show = (keys) => keys.forEach((k) => { vis[k] = true; });
+  if (role === 'SUPER_ADMIN') {
+    ALL_COLUMNS.forEach((c) => { vis[c.key] = true; });
+  } else if (role === 'MANAGER') {
+    show(['userId', 'email', 'name', 'plan', 'walletBalance', 'kyc', 'status', 'joined']);
+  } else { // ADMIN + fallback
+    show(['userId', 'email', 'name', 'role', 'plan', 'walletBalance', 'totalDeposit',
+      'totalWithdrawal', 'totalPnl', 'kyc', 'referredBy', 'status', 'joined']);
+  }
+  return vis;
+}
+
+const PLAN_TONE = {
+  FREE:    'bg-gray-700/70 text-gray-300 border-gray-600',
+  BASIC:   'bg-zinc-600/40 text-zinc-200 border-zinc-500',
+  SILVER:  'bg-slate-400/20 text-slate-200 border-slate-400/40',
+  GOLD:    'bg-amber-500/15 text-amber-300 border-amber-500/40',
+  PREMIUM: 'bg-blue-500/15 text-blue-300 border-blue-500/40',
+  PRO:     'bg-emerald-500/15 text-emerald-300 border-emerald-500/40',
+  VIP:     'bg-violet-500/15 text-violet-300 border-violet-500/40',
+};
+const PLAN_FILTER_OPTIONS = ['FREE', 'BASIC', 'SILVER', 'GOLD', 'PREMIUM', 'PRO', 'VIP'];
+
+const signedMoney = (v) => { const n = Number(v) || 0; return `${n < 0 ? '-' : ''}$${fmtNum(Math.abs(n))}`; };
+const money = (v) => `$${fmtNum(Math.abs(Number(v) || 0))}`;
+const fullName = (u) => [u?.firstName, u?.lastName].filter(Boolean).join(' ');
+const csvEscape = (val) => {
+  const s = val == null ? '' : String(val);
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+
 export default function Users() {
+  const { user: me } = useAuthStore();
+  const role = me?.role || 'ADMIN';
+  const myId = me?._id || me?.id || 'anon';
+  const storageKey = `userTableLayout:${myId}`;
+
   const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [kycFilter, setKycFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [planFilter, setPlanFilter] = useState('');
+  const [sortBy, setSortBy] = useState('joined');
+  const [sortDir, setSortDir] = useState('desc');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [selected, setSelected] = useState(null);
+  const [customizeOpen, setCustomizeOpen] = useState(false);
+  const [history, setHistory] = useState(null); // { kind, user }
+  const [exporting, setExporting] = useState(false);
 
-  const load = async () => {
-    const { data } = await api.get('/admin/users', { params: { search, kyc: kycFilter, status: statusFilter, page, limit: 25 } });
-    setUsers(data.data.users);
-    setTotal(data.data.total);
+  // Columns this role may ever see (managers can't access admin-only ones).
+  const accessibleColumns = useMemo(
+    () => ALL_COLUMNS.filter((c) => !c.adminOnly || role !== 'MANAGER'),
+    [role]
+  );
+
+  const [order, setOrder] = useState(DEFAULT_ORDER);
+  const [visible, setVisible] = useState(() => defaultVisibility(role));
+
+  // Restore saved layout (per admin user) or fall back to the role default.
+  useEffect(() => {
+    const fallback = () => { setOrder(DEFAULT_ORDER); setVisible(defaultVisibility(role)); };
+    try {
+      const saved = JSON.parse(localStorage.getItem(storageKey) || 'null');
+      if (saved && saved.v === LAYOUT_VERSION && Array.isArray(saved.order) && saved.visible) {
+        const known = new Set(ALL_COLUMNS.map((c) => c.key));
+        const ord = saved.order.filter((k) => known.has(k));
+        ALL_COLUMNS.forEach((c) => { if (!ord.includes(c.key)) ord.push(c.key); }); // append new cols
+        const def = defaultVisibility(role);
+        const vis = {};
+        ALL_COLUMNS.forEach((c) => { vis[c.key] = c.key in saved.visible ? !!saved.visible[c.key] : def[c.key]; });
+        setOrder(ord); setVisible(vis);
+      } else fallback();
+    } catch { fallback(); }
+  }, [storageKey, role]);
+
+  const persist = (ord, vis) => {
+    setOrder(ord); setVisible(vis);
+    try { localStorage.setItem(storageKey, JSON.stringify({ v: LAYOUT_VERSION, order: ord, visible: vis })); } catch { /* quota */ }
+  };
+  const resetLayout = () => {
+    try { localStorage.removeItem(storageKey); } catch { /* */ }
+    setOrder(DEFAULT_ORDER); setVisible(defaultVisibility(role));
+    toast.success('Layout reset to default');
   };
 
-  useEffect(() => { load(); }, [page, kycFilter, statusFilter]);
+  // Ordered + visible + role-accessible columns actually rendered.
+  const visibleColumns = useMemo(
+    () => order
+      .map((k) => accessibleColumns.find((c) => c.key === k))
+      .filter((c) => c && visible[c.key]),
+    [order, visible, accessibleColumns]
+  );
 
-  const onSearch = (e) => {
-    e.preventDefault();
+  const fetchUsers = async (params) => {
+    const { data } = await api.get('/admin/users', {
+      params: { search, kyc: kycFilter, status: statusFilter, plan: planFilter, sortBy, sortDir, ...params },
+    });
+    return data.data;
+  };
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const d = await fetchUsers({ page, limit: 25 });
+      setUsers(d.users || []);
+      setTotal(d.total || 0);
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [page, kycFilter, statusFilter, planFilter, sortBy, sortDir]);
+
+  const onSearch = (e) => { e.preventDefault(); setPage(1); load(); };
+
+  const toggleSort = (col) => {
+    if (!col.sortBy) return;
+    if (sortBy === col.sortBy) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else { setSortBy(col.sortBy); setSortDir(col.numeric ? 'desc' : 'asc'); }
     setPage(1);
-    load();
+  };
+
+  // CSV export — respects current visible columns + their order, and the
+  // active filters/sort. Pulls a wider page so it isn't limited to 25 rows.
+  const exportCsv = async () => {
+    setExporting(true);
+    try {
+      const d = await fetchUsers({ page: 1, limit: 1000 });
+      const rows = d.users || [];
+      const cols = visibleColumns;
+      const lines = [cols.map((c) => csvEscape(c.label)).join(',')];
+      for (const u of rows) lines.push(cols.map((c) => csvEscape(exportCell(c.key, u))).join(','));
+      const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `users_${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Exported ${rows.length} users`);
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // Plain value for CSV export, per column.
+  const exportCell = (key, u) => {
+    switch (key) {
+      case 'userId': return u.userUid || '';
+      case 'email': return u.email || '';
+      case 'name': return fullName(u);
+      case 'role': return u.role || '';
+      case 'plan': return u.plan?.name || u.plan?.code || 'Free';
+      case 'walletBalance': return Number(u.walletBalance || 0).toFixed(2);
+      case 'totalDeposit': return Number(u.totalDeposit || 0).toFixed(2);
+      case 'totalWithdrawal': return Number(u.totalWithdrawal || 0).toFixed(2);
+      case 'totalPnl': return Number(u.totalPnl || 0).toFixed(2);
+      case 'kyc': return u.kycStatus || '';
+      case 'referredBy': return u.referredBy ? (fullName(u.referredBy) || u.referredBy.email || '') : '';
+      case 'status': return u.isActive ? 'Active' : 'Blocked';
+      case 'joined': return u.createdAt ? new Date(u.createdAt).toISOString() : '';
+      case 'lastLogin': return u.lastLoginAt ? new Date(u.lastLoginAt).toISOString() : '';
+      case 'manager': return u.manager?.name || '';
+      case 'admin': return u.admin?.name || '';
+      default: return '';
+    }
+  };
+
+  // Cell renderer, per column.
+  const renderCell = (key, u) => {
+    switch (key) {
+      case 'userId':
+        return u.userUid ? (
+          <button type="button" title="Copy User ID"
+            onClick={() => { navigator.clipboard.writeText(u.userUid); toast.success('User ID copied'); }}
+            className="font-mono text-xs font-bold text-primary-500 hover:text-primary-400">
+            {u.userUid}
+          </button>
+        ) : <span className="text-gray-600 text-xs">—</span>;
+      case 'email': return <span className="text-gray-200">{u.email}</span>;
+      case 'name': return <span className="text-gray-200">{fullName(u) || '—'}</span>;
+      case 'role': return <span className="text-xs text-primary-500">{u.role}</span>;
+      case 'plan': return <PlanBadge plan={u.plan} />;
+      case 'walletBalance':
+        return <span className="font-mono tabular-nums text-gray-100">{money(u.walletBalance)}</span>;
+      case 'totalDeposit':
+        return (
+          <button type="button" onClick={() => setHistory({ kind: 'deposit', user: u })}
+            title="View deposit history"
+            className="font-mono tabular-nums text-emerald-300/90 hover:text-emerald-300 underline decoration-dotted underline-offset-2">
+            {money(u.totalDeposit)}
+          </button>
+        );
+      case 'totalWithdrawal':
+        return (
+          <button type="button" onClick={() => setHistory({ kind: 'withdrawal', user: u })}
+            title="View withdrawal history"
+            className="font-mono tabular-nums text-amber-300/90 hover:text-amber-300 underline decoration-dotted underline-offset-2">
+            {money(u.totalWithdrawal)}
+          </button>
+        );
+      case 'totalPnl': return <PnlCell u={u} />;
+      case 'kyc': return <KycBadge status={u.kycStatus} />;
+      case 'referredBy': {
+        const refBy = u.referredBy;
+        const refName = refBy ? (fullName(refBy) || refBy.email) : null;
+        return refBy ? (
+          <div className="flex flex-col leading-tight">
+            <span className="text-white truncate max-w-[150px]" title={refName}>{refName}</span>
+            {refBy.referralCode && <span className="font-mono text-[10px] text-primary-500">{refBy.referralCode}</span>}
+          </div>
+        ) : <span className="text-gray-600">—</span>;
+      }
+      case 'status':
+        return <span className={u.isActive ? 'text-bull text-xs' : 'text-bear text-xs'}>{u.isActive ? 'Active' : 'Blocked'}</span>;
+      case 'joined': return <span className="text-xs text-gray-400">{fmtDate(u.createdAt)}</span>;
+      case 'lastLogin': return <span className="text-xs text-gray-400">{u.lastLoginAt ? fmtDate(u.lastLoginAt) : '—'}</span>;
+      case 'manager': return <span className="text-xs text-gray-300">{u.manager?.name || '—'}</span>;
+      case 'admin': return <span className="text-xs text-gray-300">{u.admin?.name || '—'}</span>;
+      default: return null;
+    }
   };
 
   return (
@@ -39,6 +276,13 @@ export default function Users() {
         <div className="flex-1 min-w-[200px]">
           <label className="label">Search</label>
           <input className="input" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="User ID, email, name, phone" />
+        </div>
+        <div>
+          <label className="label">Plan</label>
+          <select className="input w-36" value={planFilter} onChange={(e) => { setPlanFilter(e.target.value); setPage(1); }}>
+            <option value="">All</option>
+            {PLAN_FILTER_OPTIONS.map((p) => <option key={p} value={p}>{p.charAt(0) + p.slice(1).toLowerCase()}</option>)}
+          </select>
         </div>
         <div>
           <label className="label">KYC</label>
@@ -61,69 +305,49 @@ export default function Users() {
         <button type="submit" className="btn-primary">Search</button>
       </form>
 
+      {/* Toolbar — customize / export / refresh */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs text-gray-500">
+          {visibleColumns.length} columns · sorted by {sortBy} ({sortDir})
+        </div>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={load} className="btn-ghost text-xs" title="Refresh values">↻ Refresh</button>
+          <button type="button" onClick={exportCsv} disabled={exporting} className="btn-ghost text-xs disabled:opacity-40">
+            {exporting ? 'Exporting…' : '⭳ Export CSV'}
+          </button>
+          <button type="button" onClick={() => setCustomizeOpen(true)} className="btn-secondary text-xs">⚙ Customize Columns</button>
+        </div>
+      </div>
+
       <div className="card overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="text-xs text-gray-500 uppercase">
             <tr>
-              <th className="text-left p-3">User ID</th>
-              <th className="text-left p-3">Email</th>
-              <th className="text-left p-3">Name</th>
-              <th className="text-left p-3">Role</th>
-              <th className="text-left p-3">KYC</th>
-              <th className="text-left p-3">Referred By</th>
-              <th className="text-left p-3">Status</th>
-              <th className="text-left p-3">Joined</th>
-              <th className="text-right p-3"></th>
+              {visibleColumns.map((col) => (
+                <SortHeader key={col.key} col={col} sortBy={sortBy} sortDir={sortDir} onSort={() => toggleSort(col)} />
+              ))}
+              <th className="text-right p-3 whitespace-nowrap">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {users.map((u) => {
-              const refBy = u.referredBy;
-              const refName = refBy
-                ? ([refBy.firstName, refBy.lastName].filter(Boolean).join(' ') || refBy.email)
-                : null;
-              return (
-                <tr key={u._id} className="table-row">
-                  <td className="p-3">
-                    {u.userUid ? (
-                      <button
-                        type="button"
-                        onClick={() => { navigator.clipboard.writeText(u.userUid); toast.success('User ID copied'); }}
-                        title="Copy User ID"
-                        className="font-mono text-xs font-bold text-primary-500 hover:text-primary-400"
-                      >
-                        {u.userUid}
-                      </button>
-                    ) : <span className="text-gray-600 text-xs">—</span>}
-                  </td>
-                  <td className="p-3">{u.email}</td>
-                  <td className="p-3">{u.firstName} {u.lastName}</td>
-                  <td className="p-3 text-xs text-primary-500">{u.role}</td>
-                  <td className="p-3"><KycBadge status={u.kycStatus} /></td>
-                  <td className="p-3 text-xs">
-                    {refBy ? (
-                      <div className="flex flex-col leading-tight">
-                        <span className="text-white truncate max-w-[150px]" title={refName}>{refName}</span>
-                        {refBy.referralCode && (
-                          <span className="font-mono text-[10px] text-primary-500">{refBy.referralCode}</span>
-                        )}
-                      </div>
-                    ) : (
-                      <span className="text-gray-600">—</span>
-                    )}
-                  </td>
-                  <td className="p-3">
-                    <span className={u.isActive ? 'text-bull text-xs' : 'text-bear text-xs'}>
-                      {u.isActive ? 'Active' : 'Blocked'}
-                    </span>
-                  </td>
-                  <td className="p-3 text-xs text-gray-400">{fmtDate(u.createdAt)}</td>
-                  <td className="p-3 text-right">
+            {loading && users.length === 0 ? (
+              <SkeletonRows cols={visibleColumns.length + 1} />
+            ) : users.length === 0 ? (
+              <tr><td colSpan={visibleColumns.length + 1} className="p-8 text-center text-gray-500">No users found.</td></tr>
+            ) : (
+              users.map((u) => (
+                <tr key={u._id} className={`table-row ${loading ? 'opacity-60' : ''}`}>
+                  {visibleColumns.map((col) => (
+                    <td key={col.key} className={`p-3 ${col.numeric ? 'text-right' : 'text-left'} whitespace-nowrap`}>
+                      {renderCell(col.key, u)}
+                    </td>
+                  ))}
+                  <td className="p-3 text-right whitespace-nowrap">
                     <button onClick={() => setSelected(u)} className="btn-ghost text-xs">View</button>
                   </td>
                 </tr>
-              );
-            })}
+              ))
+            )}
           </tbody>
         </table>
       </div>
@@ -137,6 +361,25 @@ export default function Users() {
         </div>
       </div>
 
+      {customizeOpen && (
+        <CustomizeColumnsModal
+          columns={accessibleColumns}
+          order={order}
+          visible={visible}
+          onChange={persist}
+          onReset={resetLayout}
+          onClose={() => setCustomizeOpen(false)}
+        />
+      )}
+
+      {history && (
+        <HistoryModal
+          kind={history.kind}
+          user={history.user}
+          onClose={() => setHistory(null)}
+        />
+      )}
+
       {selected && (
         <UserDetail
           userId={selected._id}
@@ -148,6 +391,57 @@ export default function Users() {
   );
 }
 
+// ── Presentational helpers ───────────────────────────────────────────
+function SortHeader({ col, sortBy, sortDir, onSort }) {
+  const active = col.sortBy && sortBy === col.sortBy;
+  return (
+    <th
+      onClick={onSort}
+      className={`p-3 whitespace-nowrap ${col.numeric ? 'text-right' : 'text-left'} ${col.sortBy ? 'cursor-pointer select-none hover:text-gray-300' : ''}`}
+      title={col.sortBy ? 'Click to sort' : undefined}
+    >
+      <span className="inline-flex items-center gap-1">
+        {col.label}
+        {col.sortBy && (
+          active
+            ? <span className="text-primary-500">{sortDir === 'asc' ? '▲' : '▼'}</span>
+            : <span className="text-gray-600">⇅</span>
+        )}
+      </span>
+    </th>
+  );
+}
+
+function PlanBadge({ plan }) {
+  const code = (plan?.code || 'FREE').toUpperCase();
+  const name = plan?.name || 'Free';
+  const tone = PLAN_TONE[code] || 'bg-primary-500/15 text-primary-300 border-primary-500/40';
+  return <span className={`text-[11px] font-bold px-2 py-0.5 rounded border ${tone}`}>{name}</span>;
+}
+
+function PnlCell({ u }) {
+  const pnl = Number(u.totalPnl) || 0;
+  const s = u.tradeStats || {};
+  const tip = `Win Rate ${fmtNum(s.winRate || 0)}% · ${s.trades || 0} trades · ROI ${fmtNum(s.roi || 0)}%`;
+  return (
+    <span className={`font-mono tabular-nums font-semibold ${pnl > 0 ? 'text-bull' : pnl < 0 ? 'text-bear' : 'text-gray-400'}`} title={tip}>
+      {pnl > 0 ? '+' : ''}{signedMoney(pnl)}
+    </span>
+  );
+}
+
+function SkeletonRows({ cols, rows = 8 }) {
+  return Array.from({ length: rows }).map((_, r) => (
+    <tr key={r} className="border-t border-border-dark/50">
+      {Array.from({ length: cols }).map((__, c) => (
+        <td key={c} className="p-3">
+          <div className="h-3.5 rounded bg-bg-hover animate-pulse" style={{ width: `${40 + ((r + c) % 4) * 15}%` }} />
+        </td>
+      ))}
+    </tr>
+  ));
+}
+
 function KycBadge({ status }) {
   const colors = {
     NOT_SUBMITTED: 'bg-gray-700 text-gray-400',
@@ -156,6 +450,152 @@ function KycBadge({ status }) {
     REJECTED: 'bg-red-900 text-red-300',
   };
   return <span className={`text-xs px-2 py-0.5 rounded ${colors[status] || ''}`}>{status}</span>;
+}
+
+// ── Customize Columns modal (visibility + drag-to-reorder) ───────────
+function CustomizeColumnsModal({ columns, order, visible, onChange, onReset, onClose }) {
+  const [dragKey, setDragKey] = useState(null);
+  const [overKey, setOverKey] = useState(null);
+
+  const colByKey = useMemo(() => new Map(columns.map((c) => [c.key, c])), [columns]);
+  // Only rows for columns this role can access, in the current order.
+  const rows = order.map((k) => colByKey.get(k)).filter(Boolean);
+  const visibleCount = rows.filter((c) => visible[c.key]).length;
+
+  const toggle = (key) => onChange(order, { ...visible, [key]: !visible[key] });
+
+  const moveKey = (from, to) => {
+    if (from === to) return;
+    const next = [...order];
+    const fromIdx = next.indexOf(from);
+    const toIdx = next.indexOf(to);
+    if (fromIdx < 0 || toIdx < 0) return;
+    next.splice(fromIdx, 1);
+    next.splice(toIdx, 0, from);
+    onChange(next, visible);
+  };
+
+  const showAll = () => { const v = { ...visible }; rows.forEach((c) => { v[c.key] = true; }); onChange(order, v); };
+  const hideAll = () => { const v = { ...visible }; rows.forEach((c) => { v[c.key] = false; }); onChange(order, v); };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4" onClick={onClose}>
+      <div className="card max-w-md w-full max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-3 border-b border-border-dark flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-bold text-white">Customize Columns</h2>
+            <p className="text-[11px] text-gray-500 mt-0.5">Drag to reorder · toggle to show/hide · {visibleCount} shown</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-xl leading-none">×</button>
+        </div>
+
+        <div className="px-5 py-2 border-b border-border-dark flex items-center gap-2 text-xs">
+          <button onClick={showAll} className="btn-ghost text-xs">Show all</button>
+          <button onClick={hideAll} className="btn-ghost text-xs">Hide all</button>
+          <button onClick={onReset} className="btn-ghost text-xs ml-auto text-amber-400 hover:text-amber-300">↺ Reset to default</button>
+        </div>
+
+        <div className="p-3 overflow-y-auto space-y-1">
+          {rows.map((col) => (
+            <div
+              key={col.key}
+              draggable
+              onDragStart={() => setDragKey(col.key)}
+              onDragEnd={() => { setDragKey(null); setOverKey(null); }}
+              onDragOver={(e) => { e.preventDefault(); if (overKey !== col.key) setOverKey(col.key); }}
+              onDrop={(e) => { e.preventDefault(); if (dragKey) moveKey(dragKey, col.key); setOverKey(null); }}
+              className={`flex items-center gap-2.5 px-2.5 py-2 rounded border transition-all cursor-grab active:cursor-grabbing
+                ${dragKey === col.key ? 'opacity-40' : ''}
+                ${overKey === col.key && dragKey !== col.key ? 'border-primary-500 bg-primary-500/10' : 'border-border-dark bg-bg-dark'}`}
+            >
+              <span className="text-gray-600 select-none" aria-hidden>⋮⋮</span>
+              <label className="flex items-center gap-2 flex-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={!!visible[col.key]}
+                  onChange={() => toggle(col.key)}
+                  className="accent-primary-500"
+                  onClick={(e) => e.stopPropagation()}
+                />
+                <span className={`text-sm ${visible[col.key] ? 'text-white' : 'text-gray-500'}`}>{col.label}</span>
+              </label>
+            </div>
+          ))}
+        </div>
+
+        <div className="px-5 py-3 border-t border-border-dark flex justify-end">
+          <button onClick={onClose} className="btn-primary text-sm">Done</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Deposit / Withdrawal history modal ───────────────────────────────
+function HistoryModal({ kind, user, onClose }) {
+  const [items, setItems] = useState(null);
+  const isDep = kind === 'deposit';
+  useEffect(() => {
+    let cancelled = false;
+    api.get(`/admin/${isDep ? 'deposits' : 'withdrawals'}`, { params: { userId: user._id } })
+      .then((r) => { if (!cancelled) setItems(r.data.data || []); })
+      .catch(() => { if (!cancelled) setItems([]); });
+    return () => { cancelled = true; };
+  }, [kind, user._id]);
+
+  const okStatus = isDep ? 'CONFIRMED' : 'COMPLETED';
+  const lifetime = (items || []).filter((x) => x.status === okStatus)
+    .reduce((s, x) => s + (Number(x.baseAmount) || 0), 0);
+
+  return (
+    <div className="fixed inset-0 bg-black/70 z-[60] flex items-center justify-center p-4" onClick={onClose}>
+      <div className="card max-w-2xl w-full max-h-[85vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-3 border-b border-border-dark flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-bold text-white">{isDep ? 'Deposit' : 'Withdrawal'} history</h2>
+            <p className="text-[11px] text-gray-500 mt-0.5">
+              {user.email} · lifetime {isDep ? 'deposited' : 'withdrawn'}{' '}
+              <span className={isDep ? 'text-emerald-300' : 'text-amber-300'}>${fmtNum(lifetime)}</span>
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-xl leading-none">×</button>
+        </div>
+        <div className="p-4 overflow-y-auto">
+          {items === null && <div className="text-gray-500 text-sm py-6 text-center">Loading…</div>}
+          {items && items.length === 0 && <div className="text-gray-500 text-sm py-8 text-center">No {kind}s on record.</div>}
+          {items && items.length > 0 && (
+            <table className="w-full text-xs">
+              <thead className="text-[10px] text-gray-500 uppercase">
+                <tr>
+                  <th className="text-left p-2">Date</th>
+                  <th className="text-right p-2">Amount</th>
+                  <th className="text-right p-2">USD</th>
+                  <th className="text-left p-2">{isDep ? 'Target' : 'Source'}</th>
+                  <th className="text-left p-2">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((x) => (
+                  <tr key={x._id} className="border-t border-border-dark/60">
+                    <td className="p-2 text-gray-400">{fmtDate(x.createdAt)}</td>
+                    <td className="p-2 text-right font-mono text-gray-200">{fmtNum(x.amount)} {x.currency}</td>
+                    <td className="p-2 text-right font-mono text-gray-300">${fmtNum(x.baseAmount)}</td>
+                    <td className="p-2 text-gray-400">{isDep ? (x.targetWallet || 'trading') : (x.source || 'TRADING')}</td>
+                    <td className="p-2">
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                        x.status === okStatus ? 'bg-emerald-900 text-emerald-300'
+                        : ['REJECTED', 'CANCELLED'].includes(x.status) ? 'bg-red-900 text-red-300'
+                        : 'bg-yellow-900 text-yellow-300'}`}>{x.status}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function UserDetail({ userId, onClose, onJumpToUser }) {
@@ -633,7 +1073,7 @@ function UserDetail({ userId, onClose, onJumpToUser }) {
                   <ConfigSelect
                     label="Routing Override"
                     value={userRouting}
-                    options={['INHERIT', 'A_BOOK', 'B_BOOK', 'HYBRID']}
+                    options={['INHERIT', 'INTERNAL_MATCHING', 'B_BOOK', 'A_BOOK', 'HYBRID']}
                     onChange={(v) => updateRiskControls({ routingMode: v })}
                   />
                   <ConfigSelect

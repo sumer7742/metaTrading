@@ -7,6 +7,16 @@ import { useThemeStore } from '../store/theme';
 import AssetIcon from './AssetIcon';
 import WatchlistButton from './WatchlistButton';
 
+// Format an instrument-override expiry as "10 Jun 2026 22:00 UTC".
+const fmtOverrideTime = (d) => {
+  try {
+    return new Date(d).toLocaleString('en-GB', {
+      day: '2-digit', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC',
+    }) + ' UTC';
+  } catch { return ''; }
+};
+
 export default function OrderForm({
   instrument,
   account,
@@ -93,7 +103,9 @@ export default function OrderForm({
   // "Has instrument leverage" — null / undefined / 0 / negative all mean
   // "not set, fall back". Any positive finite number (including the
   // unlimited sentinel) is treated as an explicit instrument value.
-  const rawInstLev   = Number(instrument?.maxLeverage);
+  // `effectiveLeverage` reflects an ACTIVE scheduled override (lower or
+  // higher) when one is running; otherwise it equals maxLeverage.
+  const rawInstLev   = Number(instrument?.effectiveLeverage ?? instrument?.maxLeverage);
   const hasInstLev   = Number.isFinite(rawInstLev) && rawInstLev > 0;
   const accountCap   = Number(leverageState?.effectiveLeverage) || null;
 
@@ -205,6 +217,10 @@ export default function OrderForm({
   useEffect(() => {
     if (leverage > MAX_LEVERAGE_UI) setLeverage(MAX_LEVERAGE_UI);
   }, [leverage, MAX_LEVERAGE_UI]);
+
+  // ── Instrument-level leverage override (from the enriched /instruments) ──
+  // leverageOverride: { leverage, normalLeverage, endAt } — temporary cap.
+  const leverageOverride = instrument?.leverageOverride || null;
 
   // ── Auto TP / SL ──────────────────────────────────────────────────
   // When the user enables Settings > Auto Trading > "Set TP/SL automatically",
@@ -907,6 +923,21 @@ export default function OrderForm({
           </FieldCard>
         )}
 
+        {/* ── Temporary leverage override banner ──────────────────── */}
+        {leverageOverride && (
+          <div
+            className="rounded-md px-3 py-2 text-[12px] leading-snug"
+            style={{ background: 'rgba(245,158,11,0.12)', border: '1px solid rgba(245,158,11,0.40)', color: '#d97706' }}
+          >
+            <div className="font-bold flex items-center gap-1">⚠ Temporary Leverage Override Active</div>
+            <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5" style={{ color: C.text }}>
+              <span>Current Leverage: <b>1:{leverageOverride.leverage}</b></span>
+              <span style={{ color: C.dim }}>Normal: 1:{leverageOverride.normalLeverage}</span>
+              {leverageOverride.endAt && <span style={{ color: C.dim }}>Expires: {fmtOverrideTime(leverageOverride.endAt)}</span>}
+            </div>
+          </div>
+        )}
+
         {/* ── Volume (Lots) — unified segmented bar ──────────────── */}
         <FieldCard label="Volume" C={C}>
           <NumericRow
@@ -1269,7 +1300,7 @@ function NumericRow({
   // "Price" pill becomes an interactive dropdown letting the user pick
   // how the field is expressed (price / pips / money / % of equity).
   priceLabelMode, onPriceLabelChange,
-  pill, unified, required, error, C,
+  pill, unified, required, error, disabled, C,
 }) {
   // Unified variant — single bordered bar with internal vertical dividers
   // between the input, suffix, minus, and plus segments (Exness-style
@@ -1284,6 +1315,8 @@ function NumericRow({
           border: `1px solid ${error ? C.sell : C.border}`,
           height: '42px',
           boxShadow: '0 1px 2px rgba(15,23,42,0.04)',
+          opacity: disabled ? 0.65 : 1,
+          cursor: disabled ? 'not-allowed' : 'auto',
         }}
       >
         {/* Input segment — pr-2 leaves breathing room so trailing digits
@@ -1297,7 +1330,9 @@ function NumericRow({
             onChange={(e) => onChange(e.target.value)}
             placeholder={placeholder}
             required={required}
-            className="flex-1 min-w-0 bg-transparent border-0 outline-none text-[15px] font-semibold tabular-nums"
+            disabled={disabled}
+            readOnly={disabled}
+            className="flex-1 min-w-0 bg-transparent border-0 outline-none text-[15px] font-semibold tabular-nums disabled:cursor-not-allowed"
             style={{ color: error ? C.sell : C.text }}
           />
         </div>
@@ -1325,8 +1360,9 @@ function NumericRow({
         <button
           type="button"
           onClick={onMinus}
+          disabled={disabled}
           aria-label="Decrease"
-          className="shrink-0 w-11 flex items-center justify-center transition-colors hover:bg-black/[0.03] active:bg-black/[0.06]"
+          className="shrink-0 w-11 flex items-center justify-center transition-colors hover:bg-black/[0.03] active:bg-black/[0.06] disabled:cursor-not-allowed"
           style={{ borderLeft: `1px solid ${C.border}`, color: C.text }}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="5" y1="12" x2="19" y2="12" /></svg>
@@ -1335,8 +1371,9 @@ function NumericRow({
         <button
           type="button"
           onClick={onPlus}
+          disabled={disabled}
           aria-label="Increase"
-          className="shrink-0 w-11 flex items-center justify-center transition-colors hover:bg-black/[0.03] active:bg-black/[0.06]"
+          className="shrink-0 w-11 flex items-center justify-center transition-colors hover:bg-black/[0.03] active:bg-black/[0.06] disabled:cursor-not-allowed"
           style={{ borderLeft: `1px solid ${C.border}`, color: C.text }}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="5" y1="12" x2="19" y2="12" /><line x1="12" y1="5" x2="12" y2="19" /></svg>

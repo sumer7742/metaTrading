@@ -151,7 +151,10 @@ class MatchingEngine {
           sellAccountId: isIncomingBuy ? f.makerAccountId : order.accountId,
           price: f.price,
           quantity: f.qty,
-          routing: ROUTING.INTERNAL,
+          // A real user↔user match in INTERNAL_MATCHING mode is tagged as
+          // such so reports can split true peer matching from legacy
+          // internalised fills. Buyer and seller are distinct users.
+          routing: order.routing === ROUTING.INTERNAL_MATCHING ? ROUTING.INTERNAL_MATCHING : ROUTING.INTERNAL,
         });
 
         // Distribute affiliate commissions on the spread/fee.
@@ -246,8 +249,10 @@ class MatchingEngine {
       order.filledAt = new Date();
     } else if (gt(order.filledQuantity, '0')) {
       order.status = ORDER_STATUS.PARTIALLY_FILLED;
-    } else if (effectiveType === 'MARKET') {
-      // MARKET (or triggered STOP-MARKET) on INTERNAL with no resting liquidity.
+    } else if (effectiveType === 'MARKET' && !(order.routing === ROUTING.INTERNAL_MATCHING && !order.closeOnly)) {
+      // MARKET (or triggered STOP-MARKET) with no resting liquidity.
+      // B-book, legacy internal, and INTERNAL_MATCHING *closes* internalise
+      // at last price so the user can always be filled / always exit.
       //
       // Pre-fix behavior: reject with "No liquidity for market order" — which
       // left positions stuck OPEN whenever a user tried to close them on a
@@ -353,6 +358,13 @@ class MatchingEngine {
         order.status = ORDER_STATUS.REJECTED;
         order.rejectionReason = 'No reference price for market order';
       }
+    } else if (effectiveType === 'MARKET') {
+      // INTERNAL_MATCHING *opening* market order with no opposing book
+      // liquidity. This is a pure user↔user venue — the broker is NOT the
+      // counterparty — so we reject the unmatched remainder rather than
+      // synthesising a broker fill. (Closes are handled by the branch above.)
+      order.status = ORDER_STATUS.REJECTED;
+      order.rejectionReason = 'No matching liquidity (internal matching)';
     }
 
     // Rest-on-book applies to LIMIT orders, including a triggered STOP-LIMIT.

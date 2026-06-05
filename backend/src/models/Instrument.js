@@ -62,6 +62,15 @@ const instrumentSchema = new mongoose.Schema(
     maxLeverage: { type: Number, default: 999999 },
     leverageLadder: { type: [Number], default: [1, 5, 10, 20, 50, 100, 200, 500, 1000] },
 
+    // Fixed-volume (lot size) lock. When enabled, every NEW order on this
+    // instrument is forced to `fixedVolumeValue` and the client volume input
+    // is read-only. Independent of leverage. Min/max/step reuse the existing
+    // minOrderSize / maxOrderSize / lotSize fields. A scheduled volume
+    // override (InstrumentVolumeOverride) takes precedence over this static
+    // setting while its window is active. Never affects open positions.
+    fixedVolumeEnabled: { type: Boolean, default: false },
+    fixedVolumeValue:   { type: String, default: '0' },
+
     // Trading hours - simplified: 24/7 if empty
     tradingHours: {
       start: { type: String, default: '00:00' }, // UTC

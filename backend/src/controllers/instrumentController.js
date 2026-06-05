@@ -10,7 +10,11 @@ const list = asyncHandler(async (req, res) => {
   const filter = { isActive: true };
   if (req.query.category) filter.category = req.query.category;
   const items = await Instrument.find(filter).lean();
-  sendSuccess(res, items);
+  // Enrich with any ACTIVE leverage / fixed-volume overrides so the client
+  // can show indicators and lock the volume input. Batched (no N+1).
+  const instrumentOverrideService = require('../services/instrumentOverrideService');
+  const enriched = await instrumentOverrideService.attachActiveOverrides(items);
+  sendSuccess(res, enriched);
 });
 
 /**

@@ -12,6 +12,7 @@ import Withdrawals from './pages/Withdrawals';
 import Deposits from './pages/Deposits';
 import AuditLog from './pages/AuditLog';
 import Reports from './pages/Reports';
+import ExecutionStats from './pages/ExecutionStats';
 import DataFeeds from './pages/DataFeeds';
 import Settings from './pages/Settings';
 import Security from './pages/Security';
@@ -78,6 +79,7 @@ export default function App() {
       <Route path="/deposits" element={wrap(<Deposits />)} />
       <Route path="/audit" element={wrap(<AuditLog />)} />
       <Route path="/reports" element={wrap(<Reports />)} />
+      <Route path="/execution" element={wrap(<ExecutionStats />)} />
       <Route path="/data-feeds" element={wrap(<DataFeeds />)} />
       <Route path="/plans" element={wrap(<Plans />)} />
       <Route path="/account-plans" element={wrap(<AccountPlans />)} />

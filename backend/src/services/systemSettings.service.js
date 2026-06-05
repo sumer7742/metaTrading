@@ -53,6 +53,16 @@ const DEFAULTS = {
     { name: 'PLATINUM', minVolume: 2000000,   percent: '25' },
     { name: 'ELITE',    minVolume: 10000000,  percent: '30' },
   ],
+  // Copy-trading Master Earnings (performance fee). When a copied trade
+  // closes IN PROFIT, the master earns `feePercent` of the follower's
+  // realized profit, credited to the master's Bonus Wallet (USD). Losses
+  // and breakeven never generate a fee. Per-master override lives on
+  // TraderProfile.performanceFeePercent; the default below applies when a
+  // master hasn't set their own. Every applied fee is clamped to [min,max].
+  'copyTrading.enabled':              true,  // master kill-switch for the whole fee system
+  'copyTrading.defaultPerformanceFee': 20,   // percent, used when master has no override
+  'copyTrading.minFee':                0,    // percent floor
+  'copyTrading.maxFee':                50,   // percent ceiling
 };
 
 const _cache = new Map(); // key -> { value, expiresAt }

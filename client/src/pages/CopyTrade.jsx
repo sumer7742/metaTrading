@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import PageHero from '../components/PageHero';
@@ -22,6 +23,25 @@ export default function CopyTrade() {
   const [loading, setLoading] = useState(true);
   const [copyTarget, setCopyTarget] = useState(null);
   const [editProfile, setEditProfile] = useState(false);
+  const navigate = useNavigate();
+  const [q, setQ] = useState('');
+  const [riskFilter, setRiskFilter] = useState('ALL');
+  const [sortBy, setSortBy] = useState('roi');
+
+  const badges = useMemo(() => computeBadges(leaders), [leaders]);
+  const visibleLeaders = useMemo(() => {
+    let list = leaders;
+    const s = q.trim().toLowerCase();
+    if (s) list = list.filter((t) => (t.displayName || '').toLowerCase().includes(s) || (t.bio || '').toLowerCase().includes(s));
+    if (riskFilter !== 'ALL') list = list.filter((t) => (t.riskBadge || 'MEDIUM') === riskFilter);
+    const sorters = {
+      roi:       (a, b) => Number(b.roiPct || 0) - Number(a.roiPct || 0),
+      followers: (a, b) => Number(b.followers || 0) - Number(a.followers || 0),
+      winRate:   (a, b) => Number(b.winRate || 0) - Number(a.winRate || 0),
+      trades:    (a, b) => Number(b.totalTrades || 0) - Number(a.totalTrades || 0),
+    };
+    return [...list].sort(sorters[sortBy] || sorters.roi);
+  }, [leaders, q, riskFilter, sortBy]);
 
   const refresh = async () => {
     try {
@@ -114,11 +134,44 @@ export default function CopyTrade() {
             {leaders.length === 0 ? (
               <div className="card p-10 text-center text-text-muted">No public traders yet — be the first to enable your profile in settings.</div>
             ) : (
-              <div className="grid sm:grid-cols-2 gap-4">
-                {leaders.map((t) => (
-                  <TraderCard key={t._id} trader={t} onCopy={() => setCopyTarget(t)} />
-                ))}
-              </div>
+              <>
+                {/* Search + filters + sort */}
+                <div className="flex flex-wrap items-center gap-2 mb-4">
+                  <input
+                    value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search traders…"
+                    className="flex-1 min-w-[160px] px-3 py-2 rounded-xl border border-border-dark bg-white text-sm focus:outline-none focus:border-primary-500"
+                  />
+                  <select value={riskFilter} onChange={(e) => setRiskFilter(e.target.value)}
+                    className="px-3 py-2 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-secondary focus:outline-none focus:border-primary-500">
+                    <option value="ALL">All risk</option>
+                    <option value="LOW">Low risk</option>
+                    <option value="MEDIUM">Medium risk</option>
+                    <option value="HIGH">High risk</option>
+                  </select>
+                  <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}
+                    className="px-3 py-2 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-secondary focus:outline-none focus:border-primary-500">
+                    <option value="roi">Sort: ROI</option>
+                    <option value="followers">Sort: Followers</option>
+                    <option value="winRate">Sort: Win rate</option>
+                    <option value="trades">Sort: Trades</option>
+                  </select>
+                </div>
+                {visibleLeaders.length === 0 ? (
+                  <div className="card p-8 text-center text-text-muted text-sm">No traders match your filters.</div>
+                ) : (
+                  <div className="grid sm:grid-cols-2 gap-4">
+                    {visibleLeaders.map((t) => (
+                      <TraderCard
+                        key={t._id}
+                        trader={t}
+                        badge={badges[t._id]}
+                        onView={() => navigate(`/copy-trading/trader/${t.userId}`)}
+                        onCopy={() => setCopyTarget(t)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </section>
 
@@ -226,6 +279,7 @@ function ProfileEditorModal({ profile, onClose, onSaved }) {
     bio:         profile?.bio || '',
     riskBadge:   profile?.riskBadge || 'MEDIUM',
     isPublic:    !!profile?.isPublic,
+    performanceFeePercent: profile?.performanceFeePercent ?? '', // '' → platform default
   });
   const [saving, setSaving] = useState(false);
 
@@ -243,6 +297,8 @@ function ProfileEditorModal({ profile, onClose, onSaved }) {
         bio:         form.bio.trim(),
         riskBadge:   form.riskBadge,
         isPublic:    form.isPublic,
+        performanceFeePercent:
+          form.performanceFeePercent === '' ? null : Number(form.performanceFeePercent),
       });
       toast.success('Profile saved');
       onSaved?.(r.data.data);
@@ -335,6 +391,28 @@ function ProfileEditorModal({ profile, onClose, onSaved }) {
               ))}
             </div>
           </div>
+
+          {/* Performance fee the master earns on profitable copied trades. */}
+          <div>
+            <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1.5">
+              Performance fee
+            </label>
+            <div className="relative">
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={form.performanceFeePercent}
+                onChange={(e) => set('performanceFeePercent', e.target.value)}
+                placeholder="Platform default"
+                className="w-full pl-3 pr-8 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-mono font-bold focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/15"
+              />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted">%</span>
+            </div>
+            <p className="text-[11px] text-text-muted mt-1.5 leading-snug">
+              Your cut of each follower's <span className="font-semibold text-text-secondary">profit</span> on winning copied trades — credited to your Bonus Wallet. No fee on losses or breakeven. Leave blank to use the platform default.
+            </p>
+          </div>
         </div>
 
         <div className="px-5 py-3 border-t border-border-subtle flex justify-end gap-2">
@@ -359,7 +437,7 @@ function SectionHeader({ title, count }) {
   );
 }
 
-function TraderCard({ trader, onCopy }) {
+function TraderCard({ trader, onCopy, onView, badge }) {
   const roi = Number(trader.roiPct || 0);
   const win = Number(trader.winRate || 0);
   const riskTone = {
@@ -371,12 +449,19 @@ function TraderCard({ trader, onCopy }) {
   return (
     <div className="card p-4 flex flex-col gap-3 hover:shadow-elevated transition-shadow">
       <div className="flex items-start gap-3">
-        <span className="shrink-0 w-12 h-12 rounded-full bg-primary-500/15 text-primary-600 flex items-center justify-center text-sm font-extrabold">
+        <button type="button" onClick={onView} className="shrink-0 w-12 h-12 rounded-full bg-primary-500/15 text-primary-600 flex items-center justify-center text-sm font-extrabold hover:ring-2 hover:ring-primary-500/40 transition">
           {(trader.displayName || 'T').slice(0, 2).toUpperCase()}
-        </span>
+        </button>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="font-extrabold text-text-primary truncate">{trader.displayName || 'Trader'}</span>
+            <button type="button" onClick={onView} className="font-extrabold text-text-primary truncate hover:text-primary-600 transition-colors text-left">
+              {trader.displayName || 'Trader'}
+            </button>
+            {badge && (
+              <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-primary-500/10 text-primary-600" title={badge.label}>
+                {badge.icon} {badge.label}
+              </span>
+            )}
             <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full ${riskTone}`}>
               {trader.riskBadge || 'MED'}
             </span>
@@ -391,15 +476,28 @@ function TraderCard({ trader, onCopy }) {
         <Stat label="Followers" value={Number(trader.followers || 0).toLocaleString()} />
       </div>
 
-      <button
-        type="button"
-        onClick={onCopy}
-        className="btn-primary text-sm w-full"
-      >
-        Copy
-      </button>
+      <div className="flex gap-2">
+        <button type="button" onClick={onView} className="btn-ghost text-sm flex-1">View profile</button>
+        <button type="button" onClick={onCopy} className="btn-primary text-sm flex-1">Copy</button>
+      </div>
     </div>
   );
+}
+
+// Award leaderboard badges to standout traders (top ROI / most followed /
+// rising star / elite). Keyed by profile _id; at most one badge per trader.
+function computeBadges(leaders) {
+  const map = {};
+  if (!leaders.length) return map;
+  const add = (t, badge) => { if (t && !map[t._id]) map[t._id] = badge; };
+  const byRoi = [...leaders].sort((a, b) => Number(b.roiPct || 0) - Number(a.roiPct || 0));
+  const byFollowers = [...leaders].sort((a, b) => Number(b.followers || 0) - Number(a.followers || 0));
+  const byWin = [...leaders].sort((a, b) => Number(b.winRate || 0) - Number(a.winRate || 0));
+  add(byRoi[0], { icon: '🏆', label: 'Top Trader' });
+  add(byFollowers[0], { icon: '🔥', label: 'Most Followed' });
+  add(byRoi.find((t) => Number(t.followers || 0) >= 100 && Number(t.roiPct || 0) >= 50), { icon: '💎', label: 'Elite' });
+  add(byWin.find((t) => Number(t.winRate || 0) >= 55 && Number(t.followers || 0) < 50), { icon: '⭐', label: 'Rising Star' });
+  return map;
 }
 
 function Stat({ label, value, tone }) {

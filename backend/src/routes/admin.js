@@ -54,10 +54,26 @@ router.patch('/accounts/:accountId/execution-config', c.updateAccountExecutionCo
 // Per-user risk controls (forceABook override, userGroup, blockedInstruments)
 router.patch('/users/:id/risk-controls', c.updateUserRiskControls);
 
-// Global system settings — routing mode + default LP provider.
-// These are the SINGLE knobs that decide A-Book vs B-Book platform-wide.
+// Global system settings — execution mode + default LP provider.
+// These are the SINGLE knobs that decide INTERNAL_MATCHING / B-Book / A-Book /
+// Hybrid platform-wide (per-user overrides live on risk-controls).
 router.get('/system/settings', c.getSystemSettings);
 router.put('/system/settings', c.updateSystemSettings);
+
+// Execution-mode analytics + routing-decision audit log.
+router.get('/execution/stats', c.getExecutionStats);
+router.get('/execution/decisions', c.listRoutingDecisions);
+
+// Scheduled instrument leverage / volume overrides (admin CRUD).
+const ov = require('../controllers/instrumentOverrideController');
+router.get   ('/instruments/:symbol/leverage-overrides', ov.listLeverage);
+router.post  ('/instruments/:symbol/leverage-overrides', ov.createLeverage);
+router.put   ('/leverage-overrides/:id',                 ov.updateLeverage);
+router.delete('/leverage-overrides/:id',                 ov.deleteLeverage);
+router.get   ('/instruments/:symbol/volume-overrides',   ov.listVolume);
+router.post  ('/instruments/:symbol/volume-overrides',   ov.createVolume);
+router.put   ('/volume-overrides/:id',                    ov.updateVolume);
+router.delete('/volume-overrides/:id',                    ov.deleteVolume);
 
 // Account metrics for any user
 router.get(

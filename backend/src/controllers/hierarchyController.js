@@ -6,6 +6,7 @@
  */
 const { sendSuccess, asyncHandler, AppError } = require('../utils/errors');
 const svc = require('../services/hierarchyService');
+const limitService = require('../services/limitService');
 const { ROLES } = require('../config/constants');
 
 // Best-effort audit — never blocks the action if logging fails.
@@ -58,6 +59,14 @@ const listManagers = asyncHandler(async (req, res) => {
 const createManager = asyncHandler(async (req, res) => {
   // Admins create only under themselves; SuperAdmin must pass parentId (the admin).
   const payload = { ...req.body, parentId: isSuper(req) ? req.body.parentId : req.user._id };
+  // Enforce the OWNING admin's configurable maxManagers limit (in addition
+  // to the legacy hard cap inside createRole).
+  if (payload.parentId) {
+    const owningAdmin = String(payload.parentId) === String(req.user._id)
+      ? req.user
+      : await require('../models/User').findById(payload.parentId).select('role hierarchyLimits').lean();
+    if (owningAdmin) await limitService.assertCanCreateChild(owningAdmin, ROLES.MANAGER);
+  }
   const user = await svc.createRole(ROLES.MANAGER, payload, req.user);
   await audit(req, 'MANAGER_CREATED', { type: 'USER', id: user._id }, { email: user.email, adminId: payload.parentId });
   sendSuccess(res, { user: user.toSafeJSON ? user.toSafeJSON() : user, generatedPassword: user._generatedPassword }, 201);
@@ -82,6 +91,8 @@ const assignAdmin = asyncHandler(async (req, res) => {
 const assignManager = asyncHandler(async (req, res) => {
   const { userId, managerId } = req.body;
   if (!userId || !managerId) throw new AppError('userId and managerId required', 400);
+  // Honor the manager's (and their admin's) configurable maxUsers limit.
+  await limitService.assertCanAddUserUnderManager(managerId);
   const user = await svc.assignUserToManager(userId, managerId, ctxOf(req));
   await audit(req, 'USER_ASSIGNED_MANAGER', { type: 'USER', id: userId }, { managerId });
   sendSuccess(res, user);
@@ -233,6 +244,27 @@ const tree = asyncHandler(async (req, res) => {
   sendSuccess(res, await svc.tree(scope));
 });
 
+/* ── Hierarchical limits & permissions ──────────────────────────────── */
+// View a target's limits (assigned / used / remaining + the caller's caps).
+// Scope is enforced by limitService.assertCanManage (direct parent or super).
+const getLimits = asyncHandler(async (req, res) => {
+  const User = require('../models/User');
+  const target = await User.findById(req.params.id);
+  if (!target) throw new AppError('User not found', 404);
+  limitService.assertCanManage(req.user, target);
+  sendSuccess(res, await limitService.getView(target, req.user));
+});
+
+// Set a target's limits. Validates each ≤ the caller's own granted limit and
+// audits every change (limitService handles validation + AuditLog).
+const setLimits = asyncHandler(async (req, res) => {
+  const User = require('../models/User');
+  const target = await User.findById(req.params.id);
+  if (!target) throw new AppError('User not found', 404);
+  const view = await limitService.setLimits(target, req.body, req.user, req.ip);
+  sendSuccess(res, view);
+});
+
 module.exports = {
   listAdmins, createAdmin, deactivateAdmin,
   listManagers, createManager, deactivateManager,
@@ -241,4 +273,6 @@ module.exports = {
   // SuperAdmin transfers + auto-created staff account control
   transferUser, bulkTransfer, transferManager,
   listAutoCreated, renameStaff, changeStaffEmail, resetStaffPassword, setLoginEnabled, claimStaff,
+  // Hierarchical limits
+  getLimits, setLimits,
 };

@@ -30,11 +30,16 @@ const lpExec = require('./lpExecution.service');
 const riskEngine = require('./riskEngine.service');
 const systemSettings = require('./systemSettings.service');
 const { AppError } = require('../utils/errors');
+const RoutingDecision = require('../models/RoutingDecision');
+const { mul } = require('../utils/decimal');
 const {
   BOOK_TYPE,
+  EXECUTION_MODE,
+  ROUTING_RESULT,
   LP_PROVIDER,
   EXECUTION_SOURCE,
   ROUTING,
+  ORDER_STATUS,
 } = require('../config/constants');
 
 /**
@@ -48,11 +53,14 @@ const {
  */
 const _resolveRoutingMode = async (user) => {
   const userOverride = user?.riskOverride?.routingMode;
-  if (userOverride && Object.values(BOOK_TYPE).includes(userOverride)) {
+  if (userOverride && Object.values(EXECUTION_MODE).includes(userOverride)) {
     return { mode: userOverride, source: 'user' };
   }
-  const global = (await systemSettings.getSetting('routingMode')) || BOOK_TYPE.B_BOOK;
-  return { mode: global, source: 'global' };
+  // Legacy values (A_BOOK/B_BOOK/HYBRID) are already valid EXECUTION_MODE
+  // values, so old settings keep working after the 4-mode upgrade.
+  const global = await systemSettings.getSetting('routingMode');
+  const mode = Object.values(EXECUTION_MODE).includes(global) ? global : EXECUTION_MODE.B_BOOK;
+  return { mode, source: 'global' };
 };
 
 /**
@@ -115,27 +123,48 @@ const routeOrder = async ({ order, userId }) => {
 
   _validate(account, instrument, order);
 
-  // 2. Resolve effective routing mode — per-user override wins, else global.
-  const { mode: routingMode, source: routingSource } = await _resolveRoutingMode(user);
+  // 2. Resolve the execution MODE — per-user override wins, else global.
+  const { mode: executionMode, source: modeSource } = await _resolveRoutingMode(user);
 
-  // 3. For HYBRID, ask the risk engine per-order whether THIS order goes
-  //    A-book or B-book. For pure A/B, no decision needed.
-  let book = routingMode;
-  let reason = `${routingSource}.routingMode=${routingMode}`;
-  if (routingMode === BOOK_TYPE.HYBRID) {
+  // 3. Resolve the concrete VENUE (routingResult). HYBRID delegates to the
+  //    risk engine, which picks INTERNAL_MATCHING | B_BOOK | A_BOOK | REJECT.
+  let routingResult = executionMode;
+  let reason = `${modeSource}.executionMode=${executionMode}`;
+  let riskEngineReason = null;
+  if (executionMode === EXECUTION_MODE.HYBRID) {
     const decision = await riskEngine.decideHybridRoute({
-      userId,
-      instrument,
-      order: { quantity: order.quantity, price: order.price, side: order.side },
+      userId, instrument, account,
+      order: { quantity: order.quantity, price: order.price, side: order.side, closeOnly: order.closeOnly },
     });
-    book = decision.book;
-    reason = `${routingSource}=HYBRID → ${decision.book} (${decision.reason})`;
+    routingResult = decision.route;
+    riskEngineReason = decision.reason;
+    reason = `HYBRID → ${routingResult} (${decision.reason})`;
   }
 
-  // 4. A-book path needs a configured LP. Clear error if missing so admin
-  //    knows exactly which knob to turn.
+  const notional = Number(mul(order.quantity || '0', order.price || instrument.lastPrice || '0')) || 0;
+  const audit = async (result) => {
+    try {
+      await RoutingDecision.create({
+        orderId: order._id, userId, accountId: order.accountId,
+        symbol: instrument.symbol, side: order.side,
+        executionMode, routingResult: result, notional, reason, riskEngineReason, modeSource,
+      });
+    } catch (_) { /* audit must never block execution */ }
+  };
+
+  // 3a. Risk engine can reject outright (e.g. exposure cap breached).
+  if (routingResult === 'REJECT' || routingResult === 'REJECTED') {
+    order.status = ORDER_STATUS.REJECTED;
+    order.executionMode = executionMode;
+    order.rejectionReason = `Routing rejected: ${riskEngineReason || reason}`;
+    await order.save();
+    await audit('REJECTED');
+    throw new AppError(order.rejectionReason, 400, 'ROUTING_REJECTED');
+  }
+
+  // 4. A-book needs a configured LP. Clear error if missing.
   let lpProvider = LP_PROVIDER.NONE;
-  if (book === BOOK_TYPE.A_BOOK) {
+  if (routingResult === ROUTING_RESULT.A_BOOK) {
     lpProvider = (await systemSettings.getSetting('defaultLpProvider')) || LP_PROVIDER.NONE;
     if (!lpProvider || lpProvider === LP_PROVIDER.NONE) {
       throw new AppError(
@@ -146,19 +175,30 @@ const routeOrder = async ({ order, userId }) => {
     }
   }
 
-  // 5. Stamp execution metadata on the order BEFORE submitting.
-  const isHybrid = routingMode === BOOK_TYPE.HYBRID;
-  const executionSource = book === BOOK_TYPE.A_BOOK
-    ? (isHybrid ? EXECUTION_SOURCE.HYBRID_LP : EXECUTION_SOURCE.LP)
-    : (isHybrid ? EXECUTION_SOURCE.HYBRID_INTERNAL : EXECUTION_SOURCE.INTERNAL);
-  order.executionSource = executionSource;
-  // Backward-compat field — old reports / dashboards still read `routing`.
-  order.routing = book === BOOK_TYPE.A_BOOK ? ROUTING.EXTERNAL : ROUTING.B_BOOK;
+  // 5. Stamp execution metadata BEFORE submitting.
+  const isHybrid = executionMode === EXECUTION_MODE.HYBRID;
+  order.executionMode = executionMode;
+  order.routingResult = routingResult;
+  if (routingResult === ROUTING_RESULT.A_BOOK) {
+    order.routing = ROUTING.EXTERNAL;
+    order.executionSource = isHybrid ? EXECUTION_SOURCE.HYBRID_LP : EXECUTION_SOURCE.LP;
+  } else if (routingResult === ROUTING_RESULT.INTERNAL_MATCHING) {
+    order.routing = ROUTING.INTERNAL_MATCHING;
+    order.executionSource = isHybrid ? EXECUTION_SOURCE.HYBRID_INTERNAL_MATCHING : EXECUTION_SOURCE.INTERNAL_MATCHING;
+  } else { // B_BOOK
+    order.routing = ROUTING.B_BOOK;
+    order.executionSource = isHybrid ? EXECUTION_SOURCE.HYBRID_INTERNAL : EXECUTION_SOURCE.INTERNAL;
+  }
   await order.save();
+  await audit(routingResult);
 
   // 6. Dispatch.
+  //    A_BOOK → LP adapter. INTERNAL_MATCHING + B_BOOK both go through the
+  //    matching engine, which branches on order.routing:
+  //      INTERNAL_MATCHING → user↔user order-book match (broker not counterparty)
+  //      B_BOOK            → broker-counterparty fill at internal price
   let settledOrder;
-  if (book === BOOK_TYPE.A_BOOK) {
+  if (routingResult === ROUTING_RESULT.A_BOOK) {
     settledOrder = await lpExec.execute({
       order,
       account: { ...account.toObject(), lpProvider },
@@ -168,7 +208,7 @@ const routeOrder = async ({ order, userId }) => {
     settledOrder = await internalExec.execute(order);
   }
 
-  return { settledOrder, executionSource, book, reason };
+  return { settledOrder, executionMode, routingResult, executionSource: order.executionSource, reason };
 };
 
 /**

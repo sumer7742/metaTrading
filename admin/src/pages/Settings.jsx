@@ -49,15 +49,31 @@ export default function Settings() {
 
   const { settings, lpProviders } = data;
   const mode = settings.routingMode || 'B_BOOK';
-  const isA = mode === 'A_BOOK';
+  const isIM = mode === 'INTERNAL_MATCHING';
   const isB = mode === 'B_BOOK';
   const isHybrid = mode === 'HYBRID';
+  const isA = mode === 'A_BOOK';
   const credentialedProviders = (lpProviders || []).filter((p) => p.credentialed).map((p) => p.provider);
   // LP is "wired" when either creds exist OR a provider is selected
   // (stub fills work in dev). Show warning only when A_BOOK / HYBRID
   // is active AND no provider is selected at all.
   const lpMissing = !settings.defaultLpProvider || settings.defaultLpProvider === 'NONE';
   const noCredsAtAll = credentialedProviders.length === 0;
+
+  // Static class strings (Tailwind JIT can't see dynamically-built names).
+  const TONE = {
+    violet:  { active: 'border-violet-500 bg-violet-500/10',   badge: 'bg-violet-500/20 text-violet-400',   tag: 'text-violet-400' },
+    emerald: { active: 'border-emerald-500 bg-emerald-500/10', badge: 'bg-emerald-500/20 text-emerald-400', tag: 'text-emerald-400' },
+    blue:    { active: 'border-blue-500 bg-blue-500/10',       badge: 'bg-blue-500/20 text-blue-400',       tag: 'text-blue-400' },
+    amber:   { active: 'border-amber-500 bg-amber-500/10',     badge: 'bg-amber-500/20 text-amber-400',     tag: 'text-amber-400' },
+  };
+  const MODES = [
+    { key: 'INTERNAL_MATCHING', label: 'Internal Matching', icon: '👥', tone: 'violet',  desc: 'User ↔ user order-book match. Broker earns fees only.' },
+    { key: 'B_BOOK',            label: 'B-Book',            icon: '🏠', tone: 'emerald', desc: 'User ↔ broker. Broker is the counterparty.' },
+    { key: 'A_BOOK',            label: 'A-Book',            icon: '🌐', tone: 'blue',    desc: 'User ↔ LP. Orders forwarded; broker hedged.' },
+    { key: 'HYBRID',            label: 'Hybrid',            icon: '⚖️', tone: 'amber',   desc: 'Risk engine routes each order automatically.' },
+  ];
+  const activeTone = MODES.find((m) => m.key === mode)?.tone || 'emerald';
 
   return (
     <div className="space-y-6 max-w-3xl">
@@ -67,86 +83,46 @@ export default function Settings() {
         subtitle="Platform-wide execution config — affects every account."
       />
 
-      {/* Routing mode card */}
+      {/* Execution mode card */}
       <div className="card p-6">
         <div className="flex items-start justify-between gap-4 mb-4">
           <div>
-            <h2 className="text-base font-semibold text-white">Routing Mode</h2>
+            <h2 className="text-base font-semibold text-white">Execution Mode</h2>
             <p className="text-xs text-text-muted mt-1 max-w-md">
-              {isA && 'Every order is forwarded to the configured liquidity provider.'}
-              {isB && 'Orders execute internally using the matching engine. No LP traffic.'}
-              {isHybrid && 'Risk engine decides per order — big trades / profitable users → LP, rest → internal.'}
+              {isIM && 'Orders match user ↔ user on the internal order book. Broker is not the counterparty — earns fees/spread only.'}
+              {isB && 'Orders execute against the broker. Broker is the counterparty and assumes market risk.'}
+              {isA && 'Every order is forwarded to the configured liquidity provider. Exposure transferred externally.'}
+              {isHybrid && 'Risk engine routes each order independently to internal matching, B-book, or A-book.'}
             </p>
           </div>
-          <span className={`text-[10px] uppercase font-bold px-2.5 py-1 rounded ${
-            isA ? 'bg-blue-500/20 text-blue-400'
-            : isHybrid ? 'bg-amber-500/20 text-amber-400'
-            : 'bg-emerald-500/20 text-emerald-400'
-          }`}>
-            {mode}
+          <span className={`text-[10px] uppercase font-bold px-2.5 py-1 rounded ${TONE[activeTone].badge}`}>
+            {mode.replace(/_/g, ' ')}
           </span>
         </div>
 
-        {/* Three-button toggle — B / HYBRID / A. Trying to switch to a
-            mode that needs LP without creds shows a warning rather than
-            blocking — admin can still save and configure LP after. */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <button
-            disabled={saving}
-            onClick={() => isB || save({ routingMode: 'B_BOOK' })}
-            className={`p-4 rounded-lg border-2 text-left transition-all ${
-              isB
-                ? 'border-emerald-500 bg-emerald-500/10'
-                : 'border-border-dark hover:border-border-accent bg-bg-dark'
-            }`}
-          >
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-lg">🏠</span>
-              <span className="font-semibold text-white text-sm">B-Book</span>
-              {isB && <span className="text-[10px] text-emerald-400 ml-auto">ACTIVE</span>}
-            </div>
-            <div className="text-xs text-text-muted">
-              Internal execution only. Broker is counterparty.
-            </div>
-          </button>
-
-          <button
-            disabled={saving}
-            onClick={() => isHybrid || save({ routingMode: 'HYBRID' })}
-            className={`p-4 rounded-lg border-2 text-left transition-all ${
-              isHybrid
-                ? 'border-amber-500 bg-amber-500/10'
-                : 'border-border-dark hover:border-border-accent bg-bg-dark'
-            }`}
-          >
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-lg">⚖️</span>
-              <span className="font-semibold text-white text-sm">Hybrid</span>
-              {isHybrid && <span className="text-[10px] text-amber-400 ml-auto">ACTIVE</span>}
-            </div>
-            <div className="text-xs text-text-muted">
-              Risk engine routes per order. Mix of internal + LP.
-            </div>
-          </button>
-
-          <button
-            disabled={saving}
-            onClick={() => isA || save({ routingMode: 'A_BOOK' })}
-            className={`p-4 rounded-lg border-2 text-left transition-all ${
-              isA
-                ? 'border-blue-500 bg-blue-500/10'
-                : 'border-border-dark hover:border-border-accent bg-bg-dark'
-            }`}
-          >
-            <div className="flex items-center gap-2 mb-1">
-              <span className="text-lg">🌐</span>
-              <span className="font-semibold text-white text-sm">A-Book</span>
-              {isA && <span className="text-[10px] text-blue-400 ml-auto">ACTIVE</span>}
-            </div>
-            <div className="text-xs text-text-muted">
-              Every order → LP. Broker is fully hedged.
-            </div>
-          </button>
+        {/* Four-mode selector. Switching to A-Book / Hybrid without an LP is
+            rejected by the API until a provider is configured. */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          {MODES.map((m) => {
+            const active = mode === m.key;
+            return (
+              <button
+                key={m.key}
+                disabled={saving}
+                onClick={() => active || save({ routingMode: m.key })}
+                className={`p-4 rounded-lg border-2 text-left transition-all ${
+                  active ? TONE[m.tone].active : 'border-border-dark hover:border-border-accent bg-bg-dark'
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-lg">{m.icon}</span>
+                  <span className="font-semibold text-white text-sm">{m.label}</span>
+                  {active && <span className={`text-[10px] ml-auto ${TONE[m.tone].tag}`}>ACTIVE</span>}
+                </div>
+                <div className="text-xs text-text-muted">{m.desc}</div>
+              </button>
+            );
+          })}
         </div>
 
         {/* LP credential warning — shown when current mode NEEDS an LP

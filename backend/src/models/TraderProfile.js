@@ -29,6 +29,12 @@ const traderProfileSchema = new mongoose.Schema(
     initialEquity:  { type: String, default: '1000' }, // ROI denominator
     roiPct:         { type: Number, default: 0 },
     followers:      { type: Number, default: 0, index: true },
+
+    // Performance fee this master charges followers on PROFITABLE copied
+    // trades — percent of follower realized profit. null → use the platform
+    // default (systemSettings 'copyTrading.defaultPerformanceFee'). Always
+    // clamped to [copyTrading.minFee, copyTrading.maxFee] when applied.
+    performanceFeePercent: { type: Number, default: null },
   },
   { timestamps: true }
 );

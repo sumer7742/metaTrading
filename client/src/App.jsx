@@ -33,6 +33,7 @@ const Plans = lazy(() => import('./pages/Plans'));
 const SubscriptionWallet = lazy(() => import('./pages/SubscriptionWallet'));
 const BonusWallet = lazy(() => import('./pages/BonusWallet'));
 const CopyTrade = lazy(() => import('./pages/CopyTrade'));
+const TraderDashboard = lazy(() => import('./pages/TraderDashboard'));
 const Feedback = lazy(() => import('./pages/Feedback'));
 const Helpdesk = lazy(() => import('./pages/Helpdesk'));
 const HelpdeskChat = lazy(() => import('./pages/HelpdeskChat'));
@@ -95,6 +96,7 @@ export default function App() {
         <Route path="/subscription-wallet" element={<Page><SubscriptionWallet /></Page>} />
         <Route path="/bonus-wallet" element={<Page><BonusWallet /></Page>} />
         <Route path="/copy-trading" element={<Page><CopyTrade /></Page>} />
+        <Route path="/copy-trading/trader/:id" element={<Page><TraderDashboard /></Page>} />
         <Route path="/wallet" element={<Page><Wallet /></Page>} />
         <Route path="/accounts/new" element={<Page><NewAccountTiers /></Page>} />
         <Route path="/accounts/new/:tierCode" element={<Page><NewAccountConfigure /></Page>} />

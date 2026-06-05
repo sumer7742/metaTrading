@@ -160,12 +160,13 @@ const placeOrder = asyncHandler(async (req, res) => {
     accountId,
     symbol,
     side,
-    quantity,
     stopLoss,
     takeProfit,
     leverage,
     idempotencyKey,
   } = req.body;
+  // `quantity` may be overridden by a fixed/scheduled instrument volume lock.
+  let { quantity } = req.body;
   // The frontend now sends `orderMode` ('MARKET' | 'LIMIT'); legacy callers
   // can still send `type` directly. When `orderMode === 'LIMIT'` we
   // auto-resolve the engine-level type (LIMIT vs STOP) from the price
@@ -302,6 +303,10 @@ const placeOrder = asyncHandler(async (req, res) => {
     }
   }
 
+  // Instrument override service — used for the leverage cap below. Volume is
+  // bounded only by the min/max order size validated next (no fixed volume).
+  const instrumentOverrideService = require('../services/instrumentOverrideService');
+
   // Validate min/max order size
   if (instrument.minOrderSize && lt(quantity, instrument.minOrderSize)) {
     throw new AppError(
@@ -366,6 +371,14 @@ const placeOrder = asyncHandler(async (req, res) => {
   } else {
     effectiveCap = SYSTEM_DEFAULT_LEVERAGE;
   }
+
+  // Scheduled instrument leverage override — during an active window the
+  // override leverage becomes the cap for NEW positions (open positions are
+  // never modified). Falls back to the chain above if there's no override.
+  try {
+    const lev = await instrumentOverrideService.getEffectiveLeverage(instrument);
+    if (lev.isOverride && Number(lev.value) > 0) effectiveCap = Number(lev.value);
+  } catch (_) { /* keep the default cap */ }
 
   let orderLeverage;
   if (leverage != null) {

@@ -52,9 +52,30 @@ module.exports = {
   },
 
   ROUTING: {
-    INTERNAL: 'INTERNAL',
-    EXTERNAL: 'EXTERNAL',
+    INTERNAL: 'INTERNAL',           // legacy internal fill (kept for old data)
+    INTERNAL_MATCHING: 'INTERNAL_MATCHING', // user↔user order-book match
+    EXTERNAL: 'EXTERNAL',           // A-book (forwarded to LP)
+    B_BOOK: 'B_BOOK',               // user↔broker (broker is counterparty)
+  },
+
+  // The four selectable execution modes (admin/global or per-user override).
+  // INTERNAL_MATCHING — user↔user matching (broker earns fees only)
+  // B_BOOK           — user↔broker (broker is the counterparty)
+  // A_BOOK           — user↔LP (exposure transferred externally)
+  // HYBRID           — risk engine routes each order to one of the above
+  EXECUTION_MODE: {
+    INTERNAL_MATCHING: 'INTERNAL_MATCHING',
     B_BOOK: 'B_BOOK',
+    A_BOOK: 'A_BOOK',
+    HYBRID: 'HYBRID',
+  },
+
+  // The concrete venue an order actually executed on (HYBRID resolves to one
+  // of these). Never 'HYBRID' — that's a mode, not a result.
+  ROUTING_RESULT: {
+    INTERNAL_MATCHING: 'INTERNAL_MATCHING',
+    B_BOOK: 'B_BOOK',
+    A_BOOK: 'A_BOOK',
   },
 
   TRADING_MODE: {
@@ -84,9 +105,11 @@ module.exports = {
   // actually executed. HYBRID_* preserves the original HYBRID decision so
   // we can audit how the risk engine routed each order.
   EXECUTION_SOURCE: {
-    INTERNAL: 'INTERNAL',
-    LP: 'LP',
+    INTERNAL: 'INTERNAL',                 // B-book (broker counterparty)
+    INTERNAL_MATCHING: 'INTERNAL_MATCHING', // user↔user book match
+    LP: 'LP',                             // A-book
     HYBRID_INTERNAL: 'HYBRID_INTERNAL',
+    HYBRID_INTERNAL_MATCHING: 'HYBRID_INTERNAL_MATCHING',
     HYBRID_LP: 'HYBRID_LP',
   },
 

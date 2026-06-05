@@ -63,6 +63,7 @@ const bonusTransactionSchema = new mongoose.Schema(
         'ADMIN_DEBIT',
         'WITHDRAWAL',
         'REFUND',
+        'COPY_PERFORMANCE_FEE',
       ],
       required: true,
       index: true,

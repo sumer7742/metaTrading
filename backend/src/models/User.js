@@ -88,10 +88,34 @@ const userSchema = new mongoose.Schema(
       // Per-user routing override. When set, the orderRouter uses this
       // value instead of the global SystemSetting.routingMode.
       // null/empty = INHERIT (use the global mode).
-      routingMode: { type: String, enum: ['A_BOOK', 'B_BOOK', 'HYBRID', null], default: null },
+      routingMode: { type: String, enum: ['INTERNAL_MATCHING', 'A_BOOK', 'B_BOOK', 'HYBRID', null], default: null },
       forceABook: { type: Boolean, default: false }, // @deprecated — use routingMode='A_BOOK' instead
       maxLeverage: { type: Number, default: null },
       maxPositionSize: { type: Number, default: null },
+    },
+
+    // ── Hierarchical limits (Super Admin → Admin → Manager → User) ──────
+    // The maximum amounts this actor was GRANTED by their parent. Each is
+    // validated server-side to never exceed the parent's own limit (set
+    // time), and enforced at the relevant action point (create / deposit /
+    // order / etc.). `null` = no limit (unlimited) — so every pre-existing
+    // user keeps working exactly as before. Counts are subtree quotas for
+    // admins/managers; money/leverage/position caps apply per user.
+    hierarchyLimits: {
+      maxUsers:                 { type: Number, default: null },
+      maxManagers:              { type: Number, default: null },
+      maxTradingAccounts:       { type: Number, default: null },
+      maxDepositLimit:          { type: Number, default: null }, // USD, per-request ceiling
+      maxWithdrawalLimit:       { type: Number, default: null }, // USD, per-request ceiling
+      maxLeverage:              { type: Number, default: null },
+      maxCreditAllocation:      { type: Number, default: null }, // USD
+      maxBonusAllocation:       { type: Number, default: null }, // USD
+      maxOpenPositions:         { type: Number, default: null },
+      maxExposure:              { type: Number, default: null }, // USD notional
+      maxReferralCommission:    { type: Number, default: null }, // %
+      maxCopyTradingCommission: { type: Number, default: null }, // %
+      updatedAt:                { type: Date, default: null },
+      updatedBy:                { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     },
     // Symbol-level block list (doc §9, per-user permissions). When non-empty,
     // orders on these symbols are rejected at the router with

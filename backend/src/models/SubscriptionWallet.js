@@ -51,7 +51,7 @@ const subscriptionTransactionSchema = new mongoose.Schema(
     },
     reason: {
       type: String,
-      enum: ['DEPOSIT', 'SUBSCRIPTION_CHARGE', 'RENEWAL', 'ADMIN_CREDIT', 'ADMIN_DEBIT', 'REFUND', 'REFERRAL_BONUS', 'WITHDRAWAL'],
+      enum: ['DEPOSIT', 'SUBSCRIPTION_CHARGE', 'RENEWAL', 'ADMIN_CREDIT', 'ADMIN_DEBIT', 'REFUND', 'REFERRAL_BONUS', 'WITHDRAWAL', 'COPY_PROFIT'],
       required: true,
     },
     status: {

@@ -50,7 +50,32 @@
       "Bash(node -e \"console.log\\(JSON.stringify\\(require\\('./package.json'\\).scripts\\)\\)\")",
       "Bash(node --check src/controllers/adminController.js)",
       "Bash(node --check src/models/Compliance.js)",
-      "Bash(node --check src/services/systemSettings.service.js)"
+      "Bash(node --check src/services/systemSettings.service.js)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\rijju\\\\OneDrive\\\\Desktop\\\\trading-platform  last and\" -Directory)",
+      "Bash(Select-Object Name)",
+      "Bash(Find /c/Users/rijju/OneDrive/Desktop/\"trading-platform  last and\"/backend/src/models -name \"Wallet.js\" -o -name \"*Wallet*\")",
+      "Bash(node --check src/services/copyAnalyticsService.js)",
+      "Bash(node --check src/controllers/copyTradingController.js)",
+      "Bash(node --check src/routes/copyTrading.js)",
+      "Bash(node -e \"const c=require\\('./src/controllers/copyTradingController'\\); console.log\\('handlers:', ['traderProfile','traderPositions','traderHistory'].map\\(k=>typeof c[k]\\).join\\(','\\)\\); require\\('./src/routes/copyTrading'\\); console.log\\('routes load OK'\\);\")",
+      "Bash(node -e \"require\\('./src/services/copyEarningsService'\\); require\\('./src/services/copyTradingService'\\); require\\('./src/services/copyAnalyticsService'\\); require\\('./src/controllers/copyTradingController'\\); require\\('./src/routes/copyTrading'\\); require\\('./src/models/CopyTradeEarnings'\\); console.log\\('backend modules load OK'\\);\")",
+      "Bash(node -e \"const s=require\\('./src/services/copyEarningsService'\\); console.log\\('exports:', Object.keys\\(s\\).join\\(', '\\)\\); console.log\\('applyPerformanceFee is settleCopyTradeProfit:', s.applyPerformanceFee===s.settleCopyTradeProfit\\); require\\('./src/services/copyTradingService'\\); require\\('./src/models/SubscriptionWallet'\\); require\\('./src/models/CopyTradeEarnings'\\); console.log\\('backend load OK'\\);\")",
+      "Bash(node -e \"require\\('./src/controllers/adminController'\\); console.log\\('controller loads OK'\\);\")",
+      "Bash(node -e \"require\\('./src/controllers/adminController'\\); console.log\\('adminController OK'\\);\")",
+      "Bash(node --check src/routes/admin.js)",
+      "Bash(node -e \"require\\('./src/routes/admin'\\); console.log\\('admin routes load OK'\\);\")",
+      "Bash(node -e \"require\\('./src/routes/admin'\\); require\\('./src/services/orderRouter.service'\\); require\\('./src/services/riskEngine.service'\\); require\\('./src/matching-engine/MatchingEngine'\\); require\\('./src/models/RoutingDecision'\\); require\\('./src/models/Order'\\); console.log\\('backend OK'\\);\")",
+      "Bash(node -e \"require\\('./src/models/User'\\); console.log\\('User model OK — INTERNAL_MATCHING now accepted on riskOverride.routingMode'\\);\")",
+      "Bash(node -e \"require\\('./src/routes/admin'\\); require\\('./src/controllers/orderController'\\); require\\('./src/controllers/instrumentController'\\); require\\('./src/services/instrumentOverrideService'\\); require\\('./src/models/InstrumentOverride'\\); console.log\\('backend OK'\\);\")",
+      "Bash(xargs grep -l \"AuditLog\\\\|new mongoose.Schema\")",
+      "Bash(dir /B \"c:\\\\Users\\\\rijju\\\\OneDrive\\\\Desktop\\\\trading-platform last and\\\\backend\\\\src\\\\models\")",
+      "Bash(findstr /i audit)",
+      "Bash(ls \"c:\\\\Users\\\\rijju\\\\OneDrive\\\\Desktop\\\\trading-platform  last and\\\\admin\\\\src\\\\pages\" 2>nul | head -30)",
+      "Read(//c/Users/rijju/OneDrive/Desktop/trading-platform last and/admin/src/**)",
+      "Bash(node -e \"require\\('./src/routes/hierarchy'\\); require\\('./src/services/limitService'\\); require\\('./src/controllers/hierarchyController'\\); require\\('./src/controllers/orderController'\\); require\\('./src/controllers/walletController'\\); require\\('./src/models/User'\\); console.log\\('backend OK'\\);\")",
+      "Bash(node -e \"const s=require\\('./src/services/limitService'\\); console.log\\('limitService keys:', s.LIMIT_KEYS.length\\); require\\('./src/routes/hierarchy'\\); console.log\\('backend OK'\\);\")",
+      "Bash(node -e \"const s=require\\('./src/services/limitService'\\); console.log\\('limits:', s.LIMIT_KEYS.join\\(','\\)\\); require\\('./src/routes/hierarchy'\\); require\\('./src/controllers/orderController'\\); require\\('./src/controllers/walletController'\\); require\\('./src/controllers/userController'\\); console.log\\('backend OK'\\);\")",
+      "Bash(node -e \"require\\('./src/controllers/orderController'\\); console.log\\('backend OK'\\);\")"
     ]
   }
 }

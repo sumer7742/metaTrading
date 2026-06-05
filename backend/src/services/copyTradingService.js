@@ -244,6 +244,8 @@ async function onMasterPositionClosed({ position, realizedPnl }) {
     }
   } catch (_) {}
 
+  const copyEarnings = require('./copyEarningsService');
+
   for (const mirror of mirrors) {
     try {
       if (!mirror.followerPositionId) {
@@ -260,11 +262,18 @@ async function onMasterPositionClosed({ position, realizedPnl }) {
         { new: true }
       );
       if (!followerPos) {
-        // Position already settled — just close the link.
+        // Position already settled (e.g. the follower's own SL/TP fired
+        // before the master closed) — close the link AND still settle the
+        // performance fee on its realized profit.
         mirror.status = 'CLOSED';
         mirror.closeReason = 'already_closed';
         mirror.closedAt = new Date();
+        try {
+          const settled = await Position.findById(mirror.followerPositionId).select('realizedPnl').lean();
+          if (settled && settled.realizedPnl != null) mirror.realizedPnl = String(settled.realizedPnl);
+        } catch (_) {}
         await mirror.save();
+        await copyEarnings.applyPerformanceFee(mirror);
         continue;
       }
       const oppositeSide = followerPos.side === 'BUY' ? 'SELL' : 'BUY';
@@ -289,7 +298,16 @@ async function onMasterPositionClosed({ position, realizedPnl }) {
       mirror.status = 'CLOSED';
       mirror.closeReason = 'master_closed';
       mirror.closedAt = new Date();
+      try {
+        const settled = await Position.findById(mirror.followerPositionId).select('realizedPnl').lean();
+        if (settled && settled.realizedPnl != null) mirror.realizedPnl = String(settled.realizedPnl);
+      } catch (_) {}
       await mirror.save();
+
+      // Master Trader Earnings — performance fee on profitable closes only.
+      // Purely additive: debits the follower's account, credits the master's
+      // Bonus Wallet. Idempotent and never throws into the close flow.
+      await copyEarnings.applyPerformanceFee(mirror);
 
       try {
         const wsServer = require('../websocket/server');
@@ -338,9 +356,20 @@ async function leaderboard({ limit = 50 } = {}) {
     .sort({ roiPct: -1, followers: -1, totalTrades: -1 })
     .limit(Math.min(200, Math.max(1, Number(limit) || 50)))
     .lean();
+  // Resolve each master's EFFECTIVE performance fee once (own override or
+  // platform default, clamped) so cards/the copy modal can disclose it.
+  const copyEarnings = require('./copyEarningsService');
+  const s = await copyEarnings.getFeeSettings();
+  const effFee = (p) => {
+    if (!s.enabled) return 0;
+    let pct = p.performanceFeePercent != null ? Number(p.performanceFeePercent) : s.defaultFee;
+    if (!Number.isFinite(pct)) pct = s.defaultFee;
+    return Math.max(s.minFee, Math.min(s.maxFee, pct));
+  };
   return list.map((p) => ({
     ...p,
     winRate: p.totalTrades ? (p.wins / p.totalTrades) * 100 : 0,
+    performanceFeePercent: effFee(p),
   }));
 }
 

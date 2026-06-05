@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { ORDER_SIDE, ORDER_TYPE, ORDER_STATUS, ROUTING, EXECUTION_SOURCE } = require('../config/constants');
+const { ORDER_SIDE, ORDER_TYPE, ORDER_STATUS, ROUTING, EXECUTION_SOURCE, EXECUTION_MODE, ROUTING_RESULT } = require('../config/constants');
 
 const orderSchema = new mongoose.Schema(
   {
@@ -50,6 +50,22 @@ const orderSchema = new mongoose.Schema(
       type: String,
       enum: Object.values(EXECUTION_SOURCE),
       default: EXECUTION_SOURCE.INTERNAL,
+      index: true,
+    },
+    // The execution MODE this order was routed under (what the admin/global
+    // or per-user setting selected). For HYBRID this stays 'HYBRID' while
+    // `routingResult` records what the risk engine actually chose.
+    executionMode: {
+      type: String,
+      enum: Object.values(EXECUTION_MODE),
+      default: EXECUTION_MODE.B_BOOK,
+      index: true,
+    },
+    // The concrete venue the order executed on (INTERNAL_MATCHING|B_BOOK|A_BOOK).
+    routingResult: {
+      type: String,
+      enum: [...Object.values(ROUTING_RESULT), null],
+      default: null,
       index: true,
     },
     // LP audit trail — populated by lpExecution.service when the order

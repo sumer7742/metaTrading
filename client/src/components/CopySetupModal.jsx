@@ -18,6 +18,12 @@ export default function CopySetupModal({ trader, onClose, onStarted }) {
   const [accounts, setAccounts] = useState([]);
   const [accountId, setAccountId] = useState('');
   const [saving, setSaving] = useState(false);
+  // Performance fee this master charges on profitable copied trades. Comes
+  // through on the leaderboard/profile object; fetched as a fallback so the
+  // follower always sees it before confirming.
+  const [feePct, setFeePct] = useState(
+    trader?.performanceFeePercent != null ? Number(trader.performanceFeePercent) : null
+  );
 
   // Load the user's real trading accounts so they can pick which one
   // the mirrored trades land in.
@@ -31,6 +37,19 @@ export default function CopySetupModal({ trader, onClose, onStarted }) {
         setAccounts(reals);
         if (reals.length) setAccountId(reals[0]._id);
       } catch { /* non-fatal */ }
+    })();
+  }, []);
+
+  // Fallback: resolve the master's effective performance fee if it wasn't
+  // already on the trader object (e.g. opened from a stale card).
+  useEffect(() => {
+    if (feePct != null) return;
+    (async () => {
+      try {
+        const r = await api.get(`/copy-trading/trader/${trader.userId}`);
+        const p = r.data?.data?.earnings?.performanceFeePercent;
+        if (p != null) setFeePct(Number(p));
+      } catch { /* leave hidden if we can't determine it */ }
     })();
   }, []);
 
@@ -158,6 +177,47 @@ export default function CopySetupModal({ trader, onClose, onStarted }) {
             />
             <span className="text-text-primary">Sync SL/TP changes from the master</span>
           </label>
+
+          {/* Profit settlement + fee disclosure — shown BEFORE confirming. */}
+          {feePct != null && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] uppercase tracking-wider font-bold text-amber-700">
+                  {feePct > 0 ? 'Performance Fee' : 'Profit Settlement'}
+                </span>
+                {feePct > 0 && <span className="text-sm font-extrabold text-amber-700">{feePct}%</span>}
+              </div>
+              {feePct > 0 ? (
+                <p className="text-[11px] text-amber-800/80 mt-1 leading-snug">
+                  {trader.displayName} earns <span className="font-semibold">{feePct}%</span> of your
+                  {' '}<span className="font-semibold">profit</span> on each winning trade.
+                  {' '}<span className="font-semibold">No fee</span> on losing or breakeven trades.
+                </p>
+              ) : (
+                <p className="text-[11px] text-amber-800/80 mt-1 leading-snug">No performance fee on this trader.</p>
+              )}
+              {feePct > 0 && (
+                <div className="mt-2 grid grid-cols-3 gap-2 text-center">
+                  <div className="rounded-lg bg-white/70 py-1.5">
+                    <div className="text-[9px] uppercase text-text-muted font-bold">On $100 profit</div>
+                    <div className="text-xs font-extrabold text-text-primary">$100</div>
+                  </div>
+                  <div className="rounded-lg bg-white/70 py-1.5">
+                    <div className="text-[9px] uppercase text-text-muted font-bold">Master earns</div>
+                    <div className="text-xs font-extrabold text-amber-700">${Number(feePct).toFixed(2)}</div>
+                  </div>
+                  <div className="rounded-lg bg-white/70 py-1.5">
+                    <div className="text-[9px] uppercase text-text-muted font-bold">To Main Wallet</div>
+                    <div className="text-xs font-extrabold text-bull">${(100 - Number(feePct)).toFixed(2)}</div>
+                  </div>
+                </div>
+              )}
+              <div className="mt-2 flex items-start gap-1.5 text-[11px] text-text-secondary">
+                <span aria-hidden>💰</span>
+                <span>Your copy-trading <span className="font-semibold text-text-primary">profits are paid to your Main Wallet</span> — your trading account keeps its capital.</span>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Footer */}
