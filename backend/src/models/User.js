@@ -18,6 +18,10 @@ const userSchema = new mongoose.Schema(
     // race conditions / direct DB writes.
     phone: { type: String, sparse: true, unique: true, index: true },
 
+    // Country (ISO name or code). Optional — populated at registration/KYC
+    // when available; surfaced as an optional column in the admin user table.
+    country: { type: String, default: null },
+
     // ─── Permanent public User ID (additive, immutable) ────────────────
     // Human-readable, platform-unique handle shown in the user's profile
     // and throughout the admin system (e.g. "USR100245"). Generated exactly
@@ -127,14 +131,25 @@ const userSchema = new mongoose.Schema(
     referralCode: { type: String, unique: true, sparse: true },
     referredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
 
-    // Partner / Referral program. `partnerLevel` is normally derived
-    // from the active-referral count + tier thresholds in SystemSetting,
-    // but admin can pin it (`partnerLevelLocked: true`) to override
-    // auto-progression. `partnerBlocked` excludes the user from earning
-    // commissions WITHOUT touching `isActive` (which gates login).
-    partnerLevel:       { type: String, default: null },   // 'BRONZE' | 'SILVER' | 'GOLD' | 'DIAMOND'
+    // Partner / Referral program — MONTHLY VOLUME-BASED tier engine.
+    // The tier is recomputed on the 1st of each month from the PREVIOUS
+    // calendar month's referral trading volume and stays fixed for the
+    // whole current month. The computed snapshot lives in the fields
+    // below (refreshed by a monthly cron + lazily on read):
+    //   partnerTier            — current tier name (BRONZE…ELITE)
+    //   partnerTierPercent     — revenue-share % for that tier
+    //   partnerTierMonth       — 'YYYY-MM' the snapshot applies to
+    //   partnerPrevMonthVolume — previous-month referral volume used (USD)
+    // Admin can PIN a tier (`partnerLevelLocked: true` + `partnerLevel`)
+    // to override the auto-calculation. `partnerBlocked` excludes the user
+    // from earning commissions WITHOUT touching `isActive` (login gate).
+    partnerLevel:       { type: String, default: null },   // manual pin: 'BRONZE'|'SILVER'|'GOLD'|'PLATINUM'|'ELITE'
     partnerLevelLocked: { type: Boolean, default: false },
     partnerBlocked:     { type: Boolean, default: false, index: true },
+    partnerTier:            { type: String, default: null },
+    partnerTierPercent:     { type: Number, default: 0 },
+    partnerTierMonth:       { type: String, default: null },
+    partnerPrevMonthVolume: { type: Number, default: 0 },
 
     // ─── Admin-controlled leverage override ─────────────────────────
     // The effective leverage cap for this user follows this precedence:

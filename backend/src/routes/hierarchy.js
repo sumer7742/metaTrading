@@ -11,6 +11,10 @@ router.use(authenticate, requireHierarchy);
 
 // ── Admin management — SuperAdmin only ──────────────────────────────
 router.get('/admins',        allowPermission('hierarchy.admin.manage'), c.listAdmins);
+// Configurable platform-wide admin cap (read + set). Declared before the
+// '/admins/:id' delete so the literal path isn't shadowed.
+router.get('/admins/cap',    allowPermission('hierarchy.admin.manage'), c.getAdminCap);
+router.put('/admins/cap',    allowPermission('hierarchy.superadmin'),   c.setAdminCap);
 router.post('/admins',       allowPermission('hierarchy.admin.manage'), c.createAdmin);
 router.delete('/admins/:id', allowPermission('hierarchy.admin.manage'), c.deactivateAdmin);
 

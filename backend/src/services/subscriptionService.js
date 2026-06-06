@@ -161,4 +161,77 @@ const cancel = async ({ userId, reason }) => {
   return sub;
 };
 
-module.exports = { getEffectivePlan, canCreateAccount, applyFeeDiscount, subscribe, cancel, invalidateCache };
+/**
+ * Charge a user for a plan. BILLING SOURCES (Bonus Wallet is NEVER used):
+ *   1. Main Wallet (SubscriptionWallet) — primary.
+ *   2. Trading Wallet — secondary, ONLY when `subscription.allowTradingWallet`
+ *      is enabled in system settings.
+ * Throws a 402 INSUFFICIENT_SUBSCRIPTION_BALANCE if neither can cover it.
+ * Returns a paymentRef object for subscriptionService.subscribe().
+ *
+ * @returns {Promise<{provider,transactionId?,amount,currency,paidAt}>}
+ */
+const { gte } = require('../utils/decimal');
+const { AppError } = require('../utils/errors');
+
+async function _chargeTradingWallet(userId, priceUsd, note) {
+  const TradingAccount = require('../models/TradingAccount');
+  const { Wallet } = require('../models/Wallet');
+  const walletService = require('./walletService');
+  const currencyService = require('./currencyService');
+  const { WALLET_TX_TYPE } = require('../config/constants');
+
+  const acc = await TradingAccount.findOne({ userId, accountType: { $nin: ['DEMO', 'VIRTUAL'] }, isActive: true })
+    .sort({ createdAt: 1 }).lean();
+  if (!acc) return null;
+  const cur = acc.baseCurrency || 'USD';
+  let amt = priceUsd;
+  if (cur !== 'USD') {
+    try { const r = Number(await currencyService.getUsdInrRate()) || 83; amt = priceUsd * r; }
+    catch { return null; }
+  }
+  const w = await Wallet.findOne({ userId, accountId: acc._id, currency: cur }).lean();
+  if (!w || !gte(w.balance, String(amt))) return null;
+  await walletService.debit({
+    userId, accountId: acc._id, currency: cur, amount: String(amt),
+    type: WALLET_TX_TYPE.FEE, referenceType: 'subscription', note,
+  });
+  return { provider: 'TRADING_WALLET', amount: String(amt), currency: cur, paidAt: new Date() };
+}
+
+async function chargePlan({ userId, amount, note }) {
+  const price = Number(amount);
+  if (!(price > 0)) return { provider: 'FREE', amount: '0', currency: 'USD', paidAt: new Date() };
+
+  const subscriptionWalletService = require('./subscriptionWalletService');
+  const systemSettings = require('./systemSettings.service');
+
+  // 1) Main Wallet (primary).
+  const mainW = await subscriptionWalletService.getOrCreate(userId);
+  if (gte(mainW.balance, String(price))) {
+    const { tx } = await subscriptionWalletService.debit({ userId, amount: String(price), reason: 'SUBSCRIPTION_CHARGE', note });
+    return { provider: 'MAIN_WALLET', transactionId: String(tx._id), amount: String(price), currency: tx.currency || 'USD', paidAt: new Date() };
+  }
+
+  // 2) Trading Wallet (secondary) — only if explicitly enabled.
+  const allowTrading = (await systemSettings.getSetting('subscription.allowTradingWallet')) === true;
+  if (allowTrading) {
+    const charged = await _chargeTradingWallet(userId, price, note);
+    if (charged) return charged;
+  }
+
+  // 3) Insufficient — NEVER fall back to the Bonus Wallet.
+  throw new AppError(
+    'Insufficient Main Wallet balance for this plan. Top up your Main Wallet to continue.',
+    402,
+    'INSUFFICIENT_SUBSCRIPTION_BALANCE',
+    {
+      balance: mainW.balance,
+      needed: String(price),
+      shortfall: String(Math.max(0, price - Number(mainW.balance)).toFixed(2)),
+      currency: mainW.currency || 'USD',
+    }
+  );
+}
+
+module.exports = { getEffectivePlan, canCreateAccount, applyFeeDiscount, subscribe, cancel, invalidateCache, chargePlan };

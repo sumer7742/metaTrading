@@ -38,6 +38,14 @@ const isSuper = (req) => req.user.role === ROLES.SUPER_ADMIN;
 /* ── Admin management (SuperAdmin only) ─────────────────────────────── */
 const listAdmins = asyncHandler(async (req, res) => sendSuccess(res, await svc.listAdmins(listOpts(req))));
 
+// Read / set the platform-wide max-admins cap (SuperAdmin configurable).
+const getAdminCap = asyncHandler(async (req, res) => sendSuccess(res, { maxAdmins: await svc.getAdminCap() }));
+const setAdminCap = asyncHandler(async (req, res) => {
+  const maxAdmins = await svc.setAdminCap(req.body.maxAdmins, req.userId);
+  await audit(req, 'HIERARCHY_ADMIN_CAP_SET', { type: 'SETTING', id: 'hierarchy.maxAdmins' }, { maxAdmins });
+  sendSuccess(res, { maxAdmins });
+});
+
 const createAdmin = asyncHandler(async (req, res) => {
   const user = await svc.createRole(ROLES.ADMIN, req.body, req.user);
   await audit(req, 'ADMIN_CREATED', { type: 'USER', id: user._id }, { email: user.email });
@@ -266,7 +274,7 @@ const setLimits = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-  listAdmins, createAdmin, deactivateAdmin,
+  listAdmins, getAdminCap, setAdminCap, createAdmin, deactivateAdmin,
   listManagers, createManager, deactivateManager,
   assignAdmin, assignManager, reassign, unassign, bulkAssign,
   unassigned, users, workload, tree,

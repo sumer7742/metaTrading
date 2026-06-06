@@ -314,6 +314,28 @@ const start = async () => {
     logger.error('Instrument leverage backfill failed', { err: e });
   }
 
+  // One-time backfill: stamp commissionType on instruments missing it.
+  // A non-zero commissionPercent ⇒ PERCENTAGE, otherwise FIXED. Also zeroes
+  // the inactive field so the two methods can never both charge.
+  try {
+    const Instrument = require('./models/Instrument');
+    const needType = { $or: [{ commissionType: { $exists: false } }, { commissionType: null }] };
+    const [toPct, toFixed] = await Promise.all([
+      Instrument.updateMany(
+        { ...needType, $expr: { $gt: [{ $toDouble: { $ifNull: ['$commissionPercent', '0'] } }, 0] } },
+        { $set: { commissionType: 'PERCENTAGE', commissionPerTrade: '0' } }
+      ),
+      Instrument.updateMany(
+        { ...needType, $expr: { $lte: [{ $toDouble: { $ifNull: ['$commissionPercent', '0'] } }, 0] } },
+        { $set: { commissionType: 'FIXED', commissionPercent: '0' } }
+      ),
+    ]);
+    const n = (toPct.modifiedCount || 0) + (toFixed.modifiedCount || 0);
+    if (n) logger.info(`Instrument commissionType backfill: ${n} instrument(s) migrated`);
+  } catch (e) {
+    logger.error('Instrument commissionType backfill failed', { err: e });
+  }
+
   const server = http.createServer(app);
   // Attach WebSocket and wire the engine's broadcaster BEFORE hydrating from
   // DB. hydrateFromDB doesn't currently broadcast, but the engine's book.add

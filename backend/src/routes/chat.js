@@ -5,6 +5,9 @@ const { authenticate } = require('../middleware/auth');
 const router = express.Router();
 router.use(authenticate);
 
+// Effective file-upload limits for the caller's role (composer hints + validation).
+router.get('/upload-config', c.uploadConfig);
+
 // User-facing: my conversation with my assigned manager.
 router.get('/conversation', c.myConversation);
 

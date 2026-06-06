@@ -16,6 +16,23 @@ const TTL_MS = Number(process.env.SETTINGS_CACHE_TTL_MS) || 60_000;
 const DEFAULTS = {
   routingMode: 'B_BOOK',
   defaultLpProvider: 'NONE',
+  // Max number of top-level platform admins (Hierarchy → Admins). Super-admin
+  // editable; falls back to the hard cap in config/hierarchy.js when unset.
+  'hierarchy.maxAdmins': 4,
+  // ── Help/Support chat file-upload limits (Super-Admin configurable) ──
+  // Applied immediately (no redeploy). Per-role overrides where a 0 means
+  // "inherit the global value". Executable/unsafe extensions are blocked in
+  // code regardless of these settings (see chatService BLOCKED_EXTENSIONS).
+  'chat.upload.enabled':    true,
+  'chat.upload.maxFileMB':  5,    // max size per file (MB) — the only size limit
+  'chat.upload.maxTotalMB': 0,    // 0 = unlimited total per message
+  'chat.upload.maxFiles':   0,    // 0 = unlimited file count per message
+  'chat.upload.allowedExtensions': [], // empty = any type (executables still blocked)
+  'chat.upload.roles': {
+    USER:    { enabled: true, maxFileMB: 0, maxTotalMB: 0, maxFiles: 0 },
+    MANAGER: { enabled: true, maxFileMB: 0, maxTotalMB: 0, maxFiles: 0 },
+    ADMIN:   { enabled: true, maxFileMB: 0, maxTotalMB: 0, maxFiles: 0 },
+  },
   // Peer-to-peer wallet transfers (Wallet → Transfer Funds → Another User).
   // Keep keys flat (dotted strings as Mongo doc keys) so adding more
   // transfer knobs later is a single-row insert each.
@@ -63,6 +80,12 @@ const DEFAULTS = {
   'copyTrading.defaultPerformanceFee': 20,   // percent, used when master has no override
   'copyTrading.minFee':                0,    // percent floor
   'copyTrading.maxFee':                50,   // percent ceiling
+
+  // Subscription billing. Plans bill from the MAIN WALLET only by default.
+  // The Bonus Wallet is NEVER a billing source (enforced in code). When this
+  // is true, the Trading Wallet is used as a SECONDARY source if the Main
+  // Wallet can't cover the charge.
+  'subscription.allowTradingWallet':  false,
 };
 
 const _cache = new Map(); // key -> { value, expiresAt }

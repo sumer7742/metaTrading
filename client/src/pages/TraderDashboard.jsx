@@ -447,9 +447,11 @@ function OpenPositions({ traderId }) {
 // ═══════════════════════════════════════════════════════════════════
 // TRADE HISTORY
 // ═══════════════════════════════════════════════════════════════════
-const HISTORY_PERIODS = [{ k: 'today', label: 'Today' }, { k: 'week', label: 'This Week' }, { k: 'month', label: 'This Month' }, { k: 'all', label: 'All' }];
+const HISTORY_PERIODS = [{ k: 'today', label: 'Today' }, { k: 'week', label: 'This Week' }, { k: 'month', label: 'This Month' }, { k: 'all', label: 'All' }, { k: 'custom', label: 'Custom' }];
 function TradeHistory({ traderId }) {
   const [period, setPeriod] = useState('all');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
   const [page, setPage] = useState(1);
   const [data, setData] = useState({ items: [], total: 0, page: 1, pages: 1 });
   const [loading, setLoading] = useState(true);
@@ -457,24 +459,46 @@ function TradeHistory({ traderId }) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    api.get(`/copy-trading/trader/${traderId}/history`, { params: { period, page, limit: 10 } })
+    const params = { period, page, limit: 10 };
+    if (period === 'custom') {
+      if (from) params.from = from;
+      // Make the end date inclusive of the whole selected day.
+      if (to) params.to = `${to}T23:59:59.999`;
+    }
+    api.get(`/copy-trading/trader/${traderId}/history`, { params })
       .then(({ data: r }) => { if (!cancelled) setData(r.data); })
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [traderId, period, page]);
+  }, [traderId, period, page, from, to]);
 
   return (
     <div className="rounded-2xl border border-border-dark bg-white shadow-card overflow-hidden">
       <div className="px-5 py-4 border-b border-border-subtle flex items-center justify-between gap-3 flex-wrap">
         <h3 className="text-sm font-bold text-text-primary">Trade History</h3>
-        <div className="flex gap-1">
+        <div className="flex gap-1 flex-wrap items-center">
           {HISTORY_PERIODS.map((p) => (
             <button key={p.k} onClick={() => { setPeriod(p.k); setPage(1); }}
               className={`text-[11px] font-bold px-2.5 py-1 rounded-lg transition-colors ${period === p.k ? 'bg-primary-500 text-white' : 'bg-bg-hover text-text-secondary hover:text-text-primary'}`}>{p.label}</button>
           ))}
         </div>
       </div>
+      {period === 'custom' && (
+        <div className="px-5 py-3 border-b border-border-subtle flex items-center gap-2 flex-wrap bg-bg-card/50">
+          <label className="text-[11px] font-bold text-text-muted uppercase tracking-wider">From</label>
+          <input type="date" value={from} max={to || undefined}
+            onChange={(e) => { setFrom(e.target.value); setPage(1); }}
+            className="text-xs px-2.5 py-1.5 rounded-lg border border-border-dark bg-white text-text-primary focus:border-primary-500 focus:outline-none" />
+          <label className="text-[11px] font-bold text-text-muted uppercase tracking-wider">To</label>
+          <input type="date" value={to} min={from || undefined}
+            onChange={(e) => { setTo(e.target.value); setPage(1); }}
+            className="text-xs px-2.5 py-1.5 rounded-lg border border-border-dark bg-white text-text-primary focus:border-primary-500 focus:outline-none" />
+          {(from || to) && (
+            <button onClick={() => { setFrom(''); setTo(''); setPage(1); }}
+              className="text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border border-border-dark text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors">Clear</button>
+          )}
+        </div>
+      )}
       {loading ? (
         <div className="px-5 py-10 text-center text-sm text-text-muted">Loading…</div>
       ) : data.items.length === 0 ? (

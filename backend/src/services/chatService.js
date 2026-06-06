@@ -10,9 +10,58 @@ const { ROLES } = require('../config/constants');
 const { AppError } = require('../utils/errors');
 const broadcaster = require('../websocket/server');
 
-const MAX_ATTACHMENTS = 4;
-const MAX_ATTACH_BYTES = 1024 * 1024; // ~1MB per attachment (data URL)
+const systemSettings = require('./systemSettings.service');
 const oid = (id) => mongoose.Types.ObjectId.createFromHexString(String(id));
+
+// ── Chat file-upload limits (Super-Admin configurable via SystemSetting) ──
+//
+// Executable / unsafe extensions are ALWAYS blocked, regardless of the
+// admin-configured allowlist — a security floor that can't be turned off.
+const BLOCKED_EXTENSIONS = [
+  'exe', 'bat', 'sh', 'apk', 'msi', 'cmd', 'com', 'scr', 'pif', 'jar',
+  'dll', 'vbs', 'vbe', 'js', 'jse', 'wsf', 'wsh', 'ps1', 'ps2', 'psc1',
+  'app', 'deb', 'rpm', 'bin', 'gadget', 'msc', 'reg', 'hta', 'cpl', 'inf',
+];
+const extOf = (name) => { const m = String(name || '').toLowerCase().match(/\.([a-z0-9]+)$/); return m ? m[1] : ''; };
+
+// Resolve the global upload config from settings (defaults applied in service).
+async function getUploadConfig() {
+  const [enabled, maxFileMB, maxTotalMB, maxFiles, allowed, roles] = await Promise.all([
+    systemSettings.getSetting('chat.upload.enabled'),
+    systemSettings.getSetting('chat.upload.maxFileMB'),
+    systemSettings.getSetting('chat.upload.maxTotalMB'),
+    systemSettings.getSetting('chat.upload.maxFiles'),
+    systemSettings.getSetting('chat.upload.allowedExtensions'),
+    systemSettings.getSetting('chat.upload.roles'),
+  ]);
+  const nn = (v) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : 0; };
+  return {
+    enabled: enabled !== false,
+    maxFileMB: Number(maxFileMB) > 0 ? Number(maxFileMB) : 5,
+    maxTotalMB: nn(maxTotalMB),  // 0 = unlimited
+    maxFiles: nn(maxFiles),      // 0 = unlimited
+    allowedExtensions: Array.isArray(allowed) ? allowed.map((e) => String(e).toLowerCase().replace(/^\./, '')).filter(Boolean) : [],
+    roles: roles && typeof roles === 'object' ? roles : {},
+    blockedExtensions: BLOCKED_EXTENSIONS,
+  };
+}
+
+// Effective limits for a specific role — per-role override wins when > 0,
+// else the global value. SUPER_ADMIN maps to the ADMIN bucket but is always
+// allowed to upload.
+async function getEffectiveUploadConfig(role) {
+  const cfg = await getUploadConfig();
+  const key = role === 'SUPER_ADMIN' ? 'ADMIN' : role;
+  const rc = (cfg.roles && cfg.roles[key]) || {};
+  return {
+    enabled: cfg.enabled && (role === 'SUPER_ADMIN' || rc.enabled !== false),
+    maxFileMB:  Number(rc.maxFileMB)  > 0 ? Number(rc.maxFileMB)  : cfg.maxFileMB,
+    maxTotalMB: Number(rc.maxTotalMB) > 0 ? Number(rc.maxTotalMB) : cfg.maxTotalMB,
+    maxFiles:   Number(rc.maxFiles)   > 0 ? Number(rc.maxFiles)   : cfg.maxFiles,
+    allowedExtensions: cfg.allowedExtensions,
+    blockedExtensions: cfg.blockedExtensions,
+  };
+}
 
 // ── role of a requester WITHIN a conversation ────────────────────────
 function roleInConversation(conv, requester) {
@@ -96,24 +145,59 @@ async function counterpartInfo(conv, requester) {
 }
 
 // ── messaging ────────────────────────────────────────────────────────
-function validateAttachments(attachments) {
+// Validate + normalise attachments against the Super-Admin-configured limits
+// for the sender's role. Throws a friendly AppError on the first violation
+// and logs every rejection (and the accepted batch) for the audit trail.
+async function validateAttachments(attachments, requester) {
   if (!Array.isArray(attachments) || !attachments.length) return [];
-  if (attachments.length > MAX_ATTACHMENTS) throw new AppError(`Max ${MAX_ATTACHMENTS} attachments`, 400);
-  return attachments.map((a) => {
+  const role = requester?.role || 'USER';
+  const who = requester?._id ? String(requester._id) : 'unknown';
+  const lim = await getEffectiveUploadConfig(role);
+
+  const reject = (msg, code, meta = {}) => {
+    console.warn(`[chat][upload-rejected] user=${who} role=${role} code=${code} :: ${msg}`, meta);
+    try {
+      const { AuditLog } = require('../models');
+      if (AuditLog) AuditLog.create({ actorId: requester?._id, actorRole: role, action: 'CHAT_UPLOAD_REJECTED', targetType: 'CHAT', metadata: { code, msg, ...meta } }).catch(() => {});
+    } catch (_) { /* logging is best-effort */ }
+    const status = code === 'UPLOADS_DISABLED' ? 403 : code === 'ATTACH_TOO_LARGE' || code === 'TOTAL_TOO_LARGE' ? 413 : 400;
+    throw new AppError(msg, status, code);
+  };
+
+  if (!lim.enabled) reject('File uploads are currently disabled by the administrator.', 'UPLOADS_DISABLED');
+  if (lim.maxFiles > 0 && attachments.length > lim.maxFiles) reject(`You can attach at most ${lim.maxFiles} file(s) per message.`, 'TOO_MANY_FILES', { count: attachments.length });
+
+  const perFileBytes = lim.maxFileMB * 1024 * 1024;
+  const totalCapBytes = lim.maxTotalMB * 1024 * 1024;
+  let total = 0;
+
+  const out = attachments.map((a) => {
+    const name = String(a.name || '').slice(0, 200);
     const dataUrl = String(a.dataUrl || '');
-    if (!dataUrl.startsWith('data:')) throw new AppError('Invalid attachment', 400);
+    if (!dataUrl.startsWith('data:')) reject('Invalid attachment.', 'BAD_ATTACHMENT', { name });
+    const ext = extOf(name);
+    if (lim.blockedExtensions.includes(ext)) reject(`Executable / unsafe files are not allowed (.${ext}).`, 'BLOCKED_TYPE', { name, ext });
+    if (lim.allowedExtensions.length && !lim.allowedExtensions.includes(ext)) {
+      reject(`File type .${ext || '?'} is not allowed. Allowed: ${lim.allowedExtensions.join(', ')}.`, 'UNSUPPORTED_TYPE', { name, ext });
+    }
     const b64 = dataUrl.split(',')[1] || '';
     const bytes = Math.floor(b64.length * 0.75);
-    if (bytes > MAX_ATTACH_BYTES) throw new AppError('Attachment exceeds 1MB', 413, 'ATTACH_TOO_LARGE');
-    return { name: String(a.name || '').slice(0, 200), mimeType: String(a.mimeType || ''), dataUrl, sizeBytes: bytes };
+    if (bytes > perFileBytes) reject(`"${name || 'File'}" exceeds the ${lim.maxFileMB} MB per-file limit.`, 'ATTACH_TOO_LARGE', { name, bytes });
+    total += bytes;
+    return { name, mimeType: String(a.mimeType || ''), dataUrl, sizeBytes: bytes };
   });
+
+  if (lim.maxTotalMB > 0 && total > totalCapBytes) reject(`Total attachments exceed the ${lim.maxTotalMB} MB per-message limit.`, 'TOTAL_TOO_LARGE', { totalBytes: total });
+
+  console.log(`[chat][upload-accepted] user=${who} role=${role} files=${out.length} totalKB=${Math.round(total / 1024)}`);
+  return out;
 }
 
 async function sendMessage(conversationId, requester, { text, attachments } = {}) {
   const conv = await Conversation.findById(conversationId);
   authorize(conv, requester);
   const cleanText = String(text || '').trim();
-  const atts = validateAttachments(attachments);
+  const atts = await validateAttachments(attachments, requester);
   if (!cleanText && !atts.length) throw new AppError('Message is empty', 400);
   if (!conv.managerId && String(conv.userId) === String(requester._id)) {
     throw new AppError('No manager is assigned to you yet', 409, 'NO_MANAGER');
@@ -201,14 +285,28 @@ async function _listConversations(filter, { search, page = 1, limit = 50 } = {})
     Conversation.countDocuments(filter),
   ]);
   const userIds = convs.map((c) => c.userId);
-  const users = await User.find({ _id: { $in: userIds } }).select('firstName lastName email userUid').lean();
+  const users = await User.find({ _id: { $in: userIds } }).select('firstName lastName email userUid adminId managerId').lean();
   const byId = new Map(users.map((u) => [String(u._id), u]));
+  // Resolve each user's Admin + Manager display names (their hierarchy) so the
+  // chat header can show who the user belongs to.
+  const staffIds = new Set();
+  users.forEach((u) => { if (u.adminId) staffIds.add(String(u.adminId)); if (u.managerId) staffIds.add(String(u.managerId)); });
+  const staff = staffIds.size
+    ? await User.find({ _id: { $in: [...staffIds] } }).select('firstName lastName email').lean()
+    : [];
+  const staffName = new Map(staff.map((s) => [String(s._id), [s.firstName, s.lastName].filter(Boolean).join(' ') || s.email]));
   const items = convs.map((c) => {
     const u = byId.get(String(c.userId));
     return {
       _id: String(c._id),
       userId: String(c.userId),
-      user: u ? { name: [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email, email: u.email, userUid: u.userUid || null } : null,
+      user: u ? {
+        name: [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email,
+        email: u.email,
+        userUid: u.userUid || null,
+        admin: u.adminId ? (staffName.get(String(u.adminId)) || null) : null,
+        manager: u.managerId ? (staffName.get(String(u.managerId)) || null) : null,
+      } : null,
       online: broadcaster.isOnline(String(c.userId)),
       unread: c.unreadForManager,
       lastMessageText: c.lastMessageText,
@@ -249,5 +347,6 @@ wirePresence();
 module.exports = {
   getOrCreateForUser, getOrCreateWithUser, counterpartInfo, authorize, roleInConversation,
   sendMessage, markSeen, history, listForManager, listAll, serializeMessage,
+  getUploadConfig, getEffectiveUploadConfig,
   emitTyping: (conv, requester) => emit(conv, 'typing', { by: roleInConversation(conv, requester), at: Date.now() }),
 };

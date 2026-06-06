@@ -36,23 +36,11 @@ const getSettings = async () => {
   const bonusAmount = await systemSettings.getSetting('partner.bonusAmount');
   const minDeposit = await systemSettings.getSetting('partner.minDeposit');
   const bonusCurrency = await systemSettings.getSetting('partner.bonusCurrency');
-  let tiers = await systemSettings.getSetting('partner.tiers');
-  if (!Array.isArray(tiers)) tiers = systemSettings.DEFAULTS['partner.tiers'];
-  // Defensive normalisation — admin may submit tiers as strings.
-  tiers = tiers
-    .map((t) => ({
-      name:      String(t.name || '').toUpperCase(),
-      minActive: Number(t.minActive) || 0,
-      maxActive: Number(t.maxActive) || 0,
-      percent:   String(t.percent || '0'),
-    }))
-    .sort((a, b) => a.minActive - b.minActive);
   return {
     enabled: enabled !== false,
     bonusAmount: String(bonusAmount || '0'),
     minDeposit:  String(minDeposit  || '0'),
     bonusCurrency: String(bonusCurrency || 'USD').toUpperCase(),
-    tiers,
   };
 };
 
@@ -108,47 +96,124 @@ const getActiveReferralCount = async (userId, opts = {}) => {
   return active.length;
 };
 
-// ─── Tier resolution ────────────────────────────────────────────────
+// ─── Monthly volume-based tier engine ────────────────────────────────
 //
-// Returns the tier matching the active-referral count. If the user has
-// zero qualifying referrals they get the sentinel NONE tier (0%). If
-// the user has a manual override on User.partnerLevel, we honour it.
-const resolveTier = (tiers, activeCount) => {
-  for (const t of tiers) {
-    const within = activeCount >= t.minActive
-      && (t.maxActive === 0 || activeCount <= t.maxActive);
-    if (within) return t;
+// Partner tier + commission % are determined SOLELY by the PREVIOUS
+// calendar month's referral trading volume. On the 1st of each month the
+// tier is recomputed and then stays fixed for the whole current month.
+//
+// Persistence: the computed tier is snapshotted onto the User
+// (partnerTier/partnerTierPercent/partnerTierMonth/partnerPrevMonthVolume).
+// A monthly cron (backgroundWorker) refreshes every partner, and reads
+// lazily self-heal — if the stored snapshot is for an older month it is
+// recomputed on demand, so the engine is correct even if the cron missed.
+
+const monthKeyOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+
+// Calendar-month boundaries around `now`. prev = last month, cur = this
+// month start, next = next month start. Half-open ranges [start, end).
+const monthBounds = (now = new Date()) => ({
+  prevStart: new Date(now.getFullYear(), now.getMonth() - 1, 1),
+  curStart:  new Date(now.getFullYear(), now.getMonth(),     1),
+  nextStart: new Date(now.getFullYear(), now.getMonth() + 1, 1),
+});
+
+// Total executed trading volume (USD notional = price × quantity) for a set
+// of referees within [start, end). Each referee's participation as buyer OR
+// seller counts toward their volume, so we sum both legs they're on.
+const referralVolumeBetween = async (refIds, start, end) => {
+  if (!refIds || !refIds.length) return 0;
+  try {
+    const rows = await Trade.aggregate([
+      { $match: {
+          executedAt: { $gte: start, $lt: end },
+          $or: [{ buyUserId: { $in: refIds } }, { sellUserId: { $in: refIds } }],
+      } },
+      { $addFields: { vol: { $multiply: [{ $toDouble: '$price' }, { $toDouble: '$quantity' }] } } },
+      { $group: {
+          _id: null,
+          buyVol:  { $sum: { $cond: [{ $in: ['$buyUserId',  refIds] }, '$vol', 0] } },
+          sellVol: { $sum: { $cond: [{ $in: ['$sellUserId', refIds] }, '$vol', 0] } },
+      } },
+    ]);
+    const r = rows[0] || { buyVol: 0, sellVol: 0 };
+    return (r.buyVol || 0) + (r.sellVol || 0);
+  } catch (e) {
+    console.error('[partner] referralVolumeBetween failed:', e.message);
+    return 0;
   }
-  return { name: 'NONE', minActive: 0, maxActive: 0, percent: '0' };
 };
 
-const getPartnerLevel = async (userId, opts = {}) => {
-  const settings = await getSettings();
-  const user = await User.findById(userId).select('partnerLevel partnerLevelLocked partnerBlocked').lean();
-  if (user?.partnerBlocked) {
-    return { tier: { name: 'BLOCKED', percent: '0', minActive: 0, maxActive: 0 }, activeCount: 0, locked: false, blocked: true, settings };
+// Recompute the tier from the PREVIOUS month's volume and persist the
+// snapshot. Returns the resolved tier descriptor.
+const recomputeTier = async (userId, { tiers, now = new Date() } = {}) => {
+  tiers = tiers || await getVolumeTiers();
+  const { prevStart, curStart } = monthBounds(now);
+  const refIds = await User.find({ referredBy: userId }).distinct('_id');
+  const prevVol = await referralVolumeBetween(refIds, prevStart, curStart);
+  const tier = resolveVolumeTier(prevVol, tiers);
+  const month = monthKeyOf(now);
+  await User.updateOne({ _id: userId }, { $set: {
+    partnerTier:            tier.name,
+    partnerTierPercent:     Number(tier.percent) || 0,
+    partnerTierMonth:       month,
+    partnerPrevMonthVolume: Math.round(prevVol),
+  } });
+  return { name: tier.name, percent: Number(tier.percent) || 0, locked: false, blocked: false, prevMonthVolume: prevVol, month, tiers };
+};
+
+// The partner's EFFECTIVE tier for the current month. Honours manual lock
+// + block first, otherwise uses the fresh monthly snapshot (recomputing if
+// the snapshot is stale or `force` is set).
+const getEffectiveTier = async (userId, opts = {}) => {
+  const tiers = await getVolumeTiers();
+  const user = opts.user || await User.findById(userId)
+    .select('partnerBlocked partnerLevelLocked partnerLevel partnerTier partnerTierPercent partnerTierMonth partnerPrevMonthVolume')
+    .lean();
+  if (!user) {
+    const base = tiers[0] || { name: 'BRONZE', percent: 0 };
+    return { name: base.name, percent: Number(base.percent) || 0, locked: false, blocked: false, prevMonthVolume: 0, tiers };
   }
-  const activeCount = opts.activeCount != null
-    ? opts.activeCount
-    : await getActiveReferralCount(userId, { minDeposit: settings.minDeposit });
-  // Manual override: admin pinned a tier — honour it as long as it exists
-  // in the current tiers config. Falls through to auto if the named tier
-  // has been removed from settings.
-  if (user?.partnerLevelLocked && user?.partnerLevel) {
-    const pinned = settings.tiers.find((t) => t.name === user.partnerLevel);
+  if (user.partnerBlocked) {
+    return { name: 'BLOCKED', percent: 0, locked: false, blocked: true, prevMonthVolume: Number(user.partnerPrevMonthVolume) || 0, tiers };
+  }
+  // Manual override: admin pinned a tier — honour it as long as it still
+  // exists in the configured volume tiers.
+  if (user.partnerLevelLocked && user.partnerLevel) {
+    const pinned = tiers.find((t) => t.name === String(user.partnerLevel).toUpperCase());
     if (pinned) {
-      return { tier: pinned, activeCount, locked: true, blocked: false, settings };
+      return { name: pinned.name, percent: Number(pinned.percent) || 0, locked: true, blocked: false, prevMonthVolume: Number(user.partnerPrevMonthVolume) || 0, tiers };
     }
   }
-  const tier = resolveTier(settings.tiers, activeCount);
-  return { tier, activeCount, locked: false, blocked: false, settings };
+  // Fresh snapshot for the current month → use it. Otherwise recompute.
+  const curMonth = monthKeyOf(new Date());
+  if (!opts.force && user.partnerTierMonth === curMonth && user.partnerTier) {
+    const pct = tiers.find((t) => t.name === user.partnerTier);
+    return {
+      name: user.partnerTier,
+      percent: pct ? (Number(pct.percent) || 0) : (Number(user.partnerTierPercent) || 0),
+      locked: false, blocked: false,
+      prevMonthVolume: Number(user.partnerPrevMonthVolume) || 0,
+      month: curMonth, tiers,
+    };
+  }
+  return recomputeTier(userId, { tiers });
 };
 
-// ─── Next-level progress ─────────────────────────────────────────────
-const getNextTier = (tiers, activeCount) => {
-  for (const t of tiers) if (t.minActive > activeCount) return t;
-  return null; // already at top tier
+// Recalculate ALL partners' tiers (monthly cron entry point). Returns the
+// number of partners processed. Honours lock/block via getEffectiveTier.
+const recalcAllPartnerTiers = async () => {
+  const partnerIds = await User.distinct('referredBy', { referredBy: { $ne: null } });
+  let n = 0;
+  for (const id of partnerIds) {
+    try { await getEffectiveTier(id, { force: true }); n++; }
+    catch (e) { console.error('[partner] tier recalc failed for', String(id), e.message); }
+  }
+  return n;
 };
+
+// Next tier above the partner's previous-month volume (or null at top).
+const getNextVolumeTierFor = (tiers, prevMonthVolume) => nextVolumeTier(prevMonthVolume, tiers);
 
 // ─── First qualifying deposit → instant bonus ───────────────────────
 //
@@ -300,8 +365,10 @@ const distributeRevenueShare = async ({ tradeId, refereeId, feeAmount, currency 
     const referrer = await User.findById(referee.referredBy).select('_id isActive partnerBlocked').lean();
     if (!referrer || referrer.isActive === false || referrer.partnerBlocked) return null;
 
-    const lvl = await getPartnerLevel(referrer._id);
-    const pct = D(lvl.tier?.percent || '0');
+    // Tier + % come from the partner's MONTHLY tier (driven by previous-
+    // month referral volume), fixed for the current calendar month.
+    const lvl = await getEffectiveTier(referrer._id);
+    const pct = D(lvl.percent || '0');
     if (pct.lte(0)) return null;
     // percent stored as plain decimal (10 → 10%), divide by 100 here.
     const amount = D(feeAmount).mul(pct).div(100);
@@ -317,7 +384,7 @@ const distributeRevenueShare = async ({ tradeId, refereeId, feeAmount, currency 
       amount:     amount.toString(),
       rate:       pct.toString(),
       status:     'PENDING',
-      note:       `Tier ${lvl.tier.name} revenue share`,
+      note:       `Tier ${lvl.name} revenue share`,
     });
 
     // Pay immediately. (We could batch via cron, but immediate gives the
@@ -328,7 +395,7 @@ const distributeRevenueShare = async ({ tradeId, refereeId, feeAmount, currency 
         userId:     referrer._id,
         amount:     amount.toString(),
         reason:     'REVENUE_SHARE',
-        note:       `Revenue share · tier ${lvl.tier.name} · ${pct.toString()}%`,
+        note:       `Revenue share · tier ${lvl.name} · ${pct.toString()}%`,
         paymentRef: `commission:${commission._id}`,
       });
       commission.status = 'PAID';
@@ -353,8 +420,7 @@ const distributeRevenueShare = async ({ tradeId, refereeId, feeAmount, currency 
 const getDashboardData = async (userId) => {
   const settings = await getSettings();
   const active = await getActiveReferrals(userId, { minDeposit: settings.minDeposit });
-  const lvl = await getPartnerLevel(userId, { activeCount: active.length });
-  const nextTier = getNextTier(settings.tiers, active.length);
+  const lvl = await getEffectiveTier(userId);
 
   // Aggregates over commissions where this user is the referrer.
   const now = new Date();
@@ -403,24 +469,14 @@ const getDashboardData = async (userId) => {
       bonusAmount: settings.bonusAmount,
       minDeposit:  settings.minDeposit,
       bonusCurrency: settings.bonusCurrency,
-      tiers: settings.tiers,
     },
     level: {
-      name:        lvl.tier.name,
-      percent:     lvl.tier.percent,
-      minActive:   lvl.tier.minActive,
-      maxActive:   lvl.tier.maxActive,
+      name:        lvl.name,
+      percent:     lvl.percent,
       locked:      lvl.locked,
       blocked:     lvl.blocked,
+      prevMonthVolume: Math.round(lvl.prevMonthVolume || 0),
       activeCount: active.length,
-      nextTier:    nextTier
-        ? {
-            name: nextTier.name,
-            percent: nextTier.percent,
-            minActive: nextTier.minActive,
-            remainingToUpgrade: Math.max(0, nextTier.minActive - active.length),
-          }
-        : null,
     },
     stats: {
       totalReferrals,
@@ -633,13 +689,20 @@ const getVolumeDashboard = async (userId) => {
 
   const activeTraders = referralPerformance.filter((r) => r.volume > 0).length;
 
+  // ── Tier is driven by the PREVIOUS calendar month's referral volume ──
+  // (computed + snapshotted by getEffectiveTier, surfaced via base.level).
+  // The CURRENT month's volume is tracked separately and only counts toward
+  // NEXT month's tier. Progression below is measured against prev-month vol.
   const volumeTiers = await getVolumeTiers();
-  const current = resolveVolumeTier(totalVolume, volumeTiers);
-  const next = nextVolumeTier(totalVolume, volumeTiers);
-  const bandStart = current.minVolume;
-  const bandEnd = next ? next.minVolume : current.minVolume;
+  const prevMonthVolume = Math.round(base.level.prevMonthVolume || 0);
+  const currentMonthVolume = Math.round(monthlyVolume);
+  const current = volumeTiers.find((t) => t.name === base.level.name)
+    || { name: base.level.name, percent: base.level.percent, minVolume: 0 };
+  const next = nextVolumeTier(prevMonthVolume, volumeTiers);
+  const bandStart = current.minVolume || 0;
+  const bandEnd = next ? next.minVolume : (current.minVolume || 0);
   const progressPercent = next
-    ? Math.min(100, Math.max(0, ((totalVolume - bandStart) / (bandEnd - bandStart)) * 100))
+    ? Math.min(100, Math.max(0, ((prevMonthVolume - bandStart) / (bandEnd - bandStart)) * 100))
     : 100;
 
   return {
@@ -651,14 +714,18 @@ const getVolumeDashboard = async (userId) => {
       minDeposit: base.settings.minDeposit,
       currency: base.settings.bonusCurrency || 'USD',
     },
-    // ── Level + progression (volume-driven) ──
-    partnerLevel: current.name,
-    revenueSharePercent: current.percent,
+    // ── Level + progression (PREVIOUS-MONTH volume-driven, fixed for month) ──
+    partnerLevel: base.level.name,
+    revenueSharePercent: base.level.percent,
+    tierLocked: !!base.level.locked,
+    tierBlocked: !!base.level.blocked,
+    previousMonthVolume: prevMonthVolume,   // determines the current month's tier
+    currentMonthVolume,                     // tracking only → next month's tier
     totalReferralVolume: Math.round(totalVolume),
-    monthlyVolume: Math.round(monthlyVolume),
+    monthlyVolume: currentMonthVolume,      // alias kept for backward-compat
     nextLevel: next ? { name: next.name, percent: next.percent, minVolume: next.minVolume } : null,
     nextLevelVolume: next ? next.minVolume : null,
-    volumeToNextLevel: next ? Math.max(0, Math.round(next.minVolume - totalVolume)) : 0,
+    volumeToNextLevel: next ? Math.max(0, Math.round(next.minVolume - prevMonthVolume)) : 0,
     progressPercent: Number(progressPercent.toFixed(2)),
     tiers: volumeTiers,
     // ── Headline stats ──
@@ -781,9 +848,12 @@ module.exports = {
   getSettings,
   getActiveReferrals,
   getActiveReferralCount,
-  resolveTier,
-  getPartnerLevel,
-  getNextTier,
+  // Monthly volume-based tier engine
+  getEffectiveTier,
+  recomputeTier,
+  recalcAllPartnerTiers,
+  referralVolumeBetween,
+  getNextVolumeTierFor,
   handleFirstQualifyingDeposit,
   distributeRevenueShare,
   getDashboardData,

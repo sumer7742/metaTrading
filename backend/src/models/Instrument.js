@@ -11,17 +11,26 @@ const instrumentSchema = new mongoose.Schema(
 
     // Trading config
     isActive: { type: Boolean, default: true },
-    // Per-instrument routing override — same semantics as the
+    // Per-instrument routing override — same semantics + options as the
     // user-level RiskOverride.routingMode. INHERIT means "use the
     // platform-wide Settings → Routing Mode". An explicit value
-    // (A_BOOK / B_BOOK / HYBRID) wins over the global for THIS symbol.
-    // Order of precedence at trade time: user override → instrument
-    // override → global setting.
+    // (INTERNAL_MATCHING / A_BOOK / B_BOOK / HYBRID) wins over the global
+    // for THIS symbol. Order of precedence at trade time: user override →
+    // instrument override → global setting.
     routingOverride: {
       type: String,
-      enum: ['INHERIT', 'A_BOOK', 'B_BOOK', 'HYBRID'],
+      enum: ['INHERIT', 'INTERNAL_MATCHING', 'A_BOOK', 'B_BOOK', 'HYBRID'],
       default: 'INHERIT',
     },
+    // ─── Optional daily volume cap (lots) ────────────────────────────────
+    // Platform-wide cap on total OPENING order volume per UTC day for THIS
+    // symbol, summed across all users. Disabled by default → UNLIMITED (no
+    // volume validation). Existing instruments default to unlimited
+    // automatically (dailyVolumeLimitEnabled=false). When enabled, new
+    // opening orders that would push the day's used volume past the limit
+    // are rejected. Closes are never capped.
+    dailyVolumeLimitEnabled: { type: Boolean, default: false },
+    dailyVolumeLimit:        { type: Number, default: 0, min: 0 }, // lots; used only when enabled
     // ─── @deprecated routing fields ──────────────────────────────────
     // Book-type / external routing is now a PER-ACCOUNT decision (see
     // TradingAccount.bookType + lpProvider). The instrument-level fields
@@ -48,8 +57,14 @@ const instrumentSchema = new mongoose.Schema(
     // Spread & Commission
     spreadType: { type: String, enum: ['FIXED', 'PERCENTAGE'], default: 'FIXED' },
     spreadValue: { type: String, default: '0' }, // e.g. "0.5" pips or "0.001" %
-    commissionPerTrade: { type: String, default: '0' }, // flat fee
-    commissionPercent: { type: String, default: '0' }, // %
+    // Commission model — exactly ONE method is active per instrument:
+    //   FIXED      → commission = commissionPerTrade (flat fee per trade)
+    //   PERCENTAGE → commission = tradeValue × commissionPercent
+    // The inactive field is forced to '0' on save so the two can never
+    // both charge. See utils/commission.computeInstrumentCommission().
+    commissionType: { type: String, enum: ['FIXED', 'PERCENTAGE'], default: 'PERCENTAGE' },
+    commissionPerTrade: { type: String, default: '0' }, // flat fee (FIXED mode)
+    commissionPercent: { type: String, default: '0' }, // % (PERCENTAGE mode)
     // Profit-share fee (doc §5) — charged only when a closing trade
     // realises positive PnL. Expressed as a percent of the realized
     // profit (e.g. "2" = take 2% of profit). 0 disables.

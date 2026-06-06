@@ -3,6 +3,7 @@ import { api, errorMessage } from '../services/api';
 import { fmtDate } from '../utils/format';
 import toast from 'react-hot-toast';
 import PageHero from '../components/PageHero';
+import DateFilter, { useDateFilter } from '../components/DateFilter';
 
 /**
  * Admin · Peer-to-peer wallet transfers.
@@ -18,11 +19,14 @@ export default function UserTransfers() {
   const [filters, setFilters] = useState({
     status: '',
     currency: '',
+    email: '',
     fromUserId: '',
     toUserId: '',
     minAmount: '',
     maxAmount: '',
   });
+  // Date range (defaults to all-time / no preset so nothing changes by default).
+  const [range, setRange] = useDateFilter('admin.transfers.range', null);
 
   const fetchList = async () => {
     setLoading(true);
@@ -31,6 +35,8 @@ export default function UserTransfers() {
       for (const [k, v] of Object.entries(filters)) {
         if (v !== '' && v != null) params[k] = v;
       }
+      if (range?.fromDate) params.fromDate = range.fromDate;
+      if (range?.toDate) params.toDate = range.toDate;
       const { data } = await api.get('/admin/transfers/user', { params });
       setItems(data.data || []);
     } catch (e) {
@@ -40,7 +46,7 @@ export default function UserTransfers() {
     }
   };
 
-  useEffect(() => { fetchList(); /* eslint-disable-next-line */ }, []);
+  useEffect(() => { fetchList(); /* eslint-disable-next-line */ }, [range]);
 
   const total = useMemo(() => items.reduce((s, r) => s + Number(r.amount || 0), 0), [items]);
   const failedCount = useMemo(() => items.filter((r) => r.status === 'FAILED').length, [items]);
@@ -63,7 +69,12 @@ export default function UserTransfers() {
 
       {/* Filters */}
       <div className="card p-4">
+        <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+          <span className="text-[10px] uppercase tracking-wider font-bold text-text-muted">Date range</span>
+          <DateFilter value={range} onChange={setRange} />
+        </div>
         <div className="grid grid-cols-2 sm:grid-cols-6 gap-3">
+          <FilterInput label="Email / name" value={filters.email} onChange={(v) => setFilters({ ...filters, email: v })} />
           <FilterInput label="Status" value={filters.status} onChange={(v) => setFilters({ ...filters, status: v })} as="select" options={[['','any'], ['COMPLETED','Completed'], ['FAILED','Failed']]} />
           <FilterInput label="Currency" value={filters.currency} onChange={(v) => setFilters({ ...filters, currency: v })} as="select" options={[['',''], ['USD','USD'], ['EUR','EUR'], ['GBP','GBP'], ['INR','INR']]} />
           <FilterInput label="From user id" value={filters.fromUserId} onChange={(v) => setFilters({ ...filters, fromUserId: v })} />
@@ -74,7 +85,7 @@ export default function UserTransfers() {
         <div className="mt-3 flex items-center justify-end gap-2">
           <button
             type="button"
-            onClick={() => { setFilters({ status: '', currency: '', fromUserId: '', toUserId: '', minAmount: '', maxAmount: '' }); }}
+            onClick={() => { setFilters({ status: '', currency: '', email: '', fromUserId: '', toUserId: '', minAmount: '', maxAmount: '' }); setRange({ period: null, fromDate: '', toDate: '' }); }}
             className="px-3 py-1.5 rounded text-xs font-semibold border border-border-dark text-text-secondary hover:text-white hover:border-border-accent transition-colors"
           >
             Clear

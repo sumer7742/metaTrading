@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../services/api';
 import { fmtNum } from '../utils/format';
 import AssetIcon from '../components/AssetIcon';
+import DateFilter from '../components/DateFilter';
 import { useAuthStore } from '../store/auth';
 
 /**
@@ -32,8 +33,11 @@ export default function Orders() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [symbolFilter, setSymbolFilter] = useState('');
   const [sideFilter, setSideFilter] = useState('');
-  const [fromDate, setFromDate] = useState('');
-  const [toDate, setToDate] = useState('');
+  // Date range via the global DateFilter (defaults to all-time / no preset
+  // so existing behaviour is preserved until the admin picks a range).
+  const [range, setRange] = useState({ period: null, fromDate: '', toDate: '' });
+  const fromDate = range.fromDate;
+  const toDate = range.toDate;
   const [page, setPage] = useState(1);
 
   // Load accounts once.
@@ -178,8 +182,7 @@ export default function Orders() {
   const clearFilters = () => {
     setSymbolFilter('');
     setSideFilter('');
-    setFromDate('');
-    setToDate('');
+    setRange({ period: null, fromDate: '', toDate: '' });
     setPage(1);
   };
 
@@ -278,23 +281,9 @@ export default function Orders() {
               <option value="SELL">SELL</option>
             </select>
           </div>
-          <div>
-            <label className="label">From</label>
-            <input
-              type="date"
-              value={fromDate}
-              onChange={(e) => { setFromDate(e.target.value); setPage(1); }}
-              className="input text-xs"
-            />
-          </div>
-          <div>
-            <label className="label">To</label>
-            <input
-              type="date"
-              value={toDate}
-              onChange={(e) => { setToDate(e.target.value); setPage(1); }}
-              className="input text-xs"
-            />
+          <div className="md:col-span-2">
+            <label className="label">Date range</label>
+            <DateFilter value={range} onChange={(r) => { setRange(r); setPage(1); }} />
           </div>
           <div className="flex items-end">
             <button onClick={clearFilters} className="btn-ghost w-full text-xs">Clear</button>

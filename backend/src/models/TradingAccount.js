@@ -50,6 +50,29 @@ const tradingAccountSchema = new mongoose.Schema(
     // (e.g. for fraud review) without disabling the user globally.
     isTradingEnabled: { type: Boolean, default: true },
 
+    // ─── Admin account status (per-account, independent of other accounts) ──
+    //   ACTIVE    — normal.
+    //   BLOCKED   — admin block (fraud/compliance): no NEW orders; closes still
+    //               allowed so the user can liquidate. Does NOT affect the
+    //               user's other accounts.
+    //   SUSPENDED — soft hold (same trading effect as BLOCKED; yellow badge).
+    status: {
+      type: String,
+      enum: ['ACTIVE', 'BLOCKED', 'SUSPENDED'],
+      default: 'ACTIVE',
+      index: true,
+    },
+    // Admin-assigned grouping tag (e.g. "default", "VIP", "Scalpers"). Used
+    // for filtering + bulk group-change in the Accounts management UI.
+    group: { type: String, default: 'default', index: true },
+    // Admin-only notes timeline for this account (not visible to the user).
+    internalNotes: [{
+      note:   { type: String, required: true },
+      by:     { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      byName: String,
+      at:     { type: Date, default: Date.now },
+    }],
+
     // Risk safety (doc §7.10): when balance + unrealized PnL <= 0, auto-close all positions
     // and floor balance at 0. Required for retail accounts in most jurisdictions.
     negativeBalanceProtection: { type: Boolean, default: true },

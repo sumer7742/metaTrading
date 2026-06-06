@@ -77,7 +77,7 @@ const dashboard = asyncHandler(async (req, res) => {
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
 const listUsers = asyncHandler(async (req, res) => {
-  const { search, kyc, status, plan, page = 1, limit = 50, sortBy, sortDir } = req.query;
+  const { search, kyc, status, plan, role, page = 1, limit = 50, sortBy, sortDir } = req.query;
 
   // ── Base filter on User fields ──
   const match = {};
@@ -93,6 +93,26 @@ const listUsers = asyncHandler(async (req, res) => {
   if (kyc) match.kycStatus = kyc;
   if (status === 'active') match.isActive = true;
   if (status === 'inactive') match.isActive = false;
+  // "Dormant" = hasn't used the platform in the last 6 months: last login is
+  // older than 6 months, OR never logged in and the account itself is 6mo+ old.
+  if (status === 'dormant') {
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    const dormantCond = { $or: [
+      { lastLoginAt: { $lt: sixMonthsAgo } },
+      { lastLoginAt: null, createdAt: { $lt: sixMonthsAgo } },
+    ] };
+    // Merge with any existing $or (search) via $and so neither clobbers the other.
+    if (match.$or) { match.$and = [{ $or: match.$or }, dormantCond]; delete match.$or; }
+    else { Object.assign(match, dormantCond); }
+  }
+  // Account type filter — separate regular users from staff (admin/manager).
+  // Accepts a single role or a comma-separated list (e.g. "ADMIN,MANAGER").
+  if (role) {
+    const roles = String(role).split(',').map((r) => r.trim().toUpperCase()).filter(Boolean);
+    if (roles.length === 1) match.role = roles[0];
+    else if (roles.length > 1) match.role = { $in: roles };
+  }
 
   const lim = Math.min(2000, Math.max(1, Number(limit) || 50));
   const skip = (Math.max(1, Number(page) || 1) - 1) * lim;
@@ -140,6 +160,7 @@ const listUsers = asyncHandler(async (req, res) => {
         { $match: { $expr: { $and: [{ $eq: ['$userId', '$$uid'] }, { $eq: ['$status', 'CLOSED'] }] } } },
         { $group: { _id: null,
             pnl: { $sum: num('$realizedPnl') },
+            comm: { $sum: num('$commission') },
             trades: { $sum: 1 },
             wins: { $sum: { $cond: [{ $gt: [num('$realizedPnl'), 0] }, 1, 0] } },
         } },
@@ -174,6 +195,7 @@ const listUsers = asyncHandler(async (req, res) => {
         totalDeposit:    { $ifNull: [{ $arrayElemAt: ['$_dep.total', 0] }, 0] },
         totalWithdrawal: { $ifNull: [{ $arrayElemAt: ['$_wd.total', 0] }, 0] },
         totalPnl:        { $ifNull: [{ $arrayElemAt: ['$_pos.pnl', 0] }, 0] },
+        commission:      { $ifNull: [{ $arrayElemAt: ['$_pos.comm', 0] }, 0] },
         tradeCount:      { $ifNull: [{ $arrayElemAt: ['$_pos.trades', 0] }, 0] },
         winCount:        { $ifNull: [{ $arrayElemAt: ['$_pos.wins', 0] }, 0] },
         walletBalance: { $add: [
@@ -226,10 +248,11 @@ const listUsers = asyncHandler(async (req, res) => {
     const wins = Number(u.winCount) || 0;
     const dep = Number(u.totalDeposit) || 0;
     const pnl = Number(u.totalPnl) || 0;
+    const commission = Number(u.commission) || 0;
     const ref = u.referredBy ? nameMap.get(String(u.referredBy)) : null;
     const mgr = u.managerId ? nameMap.get(String(u.managerId)) : null;
     const adm = u.adminId ? nameMap.get(String(u.adminId)) : null;
-    const { tradeCount, winCount, planCode, planName, ...rest } = u;
+    const { tradeCount, winCount, planCode, planName, commission: _comm, ...rest } = u;
     return {
       ...rest,
       referredBy: ref ? { _id: u.referredBy, firstName: ref.firstName, lastName: ref.lastName, email: ref.email, referralCode: ref.referralCode } : null,
@@ -240,6 +263,12 @@ const listUsers = asyncHandler(async (req, res) => {
       totalDeposit:   round2(dep),
       totalWithdrawal: round2(u.totalWithdrawal),
       totalPnl:       round2(pnl),
+      // Platform earnings generated FROM this user = commissions/fees the user
+      // paid + the broker's counterparty result on internalised flow (user's
+      // net losses are the broker's gain). Mirrors Portfolio's platformRevenue
+      // = commissions − closed PnL, applied per user.
+      commission:     round2(commission),
+      platformEarnings: round2(commission - pnl),
       tradeStats: {
         trades, wins,
         winRate: trades ? round2((wins / trades) * 100) : 0,
@@ -587,16 +616,15 @@ const approveWithdrawal = asyncHandler(async (req, res) => {
   if (!wd) throw new AppError('Withdrawal not found', 404);
   if (wd.status !== 'PENDING') throw new AppError('Withdrawal already processed', 400);
 
-  // For approval (marking as paid), require payout proof
-  if (!payoutTxReference || !payoutProof) {
-    throw new AppError('Payout transaction reference and proof screenshot are required', 400);
-  }
-  // Validate screenshot format
-  if (typeof payoutProof !== 'string' || (!payoutProof.startsWith('data:image/') && !payoutProof.startsWith('https://'))) {
-    throw new AppError('Invalid payout proof format', 400);
-  }
-  if (payoutProof.length > 700 * 1024) {
-    throw new AppError('Payout proof too large (max 500KB)', 413);
+  // Both the payout TX reference and the proof screenshot are OPTIONAL.
+  // Validate the screenshot only when one was actually provided.
+  if (payoutProof) {
+    if (typeof payoutProof !== 'string' || (!payoutProof.startsWith('data:image/') && !payoutProof.startsWith('https://'))) {
+      throw new AppError('Invalid payout proof format', 400);
+    }
+    if (payoutProof.length > 700 * 1024) {
+      throw new AppError('Payout proof too large (max 500KB)', 413);
+    }
   }
 
   // 4-eyes principle: require 2 distinct approvals for amounts > ₹10,00,000 (10 lakh INR).
@@ -1021,7 +1049,13 @@ const updateSystemSettings = asyncHandler(async (req, res) => {
   const {
     routingMode, defaultLpProvider,
     userTransfer, // { enabled, min, max, feePercent }
+    chatUpload,   // { enabled, maxFileMB, maxTotalMB, maxFiles, allowedExtensions, roles }
   } = req.body;
+
+  // Chat file-upload limits are SUPER-ADMIN only.
+  if (chatUpload !== undefined && req.user.role !== 'SUPER_ADMIN') {
+    throw new AppError('Only a Super Admin can change chat file-upload settings', 403, 'FORBIDDEN');
+  }
 
   // Validate intent before any writes — keeps the system in a consistent
   // state if either field is malformed.
@@ -1167,8 +1201,41 @@ const updateSystemSettings = asyncHandler(async (req, res) => {
     if (userTransfer.feePercent !== undefined) await systemSettings.setSetting('userTransfer.feePercent', String(userTransfer.feePercent), req.userId);
   }
 
+  // ── Chat file-upload limits (Super Admin) ──
+  if (chatUpload && typeof chatUpload === 'object') {
+    const posNum = (v) => Number.isFinite(Number(v)) && Number(v) >= 0;
+    for (const k of ['maxFileMB', 'maxTotalMB', 'maxFiles']) {
+      if (chatUpload[k] !== undefined && !posNum(chatUpload[k])) throw new AppError(`chatUpload.${k} must be a non-negative number`, 400);
+    }
+    if (chatUpload.maxFileMB !== undefined && Number(chatUpload.maxFileMB) > 500) throw new AppError('chatUpload.maxFileMB cannot exceed 500 MB', 400);
+    if (chatUpload.maxTotalMB !== undefined && Number(chatUpload.maxTotalMB) > 2000) throw new AppError('chatUpload.maxTotalMB cannot exceed 2000 MB', 400);
+
+    if (chatUpload.enabled    !== undefined) await systemSettings.setSetting('chat.upload.enabled', !!chatUpload.enabled, req.userId);
+    if (chatUpload.maxFileMB  !== undefined) await systemSettings.setSetting('chat.upload.maxFileMB', Number(chatUpload.maxFileMB), req.userId);
+    if (chatUpload.maxTotalMB !== undefined) await systemSettings.setSetting('chat.upload.maxTotalMB', Number(chatUpload.maxTotalMB), req.userId);
+    if (chatUpload.maxFiles   !== undefined) await systemSettings.setSetting('chat.upload.maxFiles', Number(chatUpload.maxFiles), req.userId);
+    if (chatUpload.allowedExtensions !== undefined) {
+      const raw = Array.isArray(chatUpload.allowedExtensions) ? chatUpload.allowedExtensions : String(chatUpload.allowedExtensions).split(',');
+      const exts = [...new Set(raw.map((e) => String(e).toLowerCase().trim().replace(/^\./, '')).filter(Boolean))];
+      await systemSettings.setSetting('chat.upload.allowedExtensions', exts, req.userId);
+    }
+    if (chatUpload.roles && typeof chatUpload.roles === 'object') {
+      const clean = {};
+      for (const r of ['USER', 'MANAGER', 'ADMIN']) {
+        const rc = chatUpload.roles[r] || {};
+        clean[r] = {
+          enabled: rc.enabled !== false,
+          maxFileMB:  Math.max(0, Number(rc.maxFileMB) || 0),
+          maxTotalMB: Math.max(0, Number(rc.maxTotalMB) || 0),
+          maxFiles:   Math.max(0, Number(rc.maxFiles) || 0),
+        };
+      }
+      await systemSettings.setSetting('chat.upload.roles', clean, req.userId);
+    }
+  }
+
   await logAction(req, 'SYSTEM_SETTINGS_UPDATE', { type: 'SYSTEM', id: null }, {
-    routingMode, defaultLpProvider, userTransfer,
+    routingMode, defaultLpProvider, userTransfer, chatUpload: chatUpload ? Object.keys(chatUpload) : undefined,
   });
 
   const fresh = await systemSettings.getAllSettings();
@@ -1195,13 +1262,21 @@ const updateSystemSettings = asyncHandler(async (req, res) => {
 const listUserTransfers = asyncHandler(async (req, res) => {
   const { WalletLedger } = require('../models/Wallet');
   const User = require('../models/User');
-  const { limit = 100, before, fromUserId, toUserId, currency, minAmount, maxAmount, status } = req.query;
+  const { limit = 100, before, fromUserId, toUserId, currency, minAmount, maxAmount, status, email, fromDate, toDate } = req.query;
 
   const cap = Math.min(500, Math.max(1, Number(limit) || 100));
   const filter = { type: 'INTERNAL_TRANSFER_OUT' };
   if (currency) filter.currency = currency;
   if (fromUserId) filter.userId = fromUserId;
-  if (before) filter.createdAt = { $lt: new Date(before) };
+  // Date range (fromDate/toDate, inclusive end-of-day) takes precedence over
+  // the legacy `before` cursor.
+  if (fromDate || toDate) {
+    filter.createdAt = {};
+    if (fromDate) filter.createdAt.$gte = new Date(fromDate);
+    if (toDate) filter.createdAt.$lte = new Date(new Date(toDate).setHours(23, 59, 59, 999));
+  } else if (before) {
+    filter.createdAt = { $lt: new Date(before) };
+  }
 
   const outs = await WalletLedger.find(filter).sort({ createdAt: -1 }).limit(cap).lean();
   const refIds = outs.map((o) => o.referenceId).filter(Boolean);
@@ -1257,11 +1332,17 @@ const listUserTransfers = asyncHandler(async (req, res) => {
   });
 
   // Optional post-filters (cheaper than threading them through the query).
+  const emailRe = email ? new RegExp(_esc(String(email).trim()), 'i') : null;
   const filtered = rows.filter((r) => {
     if (toUserId && r.to?.userId !== String(toUserId)) return false;
     if (status && r.status !== String(status).toUpperCase()) return false;
-    if (minAmount != null && Number(r.amount) < Number(minAmount)) return false;
-    if (maxAmount != null && Number(r.amount) > Number(maxAmount)) return false;
+    if (minAmount != null && minAmount !== '' && Number(r.amount) < Number(minAmount)) return false;
+    if (maxAmount != null && maxAmount !== '' && Number(r.amount) > Number(maxAmount)) return false;
+    // Email / name search across either counterparty.
+    if (emailRe) {
+      const hay = `${r.from?.email || ''} ${r.from?.name || ''} ${r.to?.email || ''} ${r.to?.name || ''}`;
+      if (!emailRe.test(hay)) return false;
+    }
     return true;
   });
 
@@ -1313,8 +1394,9 @@ const listPartners = asyncHandler(async (req, res) => {
 
   const out = [];
   for (const u of users) {
-    const lvl = await partnerService.getPartnerLevel(u._id);
-    if (req.query.level && lvl.tier.name !== String(req.query.level).toUpperCase()) continue;
+    // Monthly volume-based tier (driven by previous-month referral volume).
+    const lvl = await partnerService.getEffectiveTier(u._id);
+    if (req.query.level && lvl.name !== String(req.query.level).toUpperCase()) continue;
     const totalReferrals = await User.countDocuments({ referredBy: u._id });
     const comm = commByUser.get(String(u._id)) || { lifetime: 0, paid: 0, pending: 0 };
     out.push({
@@ -1322,11 +1404,11 @@ const listPartners = asyncHandler(async (req, res) => {
       name:         [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email,
       email:        u.email,
       referralCode: u.referralCode,
-      level:        lvl.tier.name,
-      percent:      lvl.tier.percent,
+      level:        lvl.name,
+      percent:      lvl.percent,
       locked:       lvl.locked,
       blocked:      !!u.partnerBlocked,
-      activeReferrals: lvl.activeCount,
+      previousMonthVolume: Math.round(lvl.prevMonthVolume || 0),
       totalReferrals,
       lifetimeEarnings: Number(comm.lifetime).toFixed(2),
       paidEarnings:     Number(comm.paid).toFixed(2),
@@ -1334,15 +1416,16 @@ const listPartners = asyncHandler(async (req, res) => {
       createdAt:    u.createdAt,
     });
   }
-  // Sort: most active referrals first.
-  out.sort((a, b) => b.activeReferrals - a.activeReferrals);
+  // Sort: highest previous-month referral volume first.
+  out.sort((a, b) => b.previousMonthVolume - a.previousMonthVolume);
   sendSuccess(res, out);
 });
 
 /**
  * PUT /admin/partners/:id/level
- * Body: { level: 'BRONZE'|'SILVER'|'GOLD'|'DIAMOND'|null, locked: boolean }
- * Pins a tier override or clears it.
+ * Body: { level: 'BRONZE'|'SILVER'|'GOLD'|'PLATINUM'|'ELITE'|null, locked: boolean }
+ * Manually pins a partner's tier (overriding the monthly volume calculation)
+ * or clears the pin so the auto-calculation resumes next read.
  */
 const setPartnerLevel = asyncHandler(async (req, res) => {
   const { level, locked } = req.body || {};
@@ -1434,12 +1517,22 @@ const getExecutionStats = asyncHandler(async (req, res) => {
   const Trade = require('../models/Trade');
   const RoutingDecision = require('../models/RoutingDecision');
 
-  const days = { '24h': 1, '7d': 7, '30d': 30 }[req.query.period] || 7;
-  const since = new Date(Date.now() - days * 86400000);
+  // Global DateFilter sends fromDate/toDate; fall back to period day-counts.
+  const now = new Date();
+  let since;
+  let until = now;
+  if (req.query.fromDate || req.query.toDate) {
+    since = req.query.fromDate ? new Date(req.query.fromDate) : new Date(now.getTime() - 7 * 86400000);
+    until = req.query.toDate ? new Date(new Date(req.query.toDate).setHours(23, 59, 59, 999)) : now;
+  } else {
+    const d = { '24h': 1, '7d': 7, '30d': 30 }[req.query.period] || 7;
+    since = new Date(now.getTime() - d * 86400000);
+  }
+  const range = { $gte: since, $lte: until };
 
   // Executed volume by venue (actual fills).
   const volAgg = await Trade.aggregate([
-    { $match: { executedAt: { $gte: since } } },
+    { $match: { executedAt: range } },
     { $group: {
         _id: '$routing',
         volume: { $sum: { $multiply: [{ $toDouble: '$price' }, { $toDouble: '$quantity' }] } },
@@ -1451,25 +1544,25 @@ const getExecutionStats = asyncHandler(async (req, res) => {
 
   // True user↔user matched trades (distinct buyer/seller).
   const u2uCount = await Trade.countDocuments({
-    executedAt: { $gte: since },
+    executedAt: range,
     routing: ROUTING.INTERNAL_MATCHING,
     $expr: { $ne: ['$buyUserId', '$sellUserId'] },
   });
 
   // Routing decisions → distribution %, hybrid count, routed notional/venue.
   const decAgg = await RoutingDecision.aggregate([
-    { $match: { createdAt: { $gte: since } } },
+    { $match: { createdAt: range } },
     { $group: { _id: '$routingResult', count: { $sum: 1 }, notional: { $sum: '$notional' } } },
   ]);
   const dmap = {}; let totalDec = 0;
   decAgg.forEach((d) => { dmap[d._id || 'NULL'] = { count: d.count, notional: round2(d.notional) }; totalDec += d.count; });
-  const hybridRouted = await RoutingDecision.countDocuments({ createdAt: { $gte: since }, executionMode: EXECUTION_MODE.HYBRID });
+  const hybridRouted = await RoutingDecision.countDocuments({ createdAt: range, executionMode: EXECUTION_MODE.HYBRID });
   const pct = (n) => (totalDec ? round2((n / totalDec) * 100) : 0);
   const cnt = (k) => dmap[k]?.count || 0;
   const notl = (k) => dmap[k]?.notional || 0;
 
   sendSuccess(res, {
-    period: `${days}d`,
+    period: req.query.period || 'custom',
     volume: {
       internalMatching: vmap[ROUTING.INTERNAL_MATCHING]?.volume || 0,
       bBook:            vmap[ROUTING.B_BOOK]?.volume || 0,
@@ -1522,8 +1615,617 @@ const listRoutingDecisions = asyncHandler(async (req, res) => {
   sendSuccess(res, { items, total, page: Number(page) || 1, limit: lim });
 });
 
+// ── Multi-account management ─────────────────────────────────────────
+const _esc = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Which users' accounts may this actor touch? null = unrestricted (super).
+async function _accountScopeUserIds(actor) {
+  if (actor.role === 'SUPER_ADMIN') return null;
+  if (actor.role === 'ADMIN')   return User.find({ adminId: actor._id }).distinct('_id');
+  if (actor.role === 'MANAGER') return User.find({ managerId: actor._id }).distinct('_id');
+  return [];
+}
+async function _assertAccountInScope(actor, account) {
+  if (actor.role === 'SUPER_ADMIN') return;
+  const owner = await User.findById(account.userId).select('adminId managerId').lean();
+  if (!owner) throw new AppError('Account owner not found', 404);
+  if (actor.role === 'ADMIN' && String(owner.adminId) === String(actor._id)) return;
+  if (actor.role === 'MANAGER' && String(owner.managerId) === String(actor._id)) return;
+  throw new AppError('This account is not in your hierarchy', 403, 'OUT_OF_SCOPE');
+}
+
+// GET /admin/accounts — search/filter/paginate across users (hierarchy-scoped).
+const listAccounts = asyncHandler(async (req, res) => {
+  const { search, status, accountType, userId, page = 1, limit = 50 } = req.query;
+  const and = [];
+  if (status) and.push({ status });
+  if (accountType) and.push({ accountType });
+  if (userId) and.push({ userId });
+  if (search) {
+    const re = new RegExp(_esc(search), 'i');
+    const su = await User.find({ $or: [{ email: re }, { firstName: re }, { lastName: re }, { userUid: re }] }).distinct('_id');
+    and.push({ $or: [{ accountNumber: re }, { userId: { $in: su } }] });
+  }
+  const scopeIds = await _accountScopeUserIds(req.user);
+  if (scopeIds) and.push({ userId: { $in: scopeIds } });
+
+  const filter = and.length ? { $and: and } : {};
+  const lim = Math.min(200, Math.max(1, Number(limit) || 50));
+  const skip = (Math.max(1, Number(page) || 1) - 1) * lim;
+
+  const [rows, total] = await Promise.all([
+    TradingAccount.find(filter)
+      .populate('userId', 'email firstName lastName userUid')
+      .sort({ createdAt: -1 }).skip(skip).limit(lim).lean(),
+    TradingAccount.countDocuments(filter),
+  ]);
+
+  const ids = rows.map((a) => a._id);
+  const balAgg = ids.length ? await Wallet.aggregate([
+    { $match: { accountId: { $in: ids } } },
+    { $group: { _id: '$accountId', bal: { $sum: { $convert: { input: '$balance', to: 'double', onError: 0, onNull: 0 } } } } },
+  ]) : [];
+  const balById = new Map(balAgg.map((b) => [String(b._id), round2(b.bal)]));
+
+  const accounts = rows.map((a) => {
+    const u = a.userId || {};
+    return {
+      _id: a._id,
+      accountNumber: a.accountNumber,
+      accountType: a.accountType,
+      status: a.status || 'ACTIVE',
+      isTradingEnabled: a.isTradingEnabled !== false,
+      baseCurrency: a.baseCurrency,
+      leverage: a.leverage,
+      balance: balById.get(String(a._id)) || 0,
+      createdAt: a.createdAt,
+      notesCount: (a.internalNotes || []).length,
+      user: { _id: u._id, email: u.email, name: [u.firstName, u.lastName].filter(Boolean).join(' '), userUid: u.userUid },
+    };
+  });
+  sendSuccess(res, { accounts, total, page: Number(page) || 1, limit: lim });
+});
+
+// GET /admin/accounts/:accountId — full detail (+ wallets + notes).
+const getAccountDetail = asyncHandler(async (req, res) => {
+  const account = await TradingAccount.findById(req.params.accountId).lean();
+  if (!account) throw new AppError('Account not found', 404);
+  await _assertAccountInScope(req.user, account);
+  const [user, wallets] = await Promise.all([
+    User.findById(account.userId).select('email firstName lastName userUid kycStatus isActive').lean(),
+    Wallet.find({ accountId: account._id }).lean(),
+  ]);
+  sendSuccess(res, { account, user, wallets, notes: account.internalNotes || [] });
+});
+
+// GET /admin/accounts/:accountId/positions — open positions for the account.
+const getAccountPositions = asyncHandler(async (req, res) => {
+  const account = await TradingAccount.findById(req.params.accountId).select('userId').lean();
+  if (!account) throw new AppError('Account not found', 404);
+  await _assertAccountInScope(req.user, account);
+  const positions = await Position.find({ accountId: account._id, status: { $in: ['OPEN', 'CLOSING'] } })
+    .select('symbol side positionSide quantity entryPrice leverage unrealizedPnl realizedPnl stopLoss takeProfit openedAt')
+    .sort({ openedAt: -1 }).limit(200).lean();
+  sendSuccess(res, positions);
+});
+
+// PATCH /admin/accounts/:accountId/status — block / unblock / suspend.
+const setAccountStatus = asyncHandler(async (req, res) => {
+  const { status } = req.body;
+  if (!['ACTIVE', 'BLOCKED', 'SUSPENDED'].includes(status)) {
+    throw new AppError('status must be ACTIVE, BLOCKED or SUSPENDED', 400);
+  }
+  const account = await TradingAccount.findById(req.params.accountId);
+  if (!account) throw new AppError('Account not found', 404);
+  await _assertAccountInScope(req.user, account);
+  const from = account.status || 'ACTIVE';
+  account.status = status;
+  await account.save();
+  await logAction(req, 'ACCOUNT_STATUS_CHANGE', { type: 'ACCOUNT', id: account._id }, {
+    from, to: status, accountNumber: account.accountNumber, reason: req.body.reason || '',
+  });
+  sendSuccess(res, { _id: account._id, status: account.status });
+});
+
+// POST /admin/accounts/:accountId/notes — append an internal note.
+const addAccountNote = asyncHandler(async (req, res) => {
+  const note = String(req.body.note || '').trim();
+  if (!note) throw new AppError('Note is required', 400);
+  const account = await TradingAccount.findById(req.params.accountId);
+  if (!account) throw new AppError('Account not found', 404);
+  await _assertAccountInScope(req.user, account);
+  account.internalNotes.push({
+    note,
+    by: req.userId,
+    byName: [req.user.firstName, req.user.lastName].filter(Boolean).join(' ') || req.user.email,
+    at: new Date(),
+  });
+  await account.save();
+  await logAction(req, 'ACCOUNT_NOTE_ADD', { type: 'ACCOUNT', id: account._id }, { accountNumber: account.accountNumber });
+  sendSuccess(res, { notes: account.internalNotes });
+});
+
+// ── User-first accounts management ───────────────────────────────────
+const _num = (f) => ({ $convert: { input: f, to: 'double', onError: 0, onNull: 0 } });
+const DEMO_TYPES = ['DEMO', 'VIRTUAL'];
+
+async function _assertUserInScope(actor, userId) {
+  if (actor.role === 'SUPER_ADMIN') return;
+  const u = await User.findById(userId).select('adminId managerId').lean();
+  if (!u) throw new AppError('User not found', 404);
+  if (actor.role === 'ADMIN' && String(u.adminId) === String(actor._id)) return;
+  if (actor.role === 'MANAGER' && String(u.managerId) === String(actor._id)) return;
+  throw new AppError('This user is not in your hierarchy', 403, 'OUT_OF_SCOPE');
+}
+
+// Build the TradingAccount $match from query filters (status/type/group/date).
+function _accFilter({ status, type, group, from, to }) {
+  const m = {};
+  if (status) m.status = status;
+  if (group) m.group = group;
+  if (type === 'LIVE') m.accountType = { $nin: DEMO_TYPES };
+  else if (type === 'DEMO') m.accountType = { $in: DEMO_TYPES };
+  else if (type) m.accountType = type;
+  if (from || to) {
+    m.createdAt = {};
+    if (from) m.createdAt.$gte = new Date(from);
+    if (to) m.createdAt.$lte = new Date(to);
+  }
+  return m;
+}
+
+// GET /admin/accounts/users — one row per user with aggregated account stats.
+const listAccountUsers = asyncHandler(async (req, res) => {
+  const { search, page = 1, limit = 25 } = req.query;
+  const match = _accFilter(req.query);
+
+  if (search) {
+    const re = new RegExp(_esc(search), 'i');
+    const su = await User.find({ $or: [{ email: re }, { firstName: re }, { lastName: re }, { userUid: re }] }).distinct('_id');
+    match.$or = [{ accountNumber: re }, { userId: { $in: su } }];
+  }
+  const scopeIds = await _accountScopeUserIds(req.user);
+  if (scopeIds) match.userId = { $in: scopeIds };
+
+  const lim = Math.min(100, Math.max(1, Number(limit) || 25));
+  const skip = (Math.max(1, Number(page) || 1) - 1) * lim;
+
+  // Group accounts by user (cheap counts) + paginate users.
+  const grp = await TradingAccount.aggregate([
+    { $match: match },
+    { $group: {
+        _id: '$userId',
+        totalAccounts: { $sum: 1 },
+        live:      { $sum: { $cond: [{ $in: ['$accountType', DEMO_TYPES] }, 0, 1] } },
+        demo:      { $sum: { $cond: [{ $in: ['$accountType', DEMO_TYPES] }, 1, 0] } },
+        blocked:   { $sum: { $cond: [{ $eq: ['$status', 'BLOCKED'] }, 1, 0] } },
+        suspended: { $sum: { $cond: [{ $eq: ['$status', 'SUSPENDED'] }, 1, 0] } },
+    } },
+    { $sort: { totalAccounts: -1, _id: 1 } },
+    { $facet: { data: [{ $skip: skip }, { $limit: lim }], meta: [{ $count: 'total' }] } },
+  ]);
+  const groups = grp[0]?.data || [];
+  const total = grp[0]?.meta?.[0]?.total || 0;
+  const userIds = groups.map((g) => g._id);
+
+  // Enrich the page only (no N+1): user info + balance + open uPnL/margin.
+  const [users, walletAgg, posAgg] = await Promise.all([
+    User.find({ _id: { $in: userIds } }).select('email firstName lastName userUid createdAt').lean(),
+    Wallet.aggregate([{ $match: { userId: { $in: userIds } } }, { $group: { _id: '$userId', bal: { $sum: _num('$balance') } } }]),
+    Position.aggregate([{ $match: { userId: { $in: userIds }, status: 'OPEN' } }, { $group: { _id: '$userId', upnl: { $sum: _num('$unrealizedPnl') }, margin: { $sum: _num('$margin') } } }]),
+  ]);
+  const uMap = new Map(users.map((u) => [String(u._id), u]));
+  const balMap = new Map(walletAgg.map((w) => [String(w._id), w.bal]));
+  const posMap = new Map(posAgg.map((p) => [String(p._id), p]));
+
+  const items = groups.map((g) => {
+    const id = String(g._id);
+    const u = uMap.get(id) || {};
+    const bal = round2(balMap.get(id) || 0);
+    const pos = posMap.get(id) || { upnl: 0, margin: 0 };
+    return {
+      userId: id,
+      name: [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email || '—',
+      email: u.email || '',
+      userUid: u.userUid || '',
+      totalAccounts: g.totalAccounts,
+      liveAccounts: g.live,
+      demoAccounts: g.demo,
+      totalBalance: bal,
+      totalEquity: round2(bal + (pos.upnl || 0)),
+      totalMargin: round2(pos.margin || 0),
+      overallStatus: g.blocked > 0 ? 'BLOCKED' : g.suspended > 0 ? 'SUSPENDED' : 'ACTIVE',
+      registeredAt: u.createdAt || null,
+    };
+  });
+  sendSuccess(res, { items, total, page: Number(page) || 1, limit: lim });
+});
+
+// GET /admin/accounts/users/:userId/accounts — lazy child list (balance/equity/margin).
+const getUserAccounts = asyncHandler(async (req, res) => {
+  await _assertUserInScope(req.user, req.params.userId);
+  const filter = { ..._accFilter(req.query), userId: req.params.userId };
+  const accounts = await TradingAccount.find(filter).sort({ createdAt: -1 }).lean();
+  const ids = accounts.map((a) => a._id);
+  const [walletAgg, posAgg] = await Promise.all([
+    ids.length ? Wallet.aggregate([{ $match: { accountId: { $in: ids } } }, { $group: { _id: '$accountId', bal: { $sum: _num('$balance') } } }]) : [],
+    ids.length ? Position.aggregate([{ $match: { accountId: { $in: ids }, status: 'OPEN' } }, { $group: { _id: '$accountId', upnl: { $sum: _num('$unrealizedPnl') }, margin: { $sum: _num('$margin') } } }]) : [],
+  ]);
+  const balMap = new Map(walletAgg.map((w) => [String(w._id), w.bal]));
+  const posMap = new Map(posAgg.map((p) => [String(p._id), p]));
+  const out = accounts.map((a) => {
+    const bal = round2(balMap.get(String(a._id)) || 0);
+    const pos = posMap.get(String(a._id)) || { upnl: 0, margin: 0 };
+    return {
+      _id: a._id,
+      accountNumber: a.accountNumber,
+      accountType: a.accountType,
+      group: a.group || 'default',
+      status: a.status || 'ACTIVE',
+      isTradingEnabled: a.isTradingEnabled !== false,
+      baseCurrency: a.baseCurrency,
+      leverage: a.leverage,
+      balance: bal,
+      equity: round2(bal + (pos.upnl || 0)),
+      margin: round2(pos.margin || 0),
+      createdAt: a.createdAt,
+    };
+  });
+  sendSuccess(res, out);
+});
+
+// POST /admin/accounts/bulk — { accountIds?, userIds?, action, value }
+// action: block | suspend | enable | leverage | group
+const bulkAccountAction = asyncHandler(async (req, res) => {
+  const { accountIds, userIds, action, value } = req.body;
+  const ACTIONS = ['block', 'suspend', 'enable', 'leverage', 'group'];
+  if (!ACTIONS.includes(action)) throw new AppError(`action must be one of ${ACTIONS.join(', ')}`, 400);
+
+  let lev, grp;
+  if (action === 'leverage') {
+    lev = Math.round(Number(value));
+    if (!Number.isFinite(lev) || lev < 1) throw new AppError('leverage value must be ≥ 1', 400);
+  }
+  if (action === 'group') {
+    grp = String(value || '').trim();
+    if (!grp) throw new AppError('group value required', 400);
+  }
+
+  const or = [];
+  if (Array.isArray(accountIds) && accountIds.length) or.push({ _id: { $in: accountIds } });
+  if (Array.isArray(userIds) && userIds.length) or.push({ userId: { $in: userIds } });
+  if (!or.length) throw new AppError('accountIds[] or userIds[] required', 400);
+
+  const targets = await TradingAccount.find({ $or: or });
+  let updated = 0;
+  for (const acc of targets) {
+    try { await _assertAccountInScope(req.user, acc); } catch (_) { continue; } // skip out-of-scope
+    if (action === 'block') acc.status = 'BLOCKED';
+    else if (action === 'suspend') acc.status = 'SUSPENDED';
+    else if (action === 'enable') acc.status = 'ACTIVE';
+    else if (action === 'leverage') acc.leverage = lev;
+    else if (action === 'group') acc.group = grp;
+    await acc.save();
+    updated++;
+  }
+  await logAction(req, 'ACCOUNT_BULK_ACTION', { type: 'ACCOUNT', id: 'bulk' }, { action, value: value ?? null, count: updated });
+  sendSuccess(res, { updated });
+});
+
+// ── Portfolio (SUPER_ADMIN only) — platform-wide statistics ──────────
+function _portfolioRange({ period, from, to, fromDate, toDate }) {
+  const now = new Date();
+  // Global DateFilter sends concrete fromDate/toDate for every preset; prefer
+  // them (fall back to the legacy `from`/`to`, then period keys).
+  const f = fromDate || from;
+  const t = toDate || to;
+  if (f || t) {
+    const start = f ? new Date(f) : new Date(now.getTime() - 7 * 86400000);
+    const end = t ? new Date(new Date(t).setHours(23, 59, 59, 999)) : now; // inclusive end-of-day
+    return { start, end, period: period || 'custom' };
+  }
+  let start;
+  if (period === 'today') start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  else if (period === '30d') start = new Date(now.getTime() - 30 * 86400000);
+  else start = new Date(now.getTime() - 7 * 86400000); // 7d default
+  return { start, end: now, period: period || '7d' };
+}
+
+async function _portfolioSeries(start, end) {
+  const day = (date) => ({ $dateToString: { format: '%Y-%m-%d', date } });
+  const [dep, wd, cp] = await Promise.all([
+    Deposit.aggregate([{ $match: { status: 'CONFIRMED', createdAt: { $gte: start, $lte: end } } }, { $group: { _id: day('$createdAt'), t: { $sum: _num('$baseAmount') } } }]),
+    Withdrawal.aggregate([{ $match: { status: 'COMPLETED', createdAt: { $gte: start, $lte: end } } }, { $group: { _id: day('$createdAt'), t: { $sum: _num('$baseAmount') } } }]),
+    Position.aggregate([{ $match: { status: 'CLOSED', closedAt: { $gte: start, $lte: end } } }, { $group: { _id: day('$closedAt'), t: { $sum: _num('$realizedPnl') } } }]),
+  ]);
+  const map = {};
+  const slot = (d) => (map[d] = map[d] || { date: d, deposits: 0, withdrawals: 0, closedPnl: 0 });
+  dep.forEach((r) => { slot(r._id).deposits = round2(r.t); });
+  wd.forEach((r) => { slot(r._id).withdrawals = round2(r.t); });
+  cp.forEach((r) => { slot(r._id).closedPnl = round2(r.t); });
+  return Object.values(map).sort((a, b) => (a.date < b.date ? -1 : 1));
+}
+
+const getPortfolio = asyncHandler(async (req, res) => {
+  // Hard gate — 403 for anyone who isn't a Super Admin (defence-in-depth on
+  // top of the route-level requireRole guard).
+  if (req.user.role !== 'SUPER_ADMIN') {
+    throw new AppError('Forbidden — Super Admin only', 403, 'FORBIDDEN');
+  }
+
+  const { start, end, period } = _portfolioRange(req.query);
+  const range = { $gte: start, $lte: end };
+
+  const { SubscriptionWallet } = require('../models/SubscriptionWallet');
+  const { BonusWallet } = require('../models/BonusWallet');
+  const { Commission } = require('../models/Compliance');
+  const RoutingDecision = require('../models/RoutingDecision');
+  const currencyService = require('../services/currencyService');
+  let usdInr = 83;
+  try { usdInr = Number(await currencyService.getUsdInrRate()) || 83; } catch (_) {}
+  const toUsd = (bal, cur) => ({ $cond: [{ $eq: [cur, 'USD'] }, bal, { $divide: [bal, usdInr] }] });
+
+  const [twBal, mwBal, bwBal, depAgg, wdAgg, openAgg, closedAgg, routeAgg, commPaidAgg, series] = await Promise.all([
+    Wallet.aggregate([{ $group: { _id: null, t: { $sum: toUsd(_num('$balance'), '$currency') } } }]),
+    SubscriptionWallet.aggregate([{ $group: { _id: null, t: { $sum: _num('$balance') } } }]),
+    BonusWallet.aggregate([{ $group: { _id: null, t: { $sum: _num('$balance') } } }]),
+    Deposit.aggregate([{ $match: { status: 'CONFIRMED', createdAt: range } }, { $group: { _id: null, t: { $sum: _num('$baseAmount') }, n: { $sum: 1 } } }]),
+    Withdrawal.aggregate([{ $match: { status: 'COMPLETED', createdAt: range } }, { $group: { _id: null, t: { $sum: _num('$baseAmount') }, n: { $sum: 1 } } }]),
+    Position.aggregate([{ $match: { status: 'OPEN' } }, { $group: { _id: null, t: { $sum: _num('$unrealizedPnl') } } }]),
+    Position.aggregate([{ $match: { status: 'CLOSED', closedAt: range } }, { $group: { _id: null, pnl: { $sum: _num('$realizedPnl') }, comm: { $sum: _num('$commission') } } }]),
+    RoutingDecision.aggregate([{ $match: { createdAt: range } }, { $group: { _id: '$routingResult', notional: { $sum: '$notional' } } }]),
+    // Referral + partner commissions actually PAID out in the range (partner
+    // revenue-share TRADE_FEE/SPREAD + referral DEPOSIT_BONUS + adjustments).
+    Commission.aggregate([{ $match: { status: 'PAID', createdAt: range } }, { $group: { _id: '$sourceType', t: { $sum: _num('$amount') } } }]),
+    _portfolioSeries(start, end),
+  ]);
+
+  const totalUserBalance = round2((twBal[0]?.t || 0) + (mwBal[0]?.t || 0) + (bwBal[0]?.t || 0));
+  const totalDeposits = round2(depAgg[0]?.t || 0);
+  const totalWithdrawals = round2(wdAgg[0]?.t || 0);
+  const totalOpenPnl = round2(openAgg[0]?.t || 0);
+  const totalClosedPnl = round2(closedAgg[0]?.pnl || 0);
+  const commissionEarnings = round2(closedAgg[0]?.comm || 0);
+  const rmap = {}; routeAgg.forEach((r) => { rmap[r._id] = round2(r.notional); });
+  // Platform revenue proxy: fees collected + B-book counterparty result
+  // (on B-book the broker is the counterparty, so it gains what users lose).
+  const platformRevenue = round2(commissionEarnings - totalClosedPnl);
+  // Referral + partner commissions paid out to affiliates in the range.
+  const cmap = {}; commPaidAgg.forEach((c) => { cmap[c._id] = round2(c.t); });
+  const partnerRevenueShare = round2((cmap.TRADE_FEE || 0) + (cmap.SPREAD || 0));
+  const referralBonusPaid = round2(cmap.DEPOSIT_BONUS || 0);
+  const partnerReferralPaid = round2(partnerRevenueShare + referralBonusPaid + (cmap.ADJUSTMENT || 0));
+  const netRevenue = round2(platformRevenue - partnerReferralPaid);
+
+  sendSuccess(res, {
+    range: { from: start, to: end, period },
+    kpis: {
+      totalUserBalance,
+      totalDeposits,
+      totalWithdrawals,
+      totalOpenPnl,
+      totalClosedPnl,
+      aBookExposure: rmap.A_BOOK || 0,
+      bBookExposure: rmap.B_BOOK || 0,
+      internalMatchingExposure: rmap.INTERNAL_MATCHING || 0,
+      platformRevenue,
+      commissionEarnings,
+      partnerRevenueShare,
+      referralBonusPaid,
+      partnerReferralPaid,
+      netRevenue,
+      depositCount: depAgg[0]?.n || 0,
+      withdrawalCount: wdAgg[0]?.n || 0,
+    },
+    series,
+  });
+});
+
+// ─── Executive dashboard analytics (global date filter) ───────────────
+//
+// Resolves a single { period | fromDate/toDate } range and returns every
+// time-based dashboard section in ONE payload (users, deposits, withdrawals,
+// trading, routing, B-book P&L, revenue). Exposure is intentionally LIVE
+// (current open positions) and ignores the date filter — see `exposure`.
+//
+// Presets: today | 24h | 7d | 30d | this_month | previous_month | custom.
+function _resolveDashRange({ period, fromDate, toDate }) {
+  const now = new Date();
+  const Y = now.getFullYear(), Mo = now.getMonth(), Da = now.getDate();
+  let start, end = now, key = period || '7d';
+  if (fromDate || toDate) {
+    start = fromDate ? new Date(fromDate) : new Date(now.getTime() - 7 * 86400000);
+    end = toDate ? new Date(new Date(toDate).setHours(23, 59, 59, 999)) : now;
+    key = (period && period !== 'custom') ? period : 'custom';
+  } else {
+    switch (period) {
+      case 'today':          start = new Date(Y, Mo, Da); break;
+      case '24h':            start = new Date(now.getTime() - 24 * 3600 * 1000); break;
+      case '30d':            start = new Date(now.getTime() - 30 * 86400000); break;
+      case 'this_month':     start = new Date(Y, Mo, 1); break;
+      case 'previous_month': start = new Date(Y, Mo - 1, 1); end = new Date(Y, Mo, 1, 0, 0, 0, -1); break;
+      case '7d': default:    start = new Date(now.getTime() - 7 * 86400000); key = '7d'; break;
+    }
+  }
+  return { start, end, period: key };
+}
+
+const getDashboardAnalytics = asyncHandler(async (req, res) => {
+  const { start, end, period } = _resolveDashRange(req.query);
+  const range = { $gte: start, $lte: end };
+  const num = _num;
+
+  const { Commission } = require('../models/Compliance');
+  const RoutingDecision = require('../models/RoutingDecision');
+
+  // Account book sets — used for B-book P&L and LIVE exposure attribution.
+  const [bAcctIds, aAcctIds, hAcctIds] = await Promise.all([
+    TradingAccount.find({ bookType: BOOK_TYPE.B_BOOK }).distinct('_id'),
+    TradingAccount.find({ bookType: BOOK_TYPE.A_BOOK }).distinct('_id'),
+    TradingAccount.find({ bookType: BOOK_TYPE.HYBRID }).distinct('_id'),
+  ]);
+
+  const mulQtyPrice = { $multiply: [num('$quantity'), num('$entryPrice')] };
+
+  const [
+    totalUsers, newUsers,
+    loginIds, buyIds, sellIds, depIds, posIds,
+    depAgg, depLifetime,
+    wdAgg, wdLifetime,
+    tradeAgg, openPositions, closedPositions,
+    routeDecAgg, hybridRouted,
+    bbookClosed, bbookOpen,
+    closedPnlComm, commPaidAgg,
+    expAgg,
+  ] = await Promise.all([
+    // ── Users
+    User.countDocuments(),
+    User.countDocuments({ createdAt: range }),
+    User.distinct('_id', { lastLoginAt: range }),
+    Trade.distinct('buyUserId', { executedAt: range }),
+    Trade.distinct('sellUserId', { executedAt: range }),
+    Deposit.distinct('userId', { createdAt: range }),
+    Position.distinct('userId', { openedAt: range }),
+    // ── Deposits (by status in range) + lifetime confirmed
+    Deposit.aggregate([{ $match: { createdAt: range } }, { $group: { _id: '$status', n: { $sum: 1 }, t: { $sum: num('$baseAmount') } } }]),
+    Deposit.aggregate([{ $match: { status: 'CONFIRMED' } }, { $group: { _id: null, t: { $sum: num('$baseAmount') } } }]),
+    // ── Withdrawals (by status in range) + lifetime completed
+    Withdrawal.aggregate([{ $match: { createdAt: range } }, { $group: { _id: '$status', n: { $sum: 1 }, t: { $sum: num('$baseAmount') } } }]),
+    Withdrawal.aggregate([{ $match: { status: 'COMPLETED' } }, { $group: { _id: null, t: { $sum: num('$baseAmount') } } }]),
+    // ── Trading
+    Trade.aggregate([{ $match: { executedAt: range } }, { $group: { _id: '$routing', n: { $sum: 1 }, vol: { $sum: { $multiply: [num('$price'), num('$quantity')] } } } }]),
+    Position.countDocuments({ status: 'OPEN' }),
+    Position.countDocuments({ status: 'CLOSED', closedAt: range }),
+    // ── Routing decisions in range
+    RoutingDecision.aggregate([{ $match: { createdAt: range } }, { $group: { _id: '$routingResult', count: { $sum: 1 }, notional: { $sum: '$notional' } } }]),
+    RoutingDecision.countDocuments({ createdAt: range, executionMode: EXECUTION_MODE.HYBRID }),
+    // ── B-book P&L (broker = counterparty → broker gains what traders lose)
+    Position.aggregate([{ $match: { status: 'CLOSED', closedAt: range, accountId: { $in: bAcctIds } } }, { $group: { _id: null, pnl: { $sum: num('$realizedPnl') } } }]),
+    Position.aggregate([{ $match: { status: 'OPEN', accountId: { $in: bAcctIds } } }, { $group: { _id: null, upnl: { $sum: num('$unrealizedPnl') } } }]),
+    // ── Revenue inputs: closed P&L + commission(fees) in range; commissions paid out
+    Position.aggregate([{ $match: { status: 'CLOSED', closedAt: range } }, { $group: { _id: null, pnl: { $sum: num('$realizedPnl') }, comm: { $sum: num('$commission') } } }]),
+    Commission.aggregate([{ $match: { status: 'PAID', createdAt: range } }, { $group: { _id: '$sourceType', t: { $sum: num('$amount') } } }]),
+    // ── LIVE exposure: open positions grouped by account (book mapped in JS)
+    Position.aggregate([
+      { $match: { status: 'OPEN' } },
+      { $group: {
+          _id: '$accountId',
+          notional: { $sum: mulQtyPrice },
+          signed: { $sum: { $multiply: [{ $cond: [{ $eq: ['$side', 'BUY'] }, 1, -1] }, mulQtyPrice] } },
+      } },
+    ]),
+  ]);
+
+  // ── Users: active = logged in / traded / deposited / opened a position in range
+  const activeSet = new Set();
+  [loginIds, buyIds, sellIds, depIds, posIds].forEach((arr) => arr.forEach((id) => activeSet.add(String(id))));
+
+  // ── Deposits
+  const depMap = {}; depAgg.forEach((d) => { depMap[d._id] = { n: d.n, t: round2(d.t) }; });
+  const deposits = {
+    totalLifetime: round2(depLifetime[0]?.t || 0),
+    periodAmount:  round2(depMap.CONFIRMED?.t || 0),
+    periodCount:   depMap.CONFIRMED?.n || 0,
+    pending:       depMap.PENDING?.n || 0,
+    successful:    depMap.CONFIRMED?.n || 0,
+    failed:        (depMap.REJECTED?.n || 0) + (depMap.CANCELLED?.n || 0),
+  };
+
+  // ── Withdrawals
+  const wdMap = {}; wdAgg.forEach((d) => { wdMap[d._id] = { n: d.n, t: round2(d.t) }; });
+  const withdrawals = {
+    totalLifetime: round2(wdLifetime[0]?.t || 0),
+    periodAmount:  round2(wdMap.COMPLETED?.t || 0),
+    periodCount:   wdMap.COMPLETED?.n || 0,
+    pending:       (wdMap.PENDING?.n || 0) + (wdMap.PROCESSING?.n || 0),
+    approved:      (wdMap.APPROVED?.n || 0) + (wdMap.COMPLETED?.n || 0),
+    rejected:      (wdMap.REJECTED?.n || 0) + (wdMap.CANCELLED?.n || 0),
+  };
+
+  // ── Trading
+  let totalTrades = 0, tradingVolume = 0; const volByRouting = {};
+  tradeAgg.forEach((v) => { totalTrades += v.n; tradingVolume += v.vol; volByRouting[v._id] = round2(v.vol); });
+  const trading = {
+    totalTrades,
+    tradingVolume: round2(tradingVolume),
+    openPositions,
+    closedPositions,
+  };
+
+  // ── Routing
+  let totalDecisions = 0; routeDecAgg.forEach((d) => { totalDecisions += d.count; });
+  const routing = {
+    internalMatchingVolume: volByRouting[ROUTING.INTERNAL_MATCHING] || 0,
+    bBookVolume:            volByRouting[ROUTING.B_BOOK] || 0,
+    aBookVolume:            volByRouting[ROUTING.EXTERNAL] || 0,
+    hybridRoutedOrders:     hybridRouted,
+    totalRoutingDecisions:  totalDecisions,
+  };
+
+  // ── B-book P&L (broker perspective = −trader P&L)
+  const bBookPnl = {
+    realized:   round2(-(bbookClosed[0]?.pnl || 0)),
+    unrealized: round2(-(bbookOpen[0]?.upnl || 0)),
+  };
+  bBookPnl.net = round2(bBookPnl.realized + bBookPnl.unrealized);
+
+  // ── Revenue
+  const closedPnl = round2(closedPnlComm[0]?.pnl || 0);
+  const fees = round2(closedPnlComm[0]?.comm || 0);
+  const commMap = {}; commPaidAgg.forEach((c) => { commMap[c._id] = round2(c.t); });
+  const commissionPaid = round2((commMap.TRADE_FEE || 0) + (commMap.SPREAD || 0) + (commMap.DEPOSIT_BONUS || 0) + (commMap.ADJUSTMENT || 0));
+  const partnerRevenueShare = round2((commMap.TRADE_FEE || 0) + (commMap.SPREAD || 0));
+  const platformRevenue = round2(fees - closedPnl); // fees + B-book counterparty result
+  const revenue = {
+    platformRevenue,
+    tradingFeesCollected: fees,
+    commissionPaid,
+    partnerRevenueShare,
+    netRevenue: round2(platformRevenue - commissionPaid),
+  };
+
+  // ── LIVE exposure (NOT date-filtered) — current open positions by book.
+  const bSet = new Set(bAcctIds.map(String)), aSet = new Set(aAcctIds.map(String)), hSet = new Set(hAcctIds.map(String));
+  let net = 0, aExp = 0, bExp = 0, hExp = 0;
+  expAgg.forEach((row) => {
+    const id = String(row._id);
+    net += row.signed;
+    if (bSet.has(id)) bExp += row.notional;
+    else if (aSet.has(id)) aExp += row.notional;
+    else if (hSet.has(id)) hExp += row.notional;
+  });
+  const exposure = {
+    netExposure:              round2(net),
+    aBookExposure:            round2(aExp),
+    bBookExposure:            round2(bExp),
+    internalMatchingExposure: round2(hExp), // hybrid flow is matched internally when liquidity exists
+    live: true,
+  };
+
+  // ── Live operational alerts (not date-filtered)
+  const [kycPending, withdrawPending, depositPending] = await Promise.all([
+    User.countDocuments({ kycStatus: KYC_STATUS.PENDING }),
+    Withdrawal.countDocuments({ status: 'PENDING' }),
+    Deposit.countDocuments({ status: 'PENDING' }),
+  ]);
+
+  sendSuccess(res, {
+    range: { from: start, to: end, period },
+    users: { totalUsers, newUsers, activeUsers: activeSet.size },
+    deposits,
+    withdrawals,
+    trading,
+    routing,
+    bBookPnl,
+    revenue,
+    exposure,
+    alerts: { kycPending, withdrawPending, depositPending },
+  });
+});
+
 module.exports = {
   dashboard,
+  getDashboardAnalytics,
   listUsers,
   getUser,
   updateUserStatus,
@@ -1556,4 +2258,13 @@ module.exports = {
   partnerAnalytics,
   getExecutionStats,
   listRoutingDecisions,
+  listAccounts,
+  getAccountDetail,
+  getAccountPositions,
+  setAccountStatus,
+  addAccountNote,
+  listAccountUsers,
+  getUserAccounts,
+  bulkAccountAction,
+  getPortfolio,
 };

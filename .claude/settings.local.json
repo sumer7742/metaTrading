@@ -75,7 +75,25 @@
       "Bash(node -e \"require\\('./src/routes/hierarchy'\\); require\\('./src/services/limitService'\\); require\\('./src/controllers/hierarchyController'\\); require\\('./src/controllers/orderController'\\); require\\('./src/controllers/walletController'\\); require\\('./src/models/User'\\); console.log\\('backend OK'\\);\")",
       "Bash(node -e \"const s=require\\('./src/services/limitService'\\); console.log\\('limitService keys:', s.LIMIT_KEYS.length\\); require\\('./src/routes/hierarchy'\\); console.log\\('backend OK'\\);\")",
       "Bash(node -e \"const s=require\\('./src/services/limitService'\\); console.log\\('limits:', s.LIMIT_KEYS.join\\(','\\)\\); require\\('./src/routes/hierarchy'\\); require\\('./src/controllers/orderController'\\); require\\('./src/controllers/walletController'\\); require\\('./src/controllers/userController'\\); console.log\\('backend OK'\\);\")",
-      "Bash(node -e \"require\\('./src/controllers/orderController'\\); console.log\\('backend OK'\\);\")"
+      "Bash(node -e \"require\\('./src/controllers/orderController'\\); console.log\\('backend OK'\\);\")",
+      "Bash(node -e \"require\\('./src/routes/admin'\\); require\\('./src/services/orderRouter.service'\\); require\\('./src/models/TradingAccount'\\); console.log\\('backend OK'\\);\")",
+      "Bash(node -e \"require\\('./src/routes/admin'\\); require\\('./src/controllers/adminController'\\); console.log\\('backend OK'\\);\")",
+      "Bash(node -e \"require\\('./src/routes/admin'\\); require\\('./src/controllers/adminController'\\); require\\('./src/models/TradingAccount'\\); console.log\\('backend OK'\\);\")",
+      "Bash(node -e \"require\\('./src/routes/admin'\\); require\\('./src/models/TradingAccount'\\); console.log\\('backend OK'\\);\")",
+      "Bash(node -e \"require\\('./src/routes/admin'\\); console.log\\('backend OK'\\);\")",
+      "Bash(node -e \"require\\('./src/controllers/adminController'\\); console.log\\('backend OK'\\);\")",
+      "Bash(cd \"c:/Users/rijju/OneDrive/Desktop/trading-platform  last and\" && grep -rlE \"period|fromDate|date.?range|7d|30d\" client/src/pages 2>/dev/null | head -20)",
+      "Read(//c/Users/rijju/OneDrive/Desktop/**)",
+      "Bash(node -e \"require\\('./src/controllers/dashboardController'\\); console.log\\('backend OK'\\);\")",
+      "Bash(node -e \"require\\('./src/services/subscriptionService'\\); require\\('./src/controllers/subscriptionController'\\); require\\('./src/services/backgroundWorker'\\); console.log\\('backend OK'\\);\")",
+      "Bash(node -e \"require\\('./src/services/subscriptionService'\\); require\\('./src/controllers/subscriptionController'\\); require\\('./src/services/backgroundWorker'\\); require\\('./src/services/systemSettings.service'\\); console.log\\('backend OK'\\);\")",
+      "Bash(node -e \"require\\('./src/services/chatService'\\); require\\('./src/controllers/chatController'\\); console.log\\('backend OK'\\);\")",
+      "Bash(node --check src/services/backgroundWorker.js)",
+      "Bash(node --check src/models/User.js)",
+      "Bash(node scripts/verify-copy-trading.js)",
+      "Bash(node --check src/services/chatService.js)",
+      "Bash(node --check src/controllers/chatController.js)",
+      "Bash(node --check src/routes/chat.js)"
     ]
   }
 }

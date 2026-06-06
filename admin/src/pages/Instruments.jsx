@@ -20,6 +20,7 @@ const EMPTY = {
   lotSize: '0.001',
   spreadType: 'FIXED',
   spreadValue: '0',
+  commissionType: 'PERCENTAGE',
   commissionPerTrade: '0',
   commissionPercent: '0',
   maxLeverage: 999999, // Unlimited by default
@@ -27,9 +28,13 @@ const EMPTY = {
   // to `fixedVolumeValue` and the client volume input is read-only.
   fixedVolumeEnabled: false,
   fixedVolumeValue: '0',
+  // Optional daily volume cap (lots). Off by default = unlimited.
+  dailyVolumeLimitEnabled: false,
+  dailyVolumeLimit: '',
   // Per-instrument routing override — mirrors the user-level override.
-  // INHERIT = use the global Settings → Routing Mode. An explicit
-  // value (A_BOOK / B_BOOK / HYBRID) wins over the global for THIS symbol.
+  // INHERIT = use the global Settings → Routing Mode. An explicit value
+  // (INTERNAL_MATCHING / A_BOOK / B_BOOK / HYBRID) wins over the global
+  // for THIS symbol.
   routingOverride: 'INHERIT',
   isActive: true,
 };
@@ -111,6 +116,8 @@ export default function Instruments() {
               <th className="text-left p-3">Category</th>
               <th className="text-right p-3">Last Price</th>
               <th className="text-right p-3">Max Lev</th>
+              <th className="text-right p-3">Commission</th>
+              <th className="text-right p-3">Daily Volume</th>
               <th className="text-center p-3">Routing</th>
               <th className="text-right p-3"></th>
             </tr>
@@ -119,6 +126,7 @@ export default function Instruments() {
             {items.map((it) => {
               const routing = it.routingOverride || 'INHERIT';
               const routingTone =
+                routing === 'INTERNAL_MATCHING' ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' :
                 routing === 'A_BOOK'  ? 'bg-blue-500/15 text-blue-400 border-blue-500/30' :
                 routing === 'B_BOOK'  ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' :
                 routing === 'HYBRID'  ? 'bg-violet-500/15 text-violet-400 border-violet-500/30' :
@@ -139,6 +147,30 @@ export default function Instruments() {
                       : `1:${it.maxLeverage}`}
                     {it.fixedVolume?.enabled && (
                       <div className="text-[10px] text-violet-400 mt-0.5" title="Fixed volume active">Vol {it.fixedVolume.value}</div>
+                    )}
+                  </td>
+                  <td className="p-3 text-right">
+                    {(it.commissionType || (Number(it.commissionPercent) > 0 ? 'PERCENTAGE' : 'FIXED')) === 'FIXED' ? (
+                      <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/30" title="Fixed commission per trade">
+                        ${fmtNum(it.commissionPerTrade || 0, 2)} flat
+                      </span>
+                    ) : (
+                      <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-400 border border-violet-500/30" title="Percentage of trade value">
+                        {(Number(it.commissionPercent || 0) * 100).toFixed(3)}%
+                      </span>
+                    )}
+                  </td>
+                  <td className="p-3 text-right">
+                    {it.dailyVolumeLimitEnabled && Number(it.dailyVolumeLimit) > 0 ? (
+                      <div className="leading-tight">
+                        <div className="font-mono text-text-primary">{fmtNum(it.dailyVolumeLimit, 0)} <span className="text-[10px] text-gray-500">lots</span></div>
+                        <div className="text-[10px] text-gray-500">
+                          Used {fmtNum(it.dailyVolumeUsed || 0, 0)} · Left{' '}
+                          <span className="text-emerald-500">{fmtNum(it.dailyVolumeRemaining ?? it.dailyVolumeLimit, 0)}</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <span className="text-[11px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600">Unlimited</span>
                     )}
                   </td>
                   <td className="p-3 text-center">
@@ -176,7 +208,19 @@ function InstrumentEditor({ data, onSave, onClose }) {
           <h2 className="text-lg font-semibold text-white">{form._id ? 'Edit Instrument' : 'New Instrument'}</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-white text-xl">×</button>
         </div>
-        <form onSubmit={(e) => { e.preventDefault(); onSave(form); }} className="p-5 grid grid-cols-2 gap-3">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            // Normalise the daily volume cap: disabled → 0/unlimited; enabled →
+            // numeric lots (empty/invalid coerced to 0 so the Number cast is safe).
+            onSave({
+              ...form,
+              dailyVolumeLimitEnabled: !!form.dailyVolumeLimitEnabled,
+              dailyVolumeLimit: form.dailyVolumeLimitEnabled ? (Number(form.dailyVolumeLimit) || 0) : 0,
+            });
+          }}
+          className="p-5 grid grid-cols-2 gap-3"
+        >
           <div>
             <label className="label">Symbol</label>
             <input className="input font-mono uppercase" value={form.symbol} onChange={update('symbol')} required disabled={!!form._id} />
@@ -232,12 +276,27 @@ function InstrumentEditor({ data, onSave, onClose }) {
             <input className="input font-mono" value={form.spreadValue} onChange={update('spreadValue')} />
           </div>
           <div>
-            <label className="label">Commission Per Trade</label>
-            <input className="input font-mono" value={form.commissionPerTrade} onChange={update('commissionPerTrade')} />
+            <label className="label">Commission Type</label>
+            <select className="input" value={form.commissionType || 'PERCENTAGE'} onChange={update('commissionType')}>
+              <option value="PERCENTAGE">Percentage (% of trade value)</option>
+              <option value="FIXED">Fixed (flat per trade)</option>
+            </select>
+            <div className="text-[10px] text-gray-500 mt-1">Only one method charges — the other is ignored.</div>
           </div>
           <div>
-            <label className="label">Commission %</label>
-            <input className="input font-mono" value={form.commissionPercent} onChange={update('commissionPercent')} />
+            {form.commissionType === 'FIXED' ? (
+              <>
+                <label className="label">Commission Per Trade <span className="text-emerald-500 font-bold">· active</span></label>
+                <input className="input font-mono" value={form.commissionPerTrade} onChange={update('commissionPerTrade')} placeholder="e.g. 0.10" />
+                <div className="text-[10px] text-gray-500 mt-1">Flat fee charged per trade.</div>
+              </>
+            ) : (
+              <>
+                <label className="label">Commission % <span className="text-emerald-500 font-bold">· active</span></label>
+                <input className="input font-mono" value={form.commissionPercent} onChange={update('commissionPercent')} placeholder="e.g. 0.0005 = 0.05%" />
+                <div className="text-[10px] text-gray-500 mt-1">Commission = trade value × this rate.</div>
+              </>
+            )}
           </div>
           <div>
             <label className="label">Max Leverage</label>
@@ -297,6 +356,7 @@ function InstrumentEditor({ data, onSave, onClose }) {
               onChange={update('routingOverride')}
             >
               <option value="INHERIT">INHERIT</option>
+              <option value="INTERNAL_MATCHING">INTERNAL_MATCHING</option>
               <option value="A_BOOK">A_BOOK</option>
               <option value="B_BOOK">B_BOOK</option>
               <option value="HYBRID">HYBRID</option>
@@ -307,6 +367,39 @@ function InstrumentEditor({ data, onSave, onClose }) {
               (still subject to per-user override).
             </div>
           </div>
+          {/* ── Daily Volume Limit (optional; off = unlimited) ── */}
+          <div className="col-span-2 rounded-lg border border-border-dark bg-bg-dark p-3 mt-1">
+            <label className="flex items-center justify-between cursor-pointer">
+              <span className="text-sm font-semibold text-white">Enable Daily Volume Limit</span>
+              <input
+                type="checkbox"
+                className="w-4 h-4"
+                checked={!!form.dailyVolumeLimitEnabled}
+                onChange={checkbox('dailyVolumeLimitEnabled')}
+              />
+            </label>
+            {form.dailyVolumeLimitEnabled ? (
+              <div className="mt-3">
+                <label className="label">Daily Volume Limit (Lots)</label>
+                <input
+                  type="number" min="0" step="any"
+                  className="input font-mono"
+                  value={form.dailyVolumeLimit}
+                  onChange={update('dailyVolumeLimit')}
+                  placeholder="e.g. 100000"
+                />
+                <p className="text-[11px] text-text-muted mt-1.5 leading-snug">
+                  Platform-wide cap on total OPENING volume for this symbol per UTC day (all users).
+                  New opening orders are rejected once the day's used volume reaches this limit. Closes are never blocked.
+                </p>
+              </div>
+            ) : (
+              <p className="text-[11px] text-text-muted mt-2">
+                <span className="font-semibold text-emerald-500">Unlimited</span> — no daily volume restriction on this instrument.
+              </p>
+            )}
+          </div>
+
           {/* B-Book / Mode toggles (legacy fields) removed — per-instrument
               routing is now controlled by the Routing Override above. */}
           <div className="col-span-2 flex items-center gap-4 mt-2">

@@ -900,6 +900,47 @@ const sweepExpiredSubscriptions = async () => {
 
   for (const sub of expired) {
     try {
+      // ── Auto-renew attempt — Main Wallet, then Trading if enabled.
+      //    The Bonus Wallet is NEVER charged. Only runs when the user
+      //    enabled auto-renew on their Main Wallet. On success we renew the
+      //    same plan and skip the downgrade; on failure the account enters a
+      //    grace period (soft downgrade keeps withdrawals + history).
+      try {
+        const subscriptionWalletService = require('./subscriptionWalletService');
+        const mainW = await subscriptionWalletService.getOrCreate(sub.userId);
+        if (mainW.autoRenew) {
+          const plan = await Plan.findOne({ code: sub.planCode, isActive: true }).lean();
+          const cycle = sub.billingCycle || 'MONTHLY';
+          const price = plan ? (cycle === 'YEARLY' ? Number(plan.yearlyPrice || 0) : Number(plan.monthlyPrice || 0)) : 0;
+          if (plan && price > 0) {
+            const ref = await subscriptionService.chargePlan({
+              userId: sub.userId, amount: price,
+              note: `Auto-renew · ${plan.name} (${cycle.toLowerCase()})`,
+            });
+            await subscriptionService.subscribe({ userId: sub.userId, planCode: sub.planCode, billingCycle: cycle, paymentRef: ref });
+            try {
+              const { AuditLog, Notification } = require('../models/index');
+              await AuditLog.create({ actorId: sub.userId, actorRole: 'SYSTEM', action: 'SUBSCRIPTION_AUTO_RENEW', targetType: 'SUBSCRIPTION', targetId: String(sub._id), metadata: { planCode: sub.planCode, amount: String(price), source: ref?.provider } });
+              await Notification.create({ userId: sub.userId, type: 'SUBSCRIPTION_RENEWED', title: 'Subscription renewed', message: `Your ${plan.name} plan was auto-renewed from your Main Wallet.`, channels: ['IN_APP', 'EMAIL'] });
+            } catch (_) { /* best-effort */ }
+            notifyUser(String(sub.userId), 'subscription', { event: 'AUTO_RENEWED', plan: sub.planCode });
+            continue; // renewed — skip downgrade
+          }
+        }
+      } catch (renewErr) {
+        // Insufficient Main (+Trading) balance → grace period + notify.
+        // NEVER fall back to the Bonus Wallet.
+        try {
+          const { Notification } = require('../models/index');
+          await Notification.create({
+            userId: sub.userId, type: 'SUBSCRIPTION_RENEW_FAILED',
+            title: 'Auto-renew failed — top up your Main Wallet',
+            message: `We couldn't auto-renew your ${sub.planCode} plan: insufficient Main Wallet balance. Top up your Main Wallet and re-subscribe to keep your plan. You can still withdraw funds.`,
+            channels: ['IN_APP', 'EMAIL'],
+          });
+        } catch (_) { /* best-effort */ }
+      }
+
       // Mark the failed sub EXPIRED so we don't re-process it. The
       // subsequent subscribe() to FREE will overwrite the same row.
       sub.status = 'EXPIRED';
@@ -945,6 +986,28 @@ const sweepExpiredSubscriptions = async () => {
   }
 };
 
+// ─── Monthly partner-tier recalculation ──────────────────────────────
+// Partner tiers are driven by the PREVIOUS calendar month's referral
+// trading volume and must be recomputed on the 1st of each month, then
+// held fixed for the whole month. We pigg-back on the hourly slow-tick:
+// when the calendar month changes (or on first boot) we refresh every
+// partner's tier snapshot. Reads also self-heal lazily, so this is a
+// proactive sweep — even a missed run is corrected on the next read.
+let _lastTierMonth = null;
+const monthKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+const recalcPartnerTiersIfNewMonth = async () => {
+  const m = monthKey(new Date());
+  if (_lastTierMonth === m) return;
+  try {
+    const partnerService = require('./partnerService');
+    const n = await partnerService.recalcAllPartnerTiers();
+    _lastTierMonth = m;
+    console.log(`[Worker] partner tier monthly recalculation done for ${m} (${n} partners)`);
+  } catch (e) {
+    console.error('[Worker] partner tier recalculation failed:', e.message);
+  }
+};
+
 let _tickHandle = null;
 let _slowTickHandle = null;
 const start = (intervalMs = 5000) => {
@@ -958,6 +1021,7 @@ const start = (intervalMs = 5000) => {
   const slowTick = async () => {
     try {
       await sweepExpiredSubscriptions();
+      await recalcPartnerTiersIfNewMonth();
     } catch (e) {
       console.error('[Worker] slow-tick error:', e.message);
     }

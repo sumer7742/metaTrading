@@ -78,6 +78,15 @@ const _validate = (account, instrument, order) => {
   if (!isClose && account.isTradingEnabled === false) {
     throw new AppError('Trading is disabled on this account', 403, 'TRADING_DISABLED');
   }
+  // Per-account admin block/suspend — affects ONLY this account, never the
+  // user's other accounts. Closes stay allowed so positions can be liquidated.
+  if (!isClose && account.status && account.status !== 'ACTIVE') {
+    throw new AppError(
+      `This account is ${account.status.toLowerCase()}. New orders are disabled — you can still close open positions.`,
+      403,
+      'ACCOUNT_BLOCKED'
+    );
+  }
   // Plan-driven suspension (over plan cap after a downgrade or payment
   // failure). Closes are still allowed so the user can liquidate to
   // withdraw funds — that's an explicit promise in the plan spec.
@@ -122,6 +131,11 @@ const routeOrder = async ({ order, userId }) => {
   }
 
   _validate(account, instrument, order);
+
+  // 1b. Optional per-instrument DAILY volume cap. No-op when the instrument
+  //     is unlimited (default) or for closing orders. Rejects an opening
+  //     order that would push the symbol's daily used volume past the limit.
+  await require('./volumeLimitService').assertWithinDailyLimit(instrument, order);
 
   // 2. Resolve the execution MODE — per-user override wins, else global.
   const { mode: executionMode, source: modeSource } = await _resolveRoutingMode(user);

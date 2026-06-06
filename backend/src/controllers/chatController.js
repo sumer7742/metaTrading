@@ -76,6 +76,12 @@ const postSeen = asyncHandler(async (req, res) => {
   sendSuccess(res, { ok: true });
 });
 
+// GET /chat/upload-config — effective file-upload limits for the caller's
+// role (drives the composer's client-side validation + hints).
+const uploadConfig = asyncHandler(async (req, res) => {
+  sendSuccess(res, await chat.getEffectiveUploadConfig(req.user.role));
+});
+
 // POST /chat/conversations/:id/typing — ephemeral, no DB write.
 const postTyping = asyncHandler(async (req, res) => {
   const conv = await Conversation.findById(req.params.id);
@@ -84,4 +90,4 @@ const postTyping = asyncHandler(async (req, res) => {
   sendSuccess(res, { ok: true });
 });
 
-module.exports = { myConversation, listConversations, openConversation, getMessages, postMessage, postSeen, postTyping };
+module.exports = { myConversation, listConversations, openConversation, getMessages, postMessage, postSeen, postTyping, uploadConfig };

@@ -45,6 +45,8 @@ export const DEFAULT_ROUTE_ROLES = [ROLES.SUPER_ADMIN, ROLES.ADMIN];
 // Per-route allow-lists. SUPER_ADMIN implicitly passes everything (canAccess).
 export const ROUTE_ACCESS = Object.freeze({
   '/dashboard':      [ROLES.SUPER_ADMIN, ROLES.ADMIN],
+  '/portfolio':      [ROLES.SUPER_ADMIN],   // platform portfolio — super admin only
+
   '/my-users':       [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.MANAGER],
   '/support-chats':  [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.MANAGER],
   '/admins':         [ROLES.SUPER_ADMIN],

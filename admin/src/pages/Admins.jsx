@@ -3,16 +3,21 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import PageHero from '../components/PageHero';
 import LimitsModal from '../components/LimitsModal';
+import { useAuthStore } from '../store/auth';
+import { ROLES } from '../config/roles';
 
 /**
- * Admins — SuperAdmin-only management of the (max 4) platform admins.
- * Backend: GET/POST/DELETE /hierarchy/admins + GET /hierarchy/workload.
+ * Admins — SuperAdmin-only management of the platform admins. The max-admins
+ * cap is configurable by the Super Admin (setting hierarchy.maxAdmins).
+ * Backend: GET/POST/DELETE /hierarchy/admins + GET/PUT /hierarchy/admins/cap.
  */
-const MAX_ADMINS = 4;
-
 export default function Admins() {
+  const { user } = useAuthStore();
+  const isSuper = user?.role === ROLES.SUPER_ADMIN;
+
   const [admins, setAdmins] = useState([]);
   const [workload, setWorkload] = useState({ admins: [] });
+  const [maxAdmins, setMaxAdmins] = useState(4);
   const [loading, setLoading] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [limitsFor, setLimitsFor] = useState(null);
@@ -20,16 +25,31 @@ export default function Admins() {
   const load = async () => {
     setLoading(true);
     try {
-      const [a, w] = await Promise.all([
+      const [a, w, cap] = await Promise.all([
         api.get('/hierarchy/admins', { params: { limit: 100 } }),
         api.get('/hierarchy/workload'),
+        api.get('/hierarchy/admins/cap').catch(() => null),
       ]);
       setAdmins(a.data.data.items || []);
       setWorkload(w.data.data || { admins: [] });
+      if (cap?.data?.data?.maxAdmins) setMaxAdmins(Number(cap.data.data.maxAdmins));
     } catch (e) { toast.error(errorMessage(e)); }
     finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
+
+  const editCap = async () => {
+    const v = window.prompt(`Set the maximum number of platform admins (current: ${maxAdmins}).\nEnter a whole number between 1 and 100:`, String(maxAdmins));
+    if (v == null) return;
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 1 || n > 100) { toast.error('Enter a whole number between 1 and 100'); return; }
+    if (n < admins.length) { toast.error(`There are already ${admins.length} admins — set a limit ≥ ${admins.length}.`); return; }
+    try {
+      const { data } = await api.put('/hierarchy/admins/cap', { maxAdmins: n });
+      setMaxAdmins(Number(data.data.maxAdmins));
+      toast.success(`Admin limit updated to ${data.data.maxAdmins}`);
+    } catch (e) { toast.error(errorMessage(e)); }
+  };
 
   const wlById = useMemo(() => new Map((workload.admins || []).map((x) => [String(x.id), x])), [workload]);
 
@@ -53,12 +73,19 @@ export default function Admins() {
       <PageHero
         eyebrow="Hierarchy"
         title="Admins"
-        subtitle={`${admins.length} / ${MAX_ADMINS} admins · create and manage top-level admins. Each admin runs their own managers + users.`}
+        subtitle={`${admins.length} / ${maxAdmins} admins · create and manage top-level admins. Each admin runs their own managers + users.`}
         actions={
-          <button onClick={() => setCreateOpen(true)} disabled={admins.length >= MAX_ADMINS}
-            className="btn-primary text-sm disabled:opacity-50" title={admins.length >= MAX_ADMINS ? 'Max 4 admins reached' : ''}>
-            + Create Admin
-          </button>
+          <div className="flex items-center gap-2">
+            {isSuper && (
+              <button onClick={editCap} className="btn-ghost text-sm" title="Change the maximum number of admins">
+                ⚙ Edit limit
+              </button>
+            )}
+            <button onClick={() => setCreateOpen(true)} disabled={admins.length >= maxAdmins}
+              className="btn-primary text-sm disabled:opacity-50" title={admins.length >= maxAdmins ? `Max ${maxAdmins} admins reached` : ''}>
+              + Create Admin
+            </button>
+          </div>
         }
       />
 

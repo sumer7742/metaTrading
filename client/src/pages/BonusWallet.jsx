@@ -152,9 +152,6 @@ export default function BonusWallet() {
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7 7 7-7" /></svg>
                 Withdraw
               </button>
-              <Link to="/plans" className="inline-flex items-center gap-2 border border-border-dark text-text-primary hover:bg-bg-hover text-sm font-bold px-4 py-2.5 rounded-xl transition-colors">
-                View Plans
-              </Link>
             </div>
           </div>
 
@@ -181,40 +178,7 @@ export default function BonusWallet() {
             ))}
           </div>
 
-          {/* Subscription status strip — plan / renews-in / auto-renew.
-              Plan purchases & renewals are billed from this Bonus Wallet. */}
-          <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div className="rounded-2xl border border-border-dark p-4 bg-bg-hover/30">
-              <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted">Current plan</div>
-              <div className="mt-1 flex items-center justify-between gap-2">
-                <span className="text-lg font-bold text-text-primary">{effectivePlan?.name || '—'}</span>
-                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full" style={{ background: statusTone.bg, color: statusTone.fg }}>{statusTone.label}</span>
-              </div>
-              {sub?.billingCycle && <div className="text-[11px] text-text-muted mt-0.5">{sub.billingCycle.toLowerCase()} billing</div>}
-            </div>
-            <div className="rounded-2xl border border-border-dark p-4 bg-bg-hover/30">
-              <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted">Renews in</div>
-              <div className={`mt-1 text-lg font-bold ${countdown?.expired ? 'text-bear' : 'text-text-primary'}`}>{countdown ? countdown.label : '—'}</div>
-              <div className="text-[11px] text-text-muted mt-0.5">{sub?.expiresAt ? new Date(sub.expiresAt).toLocaleDateString() : 'No renewal scheduled'}</div>
-            </div>
-            <div className="rounded-2xl border border-border-dark p-4 bg-bg-hover/30">
-              <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted">Auto-renew</div>
-              <div className="mt-2 flex items-center justify-between gap-3">
-                <span className={`text-sm font-bold ${wallet?.autoRenew ? 'text-bull' : 'text-text-muted'}`}>{wallet?.autoRenew ? 'Enabled' : 'Disabled'}</span>
-                <button onClick={() => toggleAutoRenew(!wallet?.autoRenew)} disabled={savingAutoRenew} className={`relative w-12 h-6 rounded-full transition border ${wallet?.autoRenew ? 'bg-bull border-bull' : 'bg-bg-hover border-border-dark'} disabled:opacity-60`}>
-                  <div className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition shadow ${wallet?.autoRenew ? 'left-[26px]' : 'left-0.5'}`} />
-                </button>
-              </div>
-              <div className="text-[11px] text-text-muted mt-1.5 leading-snug">Renewals debit this wallet. {wallet?.gracePeriodDays || 0}-day grace period.</div>
-            </div>
-          </div>
 
-          <div className="mt-4 text-[11px] text-text-muted inline-flex items-center gap-1.5 flex-wrap">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10" /><path d="M12 16v-4M12 8h.01" /></svg>
-            Withdrawals are processed from your Main / trading wallet —
-            <Link to="/wallet?action=transfer" className="font-semibold text-primary-600 hover:underline">transfer your earnings</Link>
-            there first, then withdraw.
-          </div>
         </div>
 
         {/* â”€â”€ Transaction history â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}

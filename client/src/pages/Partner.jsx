@@ -207,7 +207,7 @@ function FirstDepositRewardCard({ bonus, cur }) {
 function HeroCard({ d }) {
   const m = metaFor(d.partnerLevel);
   const next = d.nextLevel;
-  const vol = useCountUp(d.totalReferralVolume);
+  const vol = useCountUp(d.previousMonthVolume ?? d.totalReferralVolume);
   const pct = useCountUp(d.progressPercent, { duration: 900 });
   const [barReady, setBarReady] = useState(false);
   useEffect(() => { const t = setTimeout(() => setBarReady(true), 80); return () => clearTimeout(t); }, []);
@@ -231,7 +231,7 @@ function HeroCard({ d }) {
           <MetallicBadge tier={d.partnerLevel} size={104} />
           <div className="min-w-0">
             <div className="text-[11px] uppercase tracking-[0.2em] font-bold keep-white" style={{ color: 'rgba(255,255,255,0.55)' }}>
-              Lifetime Revenue Share
+              Current Tier {d.tierLocked ? '· 🔒 Locked' : ''}
             </div>
             <div className="mt-1 flex items-baseline gap-2.5">
               <span className="text-3xl sm:text-4xl font-extrabold tracking-tight keep-white" style={{ color: '#fff' }}>
@@ -267,10 +267,13 @@ function HeroCard({ d }) {
           <div className="flex items-end justify-between gap-4 flex-wrap">
             <div>
               <div className="text-[11px] uppercase tracking-[0.18em] font-bold keep-white" style={{ color: 'rgba(255,255,255,0.55)' }}>
-                Total Referral Trading Volume
+                Previous Month Volume
               </div>
               <div className="mt-1 text-3xl sm:text-[2.1rem] font-extrabold font-mono tabular-nums keep-white" style={{ color: '#fff' }}>
                 {usdFull(vol)}
+              </div>
+              <div className="mt-1 text-[11px] keep-white" style={{ color: 'rgba(255,255,255,0.6)' }}>
+                Determines this month's tier
               </div>
             </div>
             <div className="text-right">
@@ -279,6 +282,9 @@ function HeroCard({ d }) {
               </div>
               <div className="mt-1 text-xl font-bold font-mono tabular-nums keep-white" style={{ color: 'rgba(255,255,255,0.85)' }}>
                 {next ? usdFull(next.minVolume) : 'MAX'}
+              </div>
+              <div className="mt-1 text-[11px] keep-white" style={{ color: 'rgba(255,255,255,0.6)' }}>
+                This month so far: <strong style={{ color: 'rgba(255,255,255,0.85)' }}>{usdFull(d.currentMonthVolume || 0)}</strong>
               </div>
             </div>
           </div>
@@ -353,7 +359,7 @@ function LevelsSection({ d }) {
 
   return (
     <section>
-      <SectionTitle title="Partner Levels" sub="Progression unlocks on total referral trading volume — not referral count." />
+      <SectionTitle title="Partner Levels" sub="Your tier is set on the 1st of each month from the PREVIOUS month's referral trading volume, then fixed for the whole month." />
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3.5">
         {tiers.map((t, i) => (
           <LevelCard key={t.name} tier={t} state={i < currentIdx ? 'cleared' : i === currentIdx ? 'current' : 'locked'} />
@@ -420,12 +426,12 @@ function LevelCard({ tier, state }) {
 // ═══════════════════════════════════════════════════════════════════
 function StatsSection({ d, cur }) {
   const cards = [
-    { label: 'Total Referral Volume', value: usdFull(d.totalReferralVolume), icon: ICONS.volume, tint: 'blue' },
-    { label: 'This Month Volume',     value: usdFull(d.monthlyVolume),        icon: ICONS.calendar, tint: 'blue' },
-    { label: 'Revenue Share Earned',  value: fmtMoney(d.revenueShareEarned ?? d.totalCommissionEarned, cur), icon: ICONS.coins, tint: 'green' },
-    { label: 'Active Traders',        value: String(d.activeTraders ?? 0),    icon: ICONS.users, tint: 'violet' },
-    { label: 'Total Referrals',       value: String(d.totalReferrals ?? 0),   icon: ICONS.network, tint: 'slate' },
-    { label: 'Pending Commission',    value: fmtMoney(d.pendingCommission, cur), icon: ICONS.clock, tint: 'amber' },
+    { label: 'Previous Month Volume',    value: usdFull(d.previousMonthVolume), icon: ICONS.volume, tint: 'blue' },
+    { label: 'Current Month (tracking)', value: usdFull(d.currentMonthVolume),   icon: ICONS.calendar, tint: 'violet' },
+    { label: 'Commission Rate',          value: `${d.revenueSharePercent}%`,     icon: ICONS.coins, tint: 'green' },
+    { label: 'Revenue Share Earned',     value: fmtMoney(d.revenueShareEarned ?? d.totalCommissionEarned, cur), icon: ICONS.coins, tint: 'green' },
+    { label: 'Total Referrals',          value: String(d.totalReferrals ?? 0),   icon: ICONS.network, tint: 'slate' },
+    { label: 'Pending Commission',       value: fmtMoney(d.pendingCommission, cur), icon: ICONS.clock, tint: 'amber' },
   ];
   return (
     <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3.5">

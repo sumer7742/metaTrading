@@ -14,7 +14,30 @@ const list = asyncHandler(async (req, res) => {
   // can show indicators and lock the volume input. Batched (no N+1).
   const instrumentOverrideService = require('../services/instrumentOverrideService');
   const enriched = await instrumentOverrideService.attachActiveOverrides(items);
+
+  // Attach today's daily-volume usage for instruments that have a cap set
+  // (single batched aggregation; the all-unlimited case costs nothing).
+  const capped = enriched.filter((i) => i.dailyVolumeLimitEnabled && Number(i.dailyVolumeLimit) > 0);
+  if (capped.length) {
+    const volumeLimitService = require('../services/volumeLimitService');
+    const usedMap = await volumeLimitService.getUsedDailyVolumeForSymbols(capped.map((i) => i.symbol));
+    for (const it of enriched) {
+      if (it.dailyVolumeLimitEnabled && Number(it.dailyVolumeLimit) > 0) {
+        const used = usedMap.get(it.symbol) || 0;
+        it.dailyVolumeUsed = used;
+        it.dailyVolumeRemaining = Math.max(0, Number(it.dailyVolumeLimit) - used);
+      }
+    }
+  }
   sendSuccess(res, enriched);
+});
+
+// Daily volume usage for a single instrument → { enabled, limit, used, remaining }.
+const volumeUsage = asyncHandler(async (req, res) => {
+  const inst = await Instrument.findOne({ symbol: req.params.symbol.toUpperCase() }).lean();
+  if (!inst) throw new AppError('Instrument not found', 404);
+  const volumeLimitService = require('../services/volumeLimitService');
+  sendSuccess(res, await volumeLimitService.getDailyVolumeUsage(inst));
 });
 
 /**
@@ -196,8 +219,21 @@ const validateBBook = (data) => {
   }
 };
 
+// Enforce that exactly ONE commission method is active: the field for the
+// inactive type is forced to '0' so an instrument can never charge both a
+// flat fee AND a percentage. Mutates `body` in place.
+const normalizeCommission = (body, current = {}) => {
+  if (!body || typeof body !== 'object') return;
+  const type = String(body.commissionType ?? current.commissionType ?? 'PERCENTAGE').toUpperCase();
+  if (type !== 'FIXED' && type !== 'PERCENTAGE') return;
+  body.commissionType = type;
+  if (type === 'FIXED') body.commissionPercent = '0';
+  else body.commissionPerTrade = '0';
+};
+
 const create = asyncHandler(async (req, res) => {
   validateBBook(req.body);
+  normalizeCommission(req.body);
   const inst = await Instrument.create(req.body);
   sendSuccess(res, inst, 201);
 });
@@ -209,6 +245,7 @@ const update = asyncHandler(async (req, res) => {
   const finalMode = req.body.mode ?? current.mode;
   const finalBBook = req.body.bBookEnabled ?? current.bBookEnabled;
   validateBBook({ mode: finalMode, bBookEnabled: finalBBook });
+  normalizeCommission(req.body, current);
 
   // B-book disable transition handler (doc §9.4)
   // If bBookEnabled is going from true -> false, take action on existing B-book positions
@@ -291,4 +328,4 @@ const remove = asyncHandler(async (req, res) => {
   sendSuccess(res, inst);
 });
 
-module.exports = { list, watchlist, getOne, candles, orderbook, create, update, remove };
+module.exports = { list, watchlist, getOne, volumeUsage, candles, orderbook, create, update, remove };

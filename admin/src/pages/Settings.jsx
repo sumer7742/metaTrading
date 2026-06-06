@@ -369,9 +369,10 @@ function PartnerSettingsCard({ settings, save, saving }) {
         <div>
           <h2 className="text-base font-semibold text-white">Partner / Referral Program</h2>
           <p className="text-xs text-text-muted mt-1 max-w-md">
-            Instant bonus on referee's first qualifying deposit + a partner level that
-            progresses on TOTAL referral trading volume (shown on the partner dashboard).
-            Tier thresholds below are by volume. All earnings credit the subscription wallet.
+            Instant bonus on referee's first qualifying deposit + a partner tier that is
+            recalculated on the 1st of each month from the PREVIOUS month's referral trading
+            volume and held fixed for the whole month. Tier thresholds + % are set below.
+            All earnings credit the bonus wallet.
           </p>
         </div>
         <button
@@ -404,7 +405,7 @@ function PartnerSettingsCard({ settings, save, saving }) {
             onChange={(e) => setDraft({ ...draft, minDeposit: e.target.value })}
             className="w-full px-3 py-2 rounded bg-bg-dark border border-border-dark text-sm font-mono text-white focus:border-primary-500 focus:outline-none"
           />
-          <div className="mt-1 text-[10px] text-text-muted">Below this, deposit doesn't trigger bonus or count toward tier</div>
+          <div className="mt-1 text-[10px] text-text-muted">Below this, the deposit doesn't trigger the first-deposit bonus</div>
         </div>
         <div>
           <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1">Reward currency</label>
@@ -419,7 +420,7 @@ function PartnerSettingsCard({ settings, save, saving }) {
         </div>
       </div>
 
-      <div className="mb-2 text-[11px] uppercase tracking-wider font-bold text-text-muted">Tier thresholds (by total referral volume)</div>
+      <div className="mb-2 text-[11px] uppercase tracking-wider font-bold text-text-muted">Tier thresholds (by previous-month referral volume)</div>
       <div className="space-y-2">
         {draft.volumeTiers.map((t, i) => (
           <div key={i} className="grid grid-cols-12 gap-2 items-center bg-bg-dark border border-border-dark rounded p-2">
@@ -482,4 +483,5 @@ function PartnerSettingsCard({ settings, save, saving }) {
     </div>
   );
 }
+
 

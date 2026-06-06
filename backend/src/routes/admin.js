@@ -1,6 +1,7 @@
 const express = require('express');
 const c = require('../controllers/adminController');
-const { authenticate, requireAdmin } = require('../middleware/auth');
+const { authenticate, requireAdmin, requireRole } = require('../middleware/auth');
+const { ROLES } = require('../config/constants');
 const riskService = require('../services/riskService');
 const { sendSuccess, asyncHandler, AppError } = require('../utils/errors');
 
@@ -9,6 +10,7 @@ const router = express.Router();
 router.use(authenticate, requireAdmin);
 
 router.get('/dashboard', c.dashboard);
+router.get('/dashboard/analytics', c.getDashboardAnalytics);
 
 router.get('/users', c.listUsers);
 router.get('/users/:id', c.getUser);
@@ -60,9 +62,24 @@ router.patch('/users/:id/risk-controls', c.updateUserRiskControls);
 router.get('/system/settings', c.getSystemSettings);
 router.put('/system/settings', c.updateSystemSettings);
 
+// Portfolio — platform-wide statistics, SUPER_ADMIN only (403 otherwise).
+router.get('/portfolio', requireRole(ROLES.SUPER_ADMIN), c.getPortfolio);
+
 // Execution-mode analytics + routing-decision audit log.
 router.get('/execution/stats', c.getExecutionStats);
 router.get('/execution/decisions', c.listRoutingDecisions);
+
+// Multi-account management.
+// NOTE: static paths (/accounts/users, /accounts/bulk) MUST be registered
+// before the dynamic /accounts/:accountId, or ":accountId" would swallow them.
+router.get('/accounts/users',                      c.listAccountUsers);          // user-first list
+router.get('/accounts/users/:userId/accounts',     c.getUserAccounts);           // lazy child list
+router.post('/accounts/bulk',                      c.bulkAccountAction);         // bulk actions
+router.get('/accounts',                            c.listAccounts);              // (legacy) flat list
+router.get('/accounts/:accountId',                 c.getAccountDetail);
+router.get('/accounts/:accountId/positions',       c.getAccountPositions);
+router.patch('/accounts/:accountId/status',        c.setAccountStatus);
+router.post('/accounts/:accountId/notes',          c.addAccountNote);
 
 // Scheduled instrument leverage / volume overrides (admin CRUD).
 const ov = require('../controllers/instrumentOverrideController');

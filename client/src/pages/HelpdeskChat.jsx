@@ -9,8 +9,6 @@ import { wsClient } from '../services/ws';
  * No manager picker: the backend resolves it from user.managerId. Realtime
  * over the existing ws stack (channel 'user:chat'). Light/white theme.
  */
-const MAX_ATTACH_BYTES = 1024 * 1024;
-
 export default function HelpdeskChat({ embedded = false }) {
   const [conv, setConv] = useState(null);
   const [counterpart, setCounterpart] = useState(null);
@@ -19,6 +17,8 @@ export default function HelpdeskChat({ embedded = false }) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [theyTyping, setTheyTyping] = useState(false);
+  const [uploadCfg, setUploadCfg] = useState(null);   // effective upload limits for this role
+  const [pending, setPending] = useState([]);          // staged attachments before send
   const scrollRef = useRef(null);
   const typingTimer = useRef(null);
   const lastTypingSent = useRef(0);
@@ -27,6 +27,8 @@ export default function HelpdeskChat({ embedded = false }) {
   // synchronously (a closure over state would be stale inside intervals).
   const messagesRef = useRef([]);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
+  // Effective upload limits for this user's role (drives validation + hints).
+  useEffect(() => { api.get('/chat/upload-config').then((r) => setUploadCfg(r.data.data)).catch(() => {}); }, []);
 
   const scrollToBottom = () => requestAnimationFrame(() => { const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight; });
   // Only auto-scroll when the user is already near the bottom, so an incoming
@@ -138,14 +140,53 @@ export default function HelpdeskChat({ embedded = false }) {
     } finally { setSending(false); }
   };
 
+  // ── Attachment staging (validate → read with progress → stage → send) ──
+  const extOf = (n) => { const m = String(n || '').toLowerCase().match(/\.([a-z0-9]+)$/); return m ? m[1] : ''; };
+  const validateFile = (file) => {
+    const c = uploadCfg;
+    if (!c || c.enabled === false) return 'File uploads are currently disabled.';
+    const ext = extOf(file.name);
+    if ((c.blockedExtensions || []).includes(ext)) return `Executable / unsafe files (.${ext}) are not allowed.`;
+    if ((c.allowedExtensions || []).length && !c.allowedExtensions.includes(ext)) return `.${ext || '?'} is not allowed. Allowed: ${c.allowedExtensions.join(', ')}.`;
+    if (file.size > (c.maxFileMB || 5) * 1024 * 1024) return `"${file.name}" exceeds the ${c.maxFileMB} MB per-file limit.`;
+    return null;
+  };
+
   const onPickFile = (e) => {
-    const file = e.target.files?.[0];
+    const files = Array.from(e.target.files || []);
     e.target.value = '';
-    if (!file) return;
-    if (file.size > MAX_ATTACH_BYTES) { toast.error('File must be ≤ 1MB'); return; }
-    const reader = new FileReader();
-    reader.onload = () => send([{ name: file.name, mimeType: file.type, dataUrl: String(reader.result) }]);
-    reader.readAsDataURL(file);
+    const c = uploadCfg;
+    if (!files.length) return;
+    if (!c || c.enabled === false) { toast.error('File uploads are currently disabled.'); return; }
+    const maxFiles = c.maxFiles > 0 ? c.maxFiles : Infinity;       // 0 = unlimited
+    const maxTotalBytes = c.maxTotalMB > 0 ? c.maxTotalMB * 1024 * 1024 : Infinity;
+    let staged = pending.length;
+    let runningBytes = pending.reduce((s, p) => s + (p.sizeBytes || 0), 0);
+    for (const file of files) {
+      if (staged >= maxFiles) { toast.error(`You can attach at most ${c.maxFiles} file(s) per message.`); break; }
+      const err = validateFile(file);
+      if (err) { toast.error(err); continue; }
+      if (runningBytes + file.size > maxTotalBytes) { toast.error(`Total attachments would exceed the ${c.maxTotalMB} MB limit.`); continue; }
+      staged += 1; runningBytes += file.size;
+      const id = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      setPending((prev) => [...prev, { id, name: file.name, mimeType: file.type, dataUrl: '', sizeBytes: file.size, progress: 0 }]);
+      const reader = new FileReader();
+      reader.onprogress = (ev) => { if (ev.lengthComputable) { const p = Math.round((ev.loaded / ev.total) * 100); setPending((prev) => prev.map((x) => (x.id === id ? { ...x, progress: p } : x))); } };
+      reader.onload = () => setPending((prev) => prev.map((x) => (x.id === id ? { ...x, dataUrl: String(reader.result), progress: 100 } : x)));
+      reader.onerror = () => { toast.error(`Failed to read "${file.name}"`); setPending((prev) => prev.filter((x) => x.id !== id)); };
+      reader.readAsDataURL(file);
+    }
+  };
+  const removePending = (id) => setPending((prev) => prev.filter((x) => x.id !== id));
+
+  // Unified send: includes staged attachments (must be fully read first).
+  const submit = () => {
+    if (sending) return;
+    if (pending.some((p) => !p.dataUrl)) { toast.error('Please wait — files are still being read…'); return; }
+    const attachments = pending.filter((p) => p.dataUrl).map((p) => ({ name: p.name, mimeType: p.mimeType, dataUrl: p.dataUrl }));
+    if (!text.trim() && !attachments.length) return;
+    send(attachments);
+    setPending([]);
   };
 
   if (loading) {
@@ -184,17 +225,44 @@ export default function HelpdeskChat({ embedded = false }) {
       </div>
 
       {/* Composer */}
-      <div className="border-t border-border-subtle p-2.5 flex items-end gap-2 bg-white">
-        <button type="button" onClick={() => fileRef.current?.click()} title="Attach (≤1MB)" className="p-2 rounded-lg text-text-muted hover:text-primary-600 hover:bg-bg-hover transition-colors shrink-0">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" /></svg>
-        </button>
-        <input ref={fileRef} type="file" accept="image/*,.pdf" className="hidden" onChange={onPickFile} />
-        <textarea
-          value={text} onChange={(e) => onType(e.target.value)} rows={1} placeholder="Type a message…"
-          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
-          className="flex-1 resize-none px-3 py-2 rounded-xl border border-border-dark bg-white text-sm text-text-primary placeholder:text-text-muted focus:border-primary-500 focus:outline-none max-h-28"
-        />
-        <button onClick={() => send()} disabled={sending || !text.trim()} className="shrink-0 px-4 py-2 rounded-xl bg-primary-500 hover:bg-primary-600 disabled:opacity-50 text-white text-sm font-bold transition-colors">Send</button>
+      <div className="border-t border-border-subtle bg-white">
+        {/* Staged attachments — removable, with read progress */}
+        {pending.length > 0 && (
+          <div className="px-2.5 pt-2.5 flex flex-wrap gap-2">
+            {pending.map((p) => (
+              <div key={p.id} className="flex items-center gap-2 max-w-[230px] rounded-lg border border-border-dark bg-bg-card px-2.5 py-1.5">
+                <span className="text-base shrink-0">📎</span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[11px] font-semibold text-text-primary truncate">{p.name}</div>
+                  <div className="text-[10px] text-text-muted">{(p.sizeBytes / 1024 / 1024).toFixed(2)} MB{p.progress < 100 ? ` · ${p.progress}%` : ''}</div>
+                  {p.progress < 100 && <div className="mt-1 h-1 w-full rounded-full bg-bg-hover overflow-hidden"><div className="h-full bg-primary-500 transition-all" style={{ width: `${p.progress}%` }} /></div>}
+                </div>
+                <button type="button" onClick={() => removePending(p.id)} className="shrink-0 text-text-muted hover:text-bear" title="Remove">✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="p-2.5 flex items-end gap-2">
+          {uploadCfg?.enabled !== false && (
+            <button type="button" onClick={() => fileRef.current?.click()} title={uploadCfg ? `Attach · max ${uploadCfg.maxFileMB} MB/file` : 'Attach'} className="p-2 rounded-lg text-text-muted hover:text-primary-600 hover:bg-bg-hover transition-colors shrink-0">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" /></svg>
+            </button>
+          )}
+          <input ref={fileRef} type="file" multiple accept={uploadCfg?.allowedExtensions?.length ? uploadCfg.allowedExtensions.map((e) => '.' + e).join(',') : undefined} className="hidden" onChange={onPickFile} />
+          <textarea
+            value={text} onChange={(e) => onType(e.target.value)} rows={1} placeholder="Type a message…"
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); } }}
+            className="flex-1 resize-none px-3 py-2 rounded-xl border border-border-dark bg-white text-sm text-text-primary placeholder:text-text-muted focus:border-primary-500 focus:outline-none max-h-28"
+          />
+          <button onClick={submit} disabled={sending || (!text.trim() && pending.length === 0)} className="shrink-0 px-4 py-2 rounded-xl bg-primary-500 hover:bg-primary-600 disabled:opacity-50 text-white text-sm font-bold transition-colors">Send</button>
+        </div>
+        {uploadCfg && (
+          <div className="px-3 pb-2 text-[10px] text-text-muted">
+            {uploadCfg.enabled === false
+              ? 'File uploads are currently disabled by the administrator.'
+              : `Allowed: ${(uploadCfg.allowedExtensions || []).slice(0, 8).join(', ') || 'any (non-executable)'} · Max ${uploadCfg.maxFileMB} MB per file`}
+          </div>
+        )}
       </div>
     </div>
   );

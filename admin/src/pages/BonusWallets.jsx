@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import PageHero from '../components/PageHero';
+import DateFilter, { useDateFilter } from '../components/DateFilter';
 
 /**
  * Bonus Wallets admin — view balances, manually credit/debit, inspect the
@@ -29,6 +30,8 @@ export default function BonusWallets() {
   const [filterUser, setFilterUser] = useState('');
   const [filterReason, setFilterReason] = useState('');
   const [actionPanel, setActionPanel] = useState(null);
+  // Date range (defaults to all-time so nothing changes by default).
+  const [range, setRange] = useDateFilter('admin.bonus.range', null);
 
   const loadLogs = async (p = page, userId = filterUser.trim(), reason = filterReason) => {
     setLoading(true);
@@ -36,6 +39,8 @@ export default function BonusWallets() {
       const params = new URLSearchParams({ page: p, limit: 50 });
       if (userId) params.set('userId', userId);
       if (reason) params.set('reason', reason);
+      if (range?.fromDate) params.set('from', range.fromDate);
+      if (range?.toDate) params.set('to', `${range.toDate}T23:59:59.999`); // inclusive end-of-day
       const res = await api.get(`/bonus-wallet/admin/logs?${params.toString()}`);
       setLogs(res.data.data.items || []);
       setTotal(res.data.data.pagination?.total || 0);
@@ -58,7 +63,9 @@ export default function BonusWallets() {
     }
   };
 
-  useEffect(() => { loadLogs(1, '', ''); }, []);
+  // Initial load + reload whenever the date range changes (keeps current
+  // user/reason filters). Replaces the plain mount effect.
+  useEffect(() => { setPage(1); loadLogs(1, filterUser.trim(), filterReason); /* eslint-disable-line */ }, [range]);
   useEffect(() => { if (tab === 'balances' && balances.length === 0) loadBalances(); /* eslint-disable-line */ }, [tab]);
 
   const stats = useMemo(() => {
@@ -74,6 +81,8 @@ export default function BonusWallets() {
       const params = new URLSearchParams({ page: 1, limit: 1000 });
       if (filterUser.trim()) params.set('userId', filterUser.trim());
       if (filterReason) params.set('reason', filterReason);
+      if (range?.fromDate) params.set('from', range.fromDate);
+      if (range?.toDate) params.set('to', `${range.toDate}T23:59:59.999`);
       const res = await api.get(`/bonus-wallet/admin/logs?${params.toString()}`);
       const rows = res.data.data.items || [];
       const head = ['Transaction ID', 'Date', 'User', 'Type', 'Reason', 'Amount', 'Balance After', 'Status', 'Note'];
@@ -133,14 +142,20 @@ export default function BonusWallets() {
             <Stat label="Net (visible)" value={`$${fmt(stats.net)}`} accent={stats.net >= 0 ? 'emerald' : 'rose'} />
           </div>
 
-          <div className="card p-3 flex items-center gap-3 flex-wrap">
-            <input value={filterUser} onChange={(e) => setFilterUser(e.target.value)} placeholder="Filter by userId…" className="flex-1 min-w-[240px] bg-transparent outline-none text-sm font-mono" />
-            <select value={filterReason} onChange={(e) => setFilterReason(e.target.value)} className="input text-xs max-w-[200px]">
-              {REASONS.map((r) => <option key={r || 'all'} value={r}>{r ? r.replaceAll('_', ' ') : 'All reasons'}</option>)}
-            </select>
-            <button onClick={() => { setPage(1); loadLogs(1, filterUser.trim(), filterReason); }} className="btn-primary text-xs">Apply</button>
-            <button onClick={() => { setFilterUser(''); setFilterReason(''); setPage(1); loadLogs(1, '', ''); }} className="btn-ghost text-xs">Clear</button>
-            <span className="text-[11px] text-text-muted">{total} total</span>
+          <div className="card p-3 space-y-2.5">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <span className="text-[10px] uppercase tracking-wider font-bold text-text-muted">Date range</span>
+              <DateFilter value={range} onChange={setRange} />
+            </div>
+            <div className="flex items-center gap-3 flex-wrap border-t border-border-subtle pt-2.5">
+              <input value={filterUser} onChange={(e) => setFilterUser(e.target.value)} placeholder="Filter by userId…" className="flex-1 min-w-[240px] bg-transparent outline-none text-sm font-mono" />
+              <select value={filterReason} onChange={(e) => setFilterReason(e.target.value)} className="input text-xs max-w-[200px]">
+                {REASONS.map((r) => <option key={r || 'all'} value={r}>{r ? r.replaceAll('_', ' ') : 'All reasons'}</option>)}
+              </select>
+              <button onClick={() => { setPage(1); loadLogs(1, filterUser.trim(), filterReason); }} className="btn-primary text-xs">Apply</button>
+              <button onClick={() => { setFilterUser(''); setFilterReason(''); setPage(1); setRange({ period: null, fromDate: '', toDate: '' }); }} className="btn-ghost text-xs">Clear</button>
+              <span className="text-[11px] text-text-muted">{total} total</span>
+            </div>
           </div>
 
           <div className="card overflow-hidden">

@@ -306,7 +306,12 @@ const getLifetimeStats = asyncHandler(async (req, res) => {
   }
 
   const closedFilter = { accountId: { $in: accountIds }, status: 'CLOSED' };
-  if (days > 0) {
+  // Custom range (fromDate/toDate) wins over the preset `days` window.
+  if (req.query.fromDate || req.query.toDate) {
+    closedFilter.closedAt = {};
+    if (req.query.fromDate) closedFilter.closedAt.$gte = new Date(req.query.fromDate);
+    if (req.query.toDate) closedFilter.closedAt.$lte = new Date(new Date(req.query.toDate).setHours(23, 59, 59, 999));
+  } else if (days > 0) {
     const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
     closedFilter.closedAt = { $gte: cutoff };
   }

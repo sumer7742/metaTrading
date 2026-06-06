@@ -70,7 +70,7 @@ export default function Partners() {
       {/* Filters */}
       <div className="card p-4">
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <FilterField label="Level" value={filters.level} onChange={(v) => setFilters({ ...filters, level: v })} as="select" options={[['','any'], ['NONE','None'], ['BRONZE','Bronze'], ['SILVER','Silver'], ['GOLD','Gold'], ['DIAMOND','Diamond']]} />
+          <FilterField label="Level" value={filters.level} onChange={(v) => setFilters({ ...filters, level: v })} as="select" options={[['','any'], ['BRONZE','Bronze'], ['SILVER','Silver'], ['GOLD','Gold'], ['PLATINUM','Platinum'], ['ELITE','Elite']]} />
           <FilterField label="Blocked" value={filters.blocked} onChange={(v) => setFilters({ ...filters, blocked: v })} as="select" options={[['','any'], ['true','Yes'], ['false','No']]} />
           <FilterField label="Search" value={filters.search} onChange={(v) => setFilters({ ...filters, search: v })} placeholder="name / email / code" />
           <div className="flex items-end gap-2">
@@ -116,8 +116,8 @@ export default function Partners() {
             <tr>
               <th className="text-left p-3">Partner</th>
               <th className="text-left p-3">Code</th>
-              <th className="text-left p-3">Level</th>
-              <th className="text-right p-3">Active / Total</th>
+              <th className="text-left p-3">Tier</th>
+              <th className="text-right p-3">Prev-Mo Volume</th>
               <th className="text-right p-3">Lifetime</th>
               <th className="text-right p-3">Pending</th>
               <th className="text-left p-3">Joined</th>
@@ -136,7 +136,8 @@ export default function Partners() {
                   <LevelBadge level={r.level} locked={r.locked} percent={r.percent} />
                 </td>
                 <td className="p-3 text-right font-mono text-text-primary">
-                  {r.activeReferrals} <span className="text-[10px] text-text-muted">/ {r.totalReferrals}</span>
+                  ${Number(r.previousMonthVolume || 0).toLocaleString()}
+                  <span className="block text-[10px] text-text-muted">{r.totalReferrals} referral{r.totalReferrals === 1 ? '' : 's'}</span>
                 </td>
                 <td className="p-3 text-right font-mono text-bull">${r.lifetimeEarnings}</td>
                 <td className="p-3 text-right font-mono text-warn">${r.pendingEarnings}</td>
@@ -164,7 +165,7 @@ function AnalyticsStrip({ a }) {
     { label: 'Partners',              value: a.totalPartners },
     { label: 'Total referrals',       value: a.totalReferrals },
     { label: 'Bonuses paid',          value: `$${a.bonusesPaid}`,   tint: 'text-bull' },
-    { label: 'Revenue shared',        value: `$${a.revenueShared}`, tint: 'text-bull' },
+    { label: 'Profit',                value: `$${a.revenueShared}`, tint: 'text-bull' },
     { label: 'Commission liability',  value: `$${a.commissionLiability}`, tint: 'text-warn' },
   ];
   return (
@@ -205,8 +206,8 @@ function PartnerActions({ row, onOverride, onBlock }) {
       </button>
       {open && (
         <div className="absolute right-0 mt-1 w-56 bg-bg-panel border border-border-dark rounded shadow-lg z-10">
-          <div className="px-3 py-2 text-[10px] text-text-muted uppercase tracking-wider font-bold border-b border-border-dark">Override tier</div>
-          {['BRONZE', 'SILVER', 'GOLD', 'DIAMOND'].map((lvl) => (
+          <div className="px-3 py-2 text-[10px] text-text-muted uppercase tracking-wider font-bold border-b border-border-dark">Lock tier (override monthly calc)</div>
+          {['BRONZE', 'SILVER', 'GOLD', 'PLATINUM', 'ELITE'].map((lvl) => (
             <button
               key={lvl}
               type="button"
@@ -263,10 +264,12 @@ function FilterField({ label, value, onChange, as = 'input', options = [], place
 }
 
 const TIER_TONE = {
-  NONE:    { bg: '#94A3B8', fg: '#94A3B8' },
-  BRONZE:  { bg: '#B45309', fg: '#F59E0B' },
-  SILVER:  { bg: '#64748B', fg: '#94A3B8' },
-  GOLD:    { bg: '#CA8A04', fg: '#FBBF24' },
-  DIAMOND: { bg: '#0EA5E9', fg: '#38BDF8' },
-  BLOCKED: { bg: '#DC2626', fg: '#F87171' },
+  NONE:     { bg: '#94A3B8', fg: '#94A3B8' },
+  BRONZE:   { bg: '#B45309', fg: '#F59E0B' },
+  SILVER:   { bg: '#64748B', fg: '#94A3B8' },
+  GOLD:     { bg: '#CA8A04', fg: '#FBBF24' },
+  PLATINUM: { bg: '#0E7490', fg: '#2DD4BF' },
+  ELITE:    { bg: '#4338CA', fg: '#A78BFA' },
+  DIAMOND:  { bg: '#0EA5E9', fg: '#38BDF8' },
+  BLOCKED:  { bg: '#DC2626', fg: '#F87171' },
 };

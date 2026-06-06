@@ -36,7 +36,9 @@ const NAV_SECTIONS = [
     title: 'Operations',
     items: [
       { to: '/dashboard', icon: I.dashboard, label: 'Dashboard' },
+      { to: '/portfolio', icon: I.reports, label: 'Portfolio' },
       { to: '/users', icon: I.users, label: 'Users' },
+      { to: '/accounts', icon: I.plans, label: 'Accounts' },
       { to: '/instruments', icon: I.instruments, label: 'Instruments' },
     ],
   },

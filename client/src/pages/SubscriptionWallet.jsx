@@ -139,6 +139,49 @@ export default function SubscriptionWallet() {
         </div>
       </div>
 
+      {/* ── Subscription: plan · renews-in · auto-renew (billed from this Main Wallet) ── */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-base font-bold text-text-primary">Subscription</h2>
+          <Link to="/plans" className="text-sm text-primary-500 hover:underline font-semibold">Manage plans →</Link>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <StatusTile
+            label="Current plan"
+            value={effectivePlan?.name || '—'}
+            sub={sub?.billingCycle ? `${sub.billingCycle.toLowerCase()} billing` : undefined}
+            badge={statusTone}
+          />
+          <StatusTile
+            label="Renews in"
+            value={countdown ? countdown.label : '—'}
+            sub={sub?.expiresAt ? new Date(sub.expiresAt).toLocaleDateString() : 'No renewal scheduled'}
+            tone={countdown?.expired ? 'bear' : undefined}
+          />
+          <div className="rounded-2xl border border-border-dark p-4 bg-bg-hover/30">
+            <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted">Auto-renew</div>
+            <div className="mt-1 flex items-center justify-between gap-3">
+              <span className={`text-lg font-bold ${wallet?.autoRenew ? 'text-bull' : 'text-text-muted'}`}>{wallet?.autoRenew ? 'Enabled' : 'Disabled'}</span>
+              <button
+                onClick={() => toggleAutoRenew(!wallet?.autoRenew)}
+                disabled={savingAutoRenew}
+                className={`relative w-12 h-6 rounded-full transition border ${wallet?.autoRenew ? 'bg-bull border-bull' : 'bg-bg-hover border-border-dark'} disabled:opacity-60`}
+              >
+                <div className={`absolute top-0.5 w-5 h-5 bg-white rounded-full transition shadow ${wallet?.autoRenew ? 'left-[26px]' : 'left-0.5'}`} />
+              </button>
+            </div>
+            <div className="text-[11px] text-text-muted mt-1.5 leading-snug">
+              Plan renewals are deducted from this Main Wallet. {wallet?.gracePeriodDays || 0}-day grace period.
+            </div>
+          </div>
+        </div>
+        {isLow && (
+          <div className="mt-3 rounded-xl border border-warn/40 bg-warn/10 px-4 py-2.5 text-[12px] text-warn font-semibold">
+            ⚠ Low balance — ensure sufficient funds in your Main Wallet before your renewal date.
+          </div>
+        )}
+      </div>
+
       {/* ── Transaction history ────────────────────────────────────── */}
       <div className="bg-white border border-border-dark rounded-2xl overflow-hidden">
         <div className="px-5 py-3 border-b border-border-subtle flex items-center justify-between">

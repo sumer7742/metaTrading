@@ -3,12 +3,7 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { fmtNum, fmtMoney, fmtDate } from '../utils/format';
 import PageHero from '../components/PageHero';
-
-const PERIODS = [
-  { key: '24h', label: '24h' },
-  { key: '7d', label: '7d' },
-  { key: '30d', label: '30d' },
-];
+import DateFilter, { useDateFilter } from '../components/DateFilter';
 
 const RESULT_TONE = {
   INTERNAL_MATCHING: { bar: 'bg-violet-500', text: 'text-violet-400', label: 'Internal Matching' },
@@ -18,7 +13,7 @@ const RESULT_TONE = {
 };
 
 export default function ExecutionStats() {
-  const [period, setPeriod] = useState('7d');
+  const [range, setRange] = useDateFilter('execstats.range', '7d');
   const [stats, setStats] = useState(null);
   const [decisions, setDecisions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -27,7 +22,7 @@ export default function ExecutionStats() {
     setLoading(true);
     try {
       const [s, d] = await Promise.all([
-        api.get('/admin/execution/stats', { params: { period } }),
+        api.get('/admin/execution/stats', { params: { fromDate: range.fromDate, toDate: range.toDate, period: range.period } }),
         api.get('/admin/execution/decisions', { params: { limit: 50 } }),
       ]);
       setStats(s.data.data);
@@ -38,7 +33,7 @@ export default function ExecutionStats() {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [period]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [range]);
 
   const dist = stats?.distribution || {};
 
@@ -50,21 +45,9 @@ export default function ExecutionStats() {
         subtitle="How orders are routed across Internal Matching, B-Book, A-Book and Hybrid."
       />
 
-      {/* Period selector */}
+      {/* Period selector — global reusable DateFilter */}
       <div className="flex items-center gap-2">
-        {PERIODS.map((p) => (
-          <button
-            key={p.key}
-            onClick={() => setPeriod(p.key)}
-            className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
-              period === p.key
-                ? 'border-primary-500 bg-primary-500/10 text-primary-400'
-                : 'border-border-dark text-text-secondary hover:text-white hover:border-primary-500'
-            }`}
-          >
-            {p.label}
-          </button>
-        ))}
+        <DateFilter value={range} onChange={setRange} />
         <button onClick={load} className="text-xs px-3 py-1.5 rounded-lg border border-border-dark text-text-secondary hover:text-white ml-auto">↻ Refresh</button>
       </div>
 
@@ -81,7 +64,7 @@ export default function ExecutionStats() {
         <StatCard label="User ↔ User Matched" value={fmtNum(stats?.trades.userToUserMatched || 0, 0)} sub="peer trades" tone="violet" loading={loading} />
         <StatCard label="Broker Exposure" value={fmtMoney(stats?.exposure.broker)} sub="B-book routed notional" tone="emerald" loading={loading} />
         <StatCard label="LP Exposure" value={fmtMoney(stats?.exposure.lp)} sub="A-book routed notional" tone="blue" loading={loading} />
-        <StatCard label="Total Routing Decisions" value={fmtNum(stats?.totalDecisions || 0, 0)} sub={`${period}`} tone="gray" loading={loading} />
+        <StatCard label="Total Routing Decisions" value={fmtNum(stats?.totalDecisions || 0, 0)} sub={range.period || 'custom'} tone="gray" loading={loading} />
       </div>
 
       {/* Routing distribution */}

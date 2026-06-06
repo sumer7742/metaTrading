@@ -6,7 +6,9 @@ import ProtectedRoute from './components/ProtectedRoute';
 import Layout from './components/Layout';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
+import Portfolio from './pages/Portfolio';
 import Users from './pages/Users';
+import Accounts from './pages/Accounts';
 import Instruments from './pages/Instruments';
 import Withdrawals from './pages/Withdrawals';
 import Deposits from './pages/Deposits';
@@ -73,7 +75,9 @@ export default function App() {
       {/* Operations / money / insights / infra — gated to admins by default
           via ROUTE_ACCESS's DEFAULT_ROUTE_ROLES (managers are bounced home). */}
       <Route path="/dashboard" element={wrap(<Dashboard />)} />
+      <Route path="/portfolio" element={wrap(<Portfolio />)} />
       <Route path="/users" element={wrap(<Users />)} />
+      <Route path="/accounts" element={wrap(<Accounts />)} />
       <Route path="/instruments" element={wrap(<Instruments />)} />
       <Route path="/withdrawals" element={wrap(<Withdrawals />)} />
       <Route path="/deposits" element={wrap(<Deposits />)} />

@@ -2065,15 +2065,13 @@ export default function PriceChart({
       //
       // Colour scheme — chosen so entry never clashes with TP (green)
       // or SL (red), even when one of them sits adjacent on the chart:
-      //   Entry BUY  → blue   (#3B82F6)
-      //   Entry SELL → orange (#F97316)
+      //   Entry      → yellow (#EAB308)  (Exness-style neutral entry line)
       //   TP         → green  (#10b981)
       //   SL         → red    (#ef4444)
       if (p.entryPrice && Number(p.entryPrice) > 0) {
-        const isBuy = p.side === 'BUY';
         desired.set(`pos:${p._id}:entry`, {
           price: Number(p.entryPrice),
-          color: isBuy ? '#3B82F6' : '#F97316',
+          color: '#EAB308',
           lineWidth: 1,
           lineStyle: 0, // solid
           axisLabelVisible: true,
@@ -2141,7 +2139,7 @@ export default function PriceChart({
       if (orderPreview.entry && Number(orderPreview.entry) > 0) {
         desired.set('preview:entry', {
           price: Number(orderPreview.entry),
-          color: isLimit ? '#F59E0B' : '#60A5FA',
+          color: isLimit ? '#F59E0B' : '#EAB308',
           lineWidth: 1,
           lineStyle: 2, // dotted — clearly a draft
           axisLabelVisible: false,
@@ -2387,7 +2385,7 @@ export default function PriceChart({
       ? '#ef4444'
       : pill.kind === 'tp'
         ? '#10b981'
-        : (pill.position.side === 'BUY' ? '#3B82F6' : '#F97316');
+        : '#EAB308'; // entry — Exness-style yellow
     const step = Math.pow(10, -Math.min(8, Math.max(0, Number(pricePrecision) || 2)));
     const snap = (p) => Math.round(p / step) * step;
 
@@ -3493,16 +3491,15 @@ function PositionPill({
   else                     targetPrice = entry;
 
   // Colour scheme — keep entry/TP/SL visually distinct:
-  //   Entry BUY  → blue   (#3B82F6) / glow #60A5FA
-  //   Entry SELL → orange (#F97316) / glow #FB923C
+  //   Entry      → yellow (#EAB308) / glow #FACC15  (Exness-style)
   //   TP         → neon green (#10b981) / glow #34d399
   //   SL         → neon red   (#ef4444) / glow #f87171
   let color;
   let glowColor;
   let usd;
   if (kind === 'entry') {
-    color     = isBuy ? '#3B82F6' : '#F97316';
-    glowColor = isBuy ? '#60A5FA' : '#FB923C';
+    color     = '#EAB308';
+    glowColor = '#FACC15';
     usd = Number(position.unrealizedPnl) || 0;
   } else if (kind === 'sl') {
     color = '#ef4444';

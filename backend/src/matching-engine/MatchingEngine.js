@@ -5,6 +5,7 @@ const Instrument = require('../models/Instrument');
 const Position = require('../models/Position');
 const { ORDER_STATUS, ORDER_SIDE, POSITION_STATUS, ROUTING } = require('../config/constants');
 const { add, sub, mul, div, eq, gt, lte, D } = require('../utils/decimal');
+const { computeInstrumentCommission } = require('../utils/commission');
 
 /**
  * In-process Matching Engine.
@@ -163,8 +164,7 @@ class MatchingEngine {
           const affiliateService = require('../services/affiliateService');
           const subscriptionService = require('../services/subscriptionService');
           const notional = mul(f.price, f.qty);
-          const feeRate = instrument.commissionPercent || '0.0005'; // default 0.05%
-          let feeAmount = mul(notional, feeRate);
+          let feeAmount = computeInstrumentCommission(instrument, notional);
           // Apply subscription plan fee discount
           feeAmount = await subscriptionService.applyFeeDiscount(order.userId, feeAmount);
           if (gt(feeAmount, '0')) {
@@ -500,8 +500,7 @@ class MatchingEngine {
       const affiliateService = require('../services/affiliateService');
       const subscriptionService = require('../services/subscriptionService');
       const notional = mul(finalPrice, order.quantity);
-      const feeRate = instrument.commissionPercent || '0.0005';
-      let feeAmount = mul(notional, feeRate);
+      let feeAmount = computeInstrumentCommission(instrument, notional);
       feeAmount = await subscriptionService.applyFeeDiscount(order.userId, feeAmount);
       if (gt(feeAmount, '0')) {
         await affiliateService.distributeCommissions({
@@ -636,8 +635,7 @@ class MatchingEngine {
       const affiliateService = require('../services/affiliateService');
       const subscriptionService = require('../services/subscriptionService');
       const notional = mul(finalPrice, order.quantity);
-      const feeRate = instrument.commissionPercent || '0.0005';
-      let feeAmount = mul(notional, feeRate);
+      let feeAmount = computeInstrumentCommission(instrument, notional);
       feeAmount = await subscriptionService.applyFeeDiscount(order.userId, feeAmount);
       if (gt(feeAmount, '0')) {
         await affiliateService.distributeCommissions({

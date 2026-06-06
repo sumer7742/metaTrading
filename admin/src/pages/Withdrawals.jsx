@@ -179,8 +179,7 @@ function WithdrawalDetailModal({ withdrawal: w, onClose, onApprove, onReject }) 
   };
 
   const handleApprove = async () => {
-    if (!payoutTxReference.trim()) return toast.error('Transaction reference required');
-    if (!payoutProof) return toast.error('Upload proof of payment screenshot');
+    // Both the TX reference and the proof screenshot are optional now.
     setSubmitting(true);
     try {
       await onApprove({ payoutTxReference, payoutProof, payoutProofMimeType });
@@ -325,7 +324,7 @@ function WithdrawalDetailModal({ withdrawal: w, onClose, onApprove, onReject }) 
             <div className="bg-blue-900/10 border border-blue-700/30 rounded-lg p-4 space-y-3">
               <div className="text-sm font-semibold text-blue-300">After making the payment, fill below:</div>
               <div>
-                <label className="label">Payout Tx Reference (UPI ref / Bank ref / Tx hash) *</label>
+                <label className="label">Payout Tx Reference (UPI ref / Bank ref / Tx hash) (optional)</label>
                 <input
                   className="input font-mono"
                   value={payoutTxReference}
@@ -334,7 +333,7 @@ function WithdrawalDetailModal({ withdrawal: w, onClose, onApprove, onReject }) 
                 />
               </div>
               <div>
-                <label className="label">Proof of Payment Screenshot *</label>
+                <label className="label">Proof of Payment Screenshot (optional)</label>
                 {!payoutProof ? (
                   <div className="border-2 border-dashed border-border-dark rounded p-4 text-center">
                     <input

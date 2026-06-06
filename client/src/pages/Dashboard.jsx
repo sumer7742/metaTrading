@@ -655,6 +655,12 @@ function PortfolioStats() {
   const [accountId, setAccountId] = useState(''); // '' = All
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(false);
+  // Custom date range (in addition to the preset windows).
+  const [customMode, setCustomMode] = useState(false);
+  const [draftFrom, setDraftFrom] = useState('');
+  const [draftTo, setDraftTo] = useState('');
+  const [customFrom, setCustomFrom] = useState(''); // applied range
+  const [customTo, setCustomTo] = useState('');
 
   // Load account list once for the dropdown.
   useEffect(() => {
@@ -675,7 +681,12 @@ function PortfolioStats() {
       setLoading(true);
       try {
         const params = new URLSearchParams();
-        if (days)       params.set('days', String(days));
+        if (customMode && customFrom && customTo) {
+          params.set('fromDate', customFrom);
+          params.set('toDate', customTo);
+        } else if (!customMode && days) {
+          params.set('days', String(days));
+        }
         if (accountId)  params.set('accountId', accountId);
         const r = await api.get(`/user/dashboard/lifetime-stats?${params.toString()}`);
         if (!cancelled) setStats(r.data.data);
@@ -684,7 +695,7 @@ function PortfolioStats() {
     };
     load();
     return () => { cancelled = true; };
-  }, [days, accountId]);
+  }, [days, accountId, customMode, customFrom, customTo]);
 
   const sign = (n) => (n > 0 ? '+' : '') + n.toFixed(2);
   const toneOf = (n) => n > 0 ? 'bull' : n < 0 ? 'bear' : 'neutral';
@@ -725,14 +736,42 @@ function PortfolioStats() {
         </div>
         <div className="flex items-center gap-2">
           <select
-            value={days}
-            onChange={(e) => setDays(Number(e.target.value))}
+            value={customMode ? 'custom' : String(days)}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === 'custom') { setCustomMode(true); setDraftFrom(customFrom); setDraftTo(customTo); }
+              else { setCustomMode(false); setDays(Number(v)); }
+            }}
             className="text-xs font-semibold rounded-lg border border-border-dark bg-white px-2.5 py-1.5 focus:outline-none focus:border-primary-500"
           >
             {TIME_RANGES.map((r) => (
               <option key={r.id} value={r.id}>{r.label}</option>
             ))}
+            <option value="custom">Custom</option>
           </select>
+          {customMode && (
+            <div className="flex items-center gap-1.5">
+              <input
+                type="date" value={draftFrom} max={draftTo || undefined}
+                onChange={(e) => setDraftFrom(e.target.value)}
+                className="text-xs rounded-lg border border-border-dark bg-white px-2 py-1.5 focus:outline-none focus:border-primary-500"
+              />
+              <span className="text-text-muted text-xs">to</span>
+              <input
+                type="date" value={draftTo} min={draftFrom || undefined}
+                onChange={(e) => setDraftTo(e.target.value)}
+                className="text-xs rounded-lg border border-border-dark bg-white px-2 py-1.5 focus:outline-none focus:border-primary-500"
+              />
+              <button
+                type="button"
+                onClick={() => { if (draftFrom && draftTo) { setCustomFrom(draftFrom); setCustomTo(draftTo); } }}
+                disabled={!draftFrom || !draftTo}
+                className="text-xs font-semibold px-2.5 py-1.5 rounded-lg bg-primary-500 text-white hover:bg-primary-600 disabled:opacity-40"
+              >
+                Apply
+              </button>
+            </div>
+          )}
           <select
             value={accountId}
             onChange={(e) => setAccountId(e.target.value)}

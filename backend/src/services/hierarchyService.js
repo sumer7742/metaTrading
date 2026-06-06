@@ -15,8 +15,25 @@ const AssignmentLog = require('../models/AssignmentLog');
 const { ROLES } = require('../config/constants');
 const { ROLE_REGISTRY, AUTO } = require('../config/hierarchy');
 const { AppError } = require('../utils/errors');
+const systemSettings = require('./systemSettings.service');
 
 const STAFF_ROLES = [ROLES.ADMIN, ROLES.MANAGER];
+
+// Effective platform-wide admin cap — super-admin configurable via the
+// `hierarchy.maxAdmins` setting, falling back to the ROLE_REGISTRY hard cap.
+async function getAdminCap() {
+  const v = await systemSettings.getSetting('hierarchy.maxAdmins');
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? n : ROLE_REGISTRY[ROLES.ADMIN].cap;
+}
+async function setAdminCap(n, actorId = null) {
+  const v = Number(n);
+  if (!Number.isInteger(v) || v < 1 || v > 100) {
+    throw new AppError('maxAdmins must be an integer between 1 and 100', 400, 'BAD_CAP');
+  }
+  await systemSettings.setSetting('hierarchy.maxAdmins', v, actorId);
+  return v;
+}
 
 const DEMO_TYPES = ['DEMO', 'VIRTUAL'];
 const STAFF_SELECT = '-passwordHash -twoFactorSecret -refreshTokens -twoFactorBackupCodes';
@@ -89,13 +106,16 @@ async function createRole(roleKey, payload = {}, actor) {
     }
   }
 
-  // Cap enforcement — global or scoped to the parent.
+  // Cap enforcement — global or scoped to the parent. The ADMIN cap is
+  // super-admin configurable (setting hierarchy.maxAdmins); others use the
+  // hard cap from ROLE_REGISTRY.
+  const effectiveCap = roleKey === ROLES.ADMIN ? await getAdminCap() : cfg.cap;
   const capFilter = { role: roleKey };
   if (cfg.capScope === 'parent' && cfg.parentField) capFilter[cfg.parentField] = parentId;
   const count = await User.countDocuments(capFilter);
-  if (count >= cfg.cap) {
+  if (count >= effectiveCap) {
     throw new AppError(
-      `Limit reached: at most ${cfg.cap} ${roleKey.toLowerCase()}${cfg.capScope === 'parent' ? ' per ' + cfg.parentRole.toLowerCase() : ''}.`,
+      `Limit reached: at most ${effectiveCap} ${roleKey.toLowerCase()}${cfg.capScope === 'parent' ? ' per ' + cfg.parentRole.toLowerCase() : ''}.`,
       409, 'CAP_REACHED'
     );
   }
@@ -688,6 +708,7 @@ function listAutoCreated(opts = {}) {
 
 module.exports = {
   createRole,
+  getAdminCap, setAdminCap,
   assignUserToAdmin, assignUserToManager, reassign, unassign, bulkAssign,
   deactivateManager, deactivateAdmin,
   listAdmins, listManagers, listUnassigned, listUsersForAdmin, listUsersForManager,

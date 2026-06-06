@@ -13,12 +13,15 @@ const ALL_COLUMNS = [
   { key: 'userId',          label: 'User ID',          sortBy: null },
   { key: 'email',           label: 'Email',            sortBy: 'email' },
   { key: 'name',            label: 'Name',             sortBy: 'name' },
+  { key: 'phone',           label: 'Phone',            sortBy: null },
+  { key: 'country',         label: 'Country',          sortBy: null },
   { key: 'role',            label: 'Role',             sortBy: 'role' },
   { key: 'plan',            label: 'Plan',             sortBy: 'plan' },
   { key: 'walletBalance',   label: 'Wallet Balance',   sortBy: 'walletBalance',   numeric: true },
   { key: 'totalDeposit',    label: 'Total Deposit',    sortBy: 'totalDeposit',    numeric: true },
   { key: 'totalWithdrawal', label: 'Total Withdrawal', sortBy: 'totalWithdrawal', numeric: true },
   { key: 'totalPnl',        label: 'Total PnL',        sortBy: 'totalPnl',        numeric: true },
+  { key: 'platformEarnings',label: 'Platform Earnings',sortBy: null,             numeric: true },
   { key: 'kyc',             label: 'KYC',              sortBy: 'kyc' },
   { key: 'referredBy',      label: 'Referred By',      sortBy: null },
   { key: 'status',          label: 'Status',           sortBy: 'status' },
@@ -42,7 +45,7 @@ function defaultVisibility(role) {
     show(['userId', 'email', 'name', 'plan', 'walletBalance', 'kyc', 'status', 'joined']);
   } else { // ADMIN + fallback
     show(['userId', 'email', 'name', 'role', 'plan', 'walletBalance', 'totalDeposit',
-      'totalWithdrawal', 'totalPnl', 'kyc', 'referredBy', 'status', 'joined']);
+      'totalWithdrawal', 'totalPnl', 'platformEarnings', 'kyc', 'referredBy', 'status', 'joined']);
   }
   return vis;
 }
@@ -78,6 +81,7 @@ export default function Users() {
   const [kycFilter, setKycFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [planFilter, setPlanFilter] = useState('');
+  const [roleFilter, setRoleFilter] = useState('');
   const [sortBy, setSortBy] = useState('joined');
   const [sortDir, setSortDir] = useState('desc');
   const [page, setPage] = useState(1);
@@ -133,7 +137,7 @@ export default function Users() {
 
   const fetchUsers = async (params) => {
     const { data } = await api.get('/admin/users', {
-      params: { search, kyc: kycFilter, status: statusFilter, plan: planFilter, sortBy, sortDir, ...params },
+      params: { search, kyc: kycFilter, status: statusFilter, plan: planFilter, role: roleFilter, sortBy, sortDir, ...params },
     });
     return data.data;
   };
@@ -150,7 +154,7 @@ export default function Users() {
       setLoading(false);
     }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [page, kycFilter, statusFilter, planFilter, sortBy, sortDir]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [page, kycFilter, statusFilter, planFilter, roleFilter, sortBy, sortDir]);
 
   const onSearch = (e) => { e.preventDefault(); setPage(1); load(); };
 
@@ -192,12 +196,15 @@ export default function Users() {
       case 'userId': return u.userUid || '';
       case 'email': return u.email || '';
       case 'name': return fullName(u);
+      case 'phone': return u.phone || '';
+      case 'country': return u.country || '';
       case 'role': return u.role || '';
       case 'plan': return u.plan?.name || u.plan?.code || 'Free';
       case 'walletBalance': return Number(u.walletBalance || 0).toFixed(2);
       case 'totalDeposit': return Number(u.totalDeposit || 0).toFixed(2);
       case 'totalWithdrawal': return Number(u.totalWithdrawal || 0).toFixed(2);
       case 'totalPnl': return Number(u.totalPnl || 0).toFixed(2);
+      case 'platformEarnings': return Number(u.platformEarnings || 0).toFixed(2);
       case 'kyc': return u.kycStatus || '';
       case 'referredBy': return u.referredBy ? (fullName(u.referredBy) || u.referredBy.email || '') : '';
       case 'status': return u.isActive ? 'Active' : 'Blocked';
@@ -222,6 +229,8 @@ export default function Users() {
         ) : <span className="text-gray-600 text-xs">—</span>;
       case 'email': return <span className="text-gray-200">{u.email}</span>;
       case 'name': return <span className="text-gray-200">{fullName(u) || '—'}</span>;
+      case 'phone': return <span className="font-mono text-xs text-gray-300">{u.phone || '—'}</span>;
+      case 'country': return <span className="text-gray-300">{u.country || '—'}</span>;
       case 'role': return <span className="text-xs text-primary-500">{u.role}</span>;
       case 'plan': return <PlanBadge plan={u.plan} />;
       case 'walletBalance':
@@ -243,6 +252,16 @@ export default function Users() {
           </button>
         );
       case 'totalPnl': return <PnlCell u={u} />;
+      case 'platformEarnings': {
+        const v = Number(u.platformEarnings) || 0;
+        return (
+          <span
+            title="Platform earnings from this user = commissions/fees paid + broker counterparty result (user net losses)"
+            className={`font-mono tabular-nums ${v > 0 ? 'text-emerald-300' : v < 0 ? 'text-rose-300' : 'text-gray-400'}`}>
+            {v > 0 ? '+' : ''}{signedMoney(v)}
+          </span>
+        );
+      }
       case 'kyc': return <KycBadge status={u.kycStatus} />;
       case 'referredBy': {
         const refBy = u.referredBy;
@@ -300,6 +319,17 @@ export default function Users() {
             <option value="">All</option>
             <option value="active">Active</option>
             <option value="inactive">Blocked</option>
+            <option value="dormant">Inactive (6mo+)</option>
+          </select>
+        </div>
+        <div>
+          <label className="label">Account Type</label>
+          <select className="input w-36" value={roleFilter} onChange={(e) => { setRoleFilter(e.target.value); setPage(1); }}>
+            <option value="">All</option>
+            <option value="USER">User</option>
+            <option value="MANAGER">Manager</option>
+            <option value="ADMIN">Admin</option>
+            <option value="SUPER_ADMIN">Super Admin</option>
           </select>
         </div>
         <button type="submit" className="btn-primary">Search</button>

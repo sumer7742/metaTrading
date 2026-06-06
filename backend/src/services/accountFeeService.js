@@ -17,6 +17,7 @@
  */
 const accountPlansService = require('./accountPlansService');
 const { mul, gt } = require('../utils/decimal');
+const { computeInstrumentCommission } = require('../utils/commission');
 
 /**
  * Resolve the live AccountPlan for an account from the cached
@@ -42,11 +43,10 @@ async function _resolvePlan(account) {
 async function computeCloseFee({ account, instrument, closeQty, closePrice, closePnl }) {
   const plan = await _resolvePlan(account);
 
-  // No plan in DB and no STANDARD fallback — fall through to instrument
-  // commission so behaviour matches the pre-tier code.
+  // No plan in DB and no STANDARD fallback — fall through to the instrument's
+  // own commission setting (FIXED or PERCENTAGE), honouring its type.
   if (!plan) {
-    const feeRate = instrument?.commissionPercent || '0.0005';
-    return mul(mul(closeQty, closePrice), feeRate);
+    return computeInstrumentCommission(instrument, mul(closeQty, closePrice));
   }
 
   // Loss-waive: no fee on a losing close. gt('0', x) === true ⇔ x < 0
@@ -64,10 +64,8 @@ async function computeCloseFee({ account, instrument, closeQty, closePrice, clos
     case 'PCT_OF_PROFIT':
       if (!gt(closePnl, '0')) return '0';
       return mul(String(closePnl), String(plan.feeValue));
-    default: {
-      const feeRate = instrument?.commissionPercent || '0.0005';
-      return mul(mul(closeQty, closePrice), feeRate);
-    }
+    default:
+      return computeInstrumentCommission(instrument, mul(closeQty, closePrice));
   }
 }
 
