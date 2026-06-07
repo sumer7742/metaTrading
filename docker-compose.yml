@@ -56,6 +56,11 @@ services:
       timeout: 5s
       start_period: 15s
       retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
 
   client:
     build:
@@ -70,6 +75,11 @@ services:
       - "127.0.0.1:8081:80"
     depends_on:
       - backend
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
 
   admin:
     build:
@@ -84,6 +94,11 @@ services:
       - "127.0.0.1:8082:80"
     depends_on:
       - backend
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
 
 volumes:
   mongo-data:
