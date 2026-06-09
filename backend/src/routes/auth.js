@@ -10,6 +10,10 @@ router.post('/refresh', c.refresh);
 router.post('/logout', authenticate, c.logout);
 router.get('/me', authenticate, c.me);
 
+// End a read-only "View As User" impersonation session (audit + duration).
+// Allow-listed in the read-only guard so the impersonation token may POST it.
+router.post('/impersonation/end', authenticate, c.endImpersonation);
+
 router.post('/2fa/setup', authenticate, c.setup2FA);
 router.post('/2fa/enable', authenticate, c.enable2FA);
 router.post('/2fa/disable', authenticate, c.disable2FA);

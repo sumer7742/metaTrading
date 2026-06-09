@@ -2021,6 +2021,52 @@ const getPortfolio = asyncHandler(async (req, res) => {
   });
 });
 
+// ─── Read-only "View As User" impersonation ───────────────────────────
+// Admin/Super-Admin only (route-gated by requireAdmin). Mints a short-lived
+// READ-ONLY token scoped to the target user, logs the session start, and
+// returns the token for the admin to open the client app as that user.
+const startImpersonation = asyncHandler(async (req, res) => {
+  const { signAccessToken } = require('../utils/jwt');
+  const crypto = require('crypto');
+
+  const target = await User.findById(req.params.userId)
+    .select('_id role firstName lastName email userUid isActive').lean();
+  if (!target) throw new AppError('User not found', 404);
+  if (!target.isActive) throw new AppError('Cannot view an inactive/blocked account', 400, 'USER_INACTIVE');
+  // Only regular users can be viewed — never other staff accounts.
+  if (['ADMIN', 'SUPER_ADMIN', 'MANAGER'].includes(target.role)) {
+    throw new AppError('You can only "View As" a regular user account', 400, 'NOT_A_USER');
+  }
+
+  const sid = crypto.randomUUID();
+  const token = signAccessToken({
+    sub: String(target._id),
+    role: 'USER',
+    isImpersonation: true,
+    readOnly: true,
+    impersonatedBy: String(req.userId),
+    sid,
+  }, { expiresIn: '1h' });
+
+  await logAction(req, 'IMPERSONATION_START', { type: 'USER', id: target._id }, {
+    sid, adminRole: req.user.role, targetEmail: target.email, targetUserUid: target.userUid || null,
+  });
+
+  sendSuccess(res, {
+    token,
+    sid,
+    expiresInSec: 3600,
+    // Where to open the session — the CLIENT app URL (never the admin origin).
+    clientUrl: process.env.CLIENT_URL || null,
+    user: {
+      _id: String(target._id),
+      name: [target.firstName, target.lastName].filter(Boolean).join(' ') || target.email,
+      email: target.email,
+      userUid: target.userUid || null,
+    },
+  });
+});
+
 // ─── Executive dashboard analytics (global date filter) ───────────────
 //
 // Resolves a single { period | fromDate/toDate } range and returns every
@@ -2226,6 +2272,7 @@ const getDashboardAnalytics = asyncHandler(async (req, res) => {
 module.exports = {
   dashboard,
   getDashboardAnalytics,
+  startImpersonation,
   listUsers,
   getUser,
   updateUserStatus,

@@ -158,6 +158,21 @@ export default function Users() {
 
   const onSearch = (e) => { e.preventDefault(); setPage(1); load(); };
 
+  // "View As User" — open the user's account in READ-ONLY impersonation.
+  // Mints a server-side read-only token, then opens the client app as them.
+  const canImpersonate = role === 'SUPER_ADMIN' || role === 'ADMIN';
+  const viewAsUser = async (u) => {
+    try {
+      const { data } = await api.post(`/admin/impersonate/${u._id}`);
+      const token = data.data.token;
+      const info = encodeURIComponent(JSON.stringify({ email: u.email, name: fullName(u) || u.email }));
+      // Always open the CLIENT app (backend tells us its URL) — NOT the admin
+      // origin. Falls back to a build-time override or the current origin.
+      const base = (data.data.clientUrl || import.meta.env.VITE_CLIENT_URL || window.location.origin).replace(/\/$/, '');
+      window.open(`${base}/#imp=${encodeURIComponent(token)}&info=${info}`, '_blank', 'noopener');
+    } catch (e) { toast.error(errorMessage(e)); }
+  };
+
   const toggleSort = (col) => {
     if (!col.sortBy) return;
     if (sortBy === col.sortBy) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
@@ -374,6 +389,15 @@ export default function Users() {
                   ))}
                   <td className="p-3 text-right whitespace-nowrap">
                     <button onClick={() => setSelected(u)} className="btn-ghost text-xs">View</button>
+                    {canImpersonate && u.role === 'USER' && (
+                      <button
+                        onClick={() => viewAsUser(u)}
+                        className="btn-ghost text-xs text-primary-400 hover:text-primary-300"
+                        title="Open this user's account exactly as they see it — strict read-only"
+                      >
+                        👁 View As User
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))

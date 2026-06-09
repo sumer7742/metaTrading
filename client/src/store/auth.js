@@ -1,13 +1,18 @@
 import { create } from 'zustand';
 import { api, errorMessage } from '../services/api';
 import { wsClient } from '../services/ws';
+import { getImpersonationToken, isImpersonating } from '../services/impersonation';
 
 export const useAuthStore = create((set, get) => ({
   user: null,
   loading: true,
 
   init: async () => {
-    const token = localStorage.getItem('accessToken');
+    // Read-only "View As User": an impersonation token (tab-scoped) takes
+    // priority over any real login, so /auth/me resolves to the target user
+    // and the app renders exactly as they see it.
+    const impToken = getImpersonationToken();
+    const token = impToken || localStorage.getItem('accessToken');
     if (!token) {
       set({ loading: false });
       return;
@@ -17,8 +22,10 @@ export const useAuthStore = create((set, get) => ({
       set({ user: data.data, loading: false });
       wsClient.connect(token);
     } catch (err) {
-      localStorage.removeItem('accessToken');
-      localStorage.removeItem('refreshToken');
+      if (!isImpersonating()) {
+        localStorage.removeItem('accessToken');
+        localStorage.removeItem('refreshToken');
+      }
       set({ user: null, loading: false });
     }
   },

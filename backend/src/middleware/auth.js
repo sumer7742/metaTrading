@@ -18,6 +18,35 @@ const authenticate = async (req, res, next) => {
     }
     req.user = user;
     req.userId = user._id;
+
+    // ── Read-only impersonation ("View As User") ──────────────────────
+    // An impersonation token carries isImpersonation + readOnly + the
+    // admin who started it. We stamp these onto req so downstream code can
+    // see them, and HARD-BLOCK any state-changing request: only safe HTTP
+    // methods (GET/HEAD/OPTIONS) are allowed, plus the single endpoint that
+    // ends the session. This is the authoritative server-side guard —
+    // browser/UI tampering can't bypass it.
+    if (payload.isImpersonation) {
+      req.user.isImpersonation = true;
+      req.user.readOnly = payload.readOnly !== false;
+      req.user.impersonatedBy = payload.impersonatedBy || null;
+      req.impersonation = {
+        readOnly: req.user.readOnly,
+        by: payload.impersonatedBy || null,
+        sid: payload.sid || null,
+        startedAt: payload.iat ? payload.iat * 1000 : null,
+      };
+      const isSafe = ['GET', 'HEAD', 'OPTIONS'].includes(req.method);
+      const isEndSession = /\/impersonation\/end$/.test(req.originalUrl.split('?')[0]);
+      if (req.user.readOnly && !isSafe && !isEndSession) {
+        throw new AppError(
+          'Read-only impersonation session — this action is disabled. Return to your admin account to make changes.',
+          403,
+          'IMPERSONATION_READONLY'
+        );
+      }
+    }
+
     next();
   } catch (err) {
     if (err.name === 'TokenExpiredError') return next(new AppError('Token expired', 401, 'TOKEN_EXPIRED'));

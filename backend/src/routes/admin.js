@@ -12,6 +12,10 @@ router.use(authenticate, requireAdmin);
 router.get('/dashboard', c.dashboard);
 router.get('/dashboard/analytics', c.getDashboardAnalytics);
 
+// Read-only "View As User" — start an impersonation session (ADMIN + SUPER_ADMIN
+// only; the router-level requireAdmin already blocks MANAGER / USER).
+router.post('/impersonate/:userId', c.startImpersonation);
+
 router.get('/users', c.listUsers);
 router.get('/users/:id', c.getUser);
 router.put('/users/:id/status', c.updateUserStatus);

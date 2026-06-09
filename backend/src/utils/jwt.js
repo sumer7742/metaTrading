@@ -20,9 +20,9 @@ const assertSecrets = () => {
   }
 };
 
-const signAccessToken = (payload) =>
+const signAccessToken = (payload, opts = {}) =>
   jwt.sign(payload, process.env.JWT_ACCESS_SECRET, {
-    expiresIn: process.env.JWT_ACCESS_EXPIRES || '15m',
+    expiresIn: opts.expiresIn || process.env.JWT_ACCESS_EXPIRES || '15m',
   });
 
 const signRefreshToken = (payload) =>

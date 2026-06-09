@@ -372,6 +372,31 @@ const me = asyncHandler(async (req, res) => {
   sendSuccess(res, user.toSafeJSON());
 });
 
+// POST /auth/impersonation/end — close a read-only "View As User" session.
+// Authenticated by the impersonation token itself; records end time +
+// duration so the audit trail has a full session record.
+const endImpersonation = asyncHandler(async (req, res) => {
+  if (!req.user?.isImpersonation) {
+    throw new AppError('Not an impersonation session', 400, 'NOT_IMPERSONATION');
+  }
+  const startedAt = req.impersonation?.startedAt || null;
+  const durationSec = startedAt ? Math.round((Date.now() - startedAt) / 1000) : null;
+  try {
+    const { AuditLog } = require('../models');
+    await AuditLog.create({
+      actorId: req.impersonation?.by || null,   // the admin who started it
+      actorRole: 'ADMIN',
+      action: 'IMPERSONATION_END',
+      targetType: 'USER',
+      targetId: String(req.userId),
+      metadata: { sid: req.impersonation?.sid || null, durationSec },
+      ip: req.ip,
+      userAgent: req.headers['user-agent'],
+    });
+  } catch (_) { /* audit is best-effort */ }
+  sendSuccess(res, { ok: true, durationSec });
+});
+
 const setup2FA = asyncHandler(async (req, res) => {
   const user = await User.findById(req.userId);
   const secret = authenticator.generateSecret();
@@ -552,4 +577,4 @@ const resendVerifyEmail = asyncHandler(async (req, res) => {
   sendSuccess(res, { ok: true });
 });
 
-module.exports = { register, login, refresh, logout, me, setup2FA, enable2FA, disable2FA, requestPasswordReset, resetPassword, listDevices, revokeDevice, verifyEmail, resendVerifyEmail };
+module.exports = { register, login, refresh, logout, me, endImpersonation, setup2FA, enable2FA, disable2FA, requestPasswordReset, resetPassword, listDevices, revokeDevice, verifyEmail, resendVerifyEmail };

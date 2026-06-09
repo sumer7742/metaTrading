@@ -96,7 +96,11 @@
       "Bash(node --check src/routes/chat.js)",
       "Bash(python -c \"import yaml,sys; d=yaml.safe_load\\(open\\('docker-compose.yml'\\)\\); print\\('YAML OK · services:', list\\(d['services'].keys\\(\\)\\)\\); print\\('mongo keys:', list\\(d['services']['mongo'].keys\\(\\)\\)\\)\")",
       "Bash(node -e \"const y=require\\('js-yaml'\\);const fs=require\\('fs'\\);const d=y.load\\(fs.readFileSync\\('docker-compose.yml','utf8'\\)\\);console.log\\('YAML OK', Object.keys\\(d.services\\), Object.keys\\(d.services.mongo\\)\\)\")",
-      "Bash(node -e \"let y;try{y=require\\('js-yaml'\\)}catch\\(e\\){try{y=require\\('yaml'\\)}catch\\(e2\\){}} const fs=require\\('fs'\\);const f='../docker-compose.yml';const t=fs.readFileSync\\(f,'utf8'\\); if\\(!y\\){console.log\\('no yaml lib; printing mongo block for manual check'\\);console.log\\(t.split\\('\\\\n'\\).slice\\(13,40\\).join\\('\\\\n'\\)\\);process.exit\\(0\\)} const d=\\(y.load?y.load\\(t\\):y.parse\\(t\\)\\); console.log\\('YAML OK ·', Object.keys\\(d.services\\).join\\(', '\\)\\); console.log\\('mongo keys:', Object.keys\\(d.services.mongo\\).join\\(', '\\)\\); console.log\\('logging:', JSON.stringify\\(d.services.mongo.logging\\)\\)\")"
+      "Bash(node -e \"let y;try{y=require\\('js-yaml'\\)}catch\\(e\\){try{y=require\\('yaml'\\)}catch\\(e2\\){}} const fs=require\\('fs'\\);const f='../docker-compose.yml';const t=fs.readFileSync\\(f,'utf8'\\); if\\(!y\\){console.log\\('no yaml lib; printing mongo block for manual check'\\);console.log\\(t.split\\('\\\\n'\\).slice\\(13,40\\).join\\('\\\\n'\\)\\);process.exit\\(0\\)} const d=\\(y.load?y.load\\(t\\):y.parse\\(t\\)\\); console.log\\('YAML OK ·', Object.keys\\(d.services\\).join\\(', '\\)\\); console.log\\('mongo keys:', Object.keys\\(d.services.mongo\\).join\\(', '\\)\\); console.log\\('logging:', JSON.stringify\\(d.services.mongo.logging\\)\\)\")",
+      "Bash(node --check src/utils/jwt.js)",
+      "Bash(node --check src/middleware/auth.js)",
+      "Bash(node --check src/controllers/authController.js)",
+      "Bash(node --check src/routes/auth.js)"
     ]
   }
 }

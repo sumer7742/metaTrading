@@ -1,4 +1,11 @@
 import axios from 'axios';
+import { getImpersonationToken, isImpersonating, isMutatingMethod } from './impersonation';
+
+// Thrown (and surfaced as a toast) when a mutating request is attempted while
+// in read-only "View As User" mode. The backend also enforces this with 403.
+export class ReadOnlyError extends Error {
+  constructor() { super('Read-only mode — this action is disabled while viewing a user account.'); this.code = 'IMPERSONATION_READONLY'; }
+}
 
 // Build the API base URL from env. Accepts either VITE_API_URL (legacy)
 // or VITE_API_BASE (newer naming used in deploy docs). If the value
@@ -20,6 +27,18 @@ export const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
+  // Read-only impersonation: use the tab-scoped impersonation token and
+  // HARD-BLOCK any mutating request before it leaves the browser. The one
+  // exception is ending the session itself.
+  const impToken = getImpersonationToken();
+  if (impToken) {
+    const isEnd = /\/auth\/impersonation\/end$/.test(config.url || '');
+    if (isMutatingMethod(config.method) && !isEnd) {
+      return Promise.reject(new ReadOnlyError());
+    }
+    config.headers.Authorization = `Bearer ${impToken}`;
+    return config;
+  }
   const token = localStorage.getItem('accessToken');
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
@@ -37,6 +56,10 @@ api.interceptors.response.use(
   (res) => res,
   async (error) => {
     const original = error.config;
+    // During impersonation there is no refresh token to rotate — never run
+    // the admin's refresh flow here. Let the 401 surface (session expired →
+    // the banner's "Return to Admin" gets the admin back).
+    if (isImpersonating()) return Promise.reject(error);
     if (error.response?.status === 401 && !original._retry) {
       const code = error.response.data?.error?.code;
       if (code === 'TOKEN_EXPIRED' || code === 'INVALID_TOKEN') {
