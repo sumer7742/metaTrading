@@ -304,3 +304,11 @@
 }
 .flash-up { animation: flash-up 0.5s ease-out; }
 .flash-down { animation: flash-down 0.5s ease-out; }
+
+/* ── Read-only "View As User" impersonation banner offset ─────────────
+   The banner is position:fixed at the very top. When active we push the
+   whole page (and any sticky chrome) down by exactly the banner height
+   (published as --imp-offset by ImpersonationBanner) so nothing is hidden. */
+body.impersonating { padding-top: var(--imp-offset, 56px); }
+body.impersonating header { top: var(--imp-offset, 56px) !important; }
+body.impersonating .imp-subnav { top: calc(4rem + var(--imp-offset, 56px)) !important; }

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { api } from '../services/api';
 import { isImpersonating, getImpersonationInfo, clearImpersonation } from '../services/impersonation';
 
@@ -6,10 +6,38 @@ import { isImpersonating, getImpersonationInfo, clearImpersonation } from '../se
  * Fixed READ-ONLY banner shown across the whole app while an admin is in a
  * "View As User" impersonation session. Provides the only exit: Return to
  * Admin. Renders nothing for a normal user session.
+ *
+ * The banner is position:fixed so it's always visible — to stop it covering
+ * the app's sticky navbar we publish its height as `--imp-offset` and add a
+ * `body.impersonating` class; index.css uses that to push the page (and any
+ * sticky header) down by exactly the banner height.
  */
 export default function ImpersonationBanner() {
+  const active = isImpersonating();
   const [leaving, setLeaving] = useState(false);
-  if (!isImpersonating()) return null;
+  const ref = useRef(null);
+
+  useLayoutEffect(() => {
+    if (!active) return undefined;
+    const root = document.documentElement;
+    const apply = () => {
+      const h = ref.current ? ref.current.offsetHeight : 56;
+      root.style.setProperty('--imp-offset', `${h}px`);
+    };
+    document.body.classList.add('impersonating');
+    apply();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(apply) : null;
+    if (ro && ref.current) ro.observe(ref.current);
+    window.addEventListener('resize', apply);
+    return () => {
+      if (ro) ro.disconnect();
+      window.removeEventListener('resize', apply);
+      document.body.classList.remove('impersonating');
+      root.style.removeProperty('--imp-offset');
+    };
+  }, [active]);
+
+  if (!active) return null;
   const info = getImpersonationInfo();
 
   const returnToAdmin = async () => {
@@ -26,6 +54,7 @@ export default function ImpersonationBanner() {
 
   return (
     <div
+      ref={ref}
       className="fixed top-0 inset-x-0 z-[9999] flex items-center gap-3 px-4 py-2.5 text-white shadow-lg"
       style={{ background: 'linear-gradient(90deg,#B45309,#92400E)' }}
       role="alert"

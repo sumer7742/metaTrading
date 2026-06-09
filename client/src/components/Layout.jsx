@@ -423,7 +423,7 @@ export default function Layout({ children }) {
           overflows. Same pill-style active state as the desktop nav so
           users get consistent visual feedback across viewports. */}
       {location.pathname !== '/trade' && (
-        <div className="md:hidden sticky top-16 z-30 border-b border-border-dark bg-white">
+        <div className="imp-subnav md:hidden sticky top-16 z-30 border-b border-border-dark bg-white">
           <nav className="flex items-center gap-1 px-3 py-2 overflow-x-auto no-scrollbar">
             {[...PRIMARY_NAV, ...SECONDARY_NAV].map((item, idx) => (
               <NavLink
