@@ -3,8 +3,10 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import PageHero from '../components/PageHero';
 import AssetIcon from '../components/AssetIcon';
+import { useConfirm } from '../components/ConfirmProvider';
 
 export default function PriceAlerts() {
+  const confirm = useConfirm();
   const [alerts, setAlerts] = useState([]);
   const [instruments, setInstruments] = useState([]);
   const [showCreate, setShowCreate] = useState(false);
@@ -19,7 +21,7 @@ export default function PriceAlerts() {
   useEffect(() => { refresh(); }, []);
 
   const remove = async (id) => {
-    if (!confirm('Delete this alert?')) return;
+    if (!(await confirm('Delete this alert?'))) return;
     try { await api.delete(`/reports/alerts/${id}`); toast.success('Alert deleted'); refresh(); }
     catch (e) { toast.error(errorMessage(e)); }
   };

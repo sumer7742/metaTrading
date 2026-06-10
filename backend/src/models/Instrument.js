@@ -23,14 +23,16 @@ const instrumentSchema = new mongoose.Schema(
       default: 'INHERIT',
     },
     // ─── Optional daily volume cap (lots) ────────────────────────────────
-    // Platform-wide cap on total OPENING order volume per UTC day for THIS
-    // symbol, summed across all users. Disabled by default → UNLIMITED (no
-    // volume validation). Existing instruments default to unlimited
-    // automatically (dailyVolumeLimitEnabled=false). When enabled, new
-    // opening orders that would push the day's used volume past the limit
-    // are rejected. Closes are never capped.
+    // Platform-wide cap on OPENING order volume per UTC day for THIS symbol,
+    // summed across all users — tracked SEPARATELY for BUY and SELL. Disabled
+    // by default → UNLIMITED. When enabled, a new BUY opening order is rejected
+    // once the day's BUY volume reaches dailyBuyLimit (and likewise SELL vs
+    // dailySellLimit). A 0 on either side = that side is unlimited. Closes are
+    // never capped. (dailyVolumeLimit kept for legacy data; no longer enforced.)
     dailyVolumeLimitEnabled: { type: Boolean, default: false },
-    dailyVolumeLimit:        { type: Number, default: 0, min: 0 }, // lots; used only when enabled
+    dailyBuyLimit:           { type: Number, default: 0, min: 0 }, // lots; 0 = unlimited BUY
+    dailySellLimit:          { type: Number, default: 0, min: 0 }, // lots; 0 = unlimited SELL
+    dailyVolumeLimit:        { type: Number, default: 0, min: 0 }, // @deprecated (combined)
     // ─── @deprecated routing fields ──────────────────────────────────
     // Book-type / external routing is now a PER-ACCOUNT decision (see
     // TradingAccount.bookType + lpProvider). The instrument-level fields

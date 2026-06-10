@@ -100,7 +100,22 @@
       "Bash(node --check src/utils/jwt.js)",
       "Bash(node --check src/middleware/auth.js)",
       "Bash(node --check src/controllers/authController.js)",
-      "Bash(node --check src/routes/auth.js)"
+      "Bash(node --check src/routes/auth.js)",
+      "Bash(node --check src/routes/hierarchy.js)",
+      "Bash(sed -n '40,50p' pages/Plans.jsx)",
+      "Bash(sed -n '98,104p' pages/Plans.jsx)",
+      "Bash(sed -n '18,26p' pages/PriceAlerts.jsx)",
+      "Bash(sed -n '636,644p' pages/Profile.jsx)",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\('lightweight-charts:', \\(p.dependencies&&p.dependencies['lightweight-charts']\\)||\\(p.devDependencies&&p.devDependencies['lightweight-charts']\\)||'NOT FOUND'\\)\")",
+      "Bash(node --check src/config/constants.js)",
+      "Bash(node --check src/routes/finance.js)",
+      "Bash(node --check src/services/financeService.js)",
+      "Bash(grep -rn \"AUDITOR\" admin/src)",
+      "Bash(grep -rn \"AUDITOR\" backend/src --include=*.js)",
+      "Bash(node --check src/controllers/auditController.js)",
+      "Bash(node --check src/routes/audit.js)",
+      "Bash(node --check src/models/Audit.js)",
+      "Bash(node --check src/server.js)"
     ]
   }
 }

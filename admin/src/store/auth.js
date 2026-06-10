@@ -3,7 +3,8 @@ import { api, errorMessage } from '../services/api';
 
 // Roles allowed into the admin console. MANAGER is part of the management
 // hierarchy (scoped, read-mostly views); add future mgmt roles here.
-const ADMIN_APP_ROLES = ['ADMIN', 'SUPER_ADMIN', 'MANAGER'];
+const ADMIN_APP_ROLES = ['ADMIN', 'SUPER_ADMIN', 'MANAGER',
+  'FINANCIAL_ADMIN', 'DEPOSIT_MANAGER', 'WITHDRAWAL_MANAGER', 'AUDIT_MANAGER'];
 
 export const useAuthStore = create((set) => ({
   user: null,
@@ -44,6 +45,13 @@ export const useAuthStore = create((set) => ({
     localStorage.removeItem('admin_accessToken');
     localStorage.removeItem('admin_refreshToken');
     set({ user: null });
+  },
+
+  // Re-pull /auth/me so Manager Access Control changes (permissions / master
+  // switch) apply WITHOUT a logout. Called on window focus + periodically.
+  refresh: async () => {
+    if (!localStorage.getItem('admin_accessToken')) return;
+    try { const { data } = await api.get('/auth/me'); set({ user: data.data }); } catch { /* ignore */ }
   },
 }));
 

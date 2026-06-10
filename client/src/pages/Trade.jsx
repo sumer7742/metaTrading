@@ -7,7 +7,7 @@ import PriceChart from '../components/PriceChart';
 import OrderForm from '../components/OrderForm';
 import NotificationCenter from '../components/NotificationCenter';
 import MarketWatch from '../components/MarketWatch';
-import { fmtNum, fmtPnlSimple, fmtMoney, fmtPriceDual, fmtMoneyDual, currencySymbol } from '../utils/format';
+import { fmtNum, fmtPnlSimple, fmtMoney, fmtPriceDual, fmtMoneyDual, currencySymbol, fmtDate } from '../utils/format';
 import WatchlistButton from '../components/WatchlistButton';
 import { useWatchlistModal } from '../components/watchlistModalContext';
 import { useFxRate } from '../hooks/useFxRate';
@@ -19,8 +19,10 @@ import AssetIcon from '../components/AssetIcon';
 import TradeSettingsPanel from '../components/settings/TradeSettingsPanel';
 import { useTradeSettings } from '../store/tradeSettings';
 import { getMarketSession } from '../utils/marketSession';
+import { useConfirm } from '../components/ConfirmProvider';
 
 export default function Trade() {
+  const confirm = useConfirm();
   const [params, setParams] = useSearchParams();
   const symbol = params.get('symbol') || 'BTCUSD';
   const [timeframe, setTimeframe] = useState('1m');
@@ -573,6 +575,24 @@ export default function Trade() {
     );
     return () => unsubs.forEach((u) => u && u());
   }, [positionSymbolsKey]);
+
+  // Subscribe to symbols where the user has PENDING orders too, so the
+  // "Current price" column in the orders table ticks live even when there
+  // is no open position on that symbol. Mirrors the positions subscription.
+  const orderSymbolsKey = useMemo(
+    () => [...new Set(openOrders.map((o) => o.symbol))].sort().join('|'),
+    [openOrders]
+  );
+  useEffect(() => {
+    if (!orderSymbolsKey) return;
+    const symbols = orderSymbolsKey.split('|');
+    const unsubs = symbols.map((sym) =>
+      wsClient.subscribe(`ticker:${sym}`, (data) => {
+        setPriceMap((prev) => ({ ...prev, [sym]: data.lastPrice }));
+      })
+    );
+    return () => unsubs.forEach((u) => u && u());
+  }, [orderSymbolsKey]);
 
   // Subscribe to private 'positions', 'orders' and 'wallet' channels so the
   // table + chart refresh on FILLED/STOP_TRIGGERED/OCO_CANCELLED etc. Without
@@ -2342,7 +2362,7 @@ export default function Trade() {
                   ordersCount={openOrders.filter((o) => o.symbol === symbol).length}
                   openPositionsCount={positions.length}
                   onCloseAll={async () => {
-                    if (!window.confirm(`Close all ${positions.length} open position(s)?`)) return;
+                    if (!(await confirm(`Close all ${positions.length} open position(s)?`))) return;
                     try {
                       const { data } = await api.post('/trading/positions/close-all', {
                         accountId: account?._id,
@@ -2558,7 +2578,7 @@ export default function Trade() {
               to just the header row. */}
           <div
             className={`${isFullscreen ? 'hidden' : 'flex'} glass border border-border-dark rounded-xl flex-col shrink-0 overflow-hidden ${dragging ? '' : 'transition-[height] duration-200 ease-out'}`}
-            style={{ height: bottomState.collapsed ? 44 : bottomState.height }}
+            style={{ height: bottomState.collapsed ? 34 : bottomState.height }}
           >
             <div className="flex items-center justify-between border-b border-border-subtle px-2 shrink-0">
               <div className="flex items-center">
@@ -2574,7 +2594,7 @@ export default function Trade() {
                       // If user clicks a tab while collapsed, expand back.
                       if (bottomState.collapsed) setBottomState((s) => ({ ...s, collapsed: false }));
                     }}
-                    className={`relative px-3 sm:px-4 py-2.5 sm:py-3 text-xs sm:text-sm font-semibold flex items-center gap-1.5 sm:gap-2 transition-colors ${
+                    className={`relative px-3 sm:px-4 py-1.5 sm:py-2 text-xs sm:text-sm font-semibold flex items-center gap-1.5 sm:gap-2 transition-colors ${
                       tab === t.k ? 'text-text-primary' : 'text-text-secondary hover:text-text-primary'
                     }`}
                   >
@@ -2598,7 +2618,7 @@ export default function Trade() {
                 {tab === 'positions' && positions.length > 0 && !bottomState.collapsed && (
                   <button
                     onClick={async () => {
-                      if (!window.confirm(`Close all ${positions.length} open position(s)?`)) return;
+                      if (!(await confirm(`Close all ${positions.length} open position(s)?`))) return;
                       try {
                         const { data } = await api.post('/trading/positions/close-all', {
                           accountId: account?._id,
@@ -2652,7 +2672,7 @@ export default function Trade() {
                 </button>
               </div>
             </div>
-            <div className="p-3 overflow-x-auto flex-1">
+            <div className="py-3 pl-3 pr-0 overflow-x-auto flex-1">
               {tab === 'positions' && (
                 <PositionsTable
                   positions={positionsWithLivePnl}
@@ -2668,6 +2688,7 @@ export default function Trade() {
                   onCancel={cancelOrder}
                   fxRate={fxRate}
                   instrumentsBySymbol={instrumentsBySymbol}
+                  livePrices={priceMap}
                 />
               )}
               {tab === 'closed' && (
@@ -3585,17 +3606,20 @@ function PositionsTable({ positions, onClose, onModify, fxRate, instrumentsBySym
     );
   }
   return (
-    <table className="w-full text-sm">
+    <table className="w-full text-sm whitespace-nowrap [&_td]:align-middle [&_th]:align-middle">
       <thead className="text-xs text-gray-500 uppercase">
         <tr>
+          <th className="text-left p-2">Order ID</th>
           <th className="text-left p-2">Symbol</th>
-          <th className="text-left p-2">Side</th>
-          <th className="text-right p-2">Qty</th>
-          <th className="text-right p-2">Entry</th>
-          <th className="text-right p-2">Mark</th>
-          <th className="text-right p-2">P&L</th>
-          <th className="text-right p-2">Lev</th>
-          <th className="text-right p-2"></th>
+          <th className="text-left p-2">Type</th>
+          <th className="text-right p-2">Volume, lot</th>
+          <th className="text-right p-2">Open price</th>
+          <th className="text-right p-2">Current price</th>
+          <th className="text-right p-2">T/P</th>
+          <th className="text-right p-2">S/L</th>
+          <th className="text-left p-2">Open time</th>
+          <th className="text-right p-2 sticky right-[120px] z-10 bg-white border-l border-border-subtle">P/L, USD</th>
+          <th className="text-right p-2 sticky right-0 z-10 bg-white w-[120px]"></th>
         </tr>
       </thead>
       <tbody>
@@ -3606,12 +3630,15 @@ function PositionsTable({ positions, onClose, onModify, fxRate, instrumentsBySym
           const prec = inst?.pricePrecision || 4;
           const entry = fmtPriceDual(p.entryPrice, quote, fxRate, prec);
           const mark = fmtPriceDual(p.markPrice || p.entryPrice, quote, fxRate, prec);
+          const tpPx = p.takeProfit ? fmtPriceDual(p.takeProfit, quote, fxRate, prec) : null;
+          const slPx = p.stopLoss ? fmtPriceDual(p.stopLoss, quote, fxRate, prec) : null;
           // PnL on the wire is already in the position's quote currency.
           // We display USD throughout, so for INR-quoted positions convert
           // to USD; otherwise show the native number as-is.
           const pnlUsd = quote === 'INR' ? pnl / Math.max(Number(fxRate || 0), 1) : pnl;
           return (
-            <tr key={p._id} className="table-row">
+            <tr key={p._id} className="table-row group">
+              <td className="p-2 font-mono text-xs text-text-secondary" title={p._id}>{ticketShort(p._id)}</td>
               <td className="p-2 font-medium">
                 <div className="flex items-center gap-2">
                   <AssetIcon row={inst || { symbol: p.symbol }} size={22} round />
@@ -3619,7 +3646,7 @@ function PositionsTable({ positions, onClose, onModify, fxRate, instrumentsBySym
                 </div>
               </td>
               <td className={`p-2 font-semibold ${p.side === 'BUY' ? 'text-bull' : 'text-bear'}`}>
-                {p.side === 'BUY' ? 'LONG' : 'SHORT'}
+                {p.side === 'BUY' ? 'Buy' : 'Sell'}
               </td>
               <td className="p-2 text-right font-mono">{fmtNum(p.quantity, 4)}</td>
               <td className="p-2 text-right font-mono">
@@ -3630,13 +3657,15 @@ function PositionsTable({ positions, onClose, onModify, fxRate, instrumentsBySym
                 <div>{mark.primary}</div>
                 {mark.secondary && <div className="text-[10px] text-gray-500">{mark.secondary}</div>}
               </td>
-              <td className={`p-2 text-right font-mono ${pnl >= 0 ? 'text-bull' : 'text-bear'}`}>
+              <td className="p-2 text-right font-mono">{tpPx?.primary || '—'}</td>
+              <td className="p-2 text-right font-mono">{slPx?.primary || '—'}</td>
+              <td className="p-2 text-left text-xs text-text-secondary">{fmtDate(p.openedAt || p.createdAt)}</td>
+              <td className={`p-2 text-right font-mono sticky right-[120px] z-10 bg-white group-hover:bg-bg-hover border-l border-border-subtle ${pnl >= 0 ? 'text-bull' : 'text-bear'}`}>
                 <div>{fmtPnlSimple(pnlUsd, 'USD')}</div>
               </td>
-              <td className="p-2 text-right">1:{p.leverage}</td>
-              <td className="p-2 text-right">
-                <div className="flex justify-end gap-1">
-                  <button onClick={() => onModify(p)} className="btn-ghost text-xs px-2 py-1">SL/TP</button>
+              <td className="p-2 sticky right-0 z-10 bg-white group-hover:bg-bg-hover">
+                <div className="w-[104px] flex justify-end gap-1">
+                  <button onClick={() => onModify(p)} className="btn-ghost text-xs px-2 py-1">Edit</button>
                   <button onClick={() => onClose(p._id)} className="btn-ghost text-xs px-2 py-1">Close</button>
                 </div>
               </td>
@@ -3648,7 +3677,21 @@ function PositionsTable({ positions, onClose, onModify, fxRate, instrumentsBySym
   );
 }
 
-function OrdersTable({ orders, onCancel, fxRate, instrumentsBySymbol }) {
+// Human-readable ticket from a Mongo _id — last 6 hex chars, upper-cased
+// and prefixed, with the full id available on hover. Used for both the
+// open-positions ("Position") and pending-orders ("Order ID") tables.
+const ticketShort = (id) => (id ? `#${String(id).slice(-6).toUpperCase()}` : '—');
+
+// MT5-style order type label, e.g. "Buy Limit" / "Sell Stop".
+const orderTypeLabel = (o) => {
+  const sideWord = o.side === 'BUY' ? 'Buy' : 'Sell';
+  if (o.type === 'LIMIT') return `${sideWord} Limit`;
+  if (o.type === 'STOP') return `${sideWord} Stop`;
+  if (o.type === 'MARKET') return `${sideWord} Market`;
+  return `${sideWord} ${o.type || ''}`.trim();
+};
+
+function OrdersTable({ orders, onCancel, fxRate, instrumentsBySymbol, livePrices = {} }) {
   if (!orders.length) {
     return (
       <div className="py-10 text-center">
@@ -3664,17 +3707,20 @@ function OrdersTable({ orders, onCancel, fxRate, instrumentsBySymbol }) {
     );
   }
   return (
-    <table className="w-full text-sm">
+    <table className="w-full text-sm whitespace-nowrap [&_td]:align-middle [&_th]:align-middle">
       <thead className="text-xs text-gray-500 uppercase">
         <tr>
+          <th className="text-left p-2">Order ID</th>
           <th className="text-left p-2">Symbol</th>
-          <th className="text-left p-2">Side</th>
           <th className="text-left p-2">Type</th>
-          <th className="text-right p-2">Qty</th>
-          <th className="text-right p-2">Filled</th>
-          <th className="text-right p-2">Price / Trigger</th>
-          <th className="text-right p-2">Status</th>
-          <th className="text-right p-2"></th>
+          <th className="text-right p-2">Volume, lot</th>
+          <th className="text-right p-2">Open price</th>
+          <th className="text-right p-2">Current price</th>
+          <th className="text-right p-2">T/P</th>
+          <th className="text-right p-2">S/L</th>
+          <th className="text-left p-2">Open time</th>
+          <th className="text-right p-2 sticky right-[96px] z-10 bg-white border-l border-border-subtle">P/L, USD</th>
+          <th className="text-right p-2 sticky right-0 z-10 bg-white w-[96px]"></th>
         </tr>
       </thead>
       <tbody>
@@ -3682,47 +3728,49 @@ function OrdersTable({ orders, onCancel, fxRate, instrumentsBySymbol }) {
           const inst = instrumentsBySymbol?.[o.symbol];
           const quote = inst?.quoteCurrency || 'USD';
           const prec = inst?.pricePrecision || 4;
-          const limitPx = o.price ? fmtPriceDual(o.price, quote, fxRate, prec) : null;
-          const stopPx = o.stopPrice ? fmtPriceDual(o.stopPrice, quote, fxRate, prec) : null;
+          // "Open price" — the price the order opens at: trigger for STOP
+          // orders, limit price otherwise (falls back to whichever exists).
+          const openRaw = o.type === 'STOP' ? (o.stopPrice || o.price) : (o.price || o.stopPrice);
+          const openPx = openRaw ? fmtPriceDual(openRaw, quote, fxRate, prec) : null;
+          // "Current price" — live last price for the order's symbol.
+          const curRaw = livePrices?.[o.symbol] ?? inst?.lastPrice ?? null;
+          const curPx = curRaw ? fmtPriceDual(curRaw, quote, fxRate, prec) : null;
+          const tpPx = o.takeProfit ? fmtPriceDual(o.takeProfit, quote, fxRate, prec) : null;
+          const slPx = o.stopLoss ? fmtPriceDual(o.stopLoss, quote, fxRate, prec) : null;
           return (
-            <tr key={o._id} className="table-row">
+            <tr key={o._id} className="table-row group">
+              <td className="p-2 font-mono text-xs text-text-secondary" title={o._id}>{ticketShort(o._id)}</td>
               <td className="p-2 font-medium">
                 <div className="flex items-center gap-2">
                   <AssetIcon row={inst || { symbol: o.symbol }} size={22} round />
                   <span>{o.symbol}</span>
                 </div>
               </td>
-              <td className={`p-2 font-semibold ${o.side === 'BUY' ? 'text-bull' : 'text-bear'}`}>{o.side}</td>
-              <td className="p-2">
-                {o.type}
+              <td className={`p-2 font-semibold ${o.side === 'BUY' ? 'text-bull' : 'text-bear'}`}>
+                {orderTypeLabel(o)}
                 {o.type === 'STOP' && o.triggeredAt && <span className="ml-1 text-[10px] text-blue-500">(fired)</span>}
               </td>
               <td className="p-2 text-right font-mono">{fmtNum(o.quantity, 4)}</td>
-              <td className="p-2 text-right font-mono">{fmtNum(o.filledQuantity, 4)}</td>
               <td className="p-2 text-right font-mono">
-                {o.type === 'STOP' ? (
-                  <>
-                    <div>{stopPx?.primary || '-'}{limitPx ? ` / ${limitPx.primary}` : ''}</div>
-                    {(stopPx?.secondary || limitPx?.secondary) && (
-                      <div className="text-[10px] text-gray-500">
-                        {stopPx?.secondary || ''}{limitPx?.secondary ? ` / ${limitPx.secondary}` : ''}
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <div>{limitPx?.primary || '-'}</div>
-                    {limitPx?.secondary && (
-                      <div className="text-[10px] text-gray-500">{limitPx.secondary}</div>
-                    )}
-                  </>
-                )}
+                <div>{openPx?.primary || '-'}</div>
+                {openPx?.secondary && <div className="text-[10px] text-gray-500">{openPx.secondary}</div>}
               </td>
-              <td className="p-2 text-right text-gray-400">{o.status}</td>
-              <td className="p-2 text-right">
-                <button onClick={() => onCancel(o._id)} className="btn-ghost text-xs">
-                  Cancel
-                </button>
+              <td className="p-2 text-right font-mono">
+                <div>{curPx?.primary || '-'}</div>
+                {curPx?.secondary && <div className="text-[10px] text-gray-500">{curPx.secondary}</div>}
+              </td>
+              <td className="p-2 text-right font-mono">{tpPx?.primary || '—'}</td>
+              <td className="p-2 text-right font-mono">{slPx?.primary || '—'}</td>
+              <td className="p-2 text-left text-xs text-text-secondary">{fmtDate(o.createdAt)}</td>
+              {/* P&L doesn't apply to a pending order — it has no open
+                  exposure yet, so it stays empty until the order fills. */}
+              <td className="p-2 text-right font-mono text-gray-500 sticky right-[96px] z-10 bg-white group-hover:bg-bg-hover border-l border-border-subtle">—</td>
+              <td className="p-2 sticky right-0 z-10 bg-white group-hover:bg-bg-hover">
+                <div className="w-[80px] flex justify-end">
+                  <button onClick={() => onCancel(o._id)} className="btn-ghost text-xs">
+                    Cancel
+                  </button>
+                </div>
               </td>
             </tr>
           );

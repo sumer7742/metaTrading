@@ -369,7 +369,15 @@ const me = asyncHandler(async (req, res) => {
   // Defend against the user being deleted between the auth-middleware check
   // and this query — without this, .toSafeJSON() throws on null.
   if (!user) throw new AppError('User not found', 404);
-  sendSuccess(res, user.toSafeJSON());
+  const safe = user.toSafeJSON();
+  // Manager Access Control: ship the manager's effective module permissions +
+  // master switch so the admin app can gate sidebar/routes/actions instantly.
+  if (user.role === 'MANAGER') {
+    const { effectivePermissions } = require('../config/managerPermissions');
+    safe.managerPermissions = effectivePermissions(user.managerPermissions);
+    safe.managerAccessEnabled = user.managerAccessEnabled !== false;
+  }
+  sendSuccess(res, safe);
 });
 
 // POST /auth/impersonation/end — close a read-only "View As User" session.

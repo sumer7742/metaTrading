@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTradeSettings } from '../../store/tradeSettings';
+import { useConfirm } from '../ConfirmProvider';
 import {
   Toggle, Checkbox, Dropdown,
   SettingsSection, SettingsRow,
@@ -18,6 +19,7 @@ import {
  */
 export default function TradeSettingsDrawer() {
   const s = useTradeSettings();
+  const confirm = useConfirm();
   const open = s.drawerOpen;
   const close = s.closeDrawer;
   const setVal = s.set;
@@ -245,8 +247,8 @@ export default function TradeSettingsDrawer() {
         <div className="border-t border-border-dark px-5 py-3 flex items-center justify-between gap-3 bg-white/60 backdrop-blur-sm shrink-0">
           <button
             type="button"
-            onClick={() => {
-              if (window.confirm('Reset all trading settings to defaults?')) s.reset();
+            onClick={async () => {
+              if (await confirm('Reset all trading settings to defaults?')) s.reset();
             }}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border-dark text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors text-xs font-semibold"
           >

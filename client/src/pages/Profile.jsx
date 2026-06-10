@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { useAuthStore } from '../store/auth';
+import { useConfirm } from '../components/ConfirmProvider';
 
 const VALID_TABS = new Set(['profile', 'kyc', 'security', 'devices']);
 
@@ -627,6 +628,7 @@ function SecurityTab({ user, onUpdate }) {
 
 // ============== DEVICES ==============
 function DevicesTab() {
+  const confirm = useConfirm();
   const [devices, setDevices] = useState([]);
   const [loading, setLoading] = useState(true);
   const refresh = async () => {
@@ -637,7 +639,7 @@ function DevicesTab() {
   useEffect(() => { refresh(); }, []);
 
   const revoke = async (id) => {
-    if (!confirm('Revoke this session? You will be logged out from that device.')) return;
+    if (!(await confirm('Revoke this session? You will be logged out from that device.'))) return;
     try { await api.delete(`/auth/devices/${id}`); toast.success('Session revoked'); refresh(); }
     catch (e) { toast.error(errorMessage(e)); }
   };

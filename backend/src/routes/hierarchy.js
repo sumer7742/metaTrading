@@ -1,6 +1,6 @@
 const express = require('express');
 const c = require('../controllers/hierarchyController');
-const { authenticate, allowPermission, requireHierarchy } = require('../middleware/auth');
+const { authenticate, allowPermission, requireManagerPermission, requireHierarchy } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -45,7 +45,9 @@ router.post('/staff/:id/claim',            allowPermission('hierarchy.superadmin
 
 // ── Scoped reads — SuperAdmin + Admin + Manager ─────────────────────
 router.get('/unassigned', allowPermission('hierarchy.view'), c.unassigned);
-router.get('/users',      allowPermission('hierarchy.view'), c.users);
+// Managers additionally need the USER_MANAGEMENT module permission (Manager
+// Access Control). Admin/Super bypass inside requireManagerPermission.
+router.get('/users',      allowPermission('hierarchy.view'), requireManagerPermission('USER_MANAGEMENT'), c.users);
 router.get('/workload',   allowPermission('hierarchy.view'), c.workload);
 router.get('/tree',       allowPermission('hierarchy.view'), c.tree);
 

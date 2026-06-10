@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import PageHero from '../components/PageHero';
+import { useConfirm } from '../components/ConfirmProvider';
 
 export default function DataFeeds() {
+  const confirm = useConfirm();
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -22,7 +24,7 @@ export default function DataFeeds() {
   }, []);
 
   const forceSwitch = async (provider) => {
-    if (!confirm(`Force switch to ${provider}?`)) return;
+    if (!(await confirm(`Force switch to ${provider}?`))) return;
     try {
       await api.post('/admin/data-feeds/force-switch', { provider });
       toast.success(`Switched to ${provider}`);

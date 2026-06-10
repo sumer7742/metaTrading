@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import PageHero from '../components/PageHero';
+import { useConfirm } from '../components/ConfirmProvider';
 
 /**
  * Subscription plans management — full admin control over the plans
@@ -9,6 +10,7 @@ import PageHero from '../components/PageHero';
  * per-plan analytics (active users / monthly revenue / churn).
  */
 export default function Plans() {
+  const confirm = useConfirm();
   const [plans, setPlans] = useState([]);
   const [analytics, setAnalytics] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -58,7 +60,7 @@ export default function Plans() {
   };
 
   const remove = async (plan) => {
-    if (!window.confirm(`Delete plan "${plan.name}"? This is permanent.`)) return;
+    if (!(await confirm(`Delete plan "${plan.name}"? This is permanent.`))) return;
     try {
       await api.delete(`/subscriptions/admin/plans/${plan._id}`);
       toast.success('Plan deleted');

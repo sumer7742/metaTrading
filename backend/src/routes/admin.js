@@ -1,5 +1,6 @@
 const express = require('express');
 const c = require('../controllers/adminController');
+const mac = require('../controllers/managerAccessController');
 const { authenticate, requireAdmin, requireRole } = require('../middleware/auth');
 const { ROLES } = require('../config/constants');
 const riskService = require('../services/riskService');
@@ -11,6 +12,14 @@ router.use(authenticate, requireAdmin);
 
 router.get('/dashboard', c.dashboard);
 router.get('/dashboard/analytics', c.getDashboardAnalytics);
+
+// ── Manager Access Control (Super Admin; Admin when delegation is ON) ──
+// `settings` declared before `:id` so the literal path isn't shadowed.
+router.get('/manager-access/meta', mac.meta);
+router.get('/manager-access', mac.matrix);
+router.put('/manager-access/settings', mac.setDelegation);
+router.put('/manager-access/:id', mac.setPermissions);
+router.post('/manager-access/:id/access', mac.setAccess);
 
 // Read-only "View As User" — start an impersonation session (ADMIN + SUPER_ADMIN
 // only; the router-level requireAdmin already blocks MANAGER / USER).
@@ -78,12 +87,24 @@ router.get('/execution/decisions', c.listRoutingDecisions);
 // before the dynamic /accounts/:accountId, or ":accountId" would swallow them.
 router.get('/accounts/users',                      c.listAccountUsers);          // user-first list
 router.get('/accounts/users/:userId/accounts',     c.getUserAccounts);           // lazy child list
+router.get('/accounts/groups',                     c.listAccountGroups);         // distinct group list (for filter)
 router.post('/accounts/bulk',                      c.bulkAccountAction);         // bulk actions
 router.get('/accounts',                            c.listAccounts);              // (legacy) flat list
 router.get('/accounts/:accountId',                 c.getAccountDetail);
 router.get('/accounts/:accountId/positions',       c.getAccountPositions);
 router.patch('/accounts/:accountId/status',        c.setAccountStatus);
 router.post('/accounts/:accountId/notes',          c.addAccountNote);
+
+// Live OPEN-position volume per symbol (buy / sell / net) for the Instruments page.
+router.get   ('/instruments/live-volume',                c.instrumentLiveVolume);
+
+// ── Market Exposure Dashboard (SUPER_ADMIN: platform; ADMIN: own hierarchy).
+// requireAdmin (router-level) already blocks MANAGER/USER. ──
+router.get('/exposure/summary',     c.exposureSummary);
+router.get('/exposure/instruments', c.exposureInstruments);
+router.get('/exposure/buy',         c.exposureBuy);
+router.get('/exposure/sell',        c.exposureSell);
+router.get('/exposure/net',         c.exposureNet);
 
 // Scheduled instrument leverage / volume overrides (admin CRUD).
 const ov = require('../controllers/instrumentOverrideController');

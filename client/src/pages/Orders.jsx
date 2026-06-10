@@ -418,8 +418,13 @@ function shortId(id) {
 
 function fmtLot(qty) {
   const n = Number(qty);
-  if (!Number.isFinite(n)) return '0.00';
-  return n.toFixed(2);
+  if (!Number.isFinite(n) || n === 0) return '0.00';
+  // Lot sizes can be fractional (e.g. 0.001). Two decimals would collapse
+  // any sub-0.01 size to "0.00", so widen precision for small sizes while
+  // keeping the usual 2dp for normal ones.
+  const abs = Math.abs(n);
+  const decimals = abs >= 0.01 ? 2 : abs >= 0.001 ? 3 : abs >= 0.0001 ? 4 : 5;
+  return n.toFixed(decimals);
 }
 
 function formatDateTime(iso) {

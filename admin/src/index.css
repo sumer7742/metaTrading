@@ -120,3 +120,21 @@
   50% { opacity: 0.5; }
 }
 .pulse-live { animation: pulse-slow 2s ease-in-out infinite; }
+
+/* Native date/time pickers — the browser's calendar icon is dark by default
+   and disappears on this dark admin theme. Lighten it so it's clearly visible
+   and obviously clickable. */
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator,
+input[type="month"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.9) brightness(1.2);
+  opacity: 0.8;
+  cursor: pointer;
+}
+input[type="date"]::-webkit-calendar-picker-indicator:hover,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover,
+input[type="time"]::-webkit-calendar-picker-indicator:hover,
+input[type="month"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}

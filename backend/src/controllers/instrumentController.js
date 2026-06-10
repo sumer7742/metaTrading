@@ -15,17 +15,17 @@ const list = asyncHandler(async (req, res) => {
   const instrumentOverrideService = require('../services/instrumentOverrideService');
   const enriched = await instrumentOverrideService.attachActiveOverrides(items);
 
-  // Attach today's daily-volume usage for instruments that have a cap set
-  // (single batched aggregation; the all-unlimited case costs nothing).
-  const capped = enriched.filter((i) => i.dailyVolumeLimitEnabled && Number(i.dailyVolumeLimit) > 0);
+  // Attach today's per-side daily-volume usage for instruments with a cap
+  // enabled (single batched aggregation; the all-unlimited case costs nothing).
+  const capped = enriched.filter((i) => i.dailyVolumeLimitEnabled);
   if (capped.length) {
     const volumeLimitService = require('../services/volumeLimitService');
     const usedMap = await volumeLimitService.getUsedDailyVolumeForSymbols(capped.map((i) => i.symbol));
     for (const it of enriched) {
-      if (it.dailyVolumeLimitEnabled && Number(it.dailyVolumeLimit) > 0) {
-        const used = usedMap.get(it.symbol) || 0;
-        it.dailyVolumeUsed = used;
-        it.dailyVolumeRemaining = Math.max(0, Number(it.dailyVolumeLimit) - used);
+      if (it.dailyVolumeLimitEnabled) {
+        const u = usedMap.get(it.symbol) || { BUY: 0, SELL: 0 };
+        it.dailyBuyUsed = u.BUY;
+        it.dailySellUsed = u.SELL;
       }
     }
   }

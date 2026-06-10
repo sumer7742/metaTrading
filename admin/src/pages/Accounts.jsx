@@ -4,7 +4,10 @@ import { api, errorMessage } from '../services/api';
 import { fmtDate, fmtNum } from '../utils/format';
 import PageHero from '../components/PageHero';
 
-const ACCOUNT_TYPES = ['STANDARD', 'STANDARD_IC', 'PRO', 'PRO_IC', 'FREE', 'FREE_IC', 'REAL', 'VIRTUAL', 'DEMO'];
+// Real, current account types. REAL/VIRTUAL/DEMO are legacy (backward-compat
+// only) and the Demo/Live mode options already cover them, so they're omitted
+// here to avoid duplicate/redundant filter entries.
+const ACCOUNT_TYPES = ['STANDARD', 'STANDARD_IC', 'PRO', 'PRO_IC', 'FREE', 'FREE_IC'];
 const isDemo = (t) => ['DEMO', 'VIRTUAL'].includes(t);
 
 const STATUS_BADGE = {
@@ -30,6 +33,7 @@ export default function Accounts() {
   const [fGroup, setFGroup] = useState('');
   const [fFrom, setFFrom] = useState('');
   const [fTo, setFTo] = useState('');
+  const [groups, setGroups] = useState([]); // distinct account groups for the filter
 
   // expand + lazy children
   const [expanded, setExpanded] = useState({});      // userId -> bool
@@ -57,6 +61,15 @@ export default function Accounts() {
     finally { setLoading(false); }
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [page, fType, fStatus, fGroup, fFrom, fTo]);
+
+  // Load the distinct account groups once so the Group filter is a real list.
+  useEffect(() => {
+    let alive = true;
+    api.get('/admin/accounts/groups')
+      .then(({ data }) => { if (alive) setGroups(data.data || []); })
+      .catch(() => { if (alive) setGroups([]); });
+    return () => { alive = false; };
+  }, []);
 
   const onSearch = (e) => { e.preventDefault(); setPage(1); load(); };
 
@@ -141,7 +154,10 @@ export default function Accounts() {
         </div>
         <div>
           <label className="label">Group</label>
-          <input className="input w-28" value={fGroup} onChange={(e) => setFGroup(e.target.value)} placeholder="any" />
+          <select className="input w-32" value={fGroup} onChange={(e) => { setFGroup(e.target.value); setPage(1); }}>
+            <option value="">All</option>
+            {groups.map((g) => <option key={g} value={g}>{g}</option>)}
+          </select>
         </div>
         <div>
           <label className="label">From</label>
@@ -327,7 +343,6 @@ function AccountDetailModal({ accountId, onClose, onChanged }) {
   const [data, setData] = useState(null);
   const [positions, setPositions] = useState(null);
   const [noteText, setNoteText] = useState('');
-  const [lev, setLev] = useState('');
   const [grp, setGrp] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -339,7 +354,6 @@ function AccountDetailModal({ accountId, onClose, onChanged }) {
       ]);
       setData(d.data.data);
       setPositions(p.data.data || []);
-      setLev(String(d.data.data.account.leverage ?? ''));
       setGrp(d.data.data.account.group || 'default');
     } catch (e) { toast.error(errorMessage(e)); }
   };
@@ -355,7 +369,6 @@ function AccountDetailModal({ accountId, onClose, onChanged }) {
     setBusy(true);
     try {
       const a = data.account;
-      if (String(lev) && Number(lev) !== Number(a.leverage)) await api.post('/admin/accounts/bulk', { accountIds: [accountId], action: 'leverage', value: lev });
       if (grp && grp !== (a.group || 'default')) await api.post('/admin/accounts/bulk', { accountIds: [accountId], action: 'group', value: grp });
       toast.success('Account updated'); await load(); onChanged?.();
     } catch (e) { toast.error(errorMessage(e)); } finally { setBusy(false); }
@@ -393,13 +406,10 @@ function AccountDetailModal({ accountId, onClose, onChanged }) {
               <Field label="Trading" value={acc.isTradingEnabled === false ? 'Disabled' : 'Enabled'} />
             </div>
 
-            {/* Edit: leverage + group */}
+            {/* Edit: account group */}
             <div className="bg-bg-dark rounded p-3">
               <h3 className="text-sm font-semibold text-white mb-2">Edit</h3>
-              <div className="grid grid-cols-2 gap-3">
-                <div><label className="label">Leverage (1:N)</label><input className="input font-mono" value={lev} onChange={(e) => setLev(e.target.value)} /></div>
-                <div><label className="label">Account Group</label><input className="input" value={grp} onChange={(e) => setGrp(e.target.value)} /></div>
-              </div>
+              <div><label className="label">Account Group</label><input className="input" value={grp} onChange={(e) => setGrp(e.target.value)} /></div>
               <div className="flex flex-wrap gap-2 mt-3">
                 <button disabled={busy} onClick={saveEdit} className="btn-primary text-xs">Save changes</button>
                 {acc.status === 'ACTIVE' ? (

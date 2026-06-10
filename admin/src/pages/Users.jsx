@@ -4,6 +4,7 @@ import { api, errorMessage } from '../services/api';
 import { fmtDate, fmtNum } from '../utils/format';
 import { useAuthStore } from '../store/auth';
 import PageHero from '../components/PageHero';
+import { useConfirm } from '../components/ConfirmProvider';
 
 // ── Column registry ──────────────────────────────────────────────────
 // Canonical, ordered list of every available column. `actions` is pinned
@@ -24,6 +25,7 @@ const ALL_COLUMNS = [
   { key: 'platformEarnings',label: 'Platform Earnings',sortBy: null,             numeric: true },
   { key: 'kyc',             label: 'KYC',              sortBy: 'kyc' },
   { key: 'referredBy',      label: 'Referred By',      sortBy: null },
+  { key: 'referralEarnings',label: 'Referral Earnings',sortBy: null,             numeric: true },
   { key: 'status',          label: 'Status',           sortBy: 'status' },
   { key: 'joined',          label: 'Joined',           sortBy: 'joined' },
   { key: 'lastLogin',       label: 'Last Login',       sortBy: 'lastLogin' },
@@ -45,7 +47,7 @@ function defaultVisibility(role) {
     show(['userId', 'email', 'name', 'plan', 'walletBalance', 'kyc', 'status', 'joined']);
   } else { // ADMIN + fallback
     show(['userId', 'email', 'name', 'role', 'plan', 'walletBalance', 'totalDeposit',
-      'totalWithdrawal', 'totalPnl', 'platformEarnings', 'kyc', 'referredBy', 'status', 'joined']);
+      'totalWithdrawal', 'totalPnl', 'platformEarnings', 'kyc', 'referredBy', 'referralEarnings', 'status', 'joined']);
   }
   return vis;
 }
@@ -81,6 +83,7 @@ export default function Users() {
   const [kycFilter, setKycFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [planFilter, setPlanFilter] = useState('');
+  const [plans, setPlans] = useState(null); // real subscription plans (null = not loaded)
   const [roleFilter, setRoleFilter] = useState('');
   const [sortBy, setSortBy] = useState('joined');
   const [sortDir, setSortDir] = useState('desc');
@@ -156,6 +159,36 @@ export default function Users() {
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [page, kycFilter, statusFilter, planFilter, roleFilter, sortBy, sortDir]);
 
+  // Load the real subscription plans so the Plan filter reflects what
+  // actually exists (managed in the Plans page) instead of a hardcoded
+  // list. Falls back to PLAN_FILTER_OPTIONS if the request fails/empty.
+  useEffect(() => {
+    let alive = true;
+    api.get('/subscriptions/admin/plans')
+      .then(({ data }) => { if (alive) setPlans(data.data || []); })
+      .catch(() => { if (alive) setPlans([]); });
+    return () => { alive = false; };
+  }, []);
+
+  // Filter options as { code, label }. Backend matches on planCode (upper),
+  // and users without a subscription default to FREE — so FREE is always
+  // offered, then every real plan (deduped by code).
+  const planFilterOptions = useMemo(() => {
+    if (plans && plans.length) {
+      const seen = new Set();
+      const opts = [{ code: 'FREE', label: 'Free' }];
+      seen.add('FREE');
+      plans.forEach((p) => {
+        const code = String(p.code || '').toUpperCase();
+        if (!code || seen.has(code)) return;
+        seen.add(code);
+        opts.push({ code, label: p.name || (code.charAt(0) + code.slice(1).toLowerCase()) });
+      });
+      return opts;
+    }
+    return PLAN_FILTER_OPTIONS.map((p) => ({ code: p, label: p.charAt(0) + p.slice(1).toLowerCase() }));
+  }, [plans]);
+
   const onSearch = (e) => { e.preventDefault(); setPage(1); load(); };
 
   // "View As User" — open the user's account in READ-ONLY impersonation.
@@ -222,6 +255,7 @@ export default function Users() {
       case 'platformEarnings': return Number(u.platformEarnings || 0).toFixed(2);
       case 'kyc': return u.kycStatus || '';
       case 'referredBy': return u.referredBy ? (fullName(u.referredBy) || u.referredBy.email || '') : '';
+      case 'referralEarnings': return Number(u.referralEarnings || 0).toFixed(2);
       case 'status': return u.isActive ? 'Active' : 'Blocked';
       case 'joined': return u.createdAt ? new Date(u.createdAt).toISOString() : '';
       case 'lastLogin': return u.lastLoginAt ? new Date(u.lastLoginAt).toISOString() : '';
@@ -288,6 +322,16 @@ export default function Users() {
           </div>
         ) : <span className="text-gray-600">—</span>;
       }
+      case 'referralEarnings': {
+        const v = Number(u.referralEarnings) || 0;
+        return (
+          <span
+            title="Lifetime commissions this user earned by referring others (partner/referral program)"
+            className={`font-mono tabular-nums ${v > 0 ? 'text-emerald-300' : 'text-gray-400'}`}>
+            {money(v)}
+          </span>
+        );
+      }
       case 'status':
         return <span className={u.isActive ? 'text-bull text-xs' : 'text-bear text-xs'}>{u.isActive ? 'Active' : 'Blocked'}</span>;
       case 'joined': return <span className="text-xs text-gray-400">{fmtDate(u.createdAt)}</span>;
@@ -315,7 +359,7 @@ export default function Users() {
           <label className="label">Plan</label>
           <select className="input w-36" value={planFilter} onChange={(e) => { setPlanFilter(e.target.value); setPage(1); }}>
             <option value="">All</option>
-            {PLAN_FILTER_OPTIONS.map((p) => <option key={p} value={p}>{p.charAt(0) + p.slice(1).toLowerCase()}</option>)}
+            {planFilterOptions.map((o) => <option key={o.code} value={o.code}>{o.label}</option>)}
           </select>
         </div>
         <div>
@@ -653,6 +697,7 @@ function HistoryModal({ kind, user, onClose }) {
 }
 
 function UserDetail({ userId, onClose, onJumpToUser }) {
+  const confirm = useConfirm();
   const [data, setData] = useState(null);
   // Fetched once on mount — we surface the LP-credential warning when
   // admin sets a user to A_BOOK / HYBRID and the platform has no
@@ -699,7 +744,7 @@ function UserDetail({ userId, onClose, onJumpToUser }) {
     }
   };
   const resetLeverage = async () => {
-    if (!window.confirm('Reset leverage to plan default? The user will revert to their subscription tier.')) return;
+    if (!(await confirm('Reset leverage to plan default? The user will revert to their subscription tier.'))) return;
     try {
       await api.delete(`/admin/users/${userId}/leverage`, {
         data: { reason: 'Reset by admin' },

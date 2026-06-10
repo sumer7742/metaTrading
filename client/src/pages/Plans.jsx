@@ -3,8 +3,10 @@ import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import PageHero from '../components/PageHero';
+import { useConfirm } from '../components/ConfirmProvider';
 
 export default function Plans() {
+  const confirm = useConfirm();
   const [plans, setPlans] = useState([]);
   const [mySub, setMySub] = useState(null);
   const [effective, setEffective] = useState(null);
@@ -44,7 +46,7 @@ export default function Plans() {
     const prompt = isPostPaid
       ? `Activate ${plan.name}? You'll be billed per trade plus a monthly maintenance fee.`
       : `Switch to ${plan.name}? Your paid features will end immediately.`;
-    if (!window.confirm(prompt)) return;
+    if (!(await confirm(prompt))) return;
     try {
       await api.post('/subscriptions/subscribe', {
         planCode: plan.code,
@@ -99,7 +101,7 @@ export default function Plans() {
   };
 
   const cancel = async () => {
-    if (!window.confirm('Cancel your subscription? You will be downgraded to Free at the end of your billing period.')) return;
+    if (!(await confirm('Cancel your subscription? You will be downgraded to Free at the end of your billing period.'))) return;
     try {
       await api.post('/subscriptions/cancel', { reason: 'User requested' });
       toast.success('Subscription cancelled');

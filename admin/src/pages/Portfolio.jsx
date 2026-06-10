@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
-import DateFilter, { useDateFilter } from '../components/DateFilter';
 
 /**
  * Portfolio — platform-wide statistics. SUPER_ADMIN only (route-gated by
@@ -19,19 +18,19 @@ const download = (content, filename, type) => {
 };
 
 export default function Portfolio() {
-  const [range, setRange] = useDateFilter('portfolio.range', '7d');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const load = async () => {
     setLoading(true);
     try {
-      const { data: r } = await api.get('/admin/portfolio', { params: { fromDate: range.fromDate, toDate: range.toDate, period: range.period } });
+      // All-time totals — no date filter.
+      const { data: r } = await api.get('/admin/portfolio', { params: { period: 'all' } });
       setData(r.data);
     } catch (e) { toast.error(errorMessage(e)); }
     finally { setLoading(false); }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [range]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
   const k = data?.kpis;
   const series = data?.series || [];
@@ -54,7 +53,7 @@ export default function Portfolio() {
     if (!k) return;
     const rows = [
       ['Platform Portfolio Report'],
-      ['Range', `${fmtD(data.range.from)} - ${fmtD(data.range.to)}`, `(${data.range.period})`],
+      ['Range', `All-time (up to ${fmtD(data.range.to)})`],
       [],
       ['Metric', 'Value (USD)'],
       ...cards.map((c) => [c.label, Number(String(c.value).replace(/[$,]/g, ''))]),
@@ -72,7 +71,7 @@ export default function Portfolio() {
     const serRows = series.map((s) => `<tr><td>${s.date}</td><td>${s.deposits}</td><td>${s.withdrawals}</td><td>${s.closedPnl}</td></tr>`).join('');
     const html = `<html><head><meta charset="utf-8"></head><body>
       <h3>Platform Portfolio Report</h3>
-      <p>Range: ${fmtD(data.range.from)} - ${fmtD(data.range.to)} (${data.range.period})</p>
+      <p>Range: All-time (up to ${fmtD(data.range.to)})</p>
       <table border="1"><tr><th>Metric</th><th>Value (USD)</th></tr>${kpiRows}</table>
       <br/><table border="1"><tr><th>Date</th><th>Deposits</th><th>Withdrawals</th><th>Closed PnL</th></tr>${serRows}</table>
       </body></html>`;
@@ -87,17 +86,12 @@ export default function Portfolio() {
         <div>
           <div className="text-[11px] font-bold uppercase tracking-wider text-indigo-400">Super Admin</div>
           <h1 className="text-2xl font-extrabold text-white">Platform Portfolio</h1>
-          <p className="text-sm text-text-muted mt-0.5">Platform-wide financial overview{data ? ` · ${fmtD(data.range.from)} – ${fmtD(data.range.to)}` : ''}.</p>
+          <p className="text-sm text-text-muted mt-0.5">Platform-wide financial overview · all-time totals{data ? ` (up to ${fmtD(data.range.to)})` : ''}.</p>
         </div>
         <div className="flex items-center gap-2">
           <button onClick={exportCSV} disabled={!k} className="text-xs font-semibold px-3 py-2 rounded-lg border border-border-dark text-text-secondary hover:bg-bg-hover hover:text-white disabled:opacity-40">⭳ CSV</button>
           <button onClick={exportExcel} disabled={!k} className="text-xs font-semibold px-3 py-2 rounded-lg border border-border-dark text-text-secondary hover:bg-bg-hover hover:text-white disabled:opacity-40">⭳ Excel</button>
         </div>
-      </div>
-
-      {/* Period filter — global reusable DateFilter */}
-      <div className="mb-6">
-        <DateFilter value={range} onChange={setRange} />
       </div>
 
       {/* KPI cards */}
@@ -124,7 +118,7 @@ export default function Portfolio() {
       </div>
 
       <p className="text-[11px] text-text-muted mt-4">
-        Open PnL & exposures are live snapshots; deposits, withdrawals, closed PnL, revenue & commission are within the selected range.
+        Open PnL & exposures are live snapshots; deposits, withdrawals, closed PnL, revenue & commission are all-time totals.
         Platform Revenue = commissions + B-book counterparty result (broker gains user losses on internalised flow).
       </p>
     </div>

@@ -9,6 +9,7 @@ import { wsClient } from '../services/ws';
 import { api, errorMessage } from '../services/api';
 import { fmtNum } from '../utils/format';
 import toast from 'react-hot-toast';
+import { useConfirm } from '../components/ConfirmProvider';
 
 /**
  * Explore — Groww-style discovery page. Most sections pull from the live
@@ -335,6 +336,7 @@ function fmtPrice(raw, precision) {
 
 // ─── Page ────────────────────────────────────────────────────────────────
 export default function Explore() {
+  const confirm = useConfirm();
   const navigate = useNavigate();
   const { rows: instruments, loading } = useInstruments();
 
@@ -424,7 +426,7 @@ export default function Explore() {
   };
   const closeAllPositions = async () => {
     if (!livePositions.length) return;
-    if (!window.confirm(`Close all ${livePositions.length} open position(s)?`)) return;
+    if (!(await confirm(`Close all ${livePositions.length} open position(s)?`))) return;
     setBulkBusy(true);
     try {
       const accountId = livePositions[0]?.accountId;
@@ -443,7 +445,7 @@ export default function Explore() {
   };
   const cancelAllOrders = async () => {
     if (!pendingOrders.length) return;
-    if (!window.confirm(`Cancel all ${pendingOrders.length} pending order(s)?`)) return;
+    if (!(await confirm(`Cancel all ${pendingOrders.length} pending order(s)?`))) return;
     setBulkBusy(true);
     // No bulk endpoint exists — fan out single deletes and tally.
     const results = await Promise.allSettled(

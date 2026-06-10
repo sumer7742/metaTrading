@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import PageHero from '../components/PageHero';
 import CopySetupModal from '../components/CopySetupModal';
+import { useConfirm } from '../components/ConfirmProvider';
 
 /**
  * Copy Trading hub — three sections in one page:
@@ -544,6 +545,7 @@ function FeedRow({ event }) {
 }
 
 function MyCopyRow({ rel, onAction }) {
+  const confirm = useConfirm();
   const m = rel.master || {};
   const running = Number(rel.runningPnl || 0);
   const tone = rel.status === 'ACTIVE' ? 'bg-bull/15 text-bull'
@@ -582,8 +584,8 @@ function MyCopyRow({ rel, onAction }) {
         )}
         {rel.status !== 'STOPPED' && (
           <button
-            onClick={() => {
-              if (window.confirm('Stop copying this trader? Open mirrored trades stay open until they close on their own.')) {
+            onClick={async () => {
+              if (await confirm('Stop copying this trader? Open mirrored trades stay open until they close on their own.')) {
                 onAction(rel._id, 'stop');
               }
             }}

@@ -16,10 +16,23 @@ export const ROLES = Object.freeze({
   SUPER_ADMIN: 'SUPER_ADMIN',
   ADMIN: 'ADMIN',
   MANAGER: 'MANAGER',
+  // Financial Department (simplified — managers process directly; finance
+  // staff only see /finance)
+  FINANCIAL_ADMIN: 'FINANCIAL_ADMIN',
+  DEPOSIT_MANAGER: 'DEPOSIT_MANAGER',
+  WITHDRAWAL_MANAGER: 'WITHDRAWAL_MANAGER',
+  // Read-only oversight: regular checking, fraud detection, random inspection.
+  AUDIT_MANAGER: 'AUDIT_MANAGER',
 });
 
+export const FINANCE_ROLES = [
+  ROLES.FINANCIAL_ADMIN,
+  ROLES.DEPOSIT_MANAGER, ROLES.WITHDRAWAL_MANAGER,
+  ROLES.AUDIT_MANAGER,
+];
+
 // Every role permitted into the admin console (mirrors the auth-store guard).
-export const ADMIN_APP_ROLES = [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.MANAGER];
+export const ADMIN_APP_ROLES = [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.MANAGER, ...FINANCE_ROLES];
 
 // Landing route per role — used immediately after login AND as the safe
 // fallback when a role hits a page it isn't allowed to see.
@@ -27,6 +40,13 @@ const ROLE_HOME = Object.freeze({
   [ROLES.SUPER_ADMIN]: '/dashboard',
   [ROLES.ADMIN]: '/dashboard',
   [ROLES.MANAGER]: '/my-users',
+  // All finance staff land on the Finance workspace.
+  [ROLES.FINANCIAL_ADMIN]: '/finance',
+  [ROLES.DEPOSIT_MANAGER]: '/finance',
+  [ROLES.DEPOSIT_OFFICER]: '/finance',
+  [ROLES.WITHDRAWAL_MANAGER]: '/finance',
+  [ROLES.WITHDRAWAL_OFFICER]: '/finance',
+  [ROLES.AUDIT_MANAGER]: '/audit-compliance',
 });
 
 /**
@@ -46,6 +66,7 @@ export const DEFAULT_ROUTE_ROLES = [ROLES.SUPER_ADMIN, ROLES.ADMIN];
 export const ROUTE_ACCESS = Object.freeze({
   '/dashboard':      [ROLES.SUPER_ADMIN, ROLES.ADMIN],
   '/portfolio':      [ROLES.SUPER_ADMIN],   // platform portfolio — super admin only
+  '/market-exposure': [ROLES.SUPER_ADMIN, ROLES.ADMIN], // exposure dashboard — managers/users blocked
 
   '/my-users':       [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.MANAGER],
   '/support-chats':  [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.MANAGER],
@@ -53,7 +74,54 @@ export const ROUTE_ACCESS = Object.freeze({
   '/managers':       [ROLES.SUPER_ADMIN, ROLES.ADMIN],
   '/assignments':    [ROLES.SUPER_ADMIN, ROLES.ADMIN],
   '/hierarchy-tree': [ROLES.SUPER_ADMIN],
+
+  // Financial Department workspace — finance staff + super admin.
+  '/finance':        [ROLES.SUPER_ADMIN, ...FINANCE_ROLES],
+
+  // Audit & Compliance dashboard — Audit Manager + Super Admin only.
+  '/audit-compliance': [ROLES.SUPER_ADMIN, ROLES.AUDIT_MANAGER],
+
+  // Manager Access Control — Super Admin always; Admin only when delegation
+  // is enabled (the page itself enforces that; managers never see it).
+  '/access-control': [ROLES.SUPER_ADMIN, ROLES.ADMIN],
 });
+
+// Manager Access Control: which per-manager permission KEY gates each admin
+// route. For a MANAGER, a mapped route is visible/openable ONLY when that
+// permission is toggled ON (Super-Admin controlled). Unmapped routes fall
+// back to the static ROUTE_ACCESS allow-list above.
+export const MANAGER_ROUTE_PERMISSION = Object.freeze({
+  '/dashboard': 'DASHBOARD',
+  '/my-users': 'USER_MANAGEMENT',
+  '/deposits': 'DEPOSITS',
+  '/withdrawals': 'WITHDRAWALS',
+  '/portfolio': 'PORTFOLIO',
+  '/subscription-wallets': 'WALLET_MANAGEMENT',
+  '/bonus-wallets': 'WALLET_MANAGEMENT',
+  '/reports': 'REPORTS',
+  '/audit': 'AUDIT_LOGS',
+  '/support-chats': 'SUPPORT_TICKETS',
+  '/partners': 'REFERRAL_MANAGEMENT',
+  '/finance': 'FINANCE_ACCESS',
+  '/settings': 'SETTINGS',
+});
+
+/**
+ * Permission-aware access check (the authority for managers). Use this in the
+ * sidebar + route guard so a manager's enabled/disabled modules are honored
+ * live from their loaded permission map.
+ */
+export const canUserAccessPath = (user, pathname) => {
+  const role = user?.role;
+  if (!role) return false;
+  if (role === ROLES.SUPER_ADMIN) return true;
+  if (role === ROLES.MANAGER) {
+    const key = MANAGER_ROUTE_PERMISSION[pathname];
+    if (key) return !!(user.managerPermissions && user.managerPermissions[key]);
+    return canAccess(role, accessForPath(pathname));
+  }
+  return canAccess(role, accessForPath(pathname));
+};
 
 /**
  * Can `role` access a route whose allow-list is `allowedRoles`?

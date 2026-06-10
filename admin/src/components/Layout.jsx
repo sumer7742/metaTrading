@@ -1,6 +1,6 @@
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
-import { canAccessPath } from '../config/roles';
+import { canUserAccessPath } from '../config/roles';
 
 // Inline SVG icons — keeps bundle slim and theme-tinted via currentColor.
 const Icon = ({ d, ...p }) => (
@@ -40,6 +40,7 @@ const NAV_SECTIONS = [
       { to: '/users', icon: I.users, label: 'Users' },
       { to: '/accounts', icon: I.plans, label: 'Accounts' },
       { to: '/instruments', icon: I.instruments, label: 'Instruments' },
+      { to: '/market-exposure', icon: I.reports, label: 'Market Exposure' },
     ],
   },
   {
@@ -49,12 +50,14 @@ const NAV_SECTIONS = [
       { to: '/managers',       icon: I.users, label: 'Managers' },
       { to: '/assignments',    icon: I.users, label: 'Assignments' },
       { to: '/hierarchy-tree', icon: I.dashboard, label: 'Hierarchy Tree' },
+      { to: '/access-control', icon: I.security, label: 'Manager Permissions' },
       { to: '/my-users',       icon: I.users, label: 'My Users' },
     ],
   },
   {
     title: 'Money',
     items: [
+      { to: '/finance', icon: I.deposit, label: 'Finance Dept' },
       { to: '/deposits', icon: I.deposit, label: 'Deposits' },
       { to: '/withdrawals', icon: I.withdrawal, label: 'Withdrawals' },
       { to: '/plans', icon: I.plans, label: 'Plans' },
@@ -76,6 +79,7 @@ const NAV_SECTIONS = [
     items: [
       { to: '/reports', icon: I.reports, label: 'Reports' },
       { to: '/execution', icon: I.instruments, label: 'Execution' },
+      { to: '/audit-compliance', icon: I.security, label: 'Audit & Compliance' },
       { to: '/audit', icon: I.audit, label: 'Audit Log' },
     ],
   },
@@ -92,14 +96,13 @@ const NAV_SECTIONS = [
 // Visibility is driven by the central route-access config (keyed by path), so
 // the sidebar and the route guards always agree. SUPER_ADMIN sees everything;
 // managers only see routes whose allow-list includes MANAGER.
-const canSee = (item, role) => canAccessPath(role, item.to);
-
 export default function Layout({ children }) {
   const { user, logout } = useAuthStore();
   const navigate = useNavigate();
   const role = user?.role;
+  // Permission-aware: managers only see modules their Super Admin enabled.
   const navSections = NAV_SECTIONS
-    .map((s) => ({ ...s, items: s.items.filter((it) => canSee(it, role)) }))
+    .map((s) => ({ ...s, items: s.items.filter((it) => canUserAccessPath(user, it.to)) }))
     .filter((s) => s.items.length);
 
   const handleLogout = async () => {

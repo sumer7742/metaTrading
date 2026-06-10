@@ -3,8 +3,10 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { fmtNum, fmtDate } from '../utils/format';
 import PageHero from '../components/PageHero';
+import { useConfirm } from '../components/ConfirmProvider';
 
 export default function Deposits() {
+  const askConfirm = useConfirm();
   const [items, setItems] = useState([]);
   const [filter, setFilter] = useState('PENDING');
   const [viewing, setViewing] = useState(null); // deposit being viewed in detail modal
@@ -32,7 +34,7 @@ export default function Deposits() {
   }, [filter]);
 
   const confirm = async (id) => {
-    if (!window.confirm('Confirm this deposit? This will credit the user wallet immediately.')) return;
+    if (!(await askConfirm('Confirm this deposit? This will credit the user wallet immediately.'))) return;
     try {
       await api.post(`/admin/deposits/${id}/confirm`);
       toast.success('Deposit confirmed — user wallet credited');

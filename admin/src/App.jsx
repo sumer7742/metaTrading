@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from './store/auth';
-import { accessForPath, canAccess, roleHome } from './config/roles';
+import { canUserAccessPath, roleHome } from './config/roles';
 import ProtectedRoute from './components/ProtectedRoute';
 import Layout from './components/Layout';
 import Login from './pages/Login';
@@ -10,8 +10,11 @@ import Portfolio from './pages/Portfolio';
 import Users from './pages/Users';
 import Accounts from './pages/Accounts';
 import Instruments from './pages/Instruments';
+import MarketExposure from './pages/MarketExposure';
 import Withdrawals from './pages/Withdrawals';
 import Deposits from './pages/Deposits';
+import Finance from './pages/Finance';
+import Audit from './pages/Audit';
 import AuditLog from './pages/AuditLog';
 import Reports from './pages/Reports';
 import ExecutionStats from './pages/ExecutionStats';
@@ -26,6 +29,7 @@ import UserTransfers from './pages/UserTransfers';
 import Partners from './pages/Partners';
 import Admins from './pages/Admins';
 import Managers from './pages/Managers';
+import ManagerPermissions from './pages/ManagerPermissions';
 import Assignments from './pages/Assignments';
 import ManagerDashboard from './pages/ManagerDashboard';
 import HierarchyTree from './pages/HierarchyTree';
@@ -39,7 +43,10 @@ function RoleGate({ children }) {
   const { user } = useAuthStore();
   const { pathname } = useLocation();
   if (!user) return null; // ProtectedRoute handles the unauthenticated case
-  if (!canAccess(user.role, accessForPath(pathname))) {
+  // Permission-aware: a manager hitting a disabled module's URL is bounced to
+  // their home (403 effect) — direct URL access can't bypass a toggled-off
+  // permission. Backend middleware blocks the APIs regardless.
+  if (!canUserAccessPath(user, pathname)) {
     return <Navigate to={roleHome(user.role)} replace />;
   }
   return children;
@@ -64,8 +71,17 @@ function HomeRedirect() {
 }
 
 export default function App() {
-  const { init } = useAuthStore();
+  const { init, refresh } = useAuthStore();
   useEffect(() => { init(); }, []);
+  // Apply Manager Access Control changes without a logout: re-pull /auth/me on
+  // tab focus and every 60s so toggled permissions / disabled access take
+  // effect promptly for a signed-in manager.
+  useEffect(() => {
+    const onFocus = () => refresh();
+    window.addEventListener('focus', onFocus);
+    const id = setInterval(refresh, 60000);
+    return () => { window.removeEventListener('focus', onFocus); clearInterval(id); };
+  }, [refresh]);
 
   return (
     <Routes>
@@ -79,8 +95,11 @@ export default function App() {
       <Route path="/users" element={wrap(<Users />)} />
       <Route path="/accounts" element={wrap(<Accounts />)} />
       <Route path="/instruments" element={wrap(<Instruments />)} />
+      <Route path="/market-exposure" element={wrap(<MarketExposure />)} />
       <Route path="/withdrawals" element={wrap(<Withdrawals />)} />
       <Route path="/deposits" element={wrap(<Deposits />)} />
+      <Route path="/finance" element={wrap(<Finance />)} />
+      <Route path="/audit-compliance" element={wrap(<Audit />)} />
       <Route path="/audit" element={wrap(<AuditLog />)} />
       <Route path="/reports" element={wrap(<Reports />)} />
       <Route path="/execution" element={wrap(<ExecutionStats />)} />
@@ -97,6 +116,7 @@ export default function App() {
       <Route path="/managers" element={wrap(<Managers />)} />
       <Route path="/assignments" element={wrap(<Assignments />)} />
       <Route path="/hierarchy-tree" element={wrap(<HierarchyTree />)} />
+      <Route path="/access-control" element={wrap(<ManagerPermissions />)} />
       <Route path="/my-users" element={wrap(<ManagerDashboard />)} />
       <Route path="/support-chats" element={wrap(<ManagerChats />)} />
 

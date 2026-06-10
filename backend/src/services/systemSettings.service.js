@@ -19,6 +19,9 @@ const DEFAULTS = {
   // Max number of top-level platform admins (Hierarchy → Admins). Super-admin
   // editable; falls back to the hard cap in config/hierarchy.js when unset.
   'hierarchy.maxAdmins': 4,
+  // Manager Access Control: when true, an Admin may edit the permissions of
+  // managers under them. When false, only the Super Admin can.
+  'manager.allowAdminManagePerms': false,
   // ── Help/Support chat file-upload limits (Super-Admin configurable) ──
   // Applied immediately (no redeploy). Per-role overrides where a 0 means
   // "inherit the global value". Executable/unsafe extensions are blocked in

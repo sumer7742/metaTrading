@@ -6,6 +6,7 @@ import { useTradeSettings } from '../store/tradeSettings';
 import { useThemeStore } from '../store/theme';
 import AssetIcon from './AssetIcon';
 import WatchlistButton from './WatchlistButton';
+import { useConfirm } from './ConfirmProvider';
 
 // Format an instrument-override expiry as "10 Jun 2026 22:00 UTC".
 const fmtOverrideTime = (d) => {
@@ -163,7 +164,10 @@ export default function OrderForm({
   // Both regular and one-click modes expose Market + Pending tabs so users
   // can queue limit orders even in one-click mode (the "one-click" part
   // just refers to skipping the confirm-dialog, not restricting to market).
-  const [orderMode, setOrderMode] = useState('LIMIT');
+  // Default to MARKET (the "Market" tab) — most orders are market; Pending
+  // (LIMIT) is the deliberate, less-common choice.
+  const [orderMode, setOrderMode] = useState('MARKET');
+  const confirm = useConfirm();
 
   // Risk-calculator inputs — only shown when riskCalc mode is active.
   const [riskPct, setRiskPct] = useState('1');     // % of free margin to risk
@@ -337,7 +341,7 @@ export default function OrderForm({
     if (confirmBeforeOrder && !isOneClick) {
       const sideLabel = effectiveSide === 'BUY' ? 'Buy' : 'Sell';
       const modeLabel = orderMode === 'LIMIT' ? `LIMIT @ ${price}` : 'MARKET';
-      const ok = window.confirm(`Confirm ${sideLabel} ${quantity} ${instrument?.baseCurrency} (${modeLabel}) with 1:${leverage} leverage?`);
+      const ok = await confirm(`Confirm ${sideLabel} ${quantity} ${instrument?.baseCurrency} (${modeLabel}) with 1:${leverage} leverage?`);
       if (!ok) return;
     }
     setLoading(true);

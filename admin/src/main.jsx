@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import App from './App.jsx';
+import ConfirmProvider from './components/ConfirmProvider.jsx';
 import './index.css';
 
 // Match React Router's basename to Vite's build-time base so all client-
@@ -13,7 +14,9 @@ const basename = (import.meta.env.BASE_URL || '/').replace(/\/$/, '') || '/';
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <BrowserRouter basename={basename}>
-      <App />
+      <ConfirmProvider>
+        <App />
+      </ConfirmProvider>
       <Toaster
         position="top-right"
         toastOptions={{

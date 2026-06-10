@@ -120,6 +120,7 @@ const listUsers = asyncHandler(async (req, res) => {
   const { SubscriptionWallet } = require('../models/SubscriptionWallet');
   const { BonusWallet } = require('../models/BonusWallet');
   const { Subscription, Plan } = require('../models/Subscription');
+  const { Commission } = require('../models/Compliance');
   const currencyService = require('../services/currencyService');
 
   // One live FX rate so non-USD trading balances normalise to USD INSIDE
@@ -183,6 +184,13 @@ const listUsers = asyncHandler(async (req, res) => {
         { $match: { $expr: { $eq: ['$userId', '$$uid'] } } },
         { $group: { _id: null, total: { $sum: num('$balance') } } },
       ], as: '_bw' } },
+    // Referral earnings — lifetime commissions earned by this user as the
+    // referrer (matches the partner dashboard's "lifetime" figure). Amounts
+    // are stored positive; we sum across all statuses.
+    { $lookup: { from: Commission.collection.collectionName, let: { uid: '$_id' }, pipeline: [
+        { $match: { $expr: { $eq: ['$referrerId', '$$uid'] } } },
+        { $group: { _id: null, total: { $sum: num('$amount') } } },
+      ], as: '_ref' } },
     // Subscription plan (code + name; defaults to Free).
     { $lookup: { from: Subscription.collection.collectionName, let: { uid: '$_id' }, pipeline: [
         { $match: { $expr: { $eq: ['$userId', '$$uid'] } } },
@@ -205,6 +213,7 @@ const listUsers = asyncHandler(async (req, res) => {
         ] },
         planCode: { $toUpper: { $ifNull: [{ $arrayElemAt: ['$_sub.planCode', 0] }, 'FREE'] } },
         planName: { $ifNull: [{ $arrayElemAt: ['$_sub.planName', 0] }, 'Free'] },
+        referralEarnings: { $ifNull: [{ $arrayElemAt: ['$_ref.total', 0] }, 0] },
     } },
 
     ...(plan ? [{ $match: { planCode: String(plan).toUpperCase() } }] : []),
@@ -217,7 +226,7 @@ const listUsers = asyncHandler(async (req, res) => {
           { $limit: lim },
           { $project: {
               passwordHash: 0, twoFactorSecret: 0, refreshTokens: 0,
-              _dep: 0, _wd: 0, _pos: 0, _tw: 0, _mw: 0, _bw: 0, _sub: 0,
+              _dep: 0, _wd: 0, _pos: 0, _tw: 0, _mw: 0, _bw: 0, _sub: 0, _ref: 0,
           } },
         ],
         meta: [{ $count: 'total' }],
@@ -263,6 +272,7 @@ const listUsers = asyncHandler(async (req, res) => {
       totalDeposit:   round2(dep),
       totalWithdrawal: round2(u.totalWithdrawal),
       totalPnl:       round2(pnl),
+      referralEarnings: round2(Number(u.referralEarnings) || 0),
       // Platform earnings generated FROM this user = commissions/fees the user
       // paid + the broker's counterparty result on internalised flow (user's
       // net losses are the broker's gain). Mirrors Portfolio's platformRevenue
@@ -1841,6 +1851,182 @@ const listAccountUsers = asyncHandler(async (req, res) => {
   sendSuccess(res, { items, total, page: Number(page) || 1, limit: lim });
 });
 
+// GET /admin/accounts/groups — distinct account groups (hierarchy-scoped) so
+// the Accounts filter can offer a real list instead of a free-text box.
+const listAccountGroups = asyncHandler(async (req, res) => {
+  const match = {};
+  const scopeIds = await _accountScopeUserIds(req.user);
+  if (scopeIds) match.userId = { $in: scopeIds };
+  const groups = (await TradingAccount.distinct('group', match))
+    .filter((g) => g && String(g).trim())
+    .map((g) => String(g))
+    .sort((a, b) => a.localeCompare(b));
+  sendSuccess(res, groups);
+});
+
+// GET /admin/instruments/live-volume — live OPEN-position volume per symbol,
+// split by side (buy=long, sell=short) plus the net (buy − sell). Powers the
+// "Live Buy / Sell / Net" columns on the Instruments page. Kept separate from
+// the shared /instruments list so that endpoint stays cheap.
+const round4 = (n) => Math.round((Number(n) || 0) * 1e4) / 1e4;
+const instrumentLiveVolume = asyncHandler(async (req, res) => {
+  const agg = await Position.aggregate([
+    { $match: { status: 'OPEN' } },
+    { $group: { _id: { symbol: '$symbol', side: '$side' }, vol: { $sum: _num('$quantity') } } },
+  ]);
+  const map = {};
+  for (const r of agg) {
+    const sym = r._id.symbol;
+    if (!map[sym]) map[sym] = { buy: 0, sell: 0, net: 0 };
+    if (r._id.side === 'BUY') map[sym].buy = round4(r.vol);
+    else if (r._id.side === 'SELL') map[sym].sell = round4(r.vol);
+  }
+  for (const sym of Object.keys(map)) map[sym].net = round4(map[sym].buy - map[sym].sell);
+  sendSuccess(res, map);
+});
+
+// ─── Market Exposure Dashboard ────────────────────────────────────────
+// SUPER_ADMIN → whole platform; ADMIN → own hierarchy only. MANAGER/USER
+// are blocked upstream by requireAdmin. Only OPEN positions count;
+// exposure value = lots × current market price, normalised to USD.
+
+// Effective user-id set for an exposure query: the actor's hierarchy scope,
+// optionally narrowed by adminId / managerId / userId filters. Returns
+// null = whole platform (super admin, no narrowing).
+async function _exposureUserIds(actor, query) {
+  const ids = await _accountScopeUserIds(actor); // null (all) | ObjectId[]
+  const extra = {};
+  if (query.adminId)   extra.adminId = query.adminId;
+  if (query.managerId) extra.managerId = query.managerId;
+  if (query.userId)    extra._id = query.userId;
+  if (Object.keys(extra).length === 0) return ids;
+  const narrowed = await User.find(extra).distinct('_id');
+  if (ids === null) return narrowed;
+  const allow = new Set(narrowed.map(String));
+  return ids.filter((id) => allow.has(String(id)));
+}
+
+// Core aggregation shared by all exposure endpoints.
+async function _computeExposure(userIds, query = {}) {
+  const match = { status: 'OPEN' };
+  if (userIds) match.userId = { $in: userIds };
+  if (query.symbol) match.symbol = String(query.symbol).toUpperCase();
+  if (query.from || query.to) {
+    match.openedAt = {};
+    if (query.from) match.openedAt.$gte = new Date(query.from);
+    if (query.to)   match.openedAt.$lte = new Date(new Date(query.to).setHours(23, 59, 59, 999));
+  }
+
+  const agg = await Position.aggregate([
+    { $match: match },
+    { $group: {
+        _id: { symbol: '$symbol', side: '$side' },
+        lots: { $sum: _num('$quantity') },
+        positions: { $sum: 1 },
+        users: { $addToSet: '$userId' },
+    } },
+  ]);
+
+  const symbols = [...new Set(agg.map((a) => a._id.symbol))];
+  const insts = symbols.length
+    ? await Instrument.find({ symbol: { $in: symbols } }).select('symbol lastPrice quoteCurrency pricePrecision').lean()
+    : [];
+  const instMap = new Map(insts.map((i) => [i.symbol, i]));
+
+  let usdInr = 83;
+  try { usdInr = Number(await require('../services/currencyService').getUsdInrRate()) || 83; } catch (_) {}
+  const toUsd = (val, cur) => (cur === 'INR' ? val / usdInr : val);
+
+  const rows = {};
+  const userSet = new Set();
+  for (const a of agg) {
+    const sym = a._id.symbol;
+    const inst = instMap.get(sym) || {};
+    const price = Number(inst.lastPrice) || 0;
+    const amount = toUsd(a.lots * price, inst.quoteCurrency);
+    const r = rows[sym] || (rows[sym] = { symbol: sym, lastPrice: price, buyLots: 0, buyAmount: 0, buyPositions: 0, sellLots: 0, sellAmount: 0, sellPositions: 0 });
+    (a.users || []).forEach((u) => userSet.add(String(u)));
+    if (a._id.side === 'BUY')       { r.buyLots = a.lots;  r.buyAmount = amount;  r.buyPositions = a.positions; }
+    else if (a._id.side === 'SELL') { r.sellLots = a.lots; r.sellAmount = amount; r.sellPositions = a.positions; }
+  }
+
+  const instruments = Object.values(rows).map((r) => {
+    const buyAmount = round2(r.buyAmount);
+    const sellAmount = round2(r.sellAmount);
+    const total = buyAmount + sellAmount;
+    const net = round2(buyAmount - sellAmount);
+    return {
+      symbol: r.symbol,
+      lastPrice: r.lastPrice,
+      buyLots: round4(r.buyLots), buyAmount, buyPositions: r.buyPositions,
+      sellLots: round4(r.sellLots), sellAmount, sellPositions: r.sellPositions,
+      net,
+      buyPct: total > 0 ? round2((buyAmount / total) * 100) : 0,
+      sellPct: total > 0 ? round2((sellAmount / total) * 100) : 0,
+      status: net > 0 ? 'NET BUY' : net < 0 ? 'NET SELL' : 'BALANCED',
+    };
+  }).sort((a, b) => (b.buyAmount + b.sellAmount) - (a.buyAmount + a.sellAmount));
+
+  const totalBuyAmount = round2(instruments.reduce((s, r) => s + r.buyAmount, 0));
+  const totalSellAmount = round2(instruments.reduce((s, r) => s + r.sellAmount, 0));
+  const grand = totalBuyAmount + totalSellAmount;
+
+  return {
+    totalUsers: userSet.size,
+    totalBuyAmount,
+    totalSellAmount,
+    difference: round2(totalBuyAmount - totalSellAmount),
+    buyPercentage: grand > 0 ? round2((totalBuyAmount / grand) * 100) : 0,
+    sellPercentage: grand > 0 ? round2((totalSellAmount / grand) * 100) : 0,
+    instruments,
+  };
+}
+
+const exposureSummary = asyncHandler(async (req, res) => {
+  const ids = await _exposureUserIds(req.user, req.query);
+  const d = await _computeExposure(ids, req.query);
+  sendSuccess(res, {
+    totalUsers: d.totalUsers,
+    totalBuyAmount: d.totalBuyAmount,
+    totalSellAmount: d.totalSellAmount,
+    difference: d.difference,
+    buyPercentage: d.buyPercentage,
+    sellPercentage: d.sellPercentage,
+  });
+});
+
+const exposureInstruments = asyncHandler(async (req, res) => {
+  const ids = await _exposureUserIds(req.user, req.query);
+  const d = await _computeExposure(ids, req.query);
+  sendSuccess(res, d.instruments);
+});
+
+const exposureBuy = asyncHandler(async (req, res) => {
+  const ids = await _exposureUserIds(req.user, req.query);
+  const d = await _computeExposure(ids, req.query);
+  sendSuccess(res, d.instruments
+    .filter((r) => r.buyPositions > 0)
+    .map((r) => ({ symbol: r.symbol, positions: r.buyPositions, lots: r.buyLots, amount: r.buyAmount }))
+    .sort((a, b) => b.amount - a.amount));
+});
+
+const exposureSell = asyncHandler(async (req, res) => {
+  const ids = await _exposureUserIds(req.user, req.query);
+  const d = await _computeExposure(ids, req.query);
+  sendSuccess(res, d.instruments
+    .filter((r) => r.sellPositions > 0)
+    .map((r) => ({ symbol: r.symbol, positions: r.sellPositions, lots: r.sellLots, amount: r.sellAmount }))
+    .sort((a, b) => b.amount - a.amount));
+});
+
+const exposureNet = asyncHandler(async (req, res) => {
+  const ids = await _exposureUserIds(req.user, req.query);
+  const d = await _computeExposure(ids, req.query);
+  sendSuccess(res, d.instruments.map((r) => ({
+    symbol: r.symbol, buyAmount: r.buyAmount, sellAmount: r.sellAmount, difference: r.net, status: r.status,
+  })));
+});
+
 // GET /admin/accounts/users/:userId/accounts — lazy child list (balance/equity/margin).
 const getUserAccounts = asyncHandler(async (req, res) => {
   await _assertUserInScope(req.user, req.params.userId);
@@ -1915,6 +2101,8 @@ const bulkAccountAction = asyncHandler(async (req, res) => {
 // ── Portfolio (SUPER_ADMIN only) — platform-wide statistics ──────────
 function _portfolioRange({ period, from, to, fromDate, toDate }) {
   const now = new Date();
+  // All-time: everything since inception up to now (no date filtering).
+  if (period === 'all') return { start: new Date(0), end: now, period: 'all' };
   // Global DateFilter sends concrete fromDate/toDate for every preset; prefer
   // them (fall back to the legacy `from`/`to`, then period keys).
   const f = fromDate || from;
@@ -2311,6 +2499,13 @@ module.exports = {
   setAccountStatus,
   addAccountNote,
   listAccountUsers,
+  listAccountGroups,
+  instrumentLiveVolume,
+  exposureSummary,
+  exposureInstruments,
+  exposureBuy,
+  exposureSell,
+  exposureNet,
   getUserAccounts,
   bulkAccountAction,
   getPortfolio,

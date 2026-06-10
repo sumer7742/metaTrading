@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useTradeSettings } from '../../store/tradeSettings';
+import { useConfirm } from '../ConfirmProvider';
 import {
   Toggle, Checkbox, Dropdown,
   SettingsSection, SettingsRow,
@@ -12,6 +13,7 @@ import {
  */
 export default function TradeSettingsPanel() {
   const s = useTradeSettings();
+  const confirm = useConfirm();
   const setVal = s.set;
   const [query, setQuery] = useState('');
 
@@ -184,8 +186,8 @@ export default function TradeSettingsPanel() {
       <div className="border-t border-border-subtle px-3 py-2 shrink-0 flex items-center justify-between gap-2 bg-bg-hover/30">
         <button
           type="button"
-          onClick={() => {
-            if (window.confirm('Reset all trading settings to defaults?')) s.reset();
+          onClick={async () => {
+            if (await confirm('Reset all trading settings to defaults?')) s.reset();
           }}
           className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md border border-border-dark text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors text-[11px] font-semibold"
         >

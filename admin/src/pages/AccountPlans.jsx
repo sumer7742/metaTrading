@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import PageHero from '../components/PageHero';
+import { useConfirm } from '../components/ConfirmProvider';
 
 /**
  * Account Plans management — dynamic CRUD over the AccountPlan
@@ -10,6 +11,7 @@ import PageHero from '../components/PageHero';
  * tier added later). Analytics strip shows accounts-per-tier.
  */
 export default function AccountPlans() {
+  const confirm = useConfirm();
   const [plans, setPlans] = useState([]);
   const [analytics, setAnalytics] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -56,7 +58,7 @@ export default function AccountPlans() {
   };
 
   const remove = async (plan) => {
-    if (!window.confirm(`Delete plan "${plan.name}"? This is permanent.`)) return;
+    if (!(await confirm(`Delete plan "${plan.name}"? This is permanent.`))) return;
     try {
       await api.delete(`/account-plans/admin/${plan._id}`);
       toast.success('Plan deleted');

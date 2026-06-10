@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { fmtNum } from '../utils/format';
 import PageHero from '../components/PageHero';
+import { useConfirm } from '../components/ConfirmProvider';
 
 // Instrument shape — routing fields (mode, bBookEnabled) are intentionally
 // excluded. Routing is now a platform-wide setting; instruments only carry
@@ -28,9 +29,10 @@ const EMPTY = {
   // to `fixedVolumeValue` and the client volume input is read-only.
   fixedVolumeEnabled: false,
   fixedVolumeValue: '0',
-  // Optional daily volume cap (lots). Off by default = unlimited.
+  // Optional daily volume caps (lots), separate for BUY and SELL. Off = unlimited.
   dailyVolumeLimitEnabled: false,
-  dailyVolumeLimit: '',
+  dailyBuyLimit: '',
+  dailySellLimit: '',
   // Per-instrument routing override — mirrors the user-level override.
   // INHERIT = use the global Settings → Routing Mode. An explicit value
   // (INTERNAL_MATCHING / A_BOOK / B_BOOK / HYBRID) wins over the global
@@ -52,6 +54,15 @@ const fmtUtc = (d) => {
     return new Date(d).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'UTC' }) + ' UTC';
   } catch { return ''; }
 };
+// Volume (lots) — dynamic precision so big totals stay clean and small
+// fractional lots don't collapse to 0.
+const fmtVol = (v) => {
+  const n = Number(v) || 0;
+  if (n === 0) return '0';
+  const abs = Math.abs(n);
+  const d = abs >= 100 ? 0 : abs >= 1 ? 2 : abs >= 0.01 ? 4 : 6;
+  return n.toFixed(d);
+};
 const STATUS_TONE = {
   active:   'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
   upcoming: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
@@ -60,13 +71,19 @@ const STATUS_TONE = {
 };
 
 export default function Instruments() {
+  const confirm = useConfirm();
   const [items, setItems] = useState([]);
+  const [liveVol, setLiveVol] = useState({}); // symbol -> { buy, sell, net }
   const [editing, setEditing] = useState(null);
   const [overridesFor, setOverridesFor] = useState(null);
 
   const load = async () => {
-    const { data } = await api.get('/instruments');
-    setItems(data.data);
+    const [inst, lv] = await Promise.allSettled([
+      api.get('/instruments'),
+      api.get('/admin/instruments/live-volume'),
+    ]);
+    if (inst.status === 'fulfilled') setItems(inst.value.data.data);
+    if (lv.status === 'fulfilled') setLiveVol(lv.value.data.data || {});
   };
   useEffect(() => { load(); }, []);
 
@@ -86,7 +103,7 @@ export default function Instruments() {
   };
 
   const remove = async (symbol) => {
-    if (!confirm(`Disable ${symbol}?`)) return;
+    if (!(await confirm(`Disable ${symbol}?`))) return;
     try {
       await api.delete(`/instruments/${symbol}`);
       toast.success('Disabled');
@@ -117,13 +134,18 @@ export default function Instruments() {
               <th className="text-right p-3">Last Price</th>
               <th className="text-right p-3">Max Lev</th>
               <th className="text-right p-3">Commission</th>
-              <th className="text-right p-3">Daily Volume</th>
+              <th className="text-right p-3">Daily Buy/Sell Vol</th>
+              <th className="text-right p-3">Live Buy</th>
+              <th className="text-right p-3">Live Sell</th>
+              <th className="text-right p-3">Net (B−S)</th>
               <th className="text-center p-3">Routing</th>
               <th className="text-right p-3"></th>
             </tr>
           </thead>
           <tbody>
             {items.map((it) => {
+              const lv = liveVol[it.symbol] || { buy: 0, sell: 0 };
+              const netVol = (Number(lv.buy) || 0) - (Number(lv.sell) || 0);
               const routing = it.routingOverride || 'INHERIT';
               const routingTone =
                 routing === 'INTERNAL_MATCHING' ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' :
@@ -161,17 +183,25 @@ export default function Instruments() {
                     )}
                   </td>
                   <td className="p-3 text-right">
-                    {it.dailyVolumeLimitEnabled && Number(it.dailyVolumeLimit) > 0 ? (
-                      <div className="leading-tight">
-                        <div className="font-mono text-text-primary">{fmtNum(it.dailyVolumeLimit, 0)} <span className="text-[10px] text-gray-500">lots</span></div>
-                        <div className="text-[10px] text-gray-500">
-                          Used {fmtNum(it.dailyVolumeUsed || 0, 0)} · Left{' '}
-                          <span className="text-emerald-500">{fmtNum(it.dailyVolumeRemaining ?? it.dailyVolumeLimit, 0)}</span>
+                    {it.dailyVolumeLimitEnabled ? (
+                      <div className="leading-tight text-[11px] font-mono">
+                        <div className="text-emerald-400">
+                          B: {Number(it.dailyBuyLimit) > 0 ? `${fmtNum(it.dailyBuyLimit, 0)}` : '∞'}
+                          <span className="text-gray-500"> (used {fmtNum(it.dailyBuyUsed || 0, 0)})</span>
+                        </div>
+                        <div className="text-rose-400">
+                          S: {Number(it.dailySellLimit) > 0 ? `${fmtNum(it.dailySellLimit, 0)}` : '∞'}
+                          <span className="text-gray-500"> (used {fmtNum(it.dailySellUsed || 0, 0)})</span>
                         </div>
                       </div>
                     ) : (
                       <span className="text-[11px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600">Unlimited</span>
                     )}
+                  </td>
+                  <td className="p-3 text-right font-mono text-emerald-400">{fmtVol(lv.buy)}</td>
+                  <td className="p-3 text-right font-mono text-rose-400">{fmtVol(lv.sell)}</td>
+                  <td className={`p-3 text-right font-mono font-semibold ${netVol > 0 ? 'text-emerald-400' : netVol < 0 ? 'text-rose-400' : 'text-gray-400'}`}>
+                    {netVol > 0 ? '+' : ''}{fmtVol(netVol)}
                   </td>
                   <td className="p-3 text-center">
                     <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border ${routingTone}`}>
@@ -216,7 +246,8 @@ function InstrumentEditor({ data, onSave, onClose }) {
             onSave({
               ...form,
               dailyVolumeLimitEnabled: !!form.dailyVolumeLimitEnabled,
-              dailyVolumeLimit: form.dailyVolumeLimitEnabled ? (Number(form.dailyVolumeLimit) || 0) : 0,
+              dailyBuyLimit:  form.dailyVolumeLimitEnabled ? (Number(form.dailyBuyLimit) || 0) : 0,
+              dailySellLimit: form.dailyVolumeLimitEnabled ? (Number(form.dailySellLimit) || 0) : 0,
             });
           }}
           className="p-5 grid grid-cols-2 gap-3"
@@ -370,7 +401,7 @@ function InstrumentEditor({ data, onSave, onClose }) {
           {/* ── Daily Volume Limit (optional; off = unlimited) ── */}
           <div className="col-span-2 rounded-lg border border-border-dark bg-bg-dark p-3 mt-1">
             <label className="flex items-center justify-between cursor-pointer">
-              <span className="text-sm font-semibold text-white">Enable Daily Volume Limit</span>
+              <span className="text-sm font-semibold text-white">Enable Daily Buy/Sell Volume Limit</span>
               <input
                 type="checkbox"
                 className="w-4 h-4"
@@ -380,34 +411,45 @@ function InstrumentEditor({ data, onSave, onClose }) {
             </label>
             {form.dailyVolumeLimitEnabled ? (
               <div className="mt-3">
-                <label className="label">Daily Volume Limit (Lots)</label>
-                <input
-                  type="number" min="0" step="any"
-                  className="input font-mono"
-                  value={form.dailyVolumeLimit}
-                  onChange={update('dailyVolumeLimit')}
-                  placeholder="e.g. 100000"
-                />
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="label text-emerald-400">Daily BUY Limit (Lots)</label>
+                    <input
+                      type="number" min="0" step="any"
+                      className="input font-mono"
+                      value={form.dailyBuyLimit}
+                      onChange={update('dailyBuyLimit')}
+                      placeholder="e.g. 100000"
+                    />
+                  </div>
+                  <div>
+                    <label className="label text-rose-400">Daily SELL Limit (Lots)</label>
+                    <input
+                      type="number" min="0" step="any"
+                      className="input font-mono"
+                      value={form.dailySellLimit}
+                      onChange={update('dailySellLimit')}
+                      placeholder="e.g. 50000"
+                    />
+                  </div>
+                </div>
                 <p className="text-[11px] text-text-muted mt-1.5 leading-snug">
-                  Platform-wide cap on total OPENING volume for this symbol per UTC day (all users).
-                  New opening orders are rejected once the day's used volume reaches this limit. Closes are never blocked.
+                  Separate platform-wide caps on daily OPENING volume per UTC day (all users): BUY orders capped by the
+                  BUY limit, SELL orders by the SELL limit. A side set to <span className="font-semibold">0</span> = unlimited.
+                  Orders are rejected once that side's used volume reaches its limit. Closes are never blocked.
                 </p>
               </div>
             ) : (
               <p className="text-[11px] text-text-muted mt-2">
-                <span className="font-semibold text-emerald-500">Unlimited</span> — no daily volume restriction on this instrument.
+                <span className="font-semibold text-emerald-500">Unlimited</span> — no daily buy/sell volume restriction on this instrument.
               </p>
             )}
           </div>
 
           {/* B-Book / Mode toggles (legacy fields) removed — per-instrument
-              routing is now controlled by the Routing Override above. */}
-          <div className="col-span-2 flex items-center gap-4 mt-2">
-            <label className="flex items-center text-sm text-gray-300">
-              <input type="checkbox" className="mr-2" checked={!!form.isActive} onChange={checkbox('isActive')} />
-              Active
-            </label>
-          </div>
+              routing is now controlled by the Routing Override above.
+              The "Active" toggle is removed too; new/edited instruments stay
+              active and the table's Disable action handles deactivation. */}
           <div className="col-span-2 flex justify-end space-x-2 pt-3 border-t border-border-dark">
             <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
             <button type="submit" className="btn-primary">Save</button>
@@ -441,6 +483,7 @@ function OverridesModal({ instrument, onClose }) {
 }
 
 function OverridePanel({ kind, instrument }) {
+  const confirm = useConfirm();
   const isLev = kind === 'leverage';
   const base = isLev ? 'leverage-overrides' : 'volume-overrides';
   const field = isLev ? 'leverage' : 'volume';
@@ -479,7 +522,7 @@ function OverridePanel({ kind, instrument }) {
     setEditingId(o._id);
   };
   const toggle = async (o) => { try { await api.put(`/admin/${base}/${o._id}`, { enabled: !o.enabled }); load(); } catch (e) { toast.error(errorMessage(e)); } };
-  const del = async (o) => { if (!confirm('Delete this override?')) return; try { await api.delete(`/admin/${base}/${o._id}`); load(); } catch (e) { toast.error(errorMessage(e)); } };
+  const del = async (o) => { if (!(await confirm('Delete this override?'))) return; try { await api.delete(`/admin/${base}/${o._id}`); load(); } catch (e) { toast.error(errorMessage(e)); } };
 
   return (
     <div className="space-y-4">

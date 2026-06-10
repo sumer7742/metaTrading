@@ -5,6 +5,19 @@ module.exports = {
     MANAGER: 'MANAGER',
     ADMIN: 'ADMIN',
     SUPER_ADMIN: 'SUPER_ADMIN',
+    // ── Financial Department (simplified; request-based, no user ownership) ──
+    // Managers process requests DIRECTLY (no separate officers). The Audit
+    // Manager is an independent, read-only oversight role: regular checking,
+    // fraud detection and random inspection audits across all transactions.
+    FINANCIAL_ADMIN:    'FINANCIAL_ADMIN',     // runs the whole finance dept
+    DEPOSIT_MANAGER:    'DEPOSIT_MANAGER',     // processes deposit requests directly
+    WITHDRAWAL_MANAGER: 'WITHDRAWAL_MANAGER',  // processes withdrawal requests directly
+    AUDIT_MANAGER:      'AUDIT_MANAGER',       // read-only oversight: checking, fraud detection, random inspection
+  },
+
+  // Convenience grouping for finance RBAC + auto-distribution.
+  FINANCE_ROLES: {
+    ALL: ['FINANCIAL_ADMIN', 'DEPOSIT_MANAGER', 'WITHDRAWAL_MANAGER', 'AUDIT_MANAGER'],
   },
 
   KYC_STATUS: {

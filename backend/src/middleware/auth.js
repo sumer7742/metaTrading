@@ -16,6 +16,11 @@ const authenticate = async (req, res, next) => {
     if (!user || !user.isActive) {
       throw new AppError('User not found or inactive', 401, 'UNAUTHENTICATED');
     }
+    // Manager Access Control master switch — a disabled manager can't use the
+    // app at all (login is blocked + existing tokens stop working instantly).
+    if (user.role === ROLES.MANAGER && user.managerAccessEnabled === false) {
+      throw new AppError('Manager access has been disabled. Contact your administrator.', 403, 'MANAGER_DISABLED');
+    }
     req.user = user;
     req.userId = user._id;
 
@@ -112,6 +117,19 @@ const allowPermission = (perm) => (req, res, next) => {
   next(new AppError('Insufficient permissions', 403, 'FORBIDDEN'));
 };
 
+// Manager Access Control — gate a route by a per-manager module permission.
+// SUPER_ADMIN / ADMIN bypass; a MANAGER must have the permission toggled ON.
+const requireManagerPermission = (key) => (req, res, next) => {
+  const role = req.user && req.user.role;
+  if (role === ROLES.SUPER_ADMIN || role === ROLES.ADMIN) return next();
+  if (role === ROLES.MANAGER) {
+    const { effectivePermissions } = require('../config/managerPermissions');
+    if (effectivePermissions(req.user.managerPermissions)[key]) return next();
+    return next(new AppError('This module is disabled for your account', 403, 'PERMISSION_DENIED'));
+  }
+  next(new AppError('Insufficient permissions', 403, 'FORBIDDEN'));
+};
+
 // Feature flag gate — when ENABLE_HIERARCHY=false, hierarchy routes behave
 // as if they don't exist (404), so the rest of the platform is untouched.
 const requireHierarchy = (req, res, next) => {
@@ -120,4 +138,4 @@ const requireHierarchy = (req, res, next) => {
   next();
 };
 
-module.exports = { authenticate, requireRole, requireAdmin, allowRoles, allowPermission, requireHierarchy };
+module.exports = { authenticate, requireRole, requireAdmin, allowRoles, allowPermission, requireManagerPermission, requireHierarchy };

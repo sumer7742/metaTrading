@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
+import { useConfirm } from './ConfirmProvider';
 
 const COLLAPSE_KEY = 'chartDrawingToolbar.collapsed';
 
@@ -13,6 +14,7 @@ const COLLAPSE_KEY = 'chartDrawingToolbar.collapsed';
 const EMOJI_PALETTE = ['🚀', '📈', '📉', '🐂', '🐻', '💎', '🔥', '⚡', '💰', '⭐', '👀', '⚠️'];
 
 export default function ChartDrawingToolbar({ controls }) {
+  const confirm = useConfirm();
   if (!controls) return null;
   const {
     activeTool, setActiveTool,
@@ -139,7 +141,10 @@ export default function ChartDrawingToolbar({ controls }) {
       <Btn label="Zoom in" onClick={zoomIn}>
         <ZoomI />
       </Btn>
-      <Btn label="Reset zoom" onClick={resetZoom}>
+      <Btn label="Zoom out" onClick={zoomOut}>
+        <ZoomOutI />
+      </Btn>
+      <Btn label="Reset / fit chart" onClick={resetZoom}>
         <ZoomResetI />
       </Btn>
 
@@ -153,7 +158,7 @@ export default function ChartDrawingToolbar({ controls }) {
       <Btn label={hidden ? 'Drawings hidden — click to show' : 'Hide drawings'} active={hidden} onClick={() => setHidden((v) => !v)}>
         {hidden ? <EyeOffI /> : <EyeI />}
       </Btn>
-      <Btn label={`Clear all (${drawings.length})`} onClick={() => { if (drawings.length === 0 || window.confirm(`Clear all ${drawings.length} drawing(s)?`)) clearAll(); }}>
+      <Btn label={`Clear all (${drawings.length})`} onClick={async () => { if (drawings.length === 0 || await confirm(`Clear all ${drawings.length} drawing(s)?`)) clearAll(); }}>
         <TrashI />
       </Btn>
 
@@ -216,7 +221,8 @@ const BrushI = () => <S><path d="M9 11l-6 6a2 2 0 0 0 2.83 2.83l6-6" /><path d="
 const TextI = () => <S><path d="M4 7V5h16v2" /><line x1="12" y1="5" x2="12" y2="20" /><line x1="8" y1="20" x2="16" y2="20" /></S>;
 const RulerI = () => <S><path d="M21 6l-7-3-11 11 3 7z" /><path d="M14 3l-2 2" /><path d="M17 6l-2 2" /><path d="M8 9l-2 2" /><path d="M11 12l-2 2" /></S>;
 const ZoomI = () => <S><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="11" y1="8" x2="11" y2="14" /><line x1="8" y1="11" x2="14" y2="11" /></S>;
-const ZoomResetI = () => <S><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="8" y1="11" x2="14" y2="11" /></S>;
+const ZoomOutI = () => <S><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="8" y1="11" x2="14" y2="11" /></S>;
+const ZoomResetI = () => <S><polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" /></S>;
 const MagnetI = () => <S><path d="M6 4h4v8a2 2 0 1 0 4 0V4h4v8a6 6 0 1 1-12 0z" /><line x1="6" y1="8" x2="10" y2="8" /><line x1="14" y1="8" x2="18" y2="8" /></S>;
 const LockedI = () => <S><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></S>;
 const UnlockedI = () => <S><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 7.46-2" /></S>;

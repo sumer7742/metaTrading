@@ -46,6 +46,19 @@ const depositSchema = new mongoose.Schema(
     confirmedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     rejectionReason: String,
     note: String,
+
+    // ─── Finance auto-distribution (workload-balanced; NOT user ownership) ──
+    // The DEPOSIT_OFFICER currently responsible for this request. Set
+    // automatically on creation to the least-loaded officer; a manager can
+    // reassign. Null = unassigned (no officers configured → admins handle it).
+    assignedOfficerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+    assignedAt: Date,
+    assignmentHistory: [{
+      officerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      byId:      { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // null = system auto-assign
+      at:        { type: Date, default: Date.now },
+      reason:    String,
+    }],
   },
   { timestamps: true }
 );
@@ -102,9 +115,42 @@ const withdrawalSchema = new mongoose.Schema(
     approvedAt: Date,
     rejectedReason: String,
     txReference: String,
+
+    // ─── Finance auto-distribution (workload-balanced; NOT user ownership) ──
+    // The WITHDRAWAL_OFFICER currently responsible for this request.
+    assignedOfficerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+    assignedAt: Date,
+    assignmentHistory: [{
+      officerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      byId:      { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // null = system auto-assign
+      at:        { type: Date, default: Date.now },
+      reason:    String,
+    }],
   },
   { timestamps: true }
 );
+
+// ── Auto-distribution hooks ───────────────────────────────────────────
+// Every freshly-created PENDING deposit/withdrawal is workload-balanced to
+// the least-loaded officer of the matching department. A post-save hook
+// covers ALL creation paths (wallet / subscription / bonus) with zero
+// duplication. Best-effort + idempotent (skips if already assigned), and
+// deferred via setImmediate so it never blocks/breaks the create response.
+const _autoAssignHook = (kind) => function (doc) {
+  try {
+    if (!doc || !doc.$locals || !doc.$locals.wasNew) return;
+    if (doc.assignedOfficerId || doc.status !== 'PENDING') return;
+    setImmediate(() => {
+      require('../services/financeService')
+        .autoAssign(kind, doc._id)
+        .catch((e) => console.error(`[finance] auto-assign ${kind} failed:`, e.message));
+    });
+  } catch (_) { /* never let assignment break a money request */ }
+};
+depositSchema.pre('save', function (next) { this.$locals.wasNew = this.isNew; next(); });
+depositSchema.post('save', _autoAssignHook('deposit'));
+withdrawalSchema.pre('save', function (next) { this.$locals.wasNew = this.isNew; next(); });
+withdrawalSchema.post('save', _autoAssignHook('withdrawal'));
 
 const auditLogSchema = new mongoose.Schema(
   {

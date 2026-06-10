@@ -151,6 +151,24 @@ const userSchema = new mongoose.Schema(
     partnerTierMonth:       { type: String, default: null },
     partnerPrevMonthVolume: { type: Number, default: 0 },
 
+    // ─── Financial Department tree ──────────────────────────────────────
+    // Parallel to the trading hierarchy (adminId/managerId). A finance staff
+    // member's direct superior in the finance tree:
+    //   DEPOSIT/WITHDRAWAL/AUDIT_MANAGER → their FINANCIAL_ADMIN
+    // Used to scope queues ("manager sees their team") and team workload.
+    // NOTE: deposit/withdrawal REQUESTS are auto-distributed by workload and
+    // are NOT tied to user-account ownership.
+    financeParentId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+
+    // ─── Manager Access Control (Super-Admin controlled) ────────────────
+    // Per-module permission overrides for a MANAGER (key → boolean). Merged
+    // with config defaults at read time (see config/managerPermissions).
+    // Empty = use defaults. Changes apply on the manager's next /auth/me.
+    managerPermissions: { type: Map, of: Boolean, default: undefined },
+    // Master switch — when false a MANAGER cannot log in (account disabled)
+    // without touching the global `isActive` flag.
+    managerAccessEnabled: { type: Boolean, default: true },
+
     // ─── Admin-controlled leverage override ─────────────────────────
     // The effective leverage cap for this user follows this precedence:
     //   1. customLeverage (set by admin) — overrides everything below
@@ -181,6 +199,17 @@ const userSchema = new mongoose.Schema(
 
     lastLoginAt: Date,
     lastLoginIp: String,
+
+    // Audit / compliance flag raised by the Audit Manager. Read by the audit
+    // dashboard + surfaced on user inspection. Does NOT block login/trading on
+    // its own (that's a separate freeze request → admin action).
+    auditFlag: {
+      flagged: { type: Boolean, default: false, index: true },
+      reason: String,
+      category: String,            // e.g. MULTI_ACCOUNT, WASH_TRADING, BONUS_ABUSE, PNL_ANOMALY, KYC, OTHER
+      flaggedByEmail: String,
+      flaggedAt: Date,
+    },
   },
   { timestamps: true }
 );
