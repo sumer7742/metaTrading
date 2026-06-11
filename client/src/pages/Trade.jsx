@@ -42,6 +42,7 @@ export default function Trade() {
   };
   const [openOrders, setOpenOrders] = useState([]);
   const [positions, setPositions] = useState([]);
+  const [closedTrades, setClosedTrades] = useState([]);
   const [tab, setTab] = useState('positions');
   // Map of symbol -> latest live price (for ALL positions, not just selected chart)
   const [priceMap, setPriceMap] = useState({});
@@ -475,12 +476,14 @@ export default function Trade() {
   const refresh = async () => {
     // Use allSettled so a single endpoint failure doesn't blank both
     // tables. Each side keeps its prior data on transient errors.
-    const [o, p] = await Promise.allSettled([
+    const [o, p, h] = await Promise.allSettled([
       api.get('/trading/orders/open'),
       api.get('/trading/positions'),
+      api.get('/trading/positions/history', { params: { ...(account?._id ? { accountId: account._id } : {}), limit: 50 } }),
     ]);
     if (o.status === 'fulfilled') setOpenOrders(o.value.data.data);
     if (p.status === 'fulfilled') setPositions(p.value.data.data);
+    if (h.status === 'fulfilled') setClosedTrades(h.value.data.data.items || []);
   };
 
   useEffect(() => {
@@ -2585,7 +2588,7 @@ export default function Trade() {
                 {[
                   { k: 'positions', label: 'Open',    count: positions.length },
                   { k: 'orders',    label: 'Pending', count: openOrders.length },
-                  { k: 'closed',    label: 'Closed',  count: 0 },
+                  { k: 'closed',    label: 'Closed',  count: closedTrades.length },
                 ].map((t) => (
                   <button
                     key={t.k}
@@ -2692,13 +2695,11 @@ export default function Trade() {
                 />
               )}
               {tab === 'closed' && (
-                <div className="py-10 text-center">
-                  <div className="text-sm text-text-secondary">No closed trades to show</div>
-                  <div className="text-xs text-text-muted mt-1">
-                    Your trade history will appear here.{' '}
-                    <Link to="/reports" className="text-primary-500 hover:underline">View reports</Link>
-                  </div>
-                </div>
+                <ClosedTable
+                  trades={closedTrades}
+                  fxRate={fxRate}
+                  instrumentsBySymbol={instrumentsBySymbol}
+                />
               )}
             </div>
           </div>
@@ -3772,6 +3773,69 @@ function OrdersTable({ orders, onCancel, fxRate, instrumentsBySymbol, livePrices
                   </button>
                 </div>
               </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+// ─── Closed trades table ───────────────────────────────────────────────
+// Recent CLOSED positions (trade history) for the account. Read-only.
+function ClosedTable({ trades, fxRate, instrumentsBySymbol }) {
+  if (!trades.length) {
+    return (
+      <div className="py-10 text-center">
+        <div className="w-12 h-12 mx-auto rounded-full bg-bg-hover flex items-center justify-center text-text-muted mb-3 border border-border-dark">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 8v4l3 3" /><circle cx="12" cy="12" r="9" />
+          </svg>
+        </div>
+        <div className="text-sm text-text-secondary">No closed trades to show</div>
+        <div className="text-xs text-text-muted mt-1">
+          Closed positions will appear here.{' '}
+          <Link to="/reports" className="text-primary-500 hover:underline">View full history</Link>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <table className="w-full text-sm whitespace-nowrap [&_td]:align-middle [&_th]:align-middle">
+      <thead className="text-xs text-gray-500 uppercase">
+        <tr>
+          <th className="text-left p-2">Symbol</th>
+          <th className="text-left p-2">Type</th>
+          <th className="text-right p-2">Volume, lot</th>
+          <th className="text-right p-2">Open price</th>
+          <th className="text-right p-2">Close price</th>
+          <th className="text-left p-2">Closed time</th>
+          <th className="text-right p-2">P/L, USD</th>
+        </tr>
+      </thead>
+      <tbody>
+        {trades.map((t) => {
+          const inst = instrumentsBySymbol?.[t.symbol];
+          const quote = inst?.quoteCurrency || 'USD';
+          const prec = inst?.pricePrecision || 4;
+          const entry = fmtPriceDual(t.entryPrice, quote, fxRate, prec);
+          const close = t.closePrice ? fmtPriceDual(t.closePrice, quote, fxRate, prec) : null;
+          const pnl = Number(t.realizedPnl || 0);
+          const pnlUsd = quote === 'INR' ? pnl / Math.max(Number(fxRate || 0), 1) : pnl;
+          return (
+            <tr key={t._id} className="table-row">
+              <td className="p-2 font-medium">
+                <div className="flex items-center gap-2">
+                  <AssetIcon row={inst || { symbol: t.symbol }} size={22} round />
+                  <span>{t.symbol}</span>
+                </div>
+              </td>
+              <td className={`p-2 font-semibold ${t.side === 'BUY' ? 'text-bull' : 'text-bear'}`}>{t.side === 'BUY' ? 'Buy' : 'Sell'}</td>
+              <td className="p-2 text-right font-mono">{fmtNum(Number(t.closedQuantity) > 0 ? t.closedQuantity : t.quantity, 4)}</td>
+              <td className="p-2 text-right font-mono">{entry.primary}</td>
+              <td className="p-2 text-right font-mono">{close?.primary || '—'}</td>
+              <td className="p-2 text-left text-xs text-text-secondary">{fmtDate(t.closedAt)}</td>
+              <td className={`p-2 text-right font-mono font-semibold ${pnl >= 0 ? 'text-bull' : 'text-bear'}`}>{fmtPnlSimple(pnlUsd, 'USD')}</td>
             </tr>
           );
         })}

@@ -79,6 +79,7 @@ export default function OrderForm({
     };
   }, []);
 
+
   // Leverage resolution (priority-based, instrument always wins):
   //   1. instrument.maxLeverage  — when set (>0), this is the final cap
   //                                even if it's higher OR lower than the
@@ -1213,6 +1214,7 @@ export default function OrderForm({
                   />
                 </div>
               )}
+
             </div>
           )}
         </div>

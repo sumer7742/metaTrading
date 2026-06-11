@@ -9,6 +9,47 @@ const systemSettings = require('./systemSettings.service');
 const { ROLES } = require('../config/constants');
 const { AppError } = require('../utils/errors');
 const { MANAGER_PERMISSIONS, PERMISSION_KEYS, effectivePermissions } = require('../config/managerPermissions');
+const { effectiveAdminPermissions } = require('../config/adminPermissions');
+
+// An admin can only delegate to a manager what the admin themselves has.
+// Maps each manager-permission key → the admin permission it requires:
+//   string   → admin must have that admin-module granted
+//   null     → Super-Admin-only module (never delegatable by an admin)
+//   (absent) → benign utility, always delegatable
+const MANAGER_PERM_ADMIN_REQ = {
+  DASHBOARD: 'DASHBOARD',
+  USER_MANAGEMENT: 'USERS',
+  KYC_MANAGEMENT: 'USERS',
+  DEPOSITS: 'DEPOSITS',
+  WITHDRAWALS: 'WITHDRAWALS',
+  TRADING: 'ACCOUNTS',
+  OPEN_POSITIONS: 'ACCOUNTS',
+  ORDERS: 'ACCOUNTS',
+  RISK_MANAGEMENT: 'ACCOUNTS',
+  PORTFOLIO: null,            // /portfolio is Super-Admin-only — admins never have it
+  WALLET_MANAGEMENT: 'WALLETS',
+  REPORTS: 'REPORTS',
+  AUDIT_LOGS: 'AUDIT_LOGS',
+  SUPPORT_TICKETS: 'SUPPORT_CHATS',
+  REFERRAL_MANAGEMENT: 'PARTNERS',
+  FINANCE_ACCESS: null,       // /finance is Super-Admin + finance-staff only — admins never have it
+  SETTINGS: 'SETTINGS',
+  // NOTIFICATIONS → always delegatable (benign).
+};
+
+// Which manager-permission keys the actor is allowed to grant.
+//   SUPER_ADMIN → all. ADMIN → only modules the admin themselves has
+//   (super-only keys excluded).
+function delegatableKeys(actor) {
+  if (actor.role === ROLES.SUPER_ADMIN) return new Set(PERMISSION_KEYS);
+  const adminEff = effectiveAdminPermissions(actor.adminPermissions);
+  return new Set(PERMISSION_KEYS.filter((k) => {
+    const req = MANAGER_PERM_ADMIN_REQ[k];
+    if (req === null) return false;       // super-only
+    if (req === undefined) return true;   // benign / always allowed
+    return adminEff[req] === true;        // admin must hold the module
+  }));
+}
 
 const allowAdminManage = async () => (await systemSettings.getSetting('manager.allowAdminManagePerms')) === true;
 
@@ -64,9 +105,11 @@ async function setPermissions(actor, managerId, patch, ip) {
   const before = effectivePermissions(manager.managerPermissions);
   if (!manager.managerPermissions) manager.managerPermissions = new Map();
 
+  const allowed = delegatableKeys(actor); // admin can't grant what they lack
   const changes = [];
   for (const [key, raw] of Object.entries(patch || {})) {
     if (!PERMISSION_KEYS.includes(key)) continue;
+    if (!allowed.has(key)) continue; // silently skip non-delegatable keys
     const next = !!raw;
     if (before[key] !== next) changes.push({ key, from: before[key], to: next });
     manager.managerPermissions.set(key, next);
@@ -100,8 +143,10 @@ async function setAccess(actor, managerId, enabled, ip) {
 }
 
 async function meta(actor) {
+  // Admins only see/grant modules they themselves have; Super Admin sees all.
+  const allowed = delegatableKeys(actor);
   return {
-    permissions: MANAGER_PERMISSIONS,
+    permissions: MANAGER_PERMISSIONS.filter((p) => allowed.has(p.key)),
     allowAdminManagePerms: await allowAdminManage(),
     canEditSetting: actor.role === ROLES.SUPER_ADMIN,
   };

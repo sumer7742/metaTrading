@@ -21,10 +21,19 @@ const positionSchema = new mongoose.Schema(
       default: function () { return this.side === 'BUY' ? 'LONG' : 'SHORT'; },
       index: true,
     },
-    quantity: { type: String, required: true },
+    quantity: { type: String, required: true }, // REMAINING open size (0 when fully closed)
+    // Cumulative volume closed over the position's life. `quantity` is zeroed on
+    // full close, so this preserves the traded size for history/reporting.
+    closedQuantity: { type: String, default: '0' },
     entryPrice: { type: String, required: true },
     leverage: { type: Number, default: 1 },
     margin: { type: String, default: '0' }, // locked margin
+
+    // Which book holds this position's risk — stamped at open from the opening
+    // order's routingResult. A_BOOK = forwarded to LP; B_BOOK = broker is the
+    // counterparty (covers B_BOOK + internal matching). Powers the admin
+    // live-exposure A/B breakdown. Legacy docs default to B_BOOK.
+    book: { type: String, enum: ['A_BOOK', 'B_BOOK'], default: 'B_BOOK', index: true },
 
     stopLoss: String,
     takeProfit: String,

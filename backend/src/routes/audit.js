@@ -31,6 +31,10 @@ router.get('/balance-adjustments', c.balanceAdjustments);
 
 // User inspection + flagging
 router.get('/users/:id/inspect', c.inspectUser);
+router.get('/users/:id/analysis', c.userAnalysis);          // full fraud/risk analysis
+router.post('/users/:id/note', c.addUserNote);              // add audit note
+router.post('/users/:id/kyc-review', c.requestKycReview);   // request KYC re-review
+router.post('/users/:id/escalate', c.escalateUser);        // escalate to super/financial admin
 router.get('/flags', c.flaggedUsers);
 router.post('/users/:id/flag', c.flagUser);
 router.post('/users/:id/unflag', c.unflagUser);

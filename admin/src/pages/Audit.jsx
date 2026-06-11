@@ -16,6 +16,7 @@ const signed = (v) => `${Number(v) < 0 ? '-' : '+'}${money(Math.abs(Number(v) ||
 
 const TABS = [
   { k: 'overview', label: 'Overview' },
+  { k: 'analysis', label: 'User Analysis' },
   { k: 'random', label: 'Random Audits' },
   { k: 'risk', label: 'Risk Detection' },
   { k: 'flags', label: 'Flags & Freeze' },
@@ -47,6 +48,7 @@ export default function Audit() {
       </div>
 
       {tab === 'overview' && <Overview onInspect={setInspectId} />}
+      {tab === 'analysis' && <UserAnalysis />}
       {tab === 'random' && <RandomAudits onInspect={setInspectId} />}
       {tab === 'risk' && <RiskDetection onInspect={setInspectId} />}
       {tab === 'flags' && <FlagsFreeze isSuper={isSuper} onInspect={setInspectId} />}
@@ -85,7 +87,7 @@ function UserCell({ u, onInspect }) {
 function Tbl({ cols, children }) {
   return (
     <table className="w-full text-sm whitespace-nowrap">
-      <thead className="text-xs text-gray-500 uppercase"><tr>{cols.map((c, i) => <th key={i} className={`p-2.5 ${c.r ? 'text-right' : c.c ? 'text-center' : 'text-left'}`}>{c.t || c}</th>)}</tr></thead>
+      <thead className="text-xs text-gray-500 uppercase"><tr>{cols.map((c, i) => <th key={i} className={`p-2.5 ${c.r ? 'text-right' : c.c ? 'text-center' : 'text-left'}`}>{typeof c === 'object' ? (c.t || '') : c}</th>)}</tr></thead>
       <tbody>{children}</tbody>
     </table>
   );
@@ -125,7 +127,7 @@ function Overview({ onInspect }) {
           <Kpi label="Pending Freezes" value={k.pendingFreezeRequests} tone="rose" />
           <Kpi label="Pending KYC" value={k.pendingKyc} tone="blue" />
           <Kpi label="Shared-IP Groups" value={k.sharedIpGroups} tone="violet" />
-          <Kpi label="Deposits 24h" value={k.deposits24h} tone="emerald" />
+          <Kpi label="Fraud Alerts 24h" value={k.fraudAlerts24h} tone="rose" />
           <Kpi label="P&L Anomalies" value={k.pnlAnomalies} tone="rose" />
         </div>
       )}
@@ -347,6 +349,228 @@ function Activity() {
           </Tbl></div>
         )}
       </Card>
+    </div>
+  );
+}
+
+// ── User Analysis — full fraud / behaviour / risk investigation ──
+const riskTone = (lvl) => ({ LOW: 'text-emerald-400', MEDIUM: 'text-amber-400', HIGH: 'text-orange-400', CRITICAL: 'text-rose-400' }[lvl] || 'text-gray-400');
+const riskBar = (lvl) => ({ LOW: 'bg-emerald-500', MEDIUM: 'bg-amber-500', HIGH: 'bg-orange-500', CRITICAL: 'bg-rose-500' }[lvl] || 'bg-gray-500');
+const sevBadge = (s) => ({ LOW: 'bg-bg-hover text-text-muted', MEDIUM: 'bg-amber-500/15 text-amber-400', HIGH: 'bg-orange-500/15 text-orange-400', CRITICAL: 'bg-rose-500/20 text-rose-400' }[s] || 'bg-bg-hover text-text-muted');
+const fmtDur = (ms) => { const m = (Number(ms) || 0) / 60000; if (m < 1) return `${((Number(ms) || 0) / 1000).toFixed(1)}s`; if (m < 60) return `${m.toFixed(1)} min`; return `${(m / 60).toFixed(1)} h`; };
+
+function UserAnalysis() {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [id, setId] = useState(null);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const search = async (e) => {
+    e?.preventDefault();
+    setSearching(true);
+    try {
+      // No query → list all ACTIVE regular users; with query → filtered search.
+      const params = query.trim()
+        ? { search: query.trim(), role: 'USER', limit: 25 }
+        : { role: 'USER', status: 'active', limit: 100 };
+      const { data } = await api.get('/admin/users', { params });
+      setResults(data.data.users || []);
+    } catch (err) { toast.error(errorMessage(err)); } finally { setSearching(false); }
+  };
+  // Load all active users up front so the tab isn't empty.
+  useEffect(() => { search(); /* eslint-disable-next-line */ }, []);
+  const load = useCallback(() => {
+    if (!id) return;
+    setLoading(true);
+    api.get(`/audit/users/${id}/analysis`).then(({ data }) => setData(data.data)).catch((e) => toast.error(errorMessage(e))).finally(() => setLoading(false));
+  }, [id]);
+  useEffect(() => { load(); }, [load]);
+
+  const act = async (fn, okMsg) => { try { await fn(); toast.success(okMsg); load(); } catch (e) { toast.error(errorMessage(e)); } };
+  const flag = () => { const r = window.prompt('Flag reason:'); if (r) act(() => api.post(`/audit/users/${id}/flag`, { reason: r, category: 'OTHER' }), 'User flagged'); };
+  const unflag = () => act(() => api.post(`/audit/users/${id}/unflag`), 'Flag removed');
+  const freeze = () => { const r = window.prompt('Reason for account-freeze request:'); if (r) act(() => api.post('/audit/freeze-requests', { userId: id, reason: r }), 'Freeze request submitted'); };
+  const kyc = () => { const r = window.prompt('KYC review reason:', 'Re-verify documents'); if (r !== null) act(() => api.post(`/audit/users/${id}/kyc-review`, { reason: r }), 'KYC review requested'); };
+  const note = () => { const n = window.prompt('Audit note:'); if (n) act(() => api.post(`/audit/users/${id}/note`, { note: n }), 'Note added'); };
+  const escalate = (to) => { const r = window.prompt(`Escalate to ${to.replace('_', ' ')} — reason:`); if (r) act(() => api.post(`/audit/users/${id}/escalate`, { to, reason: r }), `Escalated to ${to.replace('_', ' ')}`); };
+
+  // ── Search view ──
+  if (!id) {
+    return (
+      <Card>
+        <h3 className="text-sm font-bold text-white mb-1">Investigate a user</h3>
+        <p className="text-[11px] text-text-muted mb-3">Search by name, email or User ID, then open the full fraud/risk analysis.</p>
+        <form onSubmit={search} className="flex gap-2 mb-3">
+          <input className="input flex-1" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Name, email, or User ID…" />
+          <button className="btn-primary text-xs" disabled={searching}>{searching ? 'Searching…' : 'Search'}</button>
+        </form>
+        <div className="text-[11px] text-text-muted mb-1.5">
+          {searching ? 'Loading…' : `${query.trim() ? 'Results' : 'Active users'}: ${results.length}`}
+        </div>
+        {results.length === 0 && !searching ? <Empty msg={query.trim() ? 'No users match.' : 'No active users.'} /> : (
+          <div className="overflow-x-auto"><Tbl cols={['User', 'KYC', 'Status', { t: '', r: 1 }]}>
+            {results.map((u) => (
+              <tr key={u._id} className="table-row">
+                <td className="p-2.5"><div className="text-white font-medium">{u.name || [u.firstName, u.lastName].filter(Boolean).join(' ') || u.email}</div><div className="text-[11px] text-text-muted font-mono">{u.userUid || u.email}</div></td>
+                <td className="p-2.5 text-xs">{u.kyc?.code || u.kycStatus || '—'}</td>
+                <td className="p-2.5"><span className={u.isActive === false ? 'text-rose-400 text-xs' : 'text-emerald-400 text-xs'}>{u.isActive === false ? 'Blocked' : 'Active'}</span></td>
+                <td className="p-2.5 text-right"><button onClick={() => setId(u._id)} className="btn-primary text-xs">Analyze</button></td>
+              </tr>
+            ))}
+          </Tbl></div>
+        )}
+      </Card>
+    );
+  }
+
+  if (loading || !data) return <Loading />;
+  const o = data.overview, t = data.trading, p = data.pnl, f = data.funding, r = data.risk;
+
+  return (
+    <div className="space-y-4">
+      <button onClick={() => { setId(null); setData(null); }} className="text-xs text-text-secondary hover:text-white">← Back to search</button>
+
+      {/* Risk header */}
+      <Card className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <div className="text-lg font-bold text-white">{o.name} <span className="text-text-muted font-mono text-sm">{o.userUid}</span></div>
+          <div className="text-xs text-text-muted">{o.email} · {o.country || '—'} · joined {fmtDate(o.registeredAt)}</div>
+          <div className="flex flex-wrap gap-1.5 mt-2">
+            {o.auditFlag?.flagged && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400">FLAGGED</span>}
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${o.status === 'BLOCKED' ? 'bg-rose-500/15 text-rose-400' : 'bg-emerald-500/15 text-emerald-400'}`}>{o.status}</span>
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-bg-hover text-text-secondary">KYC: {o.kyc}</span>
+          </div>
+        </div>
+        <div className="text-center min-w-[160px]">
+          <div className="text-[11px] uppercase tracking-wider text-text-muted">Risk Score</div>
+          <div className={`text-4xl font-extrabold ${riskTone(r.level)}`}>{r.score}</div>
+          <div className={`text-xs font-bold ${riskTone(r.level)}`}>{r.level}</div>
+          <div className="h-2 rounded-full overflow-hidden bg-bg-hover mt-1.5"><div className={`h-full ${riskBar(r.level)}`} style={{ width: `${r.score}%` }} /></div>
+        </div>
+      </Card>
+
+      {/* Actions */}
+      <Card>
+        <div className="flex flex-wrap gap-2">
+          {o.auditFlag?.flagged ? <button onClick={unflag} className="btn-ghost text-xs">Remove flag</button> : <button onClick={flag} className="btn-ghost text-xs text-amber-400">⚑ Flag user</button>}
+          <button onClick={freeze} className="btn-ghost text-xs text-rose-400">🧊 Request freeze</button>
+          <button onClick={kyc} className="btn-ghost text-xs text-blue-400">Request KYC review</button>
+          <button onClick={note} className="btn-ghost text-xs">＋ Add note</button>
+          <button onClick={() => escalate('SUPER_ADMIN')} className="btn-ghost text-xs text-violet-400">↑ Escalate · Super Admin</button>
+          <button onClick={() => escalate('FINANCIAL_ADMIN')} className="btn-ghost text-xs text-violet-400">↑ Escalate · Financial Admin</button>
+        </div>
+      </Card>
+
+      {/* Red flags */}
+      <Card>
+        <h3 className="text-sm font-bold text-white mb-2">Red Flag Center ({data.redFlags.length})</h3>
+        {!data.redFlags.length ? <Empty msg="No red flags detected." /> : (
+          <div className="space-y-1.5">
+            {data.redFlags.map((fl, i) => (
+              <div key={i} className="flex items-start gap-2 text-xs border-b border-border-subtle pb-1.5">
+                <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded shrink-0 ${sevBadge(fl.severity)}`}>{fl.severity}</span>
+                <div><div className="text-white">{fl.reason}</div><div className="text-text-muted">{fl.evidence}</div></div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <div className="grid lg:grid-cols-2 gap-4">
+        {/* Trading behaviour */}
+        <Card>
+          <h3 className="text-sm font-bold text-white mb-2">Trading Behaviour</h3>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <Row l="Total Trades" v={t.totalTrades} /><Row l="Total Volume" v={`${t.totalVolume} lots`} />
+            <Row l="Win Rate" v={`${t.winRate}%`} /><Row l="Avg Hold" v={fmtDur(t.avgHoldMs)} />
+            <Row l="Avg Profit" v={money(t.avgProfit)} /><Row l="Avg Loss" v={money(t.avgLoss)} />
+            <Row l="Max Consec. Wins" v={t.maxConsecutiveWins} /><Row l="Max Consec. Losses" v={t.maxConsecutiveLosses} />
+          </div>
+          <div className="text-[11px] text-text-muted mt-2">Sessions — Asia {t.sessions.ASIA} · Europe {t.sessions.EUROPE} · US {t.sessions.US}</div>
+          {t.mostTraded.length > 0 && <div className="text-[11px] text-text-muted mt-1">Most traded: {t.mostTraded.map((m) => `${m.symbol} (${m.trades})`).join(', ')}</div>}
+        </Card>
+
+        {/* P&L */}
+        <Card>
+          <h3 className="text-sm font-bold text-white mb-2">Profit & Loss</h3>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <Row l="Daily" v={signed(p.daily)} pos={p.daily} /><Row l="Weekly" v={signed(p.weekly)} pos={p.weekly} />
+            <Row l="Monthly" v={signed(p.monthly)} pos={p.monthly} /><Row l="Total" v={signed(p.total)} pos={p.total} />
+            <Row l="Largest Win" v={money(p.largestWin)} /><Row l="Largest Loss" v={money(p.largestLoss)} />
+          </div>
+        </Card>
+
+        {/* Funding */}
+        <Card>
+          <h3 className="text-sm font-bold text-white mb-2">Deposits & Withdrawals</h3>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <Row l="Total Deposits" v={money(f.totalDeposits)} /><Row l="Total Withdrawals" v={money(f.totalWithdrawals)} />
+            <Row l="Deposit Count" v={f.depositCount} /><Row l="Withdrawal Count" v={f.withdrawalCount} />
+            <Row l="Net (in−out)" v={signed(f.net)} pos={f.net} />
+            <Row l="Last Deposit" v={f.lastDeposit ? `${money(f.lastDeposit.amount)} · ${fmtDate(f.lastDeposit.at)}` : '—'} />
+            <Row l="Last Withdrawal" v={f.lastWithdrawal ? `${money(f.lastWithdrawal.amount)} · ${fmtDate(f.lastWithdrawal.at)}` : '—'} />
+          </div>
+        </Card>
+
+        {/* Relationships */}
+        <Card>
+          <h3 className="text-sm font-bold text-white mb-2">Trading Relationships</h3>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <Row l="Self / Wash Trades" v={data.relationships.selfTrades} />
+            <Row l="Linked-account Trades" v={data.relationships.collusionTrades} />
+            <Row l="Suspicious Score" v={`${data.relationships.suspiciousTradingScore}/100`} />
+          </div>
+        </Card>
+      </div>
+
+      {/* Linked accounts */}
+      <Card>
+        <h3 className="text-sm font-bold text-white mb-2">Linked Accounts ({data.linked.length})</h3>
+        {!data.linked.length ? <Empty msg="No linked accounts detected (IP / phone / UPI / bank / sender name)." /> : (
+          <div className="overflow-x-auto"><Tbl cols={['User', 'Shared via', { t: 'Strength', r: 1 }, 'Status']}>
+            {data.linked.map((l) => (
+              <tr key={l._id} className="table-row">
+                <td className="p-2.5"><div className="text-white font-medium">{l.name}</div><div className="text-[11px] text-text-muted font-mono">{l.userUid}</div></td>
+                <td className="p-2.5 text-xs">{l.reasons.join(', ')}</td>
+                <td className="p-2.5 text-right font-mono">{'●'.repeat(Math.min(5, l.strength))}</td>
+                <td className="p-2.5"><span className={l.active ? 'text-emerald-400 text-xs' : 'text-rose-400 text-xs'}>{l.active ? 'Active' : 'Blocked'}</span></td>
+              </tr>
+            ))}
+          </Tbl></div>
+        )}
+      </Card>
+
+      {/* Security + Compliance */}
+      <div className="grid lg:grid-cols-2 gap-4">
+        <Card>
+          <h3 className="text-sm font-bold text-white mb-2">Login & Security</h3>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <Row l="Last Login" v={o.lastLoginAt ? fmtDate(o.lastLoginAt) : '—'} /><Row l="Last IP" v={o.lastLoginIp || '—'} />
+          </div>
+          {data.security.devices.length > 0 && <div className="text-[11px] text-text-muted mt-2">Sessions: {data.security.devices.map((d) => d.device || 'Unknown').join(' · ')}</div>}
+          <div className="text-[10px] text-text-muted mt-2 italic">{data.security.note}</div>
+        </Card>
+        <Card>
+          <h3 className="text-sm font-bold text-white mb-2">Compliance & KYC</h3>
+          <Row l="KYC Status" v={data.compliance.kyc} />
+          {data.compliance.docs.length > 0 && <div className="text-[11px] text-text-muted mt-1">Docs: {data.compliance.docs.map((d) => `${d.docType}(${d.status})`).join(', ')}</div>}
+          {data.compliance.notes.length > 0 && (
+            <div className="mt-2"><div className="text-[11px] font-semibold text-text-secondary">Audit notes</div>
+              {data.compliance.notes.map((nn, i) => <div key={i} className="text-[11px] text-text-muted">• {nn.note} <span className="opacity-60">({fmtDate(nn.at)})</span></div>)}
+            </div>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}
+function Row({ l, v, pos }) {
+  return (
+    <div className="flex items-center justify-between border-b border-border-subtle py-1">
+      <span className="text-text-muted">{l}</span>
+      <span className={`font-mono ${pos === undefined ? 'text-white' : pos >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{v}</span>
     </div>
   );
 }

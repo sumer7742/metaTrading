@@ -7,6 +7,10 @@ const { ORDER_STATUS, ORDER_SIDE, POSITION_STATUS, ROUTING } = require('../confi
 const { add, sub, mul, div, eq, gt, lte, D } = require('../utils/decimal');
 const { computeInstrumentCommission } = require('../utils/commission');
 
+// Which book an order's resulting position belongs to: A_BOOK = forwarded to
+// LP; everything else (B_BOOK, internal matching) = broker is the counterparty.
+const bookOf = (o) => (String(o?.routingResult || '').toUpperCase() === 'A_BOOK' ? 'A_BOOK' : 'B_BOOK');
+
 /**
  * In-process Matching Engine.
  * - One OrderBook per symbol.
@@ -183,7 +187,7 @@ class MatchingEngine {
         // sides so each derives its own dedupeKey of "TRADE_SETTLE:<tradeId>".
         // (Idempotency is per (wallet, dedupeKey) so taker and maker each
         // get one settle on their own wallet.)
-        await this._updatePosition(order.accountId, order.userId, order.instrumentId, order.symbol, order.side, f.qty, f.price, order.leverage, newTrade._id, order.closeOnly, order.stopLoss, order.takeProfit, order.positionSide);
+        await this._updatePosition(order.accountId, order.userId, order.instrumentId, order.symbol, order.side, f.qty, f.price, order.leverage, newTrade._id, order.closeOnly, order.stopLoss, order.takeProfit, order.positionSide, bookOf(order));
 
         // Maker side: skip the position update if we couldn't load the maker
         // doc (deleted out from under us, etc.). Defaulting leverage to 1
@@ -203,7 +207,8 @@ class MatchingEngine {
             maker.closeOnly,
             maker.stopLoss,
             maker.takeProfit,
-            maker.positionSide
+            maker.positionSide,
+            bookOf(maker)
           );
         } else {
           console.error(
@@ -307,7 +312,8 @@ class MatchingEngine {
           order.closeOnly,
           order.stopLoss,
           order.takeProfit,
-          order.positionSide
+          order.positionSide,
+          bookOf(order)
         );
 
         order.filledQuantity = add(order.filledQuantity, remainingQty);
@@ -486,7 +492,8 @@ class MatchingEngine {
       order.closeOnly,
       order.stopLoss,
       order.takeProfit,
-      order.positionSide
+      order.positionSide,
+      bookOf(order)
     );
 
     order.status = ORDER_STATUS.FILLED;
@@ -621,7 +628,8 @@ class MatchingEngine {
       order.closeOnly,
       order.stopLoss,
       order.takeProfit,
-      order.positionSide
+      order.positionSide,
+      bookOf(order)
     );
 
     order.status = ORDER_STATUS.FILLED;
@@ -682,7 +690,7 @@ class MatchingEngine {
    * doc.save) for the CLOSED transition so concurrent SL+TP+manual
    * closes can't double-settle.
    */
-  async _updatePosition(accountId, userId, instrumentId, symbol, side, qty, price, leverage, tradeId, closeOnly = false, stopLoss = null, takeProfit = null, positionSide = null) {
+  async _updatePosition(accountId, userId, instrumentId, symbol, side, qty, price, leverage, tradeId, closeOnly = false, stopLoss = null, takeProfit = null, positionSide = null, book = 'B_BOOK') {
     // HEDGE MODE — LONG and SHORT positions on the same instrument coexist.
     // Position identity is (accountId, symbol, positionSide), so a BUY fill
     // never auto-closes a SHORT position and vice versa.
@@ -764,6 +772,7 @@ class MatchingEngine {
         symbol,
         side,
         positionSide: targetPositionSide,
+        book: book === 'A_BOOK' ? 'A_BOOK' : 'B_BOOK',
         quantity: qty,
         entryPrice: price,
         leverage: leverage || 1,
@@ -870,6 +879,7 @@ class MatchingEngine {
             margin: newMargin,
             realizedPnl: newRealizedPnl,
             commission: newCommission,
+            closedQuantity: add(pos.closedQuantity || '0', closeQty),
           },
         }
       );
@@ -901,6 +911,7 @@ class MatchingEngine {
             closePrice: price,
             realizedPnl: newRealizedPnl,
             commission: newCommission,
+            closedQuantity: add(pos.closedQuantity || '0', closeQty),
             quantity: '0',
             margin: '0',
             settled: true,

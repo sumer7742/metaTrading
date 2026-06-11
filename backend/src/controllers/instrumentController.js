@@ -33,11 +33,17 @@ const list = asyncHandler(async (req, res) => {
 });
 
 // Daily volume usage for a single instrument → { enabled, limit, used, remaining }.
+// Per-instrument limit usage: platform DAILY cap + GLOBAL LIFETIME cap, each
+// per-side { limit, used, remaining }. Both are platform-wide (all users), so
+// this stays public. Backward compatible — daily fields remain at top level.
 const volumeUsage = asyncHandler(async (req, res) => {
   const inst = await Instrument.findOne({ symbol: req.params.symbol.toUpperCase() }).lean();
   if (!inst) throw new AppError('Instrument not found', 404);
-  const volumeLimitService = require('../services/volumeLimitService');
-  sendSuccess(res, await volumeLimitService.getDailyVolumeUsage(inst));
+  const [daily, lifetime] = await Promise.all([
+    require('../services/volumeLimitService').getDailyVolumeUsage(inst),
+    require('../services/lifetimeVolumeLimitService').getLifetimeVolumeUsage(inst),
+  ]);
+  sendSuccess(res, { ...daily, lifetime });
 });
 
 /**

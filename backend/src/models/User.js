@@ -165,6 +165,12 @@ const userSchema = new mongoose.Schema(
     // with config defaults at read time (see config/managerPermissions).
     // Empty = use defaults. Changes apply on the manager's next /auth/me.
     managerPermissions: { type: Map, of: Boolean, default: undefined },
+    // ─── Admin Access Control (Super-Admin controlled) ──────────────────
+    // Per-module permission overrides for an ADMIN (key → boolean). Admins have
+    // NO fixed access — the Super Admin decides. Unset keys default to GRANT
+    // (see config/adminPermissions) so existing admins keep working until
+    // restricted. Changes apply on the admin's next /auth/me.
+    adminPermissions: { type: Map, of: Boolean, default: undefined },
     // Master switch — when false a MANAGER cannot log in (account disabled)
     // without touching the global `isActive` flag.
     managerAccessEnabled: { type: Boolean, default: true },

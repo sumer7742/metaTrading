@@ -84,6 +84,38 @@ export const ROUTE_ACCESS = Object.freeze({
   // Manager Access Control — Super Admin always; Admin only when delegation
   // is enabled (the page itself enforces that; managers never see it).
   '/access-control': [ROLES.SUPER_ADMIN, ROLES.ADMIN],
+
+  // Admin Access Control — Super Admin only (decides each admin's modules).
+  '/admin-access': [ROLES.SUPER_ADMIN],
+});
+
+// Admin Access Control: which per-admin permission KEY gates each admin route.
+// For an ADMIN, a mapped route is visible/openable only when the Super Admin
+// has granted that module. Unmapped routes fall back to ROUTE_ACCESS.
+export const ADMIN_ROUTE_PERMISSION = Object.freeze({
+  '/dashboard': 'DASHBOARD',
+  '/users': 'USERS',
+  '/accounts': 'ACCOUNTS',
+  '/instruments': 'INSTRUMENTS',
+  '/market-exposure': 'MARKET_EXPOSURE',
+  '/deposits': 'DEPOSITS',
+  '/withdrawals': 'WITHDRAWALS',
+  '/finance': 'FINANCE',
+  '/plans': 'PLANS',
+  '/account-plans': 'ACCOUNT_PLANS',
+  '/subscription-wallets': 'WALLETS',
+  '/bonus-wallets': 'BONUS_WALLETS',
+  '/user-transfers': 'USER_TRANSFERS',
+  '/partners': 'PARTNERS',
+  '/managers': 'MANAGERS',
+  '/assignments': 'ASSIGNMENTS',
+  '/reports': 'REPORTS',
+  '/execution': 'EXECUTION',
+  '/audit': 'AUDIT_LOGS',
+  '/data-feeds': 'DATA_FEEDS',
+  '/support-chats': 'SUPPORT_CHATS',
+  '/settings': 'SETTINGS',
+  '/security': 'SECURITY',
 });
 
 // Manager Access Control: which per-manager permission KEY gates each admin
@@ -119,6 +151,14 @@ export const canUserAccessPath = (user, pathname) => {
     const key = MANAGER_ROUTE_PERMISSION[pathname];
     if (key) return !!(user.managerPermissions && user.managerPermissions[key]);
     return canAccess(role, accessForPath(pathname));
+  }
+  if (role === ROLES.ADMIN) {
+    // Must pass the static allow-list first (keeps super-only routes blocked),
+    // THEN the Super-Admin-controlled per-admin module permission.
+    if (!canAccess(role, accessForPath(pathname))) return false;
+    const key = ADMIN_ROUTE_PERMISSION[pathname];
+    if (key && user.adminPermissions) return user.adminPermissions[key] !== false;
+    return true;
   }
   return canAccess(role, accessForPath(pathname));
 };

@@ -115,7 +115,31 @@
       "Bash(node --check src/controllers/auditController.js)",
       "Bash(node --check src/routes/audit.js)",
       "Bash(node --check src/models/Audit.js)",
-      "Bash(node --check src/server.js)"
+      "Bash(node --check src/server.js)",
+      "Bash(ls -la src/matching-engine/)",
+      "Bash(wc -l src/matching-engine/*.js)",
+      "Bash(node --check scripts/loadtest-orders.js)",
+      "Bash(node -e \"const s=require\\('./package.json'\\).scripts||{}; console.log\\(JSON.stringify\\(s,null,2\\)\\)\")",
+      "Bash(grep -nA6 \"EXECUTION_MODE:\" src/config/constants.js)",
+      "Bash(grep -nE \"function UserDetail|api.get\\\\\\(\\\\`/admin/users|loadLeverage|setData\\\\\\(|leverage\" admin/src/pages/Users.jsx)",
+      "Bash(grep -rnE \"VolLimitSide|volLimits|volume-limits|userVolumeLimits\" admin/src)",
+      "Bash(grep -rnE \"myVolumeUsage|my-volume|userVolumeLimits|getLifetimeVolumeUsage\\\\\\(.*req.userId|getUsedLifetimeVolume\\\\\\(.*userId\" backend/src)",
+      "Bash(grep -nA15 \"normalizeCommission\" src/controllers/instrumentController.js)",
+      "Bash(node --check src/models/Instrument.js)",
+      "Bash(node --check src/utils/commission.js)",
+      "Bash(node --check src/services/accountFeeService.js)",
+      "Bash(grep -nA30 \"getBBookExposure\" src/services/routingService.js)",
+      "Bash(node --check src/matching-engine/MatchingEngine.js)",
+      "Bash(node --check src/models/Position.js)",
+      "Bash(sed -n '370,382p' src/controllers/authController.js)",
+      "Bash(sed -n '1,90p' src/services/managerAccessService.js)",
+      "Bash(sed -n '1,16p' src/routes/admin.js)",
+      "Bash(node --check src/config/adminPermissions.js)",
+      "Bash(node --check src/controllers/adminAccessController.js)",
+      "Bash(sed -n '90,140p' src/services/managerAccessService.js)",
+      "Read(//c/Users/rijju/OneDrive/Desktop/trading-platform  last and/admin/src/pages/**)",
+      "Bash(node --check src/services/managerAccessService.js)",
+      "Bash(node --check src/config/managerPermissions.js)"
     ]
   }
 }

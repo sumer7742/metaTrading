@@ -732,6 +732,7 @@ function UserDetail({ userId, onClose, onJumpToUser }) {
     api.get('/admin/system/settings').then((r) => setSystemInfo(r.data.data)).catch(() => {});
   }, [userId]);
 
+
   // ── Leverage actions ────────────────────────────────────────────
   const saveLeverage = async ({ value, reason, expiresAt }) => {
     try {

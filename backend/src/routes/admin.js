@@ -1,14 +1,34 @@
 const express = require('express');
 const c = require('../controllers/adminController');
 const mac = require('../controllers/managerAccessController');
+const aac = require('../controllers/adminAccessController');
 const { authenticate, requireAdmin, requireRole } = require('../middleware/auth');
 const { ROLES } = require('../config/constants');
 const riskService = require('../services/riskService');
 const { sendSuccess, asyncHandler, AppError } = require('../utils/errors');
+const { effectiveAdminPermissions, adminPermissionForPath } = require('../config/adminPermissions');
 
 const router = express.Router();
 
 router.use(authenticate, requireAdmin);
+
+// ── Per-admin module enforcement (Admin Access Control) ──
+// SUPER_ADMIN (and non-admin staff) bypass. An ADMIN is blocked from any
+// /api/admin sub-path whose module the Super Admin has turned OFF for them.
+// Ungated paths (no catalog mapping) are always allowed.
+router.use((req, res, next) => {
+  if (!req.user || req.user.role !== ROLES.ADMIN) return next();
+  const key = adminPermissionForPath(req.path);
+  if (!key) return next();
+  const perms = effectiveAdminPermissions(req.user.adminPermissions);
+  if (perms[key]) return next();
+  return next(new AppError('This module is disabled for your account by the Super Admin.', 403, 'MODULE_FORBIDDEN'));
+});
+
+// ── Admin Access Control (Super Admin only) ──
+router.get('/admin-access/meta', aac.meta);
+router.get('/admin-access', aac.matrix);
+router.put('/admin-access/:id', aac.setPermissions);
 
 router.get('/dashboard', c.dashboard);
 router.get('/dashboard/analytics', c.getDashboardAnalytics);

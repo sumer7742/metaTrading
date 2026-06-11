@@ -9,6 +9,7 @@
 const mongoose = require('mongoose');
 const User = require('../models/User');
 const Position = require('../models/Position');
+const Trade = require('../models/Trade');
 const { Deposit, Withdrawal, AuditLog } = require('../models/index');
 const { Wallet, WalletLedger } = require('../models/Wallet');
 const { BonusWallet } = require('../models/BonusWallet');
@@ -32,7 +33,7 @@ const periodStart = (p) => {
 // ── Overview: suspicious-activity summary ─────────────────────────────
 const overview = asyncHandler(async (req, res) => {
   const since24 = new Date(Date.now() - 86400000);
-  const [flagged, pendingFreezes, pendingKyc, ipGroups, depCount, wdCount, anomalies] = await Promise.all([
+  const [flagged, pendingFreezes, pendingKyc, ipGroups, depCount, wdCount, anomalies, fraudAlerts24h] = await Promise.all([
     User.countDocuments({ 'auditFlag.flagged': true }),
     FreezeRequest.countDocuments({ status: 'PENDING' }),
     User.countDocuments({ kycStatus: 'PENDING' }),
@@ -44,6 +45,7 @@ const overview = asyncHandler(async (req, res) => {
     Deposit.countDocuments({ status: 'CONFIRMED', createdAt: { $gte: since24 } }),
     Withdrawal.countDocuments({ status: 'COMPLETED', createdAt: { $gte: since24 } }),
     Position.countDocuments({ status: 'CLOSED', $expr: { $gt: [{ $abs: num('$realizedPnl') }, 1000] } }),
+    AuditLog.countDocuments({ action: { $in: ['AUDIT_FLAG', 'AUDIT_ESCALATION', 'AUDIT_KYC_REVIEW_REQUEST'] }, createdAt: { $gte: since24 } }),
   ]);
   sendSuccess(res, {
     flaggedUsers: flagged,
@@ -53,6 +55,7 @@ const overview = asyncHandler(async (req, res) => {
     deposits24h: depCount,
     withdrawals24h: wdCount,
     pnlAnomalies: anomalies,
+    fraudAlerts24h,
   });
 });
 
@@ -332,8 +335,198 @@ const report = asyncHandler(async (req, res) => {
   });
 });
 
+// ── User Analysis: full fraud / behaviour / risk investigation ────────
+const oid = (id) => { try { return new mongoose.Types.ObjectId(String(id)); } catch { return null; } };
+
+// Accounts linked to this user by shared identifiers (IP, phone, deposit
+// UPI / bank / sender name). Returns [{ _id, name, reasons[], strength }].
+async function _linkedAccounts(user) {
+  const links = new Map();
+  const add = (uid, reason) => {
+    const k = String(uid);
+    if (!k || k === String(user._id)) return;
+    if (!links.has(k)) links.set(k, new Set());
+    links.get(k).add(reason);
+  };
+  if (user.lastLoginIp) {
+    (await User.find({ lastLoginIp: user.lastLoginIp, _id: { $ne: user._id } }).select('_id').limit(50).lean()).forEach((u) => add(u._id, 'Same IP'));
+  }
+  if (user.phone) {
+    (await User.find({ phone: user.phone, _id: { $ne: user._id } }).select('_id').limit(50).lean()).forEach((u) => add(u._id, 'Same phone'));
+  }
+  const myDeps = await Deposit.find({ userId: user._id }).select('senderUpiId senderBankAccount senderName').lean();
+  const pick = (k) => [...new Set(myDeps.map((d) => d[k]).filter(Boolean))];
+  const upis = pick('senderUpiId'); const banks = pick('senderBankAccount'); const names = pick('senderName');
+  if (upis.length) (await Deposit.find({ senderUpiId: { $in: upis }, userId: { $ne: user._id } }).select('userId').limit(100).lean()).forEach((d) => add(d.userId, 'Same UPI'));
+  if (banks.length) (await Deposit.find({ senderBankAccount: { $in: banks }, userId: { $ne: user._id } }).select('userId').limit(100).lean()).forEach((d) => add(d.userId, 'Same bank'));
+  if (names.length) (await Deposit.find({ senderName: { $in: names }, userId: { $ne: user._id } }).select('userId').limit(100).lean()).forEach((d) => add(d.userId, 'Same sender name'));
+
+  const ids = [...links.keys()];
+  const users = ids.length ? await User.find({ _id: { $in: ids } }).select('email firstName lastName userUid isActive').lean() : [];
+  const uMap = new Map(users.map((u) => [String(u._id), u]));
+  return ids.map((id) => {
+    const u = uMap.get(id); const reasons = [...links.get(id)];
+    return { _id: id, name: nameOf(u), email: u?.email, userUid: u?.userUid, active: u?.isActive !== false, reasons, strength: reasons.length };
+  }).sort((a, b) => b.strength - a.strength);
+}
+
+const userAnalysis = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.params.id).select('-passwordHash -twoFactorSecret -refreshTokens.token').lean();
+  if (!user) throw new AppError('User not found', 404);
+  const now = Date.now();
+  const flags = [];
+  const flag = (severity, reason, evidence) => flags.push({ severity, reason, evidence, date: new Date() });
+
+  const [accounts, closed, depAgg, wdAgg, lastDep, lastWd, kycDocs, notes, linked] = await Promise.all([
+    TradingAccount.find({ userId: user._id }).select('accountNumber accountType status').lean(),
+    Position.find({ userId: user._id, status: 'CLOSED' }).select('symbol side quantity closedQuantity realizedPnl openedAt closedAt').sort({ closedAt: 1 }).limit(2000).lean(),
+    Deposit.aggregate([{ $match: { userId: oid(user._id), status: 'CONFIRMED' } }, { $group: { _id: null, n: { $sum: 1 }, sum: { $sum: num('$baseAmount') } } }]),
+    Withdrawal.aggregate([{ $match: { userId: oid(user._id), status: 'COMPLETED' } }, { $group: { _id: null, n: { $sum: 1 }, sum: { $sum: num('$baseAmount') } } }]),
+    Deposit.findOne({ userId: user._id, status: 'CONFIRMED' }).sort({ createdAt: -1 }).select('baseAmount createdAt').lean(),
+    Withdrawal.findOne({ userId: user._id, status: 'COMPLETED' }).sort({ createdAt: -1 }).select('baseAmount createdAt').lean(),
+    KycDocument.find({ userId: user._id }).select('docType status createdAt').lean(),
+    AuditLog.find({ action: 'AUDIT_NOTE', targetId: String(user._id) }).sort({ createdAt: -1 }).limit(50).lean(),
+    _linkedAccounts(user),
+  ]);
+
+  // ── Trading behaviour ──
+  let wins = 0, losses = 0, sumProfit = 0, sumLoss = 0, holdSum = 0, holdN = 0, vol = 0;
+  let largestWin = 0, largestLoss = 0, curW = 0, curL = 0, maxW = 0, maxL = 0;
+  const bySymbol = {}; const sessions = { ASIA: 0, EUROPE: 0, US: 0 };
+  for (const p of closed) {
+    const pnl = Number(p.realizedPnl) || 0;
+    const q = Number(p.closedQuantity) > 0 ? Number(p.closedQuantity) : Number(p.quantity) || 0;
+    vol += q;
+    if (pnl > 0) { wins++; sumProfit += pnl; curW++; curL = 0; if (pnl > largestWin) largestWin = pnl; }
+    else if (pnl < 0) { losses++; sumLoss += pnl; curL++; curW = 0; if (pnl < largestLoss) largestLoss = pnl; }
+    maxW = Math.max(maxW, curW); maxL = Math.max(maxL, curL);
+    if (p.openedAt && p.closedAt) { holdSum += (new Date(p.closedAt) - new Date(p.openedAt)); holdN++; }
+    bySymbol[p.symbol] = (bySymbol[p.symbol] || 0) + 1;
+    if (p.closedAt) { const h = new Date(p.closedAt).getUTCHours(); sessions[h < 7 ? 'ASIA' : h < 13 ? 'EUROPE' : h < 21 ? 'US' : 'ASIA']++; }
+  }
+  const totalTrades = closed.length;
+  const winRate = totalTrades ? round2((wins / totalTrades) * 100) : 0;
+  const avgHoldMs = holdN ? Math.round(holdSum / holdN) : 0;
+  const mostTraded = Object.entries(bySymbol).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([symbol, n]) => ({ symbol, trades: n }));
+
+  if (totalTrades >= 20 && winRate >= 85) flag('CRITICAL', 'Extremely high win rate', `${winRate}% over ${totalTrades} trades`);
+  else if (totalTrades >= 20 && winRate >= 75) flag('HIGH', 'Unusually high win rate', `${winRate}% over ${totalTrades} trades`);
+  if (holdN >= 20 && avgHoldMs > 0 && avgHoldMs < 60000) flag('HIGH', 'Abnormally short holding time (scalping/bot)', `avg ${(avgHoldMs / 1000).toFixed(1)}s`);
+  if (holdN >= 30 && avgHoldMs > 0 && avgHoldMs < 10000) flag('CRITICAL', 'Bot-like ultra-short holds', `avg ${(avgHoldMs / 1000).toFixed(1)}s over ${holdN} trades`);
+  if (maxW >= 15) flag('MEDIUM', 'Unrealistic win consistency', `${maxW} consecutive wins`);
+
+  // ── P&L windows ──
+  const inWin = (p, ms) => p.closedAt && (now - new Date(p.closedAt).getTime()) <= ms;
+  const sumPnl = (filterFn) => round2(closed.filter(filterFn).reduce((s, p) => s + (Number(p.realizedPnl) || 0), 0));
+  const pnl = {
+    daily: sumPnl((p) => inWin(p, 86400000)),
+    weekly: sumPnl((p) => inWin(p, 7 * 86400000)),
+    monthly: sumPnl((p) => inWin(p, 30 * 86400000)),
+    total: round2(sumProfit + sumLoss),
+    largestWin: round2(largestWin), largestLoss: round2(largestLoss),
+  };
+
+  // ── Funding ──
+  const totalDeposits = round2(depAgg[0]?.sum || 0);
+  const totalWithdrawals = round2(wdAgg[0]?.sum || 0);
+  const funding = {
+    totalDeposits, totalWithdrawals,
+    depositCount: depAgg[0]?.n || 0, withdrawalCount: wdAgg[0]?.n || 0,
+    net: round2(totalDeposits - totalWithdrawals),
+    lastDeposit: lastDep ? { amount: round2(lastDep.baseAmount), at: lastDep.createdAt } : null,
+    lastWithdrawal: lastWd ? { amount: round2(lastWd.baseAmount), at: lastWd.createdAt } : null,
+  };
+  if (totalWithdrawals > totalDeposits * 1.5 && totalWithdrawals > 100) flag('HIGH', 'Withdrawals far exceed deposits', `out ${totalWithdrawals} vs in ${totalDeposits}`);
+  if (totalDeposits > 0 && totalWithdrawals === 0 && (funding.depositCount >= 3)) flag('LOW', 'Deposits with no withdrawals yet', `${funding.depositCount} deposits`);
+
+  // ── Trading relationships (wash / self / collusion) ──
+  const linkedOids = linked.map((l) => oid(l._id)).filter(Boolean);
+  const [selfTrades, collusionTrades] = await Promise.all([
+    Trade.countDocuments({ buyUserId: user._id, sellUserId: user._id }),
+    linkedOids.length ? Trade.countDocuments({ $or: [
+      { buyUserId: user._id, sellUserId: { $in: linkedOids } },
+      { sellUserId: user._id, buyUserId: { $in: linkedOids } },
+    ] }) : 0,
+  ]);
+  if (selfTrades > 0) flag('CRITICAL', 'Self / wash trading detected', `${selfTrades} self-matched trades`);
+  if (collusionTrades > 0) flag('HIGH', 'Trades with linked accounts (possible collusion)', `${collusionTrades} matched trades`);
+  const suspiciousTradingScore = Math.min(100, selfTrades * 25 + collusionTrades * 10);
+
+  // ── Linked accounts flags ──
+  if (linked.length >= 1) flag(linked.length >= 3 ? 'HIGH' : 'MEDIUM', 'Linked / shared-identity accounts', `${linked.length} account(s): ${linked.slice(0, 3).map((l) => l.reasons.join('+')).join(', ')}`);
+  // KYC
+  if (user.kycStatus !== 'APPROVED') flag('MEDIUM', 'KYC not approved', user.kycStatus || 'NOT_SUBMITTED');
+  if (user.auditFlag?.flagged) flag('HIGH', 'Already flagged by audit', user.auditFlag.reason || '');
+
+  // ── Risk score (weighted, capped 0–100) ──
+  const sevWeight = { LOW: 5, MEDIUM: 12, HIGH: 22, CRITICAL: 35 };
+  let score = flags.reduce((s, f) => s + (sevWeight[f.severity] || 0), 0);
+  score = Math.max(0, Math.min(100, score));
+  const level = score >= 81 ? 'CRITICAL' : score >= 61 ? 'HIGH' : score >= 31 ? 'MEDIUM' : 'LOW';
+  const sevRank = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+  flags.sort((a, b) => sevRank[a.severity] - sevRank[b.severity]);
+
+  sendSuccess(res, {
+    overview: {
+      _id: user._id, userUid: user.userUid, name: nameOf(user), email: user.email,
+      accountNumber: accounts[0]?.accountNumber || null, accountsCount: accounts.length,
+      managerId: user.managerId || null, adminId: user.adminId || null,
+      registeredAt: user.createdAt, lastLoginAt: user.lastLoginAt, lastLoginIp: user.lastLoginIp,
+      status: user.isActive === false ? 'BLOCKED' : 'ACTIVE', kyc: user.kycStatus || 'NOT_SUBMITTED',
+      country: user.country, phone: user.phone, riskScore: score, riskLevel: level,
+    },
+    trading: {
+      totalTrades, totalVolume: round2(vol), winRate,
+      avgHoldMs, avgHoldText: avgHoldMs ? `${(avgHoldMs / 60000).toFixed(1)} min` : '—',
+      avgProfit: wins ? round2(sumProfit / wins) : 0, avgLoss: losses ? round2(sumLoss / losses) : 0,
+      maxConsecutiveWins: maxW, maxConsecutiveLosses: maxL, mostTraded, sessions,
+    },
+    pnl,
+    funding,
+    security: {
+      lastLoginAt: user.lastLoginAt, lastLoginIp: user.lastLoginIp,
+      devices: (user.refreshTokens || []).map((t) => ({ device: t.deviceInfo, at: t.createdAt })),
+      note: 'Full login/IP/country history and failed-login tracking is not recorded yet — only the last login + active sessions are available.',
+    },
+    linked,
+    relationships: { selfTrades, collusionTrades, suspiciousTradingScore },
+    compliance: {
+      kyc: user.kycStatus || 'NOT_SUBMITTED',
+      docs: kycDocs.map((k) => ({ docType: k.docType, status: k.status, at: k.createdAt })),
+      auditFlag: user.auditFlag || null,
+      notes: notes.map((nLog) => ({ note: nLog.metadata?.note, by: nLog.actorRole, at: nLog.createdAt })),
+    },
+    risk: { score, level, flagCount: flags.length },
+    redFlags: flags,
+  });
+});
+
+// Audit Manager actions (read-only role + allowed writes).
+const addUserNote = asyncHandler(async (req, res) => {
+  const note = String(req.body?.note || '').trim();
+  if (!note) throw new AppError('note is required', 400);
+  await AuditLog.create({ actorId: req.user._id, actorRole: req.user.role, action: 'AUDIT_NOTE', targetType: 'USER', targetId: String(req.params.id), metadata: { note } });
+  sendSuccess(res, { ok: true });
+});
+
+const requestKycReview = asyncHandler(async (req, res) => {
+  const reason = String(req.body?.reason || 'Audit-requested KYC re-review').trim();
+  await AuditLog.create({ actorId: req.user._id, actorRole: req.user.role, action: 'AUDIT_KYC_REVIEW_REQUEST', targetType: 'USER', targetId: String(req.params.id), metadata: { reason } });
+  sendSuccess(res, { ok: true });
+});
+
+const escalateUser = asyncHandler(async (req, res) => {
+  const to = String(req.body?.to || '').toUpperCase();
+  if (!['SUPER_ADMIN', 'FINANCIAL_ADMIN'].includes(to)) throw new AppError('to must be SUPER_ADMIN or FINANCIAL_ADMIN', 400);
+  const reason = String(req.body?.reason || '').trim();
+  if (!reason) throw new AppError('reason is required', 400);
+  await AuditLog.create({ actorId: req.user._id, actorRole: req.user.role, action: 'AUDIT_ESCALATION', targetType: 'USER', targetId: String(req.params.id), metadata: { to, reason } });
+  sendSuccess(res, { ok: true, escalatedTo: to });
+});
+
 module.exports = {
   overview, randomDeposits, randomWithdrawals, multiAccount, washTrading, pnlAnomalies, bonusAbuse,
   kycReview, activity, balanceAdjustments, inspectUser, flagUser, unflagUser, flaggedUsers,
   createFreezeRequest, listFreezeRequests, reviewFreezeRequest, report,
+  userAnalysis, addUserNote, requestKycReview, escalateUser,
 };

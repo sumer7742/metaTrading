@@ -24,6 +24,7 @@ const EMPTY = {
   commissionType: 'PERCENTAGE',
   commissionPerTrade: '0',
   commissionPercent: '0',
+  commissionOverrides: [],
   maxLeverage: 999999, // Unlimited by default
   // Fixed-volume lock — when on, every new order on this symbol is forced
   // to `fixedVolumeValue` and the client volume input is read-only.
@@ -33,6 +34,9 @@ const EMPTY = {
   dailyVolumeLimitEnabled: false,
   dailyBuyLimit: '',
   dailySellLimit: '',
+  lifetimeVolumeLimitEnabled: false,
+  lifetimeBuyLimit: '',
+  lifetimeSellLimit: '',
   // Per-instrument routing override — mirrors the user-level override.
   // INHERIT = use the global Settings → Routing Mode. An explicit value
   // (INTERNAL_MATCHING / A_BOOK / B_BOOK / HYBRID) wins over the global
@@ -63,6 +67,56 @@ const fmtVol = (v) => {
   const d = abs >= 100 ? 0 : abs >= 1 ? 2 : abs >= 0.01 ? 4 : 6;
   return n.toFixed(d);
 };
+
+// Global lifetime usage indicator for one side (BUY/SELL): Total Limit / Used /
+// Remaining / Usage %, a colour-thresholded progress bar and a status badge.
+// `limit` comes live from the editor input; `used` = instrument total (all users).
+const nLots = (v) => Number(v || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
+function LifetimeUsageSide({ label, limit, used, tone }) {
+  const accent = tone === 'rose' ? 'text-rose-400' : 'text-emerald-400';
+  const u = Number(used) || 0;
+  const lim = Number(limit) || 0;
+
+  if (lim <= 0) {
+    return (
+      <div className="rounded-lg border border-border-dark bg-bg-card p-2.5">
+        <div className="flex items-center justify-between mb-1">
+          <span className={`text-[11px] font-bold ${accent}`}>{label}</span>
+          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-bg-hover text-text-muted">UNLIMITED</span>
+        </div>
+        <div className="text-[10px] text-text-muted">Unlimited — Usage Tracking Only</div>
+        <div className="text-xs font-mono text-white mt-0.5">Used: {nLots(u)} lots</div>
+      </div>
+    );
+  }
+
+  const remaining = Math.max(0, lim - u);
+  const pct = (u / lim) * 100;
+  // 0–70 green · 70–90 orange · 90–100 red · 100%+ limit reached
+  let badge, badgeCls, barCls;
+  if (pct >= 100)      { badge = 'LIMIT REACHED'; badgeCls = 'bg-rose-500/20 text-rose-400 ring-1 ring-rose-500/40'; barCls = 'bg-rose-500'; }
+  else if (pct >= 90)  { badge = 'CRITICAL';      badgeCls = 'bg-rose-500/15 text-rose-400';   barCls = 'bg-rose-500'; }
+  else if (pct >= 70)  { badge = 'WARNING';       badgeCls = 'bg-amber-500/15 text-amber-400'; barCls = 'bg-amber-500'; }
+  else                 { badge = 'NORMAL';        badgeCls = 'bg-emerald-500/15 text-emerald-400'; barCls = 'bg-emerald-500'; }
+
+  return (
+    <div className="rounded-lg border border-border-dark bg-bg-card p-2.5">
+      <div className="flex items-center justify-between mb-1.5">
+        <span className={`text-[11px] font-bold ${accent}`}>{label}</span>
+        <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${badgeCls}`}>{badge}</span>
+      </div>
+      <div className="grid grid-cols-3 gap-1 text-[10px] mb-1.5">
+        <div><div className="text-text-muted">Limit</div><div className="font-mono text-white">{nLots(lim)}</div></div>
+        <div><div className="text-text-muted">Used</div><div className="font-mono text-white">{nLots(u)}</div></div>
+        <div><div className="text-text-muted">Left</div><div className="font-mono text-white">{nLots(remaining)}</div></div>
+      </div>
+      <div className="h-2 rounded-full overflow-hidden bg-bg-hover">
+        <div className={`h-full rounded-full ${barCls} transition-all duration-300`} style={{ width: `${Math.min(100, pct)}%` }} />
+      </div>
+      <div className="text-[10px] text-right mt-0.5 font-mono text-text-muted">{pct.toFixed(1)}% used</div>
+    </div>
+  );
+}
 const STATUS_TONE = {
   active:   'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
   upcoming: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
@@ -125,7 +179,7 @@ export default function Instruments() {
       />
 
       <div className="card overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="w-full text-sm whitespace-nowrap">
           <thead className="text-xs text-gray-500 uppercase">
             <tr>
               <th className="text-left p-3">Symbol</th>
@@ -137,6 +191,10 @@ export default function Instruments() {
               <th className="text-right p-3">Daily Buy/Sell Vol</th>
               <th className="text-right p-3">Live Buy</th>
               <th className="text-right p-3">Live Sell</th>
+              <th className="text-right p-3" title="A-book buy volume">A Buy</th>
+              <th className="text-right p-3" title="A-book sell volume">A Sell</th>
+              <th className="text-right p-3" title="B-book buy volume">B Buy</th>
+              <th className="text-right p-3" title="B-book sell volume">B Sell</th>
               <th className="text-right p-3">Net (B−S)</th>
               <th className="text-center p-3">Routing</th>
               <th className="text-right p-3"></th>
@@ -144,7 +202,7 @@ export default function Instruments() {
           </thead>
           <tbody>
             {items.map((it) => {
-              const lv = liveVol[it.symbol] || { buy: 0, sell: 0 };
+              const lv = liveVol[it.symbol] || { buy: 0, sell: 0, aBuy: 0, aSell: 0, bBuy: 0, bSell: 0 };
               const netVol = (Number(lv.buy) || 0) - (Number(lv.sell) || 0);
               const routing = it.routingOverride || 'INHERIT';
               const routingTone =
@@ -172,13 +230,13 @@ export default function Instruments() {
                     )}
                   </td>
                   <td className="p-3 text-right">
-                    {(it.commissionType || (Number(it.commissionPercent) > 0 ? 'PERCENTAGE' : 'FIXED')) === 'FIXED' ? (
-                      <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-blue-500/15 text-blue-400 border border-blue-500/30" title="Fixed commission per trade">
-                        ${fmtNum(it.commissionPerTrade || 0, 2)} flat
+                    {(it.commissionOverrides?.length || 0) > 0 ? (
+                      <span className="text-[11px] font-bold px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-400 border border-violet-500/30" title={`Overrides: ${it.commissionOverrides.map((o) => `${o.accountType} ${o.commissionType === 'FIXED' ? '$' + o.commissionValue : o.commissionType === 'PCT_OF_PROFIT' ? (Number(o.commissionValue) * 100).toFixed(2) + '% of profit' : (Number(o.commissionValue) * 100).toFixed(3) + '%'}`).join(', ')}`}>
+                        {it.commissionOverrides.length} override{it.commissionOverrides.length > 1 ? 's' : ''}
                       </span>
                     ) : (
-                      <span className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-violet-500/15 text-violet-400 border border-violet-500/30" title="Percentage of trade value">
-                        {(Number(it.commissionPercent || 0) * 100).toFixed(3)}%
+                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-bg-hover text-text-muted border border-border-dark" title="Inherits each account type's own commission">
+                        Inherited
                       </span>
                     )}
                   </td>
@@ -200,6 +258,10 @@ export default function Instruments() {
                   </td>
                   <td className="p-3 text-right font-mono text-emerald-400">{fmtVol(lv.buy)}</td>
                   <td className="p-3 text-right font-mono text-rose-400">{fmtVol(lv.sell)}</td>
+                  <td className="p-3 text-right font-mono text-emerald-400/70">{fmtVol(lv.aBuy)}</td>
+                  <td className="p-3 text-right font-mono text-rose-400/70">{fmtVol(lv.aSell)}</td>
+                  <td className="p-3 text-right font-mono text-emerald-400/70">{fmtVol(lv.bBuy)}</td>
+                  <td className="p-3 text-right font-mono text-rose-400/70">{fmtVol(lv.bSell)}</td>
                   <td className={`p-3 text-right font-mono font-semibold ${netVol > 0 ? 'text-emerald-400' : netVol < 0 ? 'text-rose-400' : 'text-gray-400'}`}>
                     {netVol > 0 ? '+' : ''}{fmtVol(netVol)}
                   </td>
@@ -226,10 +288,113 @@ export default function Instruments() {
   );
 }
 
+// Human-readable inherited commission for an account plan.
+const planFeeText = (p) => {
+  if (p?.feeDisplay) return p.feeDisplay;
+  const v = Number(p?.feeValue || 0);
+  if (p?.feeKind === 'FIXED_PER_TRADE') return `$${v} per trade`;
+  if (p?.feeKind === 'PCT_OF_PROFIT') return `${(v * 100).toFixed(2)}% of profit`;
+  return `${(v * 100).toFixed(3)}% of trade value`;
+};
+
+// Per-account-type commission config. Each account type inherits its own
+// commission by default; admin can override it for THIS instrument only.
+function CommissionOverrides({ value, onChange }) {
+  const [plans, setPlans] = useState(null);
+  useEffect(() => {
+    api.get('/account-plans/admin')
+      .then(({ data }) => setPlans((data.data || []).filter((p) => p.isActive !== false)))
+      .catch(() => setPlans([]));
+  }, []);
+  const ovFor = (code) => value.find((o) => String(o.accountType).toUpperCase() === String(code).toUpperCase());
+  const setOverride = (code, patch) => {
+    const others = value.filter((o) => String(o.accountType).toUpperCase() !== String(code).toUpperCase());
+    const cur = ovFor(code) || { accountType: code, commissionType: 'PERCENTAGE', commissionValue: 0 };
+    onChange([...others, { ...cur, ...patch, accountType: code }]);
+  };
+  const removeOverride = (code) => onChange(value.filter((o) => String(o.accountType).toUpperCase() !== String(code).toUpperCase()));
+
+  return (
+    <div className="rounded-lg border border-border-dark bg-bg-dark p-3">
+      <div className="text-sm font-semibold text-white mb-1">Commission per Account Type</div>
+      <p className="text-[11px] text-text-muted mb-3 leading-snug">
+        Every instrument <span className="font-semibold">inherits</span> each account type's own commission. Set an
+        <span className="font-semibold"> Override</span> below to change the fee for THIS instrument — it applies to that
+        account type only; other account types stay on their default.
+      </p>
+      {plans === null ? (
+        <div className="text-xs text-text-muted">Loading account types…</div>
+      ) : !plans.length ? (
+        <div className="text-xs text-text-muted">No account types found. Create them under Account Plans.</div>
+      ) : (
+        <div className="space-y-2">
+          {plans.map((p) => {
+            const ov = ovFor(p.code);
+            const isOverride = !!ov;
+            return (
+              <div key={p.code} className="rounded-lg border border-border-dark bg-bg-card p-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-white truncate">{p.name} <span className="text-text-muted font-mono">({p.code})</span></div>
+                    <div className="text-[10px] text-text-muted">Inherited: {planFeeText(p)}</div>
+                  </div>
+                  <div className="flex items-center gap-1 text-[11px] shrink-0">
+                    <button type="button" onClick={() => removeOverride(p.code)}
+                      className={`px-2 py-1 rounded ${!isOverride ? 'bg-primary-500 text-bg-dark font-bold' : 'bg-bg-hover text-text-secondary'}`}>
+                      Use Default
+                    </button>
+                    <button type="button" onClick={() => { if (!isOverride) setOverride(p.code, {}); }}
+                      className={`px-2 py-1 rounded ${isOverride ? 'bg-primary-500 text-bg-dark font-bold' : 'bg-bg-hover text-text-secondary'}`}>
+                      Override
+                    </button>
+                  </div>
+                </div>
+                {isOverride && (
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    <select className="input !py-1.5 text-xs" value={ov.commissionType} onChange={(e) => setOverride(p.code, { commissionType: e.target.value })}>
+                      <option value="PERCENTAGE">Percentage (% of trade value)</option>
+                      <option value="FIXED">Fixed (flat per trade)</option>
+                      <option value="PCT_OF_PROFIT">Percentage of Profit (% of realized profit)</option>
+                    </select>
+                    <input className="input !py-1.5 text-xs font-mono" value={ov.commissionValue}
+                      onChange={(e) => setOverride(p.code, { commissionValue: e.target.value })}
+                      placeholder={ov.commissionType === 'FIXED' ? 'e.g. 5  ($/trade)' : 'e.g. 0.01 = 1%'} />
+                    <div className="col-span-2 text-[10px] text-text-muted">
+                      {ov.commissionType === 'FIXED'
+                        ? 'Flat fee charged per trade for this account type.'
+                        : ov.commissionType === 'PCT_OF_PROFIT'
+                          ? 'Commission = realized profit × this rate (0.01 = 1%). Charged ONLY on profitable closes — loss / breakeven = 0.'
+                          : 'Commission = trade value × this rate (0.0001 = 0.01%).'}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InstrumentEditor({ data, onSave, onClose }) {
   const [form, setForm] = useState(data);
   const update = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   const checkbox = (k) => (e) => setForm({ ...form, [k]: e.target.checked });
+
+  // Global executed volume for THIS instrument (all users, all-time) — drives
+  // the live usage indicator below the lifetime limit fields.
+  const [usedVol, setUsedVol] = useState({ buy: 0, sell: 0 });
+  useEffect(() => {
+    if (!data?.symbol) return;
+    let alive = true;
+    const load = () => api.get(`/instruments/${data.symbol}/volume-usage`)
+      .then((r) => { if (alive) setUsedVol({ buy: Number(r.data?.data?.lifetime?.buy?.used || 0), sell: Number(r.data?.data?.lifetime?.sell?.used || 0) }); })
+      .catch(() => {});
+    load();
+    const id = setInterval(load, 5000); // refresh live as orders execute
+    return () => { alive = false; clearInterval(id); };
+  }, [data?.symbol]);
 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
@@ -248,6 +413,16 @@ function InstrumentEditor({ data, onSave, onClose }) {
               dailyVolumeLimitEnabled: !!form.dailyVolumeLimitEnabled,
               dailyBuyLimit:  form.dailyVolumeLimitEnabled ? (Number(form.dailyBuyLimit) || 0) : 0,
               dailySellLimit: form.dailyVolumeLimitEnabled ? (Number(form.dailySellLimit) || 0) : 0,
+              lifetimeVolumeLimitEnabled: !!form.lifetimeVolumeLimitEnabled,
+              lifetimeBuyLimit:  form.lifetimeVolumeLimitEnabled ? (Number(form.lifetimeBuyLimit) || 0) : 0,
+              lifetimeSellLimit: form.lifetimeVolumeLimitEnabled ? (Number(form.lifetimeSellLimit) || 0) : 0,
+              commissionOverrides: (form.commissionOverrides || [])
+                .filter((o) => o && o.accountType)
+                .map((o) => ({
+                  accountType: o.accountType,
+                  commissionType: ['FIXED', 'PERCENTAGE', 'PCT_OF_PROFIT'].includes(o.commissionType) ? o.commissionType : 'PERCENTAGE',
+                  commissionValue: Number(o.commissionValue) || 0,
+                })),
             });
           }}
           className="p-5 grid grid-cols-2 gap-3"
@@ -306,28 +481,11 @@ function InstrumentEditor({ data, onSave, onClose }) {
             <label className="label">Spread Value</label>
             <input className="input font-mono" value={form.spreadValue} onChange={update('spreadValue')} />
           </div>
-          <div>
-            <label className="label">Commission Type</label>
-            <select className="input" value={form.commissionType || 'PERCENTAGE'} onChange={update('commissionType')}>
-              <option value="PERCENTAGE">Percentage (% of trade value)</option>
-              <option value="FIXED">Fixed (flat per trade)</option>
-            </select>
-            <div className="text-[10px] text-gray-500 mt-1">Only one method charges — the other is ignored.</div>
-          </div>
-          <div>
-            {form.commissionType === 'FIXED' ? (
-              <>
-                <label className="label">Commission Per Trade <span className="text-emerald-500 font-bold">· active</span></label>
-                <input className="input font-mono" value={form.commissionPerTrade} onChange={update('commissionPerTrade')} placeholder="e.g. 0.10" />
-                <div className="text-[10px] text-gray-500 mt-1">Flat fee charged per trade.</div>
-              </>
-            ) : (
-              <>
-                <label className="label">Commission % <span className="text-emerald-500 font-bold">· active</span></label>
-                <input className="input font-mono" value={form.commissionPercent} onChange={update('commissionPercent')} placeholder="e.g. 0.0005 = 0.05%" />
-                <div className="text-[10px] text-gray-500 mt-1">Commission = trade value × this rate.</div>
-              </>
-            )}
+          <div className="col-span-2">
+            <CommissionOverrides
+              value={form.commissionOverrides || []}
+              onChange={(arr) => setForm((f) => ({ ...f, commissionOverrides: arr }))}
+            />
           </div>
           <div>
             <label className="label">Max Leverage</label>
@@ -442,6 +600,60 @@ function InstrumentEditor({ data, onSave, onClose }) {
             ) : (
               <p className="text-[11px] text-text-muted mt-2">
                 <span className="font-semibold text-emerald-500">Unlimited</span> — no daily buy/sell volume restriction on this instrument.
+              </p>
+            )}
+          </div>
+          {/* ── Lifetime Volume Limit (per user, all-time; off = unlimited) ── */}
+          <div className="col-span-2 rounded-lg border border-border-dark bg-bg-dark p-3 mt-1">
+            <label className="flex items-center justify-between cursor-pointer">
+              <span className="text-sm font-semibold text-white">Enable Lifetime Buy/Sell Volume Limit</span>
+              <input
+                type="checkbox"
+                className="w-4 h-4"
+                checked={!!form.lifetimeVolumeLimitEnabled}
+                onChange={checkbox('lifetimeVolumeLimitEnabled')}
+              />
+            </label>
+            {form.lifetimeVolumeLimitEnabled ? (
+              <div className="mt-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="label text-emerald-400">Lifetime BUY Limit (Lots)</label>
+                    <input
+                      type="number" min="0" step="any"
+                      className="input font-mono"
+                      value={form.lifetimeBuyLimit}
+                      onChange={update('lifetimeBuyLimit')}
+                      placeholder="e.g. 1000000"
+                    />
+                  </div>
+                  <div>
+                    <label className="label text-rose-400">Lifetime SELL Limit (Lots)</label>
+                    <input
+                      type="number" min="0" step="any"
+                      className="input font-mono"
+                      value={form.lifetimeSellLimit}
+                      onChange={update('lifetimeSellLimit')}
+                      placeholder="e.g. 1000000"
+                    />
+                  </div>
+                </div>
+                {/* Live global usage indicator — limit from the inputs above,
+                    used = this instrument's total executed volume (all users). */}
+                <div className="grid grid-cols-2 gap-3 mt-3">
+                  <LifetimeUsageSide label="BUY" limit={form.lifetimeBuyLimit} used={usedVol.buy} tone="emerald" />
+                  <LifetimeUsageSide label="SELL" limit={form.lifetimeSellLimit} used={usedVol.sell} tone="rose" />
+                </div>
+                <p className="text-[11px] text-text-muted mt-2 leading-snug">
+                  Platform-wide caps on total OPENING volume across ALL users, all time: once the instrument's BUY volume
+                  reaches the BUY limit, NO user can open more BUYs on this symbol (SELL likewise). A side set to{' '}
+                  <span className="font-semibold">0</span> = unlimited (usage still tracked). Closes are never blocked;
+                  existing positions are unaffected. Changes apply to future orders only (past volume is never rewritten).
+                </p>
+              </div>
+            ) : (
+              <p className="text-[11px] text-text-muted mt-2">
+                <span className="font-semibold text-emerald-500">Unlimited</span> — no platform-wide lifetime buy/sell volume restriction.
               </p>
             )}
           </div>

@@ -33,6 +33,18 @@ const instrumentSchema = new mongoose.Schema(
     dailyBuyLimit:           { type: Number, default: 0, min: 0 }, // lots; 0 = unlimited BUY
     dailySellLimit:          { type: Number, default: 0, min: 0 }, // lots; 0 = unlimited SELL
     dailyVolumeLimit:        { type: Number, default: 0, min: 0 }, // @deprecated (combined)
+
+    // ─── Optional LIFETIME volume cap (lots), GLOBAL per instrument ──────
+    // Platform-wide cumulative cap on total executed OPENING volume for THIS
+    // symbol across ALL users and ALL time — tracked SEPARATELY for BUY and
+    // SELL. Disabled by default → UNLIMITED. Once the instrument's cumulative
+    // BUY volume reaches lifetimeBuyLimit, NO user can open more BUYs on this
+    // symbol (SELL vs lifetimeSellLimit). 0 on a side = that side unlimited
+    // (usage still tracked). Closes are never capped; existing positions are
+    // unaffected. Changes apply to future orders only (history is never rewritten).
+    lifetimeVolumeLimitEnabled: { type: Boolean, default: false },
+    lifetimeBuyLimit:           { type: Number, default: 0, min: 0 }, // lots; 0 = unlimited BUY
+    lifetimeSellLimit:          { type: Number, default: 0, min: 0 }, // lots; 0 = unlimited SELL
     // ─── @deprecated routing fields ──────────────────────────────────
     // Book-type / external routing is now a PER-ACCOUNT decision (see
     // TradingAccount.bookType + lpProvider). The instrument-level fields
@@ -64,9 +76,34 @@ const instrumentSchema = new mongoose.Schema(
     //   PERCENTAGE → commission = tradeValue × commissionPercent
     // The inactive field is forced to '0' on save so the two can never
     // both charge. See utils/commission.computeInstrumentCommission().
+    // @deprecated for user-facing fees — commission now inherits from the
+    // ACCOUNT TYPE (AccountPlan) and is overridden PER ACCOUNT TYPE via
+    // `commissionOverrides` below. These flat fields are retained only as the
+    // affiliate-distribution basis + ultimate fallback for orphaned accounts.
     commissionType: { type: String, enum: ['FIXED', 'PERCENTAGE'], default: 'PERCENTAGE' },
     commissionPerTrade: { type: String, default: '0' }, // flat fee (FIXED mode)
     commissionPercent: { type: String, default: '0' }, // % (PERCENTAGE mode)
+
+    // Per-account-type commission OVERRIDES. By default an instrument inherits
+    // each account type's own commission (AccountPlan fee model). An entry here
+    // overrides the fee for ONLY that account type on THIS instrument; other
+    // account types are unaffected. Multiple entries (one per account type)
+    // may coexist. PERCENTAGE → fee = tradeValue × commissionValue (raw
+    // fraction, 0.0005 = 0.05%); FIXED → flat commissionValue per trade.
+    // commissionType:
+    //   PERCENTAGE    → fee = tradeValue × commissionValue (raw fraction)
+    //   FIXED         → flat commissionValue per trade
+    //   PCT_OF_PROFIT → fee = realizedProfit × commissionValue, charged ONLY on
+    //                   profitable closes (loss / breakeven → 0)
+    commissionOverrides: {
+      type: [{
+        accountType: { type: String, required: true }, // AccountPlan.code (e.g. STANDARD)
+        commissionType: { type: String, enum: ['PERCENTAGE', 'FIXED', 'PCT_OF_PROFIT'], default: 'PERCENTAGE' },
+        commissionValue: { type: Number, default: 0 },
+        _id: false,
+      }],
+      default: [],
+    },
     // Profit-share fee (doc §5) — charged only when a closing trade
     // realises positive PnL. Expressed as a percent of the realized
     // profit (e.g. "2" = take 2% of profit). 0 disables.

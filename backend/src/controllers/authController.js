@@ -377,6 +377,12 @@ const me = asyncHandler(async (req, res) => {
     safe.managerPermissions = effectivePermissions(user.managerPermissions);
     safe.managerAccessEnabled = user.managerAccessEnabled !== false;
   }
+  // Admin Access Control: ship the admin's effective module permissions so the
+  // admin app can gate sidebar/routes instantly (Super Admin always full).
+  if (user.role === 'ADMIN') {
+    const { effectiveAdminPermissions } = require('../config/adminPermissions');
+    safe.adminPermissions = effectiveAdminPermissions(user.adminPermissions);
+  }
   sendSuccess(res, safe);
 });
 

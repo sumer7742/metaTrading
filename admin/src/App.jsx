@@ -30,6 +30,7 @@ import Partners from './pages/Partners';
 import Admins from './pages/Admins';
 import Managers from './pages/Managers';
 import ManagerPermissions from './pages/ManagerPermissions';
+import AdminAccess from './pages/AdminAccess';
 import Assignments from './pages/Assignments';
 import ManagerDashboard from './pages/ManagerDashboard';
 import HierarchyTree from './pages/HierarchyTree';
@@ -117,6 +118,7 @@ export default function App() {
       <Route path="/assignments" element={wrap(<Assignments />)} />
       <Route path="/hierarchy-tree" element={wrap(<HierarchyTree />)} />
       <Route path="/access-control" element={wrap(<ManagerPermissions />)} />
+      <Route path="/admin-access" element={wrap(<AdminAccess />)} />
       <Route path="/my-users" element={wrap(<ManagerDashboard />)} />
       <Route path="/support-chats" element={wrap(<ManagerChats />)} />
 

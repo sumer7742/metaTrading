@@ -51,6 +51,7 @@ const NAV_SECTIONS = [
       { to: '/assignments',    icon: I.users, label: 'Assignments' },
       { to: '/hierarchy-tree', icon: I.dashboard, label: 'Hierarchy Tree' },
       { to: '/access-control', icon: I.security, label: 'Manager Permissions' },
+      { to: '/admin-access', icon: I.security, label: 'Admin Access' },
       { to: '/my-users',       icon: I.users, label: 'My Users' },
     ],
   },

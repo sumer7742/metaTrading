@@ -142,9 +142,9 @@ export default function MarketExposure() {
     <div className="space-y-5 max-w-[1600px]">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <PageHero
-          eyebrow="Risk · Read Only"
+          eyebrow="Risk · Read Only · B-Book"
           title="Market Exposure Dashboard"
-          subtitle="Live open-position exposure across the platform. Buy vs Sell imbalance, per-instrument breakdown. Auto-refreshes every 4s. No trading actions."
+          subtitle="Live B-BOOK open-position exposure (the broker's own risk; A-book is forwarded to the LP and excluded). Buy vs Sell imbalance, per-instrument breakdown. Auto-refreshes every 4s. No trading actions."
         />
         <div className="flex items-center gap-2">
           <button onClick={exportCSV} disabled={!summary} className="btn-ghost text-xs disabled:opacity-40">⭳ CSV</button>

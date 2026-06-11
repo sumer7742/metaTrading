@@ -149,7 +149,7 @@ export default function Orders() {
       shortId(p._id),
       p.symbol,
       p.side,
-      p.quantity,
+      Number(p.closedQuantity) > 0 ? p.closedQuantity : p.quantity,
       p.entryPrice,
       p.closePrice || '',
       p.commission || '0',
@@ -329,7 +329,7 @@ export default function Orders() {
                       </div>
                     </td>
                     <td className="px-4 py-3"><SidePill side={p.side} /></td>
-                    <td className="px-4 py-3 text-right font-mono">{fmtLot(p.quantity)}</td>
+                    <td className="px-4 py-3 text-right font-mono">{fmtLot(Number(p.closedQuantity) > 0 ? p.closedQuantity : p.quantity)}</td>
                     <td className="px-4 py-3 text-right font-mono">{fmtNum(p.entryPrice, 5)}</td>
                     <td className="px-4 py-3 text-right font-mono">
                       {p.closePrice ? fmtNum(p.closePrice, 5) : '-'}

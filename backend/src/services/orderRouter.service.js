@@ -137,6 +137,13 @@ const routeOrder = async ({ order, userId }) => {
   //     order that would push the symbol's daily used volume past the limit.
   await require('./volumeLimitService').assertWithinDailyLimit(instrument, order);
 
+  // 1c. Optional per-instrument LIFETIME volume cap, PER USER. No-op when
+  //     unlimited or for closing orders. Rejects an opening order that would
+  //     push THIS user's cumulative executed volume past the symbol's lifetime
+  //     limit for its side. Runs here so it covers every order path (market /
+  //     limit / stop / copy / API).
+  await require('./lifetimeVolumeLimitService').assertWithinLifetimeLimit(instrument, order);
+
   // 2. Resolve the execution MODE — per-user override wins, else global.
   const { mode: executionMode, source: modeSource } = await _resolveRoutingMode(user);
 

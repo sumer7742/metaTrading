@@ -29,13 +29,12 @@ const MANAGER_PERMISSIONS = [
 
 const PERMISSION_KEYS = MANAGER_PERMISSIONS.map((p) => p.key);
 
-// Baseline for a manager with nothing configured yet — keeps today's managers
-// working (they already had Users + Support). Everything else is OFF until a
-// Super Admin grants it.
+// Baseline for a manager with nothing configured yet — only Dashboard +
+// Support are ON. Everything else is OFF until a Super Admin (or delegated
+// Admin) grants it.
 const DEFAULT_MANAGER_PERMISSIONS = {
-  USER_MANAGEMENT: true,
+  DASHBOARD: true,
   SUPPORT_TICKETS: true,
-  NOTIFICATIONS: true,
 };
 
 // Resolve the effective permission map for a manager (defaults + stored

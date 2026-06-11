@@ -1865,23 +1865,35 @@ const listAccountGroups = asyncHandler(async (req, res) => {
 });
 
 // GET /admin/instruments/live-volume — live OPEN-position volume per symbol,
-// split by side (buy=long, sell=short) plus the net (buy − sell). Powers the
-// "Live Buy / Sell / Net" columns on the Instruments page. Kept separate from
-// the shared /instruments list so that endpoint stays cheap.
+// split by side (buy=long, sell=short) AND by book (A-book vs B-book), plus the
+// net (buy − sell). Powers the Live Buy/Sell · A · B · Net columns on the
+// Instruments page. Kept separate from the shared /instruments list so that
+// endpoint stays cheap.
 const round4 = (n) => Math.round((Number(n) || 0) * 1e4) / 1e4;
 const instrumentLiveVolume = asyncHandler(async (req, res) => {
   const agg = await Position.aggregate([
     { $match: { status: 'OPEN' } },
-    { $group: { _id: { symbol: '$symbol', side: '$side' }, vol: { $sum: _num('$quantity') } } },
+    { $group: { _id: { symbol: '$symbol', side: '$side', book: '$book' }, vol: { $sum: _num('$quantity') } } },
   ]);
+  const blank = () => ({ buy: 0, sell: 0, aBuy: 0, aSell: 0, bBuy: 0, bSell: 0, net: 0 });
   const map = {};
   for (const r of agg) {
     const sym = r._id.symbol;
-    if (!map[sym]) map[sym] = { buy: 0, sell: 0, net: 0 };
-    if (r._id.side === 'BUY') map[sym].buy = round4(r.vol);
-    else if (r._id.side === 'SELL') map[sym].sell = round4(r.vol);
+    const isBuy = r._id.side === 'BUY';
+    const isA = String(r._id.book || 'B_BOOK').toUpperCase() === 'A_BOOK';
+    if (!map[sym]) map[sym] = blank();
+    const m = map[sym];
+    const v = Number(r.vol) || 0;
+    if (isBuy) { m.buy += v; if (isA) m.aBuy += v; else m.bBuy += v; }
+    else { m.sell += v; if (isA) m.aSell += v; else m.bSell += v; }
   }
-  for (const sym of Object.keys(map)) map[sym].net = round4(map[sym].buy - map[sym].sell);
+  for (const sym of Object.keys(map)) {
+    const m = map[sym];
+    m.buy = round4(m.buy); m.sell = round4(m.sell);
+    m.aBuy = round4(m.aBuy); m.aSell = round4(m.aSell);
+    m.bBuy = round4(m.bBuy); m.bSell = round4(m.bSell);
+    m.net = round4(m.buy - m.sell);
+  }
   sendSuccess(res, map);
 });
 
@@ -1908,7 +1920,10 @@ async function _exposureUserIds(actor, query) {
 
 // Core aggregation shared by all exposure endpoints.
 async function _computeExposure(userIds, query = {}) {
-  const match = { status: 'OPEN' };
+  // B-BOOK ONLY — exposure is the broker's own risk. A-book positions are
+  // forwarded to the LP (no broker risk), so they're excluded. `$ne A_BOOK`
+  // also captures legacy positions written before the `book` field existed.
+  const match = { status: 'OPEN', book: { $ne: 'A_BOOK' } };
   if (userIds) match.userId = { $in: userIds };
   if (query.symbol) match.symbol = String(query.symbol).toUpperCase();
   if (query.from || query.to) {

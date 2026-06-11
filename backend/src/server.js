@@ -155,7 +155,7 @@ observability.initPrometheus(app);
 
 // Rate limits
 const authLimiter = rateLimit({ windowMs: 60 * 1000, max: 600 });
-const orderLimiter = rateLimit({ windowMs: 60 * 1000, max: 60 });
+const orderLimiter = rateLimit({ windowMs: 60 * 1000, max: Number(process.env.RATE_LIMIT_ORDERS_PER_MIN) || 60 });
 app.use('/api/auth', authLimiter);
 app.use('/api/trading/orders', orderLimiter);
 

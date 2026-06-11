@@ -5,11 +5,10 @@ import PageHero from '../components/PageHero';
 import { useAuthStore } from '../store/auth';
 
 /**
- * Access Control → Manager Permissions.
- *
- * Super Admin (and Admins, when delegation is enabled) toggle each manager's
- * module access in a single matrix. Backend enforces every change + audits it;
- * managers' sidebar/routes/APIs update on their next /auth/me (≤60s, no logout).
+ * Access Control → Manager Permissions (card layout, same style as Admin
+ * Access). Super Admin (and Admins when delegation is ON) toggle each
+ * manager's module access + master login switch. Backend enforces + audits;
+ * managers' sidebar/routes/APIs update on their next /auth/me (no logout).
  */
 export default function ManagerPermissions() {
   const { user } = useAuthStore();
@@ -18,7 +17,7 @@ export default function ManagerPermissions() {
   const [meta, setMeta] = useState(null);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState({}); // managerId → bool
+  const [savingKey, setSavingKey] = useState(null); // `${id}:${key}`
 
   const load = async () => {
     setLoading(true);
@@ -36,42 +35,29 @@ export default function ManagerPermissions() {
 
   const perms = meta?.permissions || [];
   const editable = isSuper || (meta?.allowAdminManagePerms && user?.role === 'ADMIN');
-
   const patchRow = (id, fields) => setRows((rs) => rs.map((r) => (r._id === id ? { ...r, ...fields } : r)));
-  const withBusy = async (id, fn) => {
-    setBusy((b) => ({ ...b, [id]: true }));
-    try { await fn(); } finally { setBusy((b) => ({ ...b, [id]: false })); }
-  };
 
-  const toggle = (row, key) => {
+  const toggle = async (row, key, next) => {
     if (!editable) return;
-    const next = !row.permissions[key];
-    const prev = row.permissions;
-    patchRow(row._id, { permissions: { ...prev, [key]: next } }); // optimistic
-    withBusy(row._id, async () => {
-      try { const { data } = await api.put(`/admin/manager-access/${row._id}`, { permissions: { [key]: next } }); patchRow(row._id, { permissions: data.data }); }
-      catch (e) { patchRow(row._id, { permissions: prev }); toast.error(errorMessage(e)); }
-    });
+    setSavingKey(`${row._id}:${key}`);
+    try { const { data } = await api.put(`/admin/manager-access/${row._id}`, { permissions: { [key]: next } }); patchRow(row._id, { permissions: data.data }); }
+    catch (e) { toast.error(errorMessage(e)); } finally { setSavingKey(null); }
   };
-  const setAll = (row, value) => {
+  const setAll = async (row, value) => {
     if (!editable) return;
-    const patch = {}; perms.forEach((p) => { patch[p.key] = value; });
-    const prev = row.permissions;
-    patchRow(row._id, { permissions: { ...prev, ...patch } });
-    withBusy(row._id, async () => {
-      try { const { data } = await api.put(`/admin/manager-access/${row._id}`, { permissions: patch }); patchRow(row._id, { permissions: data.data }); toast.success(value ? 'All enabled' : 'All removed'); }
-      catch (e) { patchRow(row._id, { permissions: prev }); toast.error(errorMessage(e)); }
-    });
+    setSavingKey(`${row._id}:ALL`);
+    try {
+      const patch = {}; perms.forEach((p) => { patch[p.key] = value; });
+      const { data } = await api.put(`/admin/manager-access/${row._id}`, { permissions: patch });
+      patchRow(row._id, { permissions: data.data }); toast.success(value ? 'All modules granted' : 'All modules revoked');
+    } catch (e) { toast.error(errorMessage(e)); } finally { setSavingKey(null); }
   };
-  const toggleAccess = (row) => {
+  const toggleAccess = async (row) => {
     if (!editable) return;
     const next = !row.accessEnabled;
-    const prev = row.accessEnabled;
-    patchRow(row._id, { accessEnabled: next });
-    withBusy(row._id, async () => {
-      try { await api.post(`/admin/manager-access/${row._id}/access`, { enabled: next }); toast.success(next ? 'Manager access enabled' : 'Manager access disabled'); }
-      catch (e) { patchRow(row._id, { accessEnabled: prev }); toast.error(errorMessage(e)); }
-    });
+    setSavingKey(`${row._id}:ACCESS`);
+    try { await api.post(`/admin/manager-access/${row._id}/access`, { enabled: next }); patchRow(row._id, { accessEnabled: next }); toast.success(next ? 'Login enabled' : 'Login disabled'); }
+    catch (e) { toast.error(errorMessage(e)); } finally { setSavingKey(null); }
   };
   const toggleDelegation = async () => {
     const next = !meta.allowAdminManagePerms;
@@ -80,11 +66,11 @@ export default function ManagerPermissions() {
   };
 
   return (
-    <div className="space-y-4 max-w-[1700px]">
+    <div className="space-y-4 max-w-[1500px]">
       <PageHero
         eyebrow="Access Control"
         title="Manager Permissions"
-        subtitle="Toggle each manager's module access. Disabled modules vanish from their sidebar, return 403 on direct URL, and their APIs are blocked. Changes apply without logout."
+        subtitle="Grant or revoke each manager's module access + master login. Disabled modules vanish from their sidebar, 403 on direct API, applied without logout."
         actions={isSuper && meta && (
           <button onClick={toggleDelegation}
             className={`text-xs font-bold px-3 py-2 rounded-lg border transition-colors ${meta.allowAdminManagePerms ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-400' : 'border-border-dark text-text-secondary hover:text-white'}`}
@@ -100,61 +86,55 @@ export default function ManagerPermissions() {
         </div>
       )}
 
-      <div className="card overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-[10px] uppercase tracking-wider text-text-muted border-b border-border-subtle bg-bg-hover/40">
-              <th className="text-left p-2.5 sticky left-0 bg-bg-card z-10">Manager</th>
-              <th className="text-left p-2.5">Admin</th>
-              <th className="text-center p-2.5">Access</th>
-              <th className="text-center p-2.5">Bulk</th>
-              {perms.map((p) => (
-                <th key={p.key} className="p-2 text-center align-bottom">
-                  <div className="whitespace-nowrap text-[9px] font-bold text-text-secondary">{p.label}</div>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {loading && !rows.length && <tr><td colSpan={4 + perms.length} className="py-10 text-center text-text-muted">Loading…</td></tr>}
-            {!loading && !rows.length && <tr><td colSpan={4 + perms.length} className="py-10 text-center text-text-muted">No managers found</td></tr>}
-            {rows.map((row) => (
-              <tr key={row._id} className={`border-b border-border-subtle hover:bg-bg-hover/30 ${busy[row._id] ? 'opacity-60' : ''} ${!row.accessEnabled ? 'opacity-50' : ''}`}>
-                <td className="p-2.5 sticky left-0 bg-bg-card z-10">
-                  <div className="font-semibold text-text-primary whitespace-nowrap">{row.name}</div>
-                  <div className="text-[10px] text-text-muted font-mono">{row.email}</div>
-                </td>
-                <td className="p-2.5 text-xs text-text-secondary whitespace-nowrap">{row.adminName}</td>
-                <td className="p-2.5 text-center">
-                  <button onClick={() => toggleAccess(row)} disabled={!editable}
-                    className={`text-[10px] font-bold uppercase px-2 py-1 rounded ${row.accessEnabled ? 'bg-emerald-500/15 text-emerald-400' : 'bg-bear/20 text-bear'} ${editable ? 'hover:opacity-80' : 'cursor-not-allowed'}`}>
-                    {row.accessEnabled ? 'ON' : 'OFF'}
+      {loading ? (
+        <div className="space-y-2">{[0, 1, 2].map((i) => <div key={i} className="h-40 rounded-xl bg-bg-hover animate-pulse" />)}</div>
+      ) : !rows.length ? (
+        <div className="card p-8 text-center text-text-muted text-sm">No managers found.</div>
+      ) : (
+        rows.map((row) => {
+          const busy = savingKey && savingKey.startsWith(`${row._id}:`);
+          return (
+            <div key={row._id} className={`card p-4 ${row.accessEnabled ? '' : 'opacity-70'}`}>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <div>
+                  <div className="text-sm font-bold text-white">{row.name} <span className="text-text-muted font-normal">· {row.email}</span></div>
+                  <div className="text-[11px] text-text-muted">
+                    Admin: {row.adminName} · {perms.filter((p) => row.permissions[p.key]).length}/{perms.length} modules
+                    {!row.accessEnabled && <span className="text-rose-400 ml-2">· login disabled</span>}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button onClick={() => toggleAccess(row)} disabled={!editable || busy}
+                    className={`text-[11px] font-bold px-2.5 py-1.5 rounded-lg border ${row.accessEnabled ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-400' : 'border-rose-500/40 bg-rose-500/15 text-rose-400'} disabled:opacity-50`}>
+                    Login: {row.accessEnabled ? 'ON' : 'OFF'}
                   </button>
-                </td>
-                <td className="p-2.5 text-center whitespace-nowrap">
-                  <button onClick={() => setAll(row, true)} disabled={!editable} className="text-[10px] text-emerald-400 hover:underline disabled:opacity-40">All</button>
-                  <span className="text-text-muted mx-1">/</span>
-                  <button onClick={() => setAll(row, false)} disabled={!editable} className="text-[10px] text-bear hover:underline disabled:opacity-40">None</button>
-                </td>
+                  <button onClick={() => setAll(row, true)} disabled={!editable || busy} className="btn-ghost text-xs">Grant all</button>
+                  <button onClick={() => setAll(row, false)} disabled={!editable || busy} className="btn-ghost text-xs text-rose-400">Revoke all</button>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
                 {perms.map((p) => {
                   const on = !!row.permissions[p.key];
+                  const cellBusy = savingKey === `${row._id}:${p.key}` || savingKey === `${row._id}:ALL`;
                   return (
-                    <td key={p.key} className="p-1 text-center">
-                      <button onClick={() => toggle(row, p.key)} disabled={!editable} title={`${p.label}: ${on ? 'ON' : 'OFF'}`}
-                        className={`w-7 h-6 rounded text-xs font-bold transition-colors ${on ? 'bg-emerald-500/20 text-emerald-400' : 'bg-bg-hover text-text-muted'} ${editable ? 'hover:ring-1 hover:ring-border-accent' : 'cursor-not-allowed'}`}>
-                        {on ? '✓' : '·'}
-                      </button>
-                    </td>
+                    <button key={p.key} type="button" disabled={!editable || cellBusy} onClick={() => toggle(row, p.key, !on)}
+                      className={`flex items-center justify-between gap-2 px-2.5 py-2 rounded-lg border text-xs transition-colors ${
+                        on ? 'border-emerald-500/40 bg-emerald-500/10 text-white' : 'border-border-dark bg-bg-dark text-text-muted'} ${(!editable || cellBusy) ? 'opacity-60' : 'hover:border-primary-500'}`}>
+                      <span className="truncate">{p.label}</span>
+                      <span className={`shrink-0 w-8 h-4 rounded-full relative transition-colors ${on ? 'bg-emerald-500' : 'bg-bg-hover'}`}>
+                        <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${on ? 'left-4' : 'left-0.5'}`} />
+                      </span>
+                    </button>
                   );
                 })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+              </div>
+            </div>
+          );
+        })
+      )}
       <p className="text-[11px] text-text-muted">
-        Master <span className="font-semibold">Access</span> OFF disables the manager's login entirely. Every change is recorded in the Audit Log
-        (changed-by, manager, permission, old → new value, IP, time).
+        <span className="font-semibold">Login</span> OFF disables the manager's sign-in entirely. Every change is recorded in the Audit Log
+        (changed-by, manager, permission, old → new, IP, time).
       </p>
     </div>
   );

@@ -17,7 +17,7 @@
  */
 const accountPlansService = require('./accountPlansService');
 const { mul, gt } = require('../utils/decimal');
-const { computeInstrumentCommission } = require('../utils/commission');
+const { computeInstrumentCommission, findCommissionOverride, computeOverrideCommission } = require('../utils/commission');
 
 /**
  * Resolve the live AccountPlan for an account from the cached
@@ -41,6 +41,15 @@ async function _resolvePlan(account) {
  * @returns {Promise<string>} fee amount in account base currency
  */
 async function computeCloseFee({ account, instrument, closeQty, closePrice, closePnl }) {
+  // 1. Per-account-type OVERRIDE wins — if this instrument has a commission
+  //    override for the account's type, it replaces the account-type default
+  //    for that type only. (Applies to this account type, not others.)
+  const override = findCommissionOverride(instrument, account?.accountType);
+  if (override) {
+    return computeOverrideCommission(override, mul(closeQty, closePrice), closePnl);
+  }
+
+  // 2. Otherwise inherit the account type's own commission (AccountPlan).
   const plan = await _resolvePlan(account);
 
   // No plan in DB and no STANDARD fallback — fall through to the instrument's
