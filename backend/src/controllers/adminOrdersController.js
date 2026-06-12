@@ -39,21 +39,30 @@ function requireManage(req) {
 }
 
 // Resolve the end-user ids in the caller's scope.
-//   ADMIN / SUPER_ADMIN → null  (no user filter — platform-wide)
-//   MANAGER             → [ids] (only users whose managerId === manager)
+//   SUPER_ADMIN → null  (no user filter — platform-wide)
+//   ADMIN       → [ids] (their hierarchy subtree, by adminId)
+//   MANAGER     → [ids] (only users whose managerId === manager)
 async function scopeUserIds(req) {
   if (req.user.role === ROLES.MANAGER) {
     const users = await User.find({ managerId: req.user._id, role: ROLES.USER }).select('_id').lean();
     return users.map((u) => u._id);
   }
+  if (req.user.role === ROLES.ADMIN) {
+    const users = await User.find({ adminId: req.user._id }).select('_id').lean();
+    return users.map((u) => u._id);
+  }
   return null;
 }
 
-// Managers may only touch positions/orders belonging to their own users.
+// Managers/Admins may only touch positions/orders belonging to their own users.
 async function assertInScope(req, ownerUserId) {
-  if (req.user.role !== ROLES.MANAGER) return;
-  const ok = await User.exists({ _id: ownerUserId, managerId: req.user._id });
-  if (!ok) throw new AppError('This order is outside your assigned users.', 403, 'FORBIDDEN');
+  if (req.user.role === ROLES.MANAGER) {
+    const ok = await User.exists({ _id: ownerUserId, managerId: req.user._id });
+    if (!ok) throw new AppError('This order is outside your assigned users.', 403, 'FORBIDDEN');
+  } else if (req.user.role === ROLES.ADMIN) {
+    const ok = await User.exists({ _id: ownerUserId, adminId: req.user._id });
+    if (!ok) throw new AppError('This order is outside your assigned users.', 403, 'FORBIDDEN');
+  }
 }
 
 async function audit(req, action, targetId, metadata = {}) {

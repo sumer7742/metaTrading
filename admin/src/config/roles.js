@@ -68,7 +68,9 @@ export const ROUTE_ACCESS = Object.freeze({
   '/portfolio':      [ROLES.SUPER_ADMIN],   // platform portfolio — super admin only
   '/market-exposure': [ROLES.SUPER_ADMIN, ROLES.ADMIN], // exposure dashboard — managers/users blocked
 
-  '/my-users':       [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.MANAGER],
+  // "My Users" = personal assigned-user view (manager / admin subtree).
+  // Super Admin doesn't have "assigned" users — they use full User Management.
+  '/my-users':       [ROLES.ADMIN, ROLES.MANAGER],
   '/support-chats':  [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.MANAGER],
   // Orders Management — institutional dealing desk. Super/Admin platform-wide,
   // Managers see only their own users' orders (backend-scoped).
@@ -135,15 +137,15 @@ export const MANAGER_ROUTE_PERMISSION = Object.freeze({
   '/withdrawals': 'WITHDRAWALS',
   '/orders': 'ORDERS_MANAGEMENT',
   '/portfolio': 'PORTFOLIO',
-  '/subscription-wallets': 'WALLET_MANAGEMENT',
-  '/bonus-wallets': 'WALLET_MANAGEMENT',
   '/reports': 'REPORTS',
   '/audit': 'AUDIT_LOGS',
   '/support-chats': 'SUPPORT_TICKETS',
-  '/partners': 'REFERRAL_MANAGEMENT',
-  '/finance': 'FINANCE_ACCESS',
-  '/settings': 'SETTINGS',
 });
+
+// Routes hidden even from SUPER_ADMIN (otherwise they bypass every check).
+// "My Users" is a personal assigned-user view — meaningless for Super Admin,
+// who manages everyone via full User Management.
+const SUPER_ADMIN_HIDDEN = ['/my-users'];
 
 /**
  * Permission-aware access check (the authority for managers). Use this in the
@@ -153,7 +155,7 @@ export const MANAGER_ROUTE_PERMISSION = Object.freeze({
 export const canUserAccessPath = (user, pathname) => {
   const role = user?.role;
   if (!role) return false;
-  if (role === ROLES.SUPER_ADMIN) return true;
+  if (role === ROLES.SUPER_ADMIN) return !SUPER_ADMIN_HIDDEN.includes(pathname);
   if (role === ROLES.MANAGER) {
     const key = MANAGER_ROUTE_PERMISSION[pathname];
     if (key) return !!(user.managerPermissions && user.managerPermissions[key]);

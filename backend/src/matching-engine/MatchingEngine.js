@@ -164,24 +164,27 @@ class MatchingEngine {
 
         // Distribute affiliate commissions on the spread/fee.
         // For INTERNAL trades, fee is approximated as (instrument.commissionPercent * notional).
-        try {
-          const affiliateService = require('../services/affiliateService');
-          const subscriptionService = require('../services/subscriptionService');
-          const notional = mul(f.price, f.qty);
-          let feeAmount = computeInstrumentCommission(instrument, notional);
-          // Apply subscription plan fee discount
-          feeAmount = await subscriptionService.applyFeeDiscount(order.userId, feeAmount);
-          if (gt(feeAmount, '0')) {
-            await affiliateService.distributeCommissions({
-              tradeId: newTrade._id,
-              userId: order.userId,
-              feeAmount,
-              currency: instrument.quoteCurrency,
-            });
+        // Affiliate commission — non-critical; runs after the fill (off the
+        // hot path) so it never adds latency to matching/settlement.
+        setImmediate(async () => {
+          try {
+            const affiliateService = require('../services/affiliateService');
+            const subscriptionService = require('../services/subscriptionService');
+            const notional = mul(f.price, f.qty);
+            let feeAmount = computeInstrumentCommission(instrument, notional);
+            feeAmount = await subscriptionService.applyFeeDiscount(order.userId, feeAmount);
+            if (gt(feeAmount, '0')) {
+              await affiliateService.distributeCommissions({
+                tradeId: newTrade._id,
+                userId: order.userId,
+                feeAmount,
+                currency: instrument.quoteCurrency,
+              });
+            }
+          } catch (e) {
+            console.error('[ME] Affiliate commission error:', e.message);
           }
-        } catch (e) {
-          console.error('[ME] Affiliate commission error:', e.message);
-        }
+        });
 
         // Update positions for both sides. Same tradeId is passed to both
         // sides so each derives its own dedupeKey of "TRADE_SETTLE:<tradeId>".
@@ -235,7 +238,7 @@ class MatchingEngine {
       // Update last price on instrument
       instrument.lastPrice = fills[fills.length - 1].price;
       instrument.lastPriceUpdatedAt = new Date();
-      await instrument.save();
+      instrument.save().catch(() => {}); // fire-and-forget: lastPrice off the hot path
     }
 
     // Update incoming order
@@ -327,16 +330,16 @@ class MatchingEngine {
         // reflect this fill, same as a real match would.
         instrument.lastPrice = fillPx;
         instrument.lastPriceUpdatedAt = new Date();
-        await instrument.save();
-        try {
+        instrument.save().catch(() => {}); // fire-and-forget: lastPrice off the hot path
+        {
           const { updateCandlesForTrade } = require('../services/candleService');
-          await updateCandlesForTrade({
+          updateCandlesForTrade({
             symbol: order.symbol,
             price: fillPx,
             quantity: remainingQty,
             ts: Date.now(),
-          });
-        } catch (_) { /* candle update is best-effort */ }
+          }).catch(() => {}); // fire-and-forget: candle aggregation off the hot path
+        }
 
         if (this.broadcaster) {
           this.broadcaster.broadcastTrade({
@@ -468,17 +471,15 @@ class MatchingEngine {
     // Update instrument lastPrice and aggregate into candles
     instrument.lastPrice = finalPrice;
     instrument.lastPriceUpdatedAt = new Date();
-    await instrument.save();
-    try {
+    instrument.save().catch(() => {}); // fire-and-forget: lastPrice off the hot path
+    {
       const { updateCandlesForTrade } = require('../services/candleService');
-      await updateCandlesForTrade({
+      updateCandlesForTrade({
         symbol: order.symbol,
         price: finalPrice,
         quantity: order.quantity,
         ts: Date.now(),
-      });
-    } catch (e) {
-      console.error('[ME] B-book candle update failed:', e.message);
+      }).catch((e) => console.error('[ME] B-book candle update failed:', e.message)); // fire-and-forget
     }
 
     // Update the trader's position. tradeId enables idempotent settle.
@@ -505,24 +506,27 @@ class MatchingEngine {
     order.filledAt = new Date();
     await order.save();
 
-    // Distribute affiliate commissions (B-book also pays referrers based on spread captured)
-    try {
-      const affiliateService = require('../services/affiliateService');
-      const subscriptionService = require('../services/subscriptionService');
-      const notional = mul(finalPrice, order.quantity);
-      let feeAmount = computeInstrumentCommission(instrument, notional);
-      feeAmount = await subscriptionService.applyFeeDiscount(order.userId, feeAmount);
-      if (gt(feeAmount, '0')) {
-        await affiliateService.distributeCommissions({
-          tradeId: bbookTrade._id,
-          userId: order.userId,
-          feeAmount,
-          currency: instrument.quoteCurrency,
-        });
+    // Distribute affiliate commissions (B-book also pays referrers based on
+    // spread captured). Non-critical → runs after the fill (off the hot path).
+    setImmediate(async () => {
+      try {
+        const affiliateService = require('../services/affiliateService');
+        const subscriptionService = require('../services/subscriptionService');
+        const notional = mul(finalPrice, order.quantity);
+        let feeAmount = computeInstrumentCommission(instrument, notional);
+        feeAmount = await subscriptionService.applyFeeDiscount(order.userId, feeAmount);
+        if (gt(feeAmount, '0')) {
+          await affiliateService.distributeCommissions({
+            tradeId: bbookTrade._id,
+            userId: order.userId,
+            feeAmount,
+            currency: instrument.quoteCurrency,
+          });
+        }
+      } catch (e) {
+        console.error('[ME] B-book commission error:', e.message);
       }
-    } catch (e) {
-      console.error('[ME] B-book commission error:', e.message);
-    }
+    });
 
     // Broadcast ticker and trade tape so chart and last-price update
     if (this.broadcaster) {
@@ -607,16 +611,16 @@ class MatchingEngine {
     // Update lastPrice + candles so chart reflects the activity
     instrument.lastPrice = finalPrice;
     instrument.lastPriceUpdatedAt = new Date();
-    await instrument.save();
-    try {
+    instrument.save().catch(() => {}); // fire-and-forget: lastPrice off the hot path
+    {
       const { updateCandlesForTrade } = require('../services/candleService');
-      await updateCandlesForTrade({
+      updateCandlesForTrade({
         symbol: order.symbol,
         price: finalPrice,
         quantity: order.quantity,
         ts: Date.now(),
-      });
-    } catch (e) { /* ignore */ }
+      }).catch(() => {}); // fire-and-forget: candle aggregation off the hot path
+    }
 
     // Update trader's position (broker has no position - it's "hedged" externally)
     await this._updatePosition(
@@ -642,24 +646,27 @@ class MatchingEngine {
     order.filledAt = new Date();
     await order.save();
 
-    // Distribute affiliate commissions on the spread
-    try {
-      const affiliateService = require('../services/affiliateService');
-      const subscriptionService = require('../services/subscriptionService');
-      const notional = mul(finalPrice, order.quantity);
-      let feeAmount = computeInstrumentCommission(instrument, notional);
-      feeAmount = await subscriptionService.applyFeeDiscount(order.userId, feeAmount);
-      if (gt(feeAmount, '0')) {
-        await affiliateService.distributeCommissions({
-          tradeId: externalTrade._id,
-          userId: order.userId,
-          feeAmount,
-          currency: instrument.quoteCurrency,
-        });
+    // Distribute affiliate commissions on the spread. Non-critical → runs
+    // after the fill (off the hot path).
+    setImmediate(async () => {
+      try {
+        const affiliateService = require('../services/affiliateService');
+        const subscriptionService = require('../services/subscriptionService');
+        const notional = mul(finalPrice, order.quantity);
+        let feeAmount = computeInstrumentCommission(instrument, notional);
+        feeAmount = await subscriptionService.applyFeeDiscount(order.userId, feeAmount);
+        if (gt(feeAmount, '0')) {
+          await affiliateService.distributeCommissions({
+            tradeId: externalTrade._id,
+            userId: order.userId,
+            feeAmount,
+            currency: instrument.quoteCurrency,
+          });
+        }
+      } catch (e) {
+        console.error('[ME] EXTERNAL commission error:', e.message);
       }
-    } catch (e) {
-      console.error('[ME] EXTERNAL commission error:', e.message);
-    }
+    });
 
     // Broadcast
     if (this.broadcaster) {

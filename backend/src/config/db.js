@@ -39,9 +39,10 @@ const connectDB = async () => {
     // Fail fast instead of buffering queries when connection is dead
     bufferCommands: false,
 
-    // Pool sizing — keep modest for Atlas M0 free tier
-    maxPoolSize: 20,
-    minPoolSize: 2,
+    // Pool sizing — self-hosted Mongo; sized for the matching engine + API
+    // running parallel DB ops (raise further if you shard the engine).
+    maxPoolSize: Number(process.env.MONGO_MAX_POOL) || 50,
+    minPoolSize: Number(process.env.MONGO_MIN_POOL) || 5,
 
     // Timeouts
     serverSelectionTimeoutMS: 8000,   // fail fast if Atlas unreachable

@@ -103,20 +103,18 @@ const _validate = (account, instrument, order) => {
 };
 
 const routeOrder = async ({ order, userId }) => {
-  // 1. Load account & instrument
-  const account = await TradingAccount.findById(order.accountId);
+  // 1. Load account + instrument + user in PARALLEL — independent reads, so
+  //    this cuts ~2 sequential DB round-trips off the order hot path.
+  const [account, instrument, user] = await Promise.all([
+    TradingAccount.findById(order.accountId),
+    Instrument.findById(order.instrumentId),
+    User.findById(userId).select('blockedInstruments riskOverride userGroup').lean(),
+  ]);
   if (!account) throw new AppError('Account not found', 404, 'ACCOUNT_NOT_FOUND');
   if (String(account.userId) !== String(userId)) {
     throw new AppError('Account does not belong to user', 403, 'ACCOUNT_FORBIDDEN');
   }
-
-  const instrument = await Instrument.findById(order.instrumentId);
   if (!instrument) throw new AppError('Instrument not found', 404, 'INSTRUMENT_NOT_FOUND');
-
-  // Load user once — we need both blockedInstruments AND riskOverride.
-  const user = await User.findById(userId)
-    .select('blockedInstruments riskOverride userGroup')
-    .lean();
 
   // Per-user symbol block list. Closes are allowed even on blocked symbols
   // so flipping the block doesn't trap positions.
@@ -179,7 +177,7 @@ const routeOrder = async ({ order, userId }) => {
     order.executionMode = executionMode;
     order.rejectionReason = `Routing rejected: ${riskEngineReason || reason}`;
     await order.save();
-    await audit('REJECTED');
+    audit('REJECTED'); // fire-and-forget: routing-decision log is non-critical
     throw new AppError(order.rejectionReason, 400, 'ROUTING_REJECTED');
   }
 
@@ -210,8 +208,10 @@ const routeOrder = async ({ order, userId }) => {
     order.routing = ROUTING.B_BOOK;
     order.executionSource = isHybrid ? EXECUTION_SOURCE.HYBRID_INTERNAL : EXECUTION_SOURCE.INTERNAL;
   }
-  await order.save();
-  await audit(routingResult);
+  // Routing metadata is stamped on the in-memory `order` above. Every dispatch
+  // path (internalExec → engine, lpExec) persists the order with its fill /
+  // reject save, so we skip a redundant save here — one fewer write per order.
+  audit(routingResult); // fire-and-forget: routing-decision log is non-critical
 
   // 6. Dispatch.
   //    A_BOOK → LP adapter. INTERNAL_MATCHING + B_BOOK both go through the

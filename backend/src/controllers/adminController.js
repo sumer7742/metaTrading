@@ -30,18 +30,25 @@ const dashboard = asyncHandler(async (req, res) => {
   const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
   const weekAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
+  // ── Hierarchy scope ── ADMIN sees only their subtree; SUPER_ADMIN: all.
+  const isAdmin = req.user && req.user.role === 'ADMIN';
+  const userScope = isAdmin ? { adminId: req.user._id } : {};
+  const scope = isAdmin ? await User.find({ adminId: req.user._id }).distinct('_id') : null;
+  const uidIn = scope ? { userId: { $in: scope } } : {};               // Withdrawal / Position
+  const tradeIn = scope ? { $or: [{ buyUserId: { $in: scope } }, { sellUserId: { $in: scope } }] } : {}; // Trade
+
   const [totalUsers, activeUsers24h, kycPending, withdrawPending, trades24h, openPositions] = await Promise.all([
-    User.countDocuments(),
-    User.countDocuments({ lastLoginAt: { $gte: dayAgo } }),
-    User.countDocuments({ kycStatus: KYC_STATUS.PENDING }),
-    Withdrawal.countDocuments({ status: 'PENDING' }),
-    Trade.countDocuments({ executedAt: { $gte: dayAgo } }),
-    Position.countDocuments({ status: 'OPEN' }),
+    User.countDocuments(userScope),
+    User.countDocuments({ ...userScope, lastLoginAt: { $gte: dayAgo } }),
+    User.countDocuments({ ...userScope, kycStatus: KYC_STATUS.PENDING }),
+    Withdrawal.countDocuments({ status: 'PENDING', ...uidIn }),
+    Trade.countDocuments({ executedAt: { $gte: dayAgo }, ...tradeIn }),
+    Position.countDocuments({ status: 'OPEN', ...uidIn }),
   ]);
 
   // Volume by routing
   const volumeAgg = await Trade.aggregate([
-    { $match: { executedAt: { $gte: weekAgo } } },
+    { $match: { executedAt: { $gte: weekAgo }, ...tradeIn } },
     {
       $group: {
         _id: '$routing',
@@ -52,7 +59,7 @@ const dashboard = asyncHandler(async (req, res) => {
 
   // Net exposure per instrument
   const exposureAgg = await Position.aggregate([
-    { $match: { status: 'OPEN' } },
+    { $match: { status: 'OPEN', ...uidIn } },
     {
       $group: {
         _id: { symbol: '$symbol', side: '$side' },
@@ -112,6 +119,15 @@ const listUsers = asyncHandler(async (req, res) => {
     const roles = String(role).split(',').map((r) => r.trim().toUpperCase()).filter(Boolean);
     if (roles.length === 1) match.role = roles[0];
     else if (roles.length > 1) match.role = { $in: roles };
+  }
+
+  // ── Hierarchy scope ──
+  // An ADMIN sees only THEIR assigned users (their subtree). `adminId` is the
+  // denormalised tree key — set on direct admin-assignment AND when a user is
+  // assigned to a manager under this admin — so this single filter covers the
+  // whole subtree. SUPER_ADMIN (and other staff) see everyone.
+  if (req.user && req.user.role === 'ADMIN') {
+    match.adminId = req.user._id;
   }
 
   const lim = Math.min(2000, Math.max(1, Number(limit) || 50));
@@ -295,6 +311,11 @@ const getUser = asyncHandler(async (req, res) => {
     .select('-passwordHash -twoFactorSecret -refreshTokens')
     .populate('referredBy', 'firstName lastName email referralCode');
   if (!user) throw new AppError('User not found', 404);
+  // Hierarchy scope — an ADMIN may only open users in their own subtree
+  // (can't reach someone else's user by typing the ID). Super Admin: any.
+  if (req.user && req.user.role === 'ADMIN' && String(user.adminId || '') !== String(req.user._id)) {
+    throw new AppError('User not found', 404);
+  }
   const accounts = await TradingAccount.find({ userId: user._id }).lean();
   const wallets = await Wallet.find({ userId: user._id }).lean();
   // Direct referrals (level-1 only) — anyone who signed up with this
@@ -609,11 +630,32 @@ async function attachUserBadge(items) {
   return items;
 }
 
+// Resolve the user IDs an ADMIN is allowed to see (their hierarchy subtree).
+// Returns null for SUPER_ADMIN / other staff → no scoping (everyone visible).
+async function adminScopeUserIds(req) {
+  if (!req.user || req.user.role !== 'ADMIN') return null;
+  const users = await User.find({ adminId: req.user._id }).select('_id').lean();
+  return users.map((u) => u._id);
+}
+
+// Apply the admin subtree scope to a {userId} filter. Returns false when the
+// caller asked for a specific userId that is OUTSIDE their scope (→ empty list).
+function applyUserScope(filter, scope) {
+  if (!scope) return true; // super admin / staff — unscoped
+  if (filter.userId) {
+    return scope.some((id) => String(id) === String(filter.userId)); // in-scope?
+  }
+  filter.userId = { $in: scope };
+  return true;
+}
+
 const listWithdrawals = asyncHandler(async (req, res) => {
   const { status, userId } = req.query;
   const filter = {};
   if (status) filter.status = status;
   if (userId) filter.userId = userId;   // per-user history (User Mgmt modal)
+  const scope = await adminScopeUserIds(req);
+  if (!applyUserScope(filter, scope)) return sendSuccess(res, []);
   const items = await Withdrawal.find(filter).sort({ createdAt: -1 }).limit(200).lean();
   await attachUserBadge(items);
   sendSuccess(res, items);
@@ -779,6 +821,8 @@ const listDeposits = asyncHandler(async (req, res) => {
   const filter = {};
   if (status) filter.status = status;
   if (userId) filter.userId = userId;   // per-user history (User Mgmt modal)
+  const scope = await adminScopeUserIds(req);
+  if (!applyUserScope(filter, scope)) return sendSuccess(res, []);
   const items = await Deposit.find(filter).sort({ createdAt: -1 }).limit(200).lean();
   await attachUserBadge(items);
   sendSuccess(res, items);
@@ -900,6 +944,10 @@ const tradesReport = asyncHandler(async (req, res) => {
     if (from) filter.executedAt.$gte = new Date(from);
     if (to) filter.executedAt.$lte = new Date(to);
   }
+  // Hierarchy scope — an ADMIN only sees trades involving their subtree's
+  // users (a trade counts if either leg is one of their users). Super Admin: all.
+  const scope = await adminScopeUserIds(req);
+  if (scope) filter.$or = [{ buyUserId: { $in: scope } }, { sellUserId: { $in: scope } }];
   const trades = await Trade.find(filter).sort({ executedAt: -1 }).limit(Number(limit)).lean();
   sendSuccess(res, trades);
 });
@@ -1376,6 +1424,8 @@ const listPartners = asyncHandler(async (req, res) => {
   if (!partnerIds.length) return sendSuccess(res, []);
 
   const filter = { _id: { $in: partnerIds } };
+  // Hierarchy scope — an ADMIN sees only partners within their subtree.
+  if (req.user && req.user.role === 'ADMIN') filter.adminId = req.user._id;
   if (req.query.blocked === 'true')  filter.partnerBlocked = true;
   if (req.query.blocked === 'false') filter.partnerBlocked = { $ne: true };
   if (req.query.search) {
@@ -1474,10 +1524,19 @@ const setPartnerBlocked = asyncHandler(async (req, res) => {
  */
 const partnerAnalytics = asyncHandler(async (req, res) => {
   const { Commission } = require('../models/Compliance');
-  const totalPartners = (await User.distinct('referredBy', { referredBy: { $ne: null } })).length;
-  const totalReferrals = await User.countDocuments({ referredBy: { $ne: null } });
+  // Hierarchy scope — an ADMIN's program stats cover only their subtree's
+  // partners (referrers who are their users). Super Admin: whole program.
+  const scopeIds = (req.user && req.user.role === 'ADMIN')
+    ? await User.find({ adminId: req.user._id }).distinct('_id')
+    : null;
+  const commMatch = scopeIds ? { referrerId: { $in: scopeIds } } : {};
+  const refByFilter = scopeIds ? { referredBy: { $in: scopeIds } } : { referredBy: { $ne: null } };
+
+  const totalPartners = (await User.distinct('referredBy', refByFilter)).length;
+  const totalReferrals = await User.countDocuments(refByFilter);
 
   const totals = await Commission.aggregate([
+    { $match: commMatch },
     { $addFields: { amtNum: { $toDouble: '$amount' } } },
     { $group: {
         _id: null,
@@ -1489,6 +1548,7 @@ const partnerAnalytics = asyncHandler(async (req, res) => {
   const t = totals[0] || { bonusesPaid: 0, revenueShared: 0, liability: 0 };
 
   const topEarners = await Commission.aggregate([
+    { $match: commMatch },
     { $addFields: { amtNum: { $toDouble: '$amount' } } },
     { $group: { _id: '$referrerId', total: { $sum: '$amtNum' } } },
     { $sort: { total: -1 } }, { $limit: 10 },

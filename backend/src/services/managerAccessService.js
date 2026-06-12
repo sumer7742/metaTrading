@@ -23,13 +23,9 @@ const MANAGER_PERM_ADMIN_REQ = {
   WITHDRAWALS: 'WITHDRAWALS',
   ORDERS_MANAGEMENT: 'ORDERS', // admin must have the Orders module to delegate it
   PORTFOLIO: null,            // /portfolio is Super-Admin-only — admins never have it
-  WALLET_MANAGEMENT: 'WALLETS',
   REPORTS: 'REPORTS',
   AUDIT_LOGS: 'AUDIT_LOGS',
   SUPPORT_TICKETS: 'SUPPORT_CHATS',
-  REFERRAL_MANAGEMENT: 'PARTNERS',
-  FINANCE_ACCESS: null,       // /finance is Super-Admin + finance-staff only — admins never have it
-  SETTINGS: 'SETTINGS',
 };
 
 // Which manager-permission keys the actor is allowed to grant.

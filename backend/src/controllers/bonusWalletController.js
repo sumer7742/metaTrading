@@ -309,14 +309,20 @@ const adminBalances = asyncHandler(async (req, res) => {
   const { page = '1', limit = '50' } = req.query;
   const p = Math.max(1, parseInt(page, 10) || 1);
   const l = Math.min(500, Math.max(1, parseInt(limit, 10) || 50));
+  // Hierarchy scope — an ADMIN sees only their subtree's bonus wallets.
+  const filter = {};
+  if (req.user && req.user.role === 'ADMIN') {
+    const ids = await require('../models/User').find({ adminId: req.user._id }).distinct('_id');
+    filter.userId = { $in: ids };
+  }
   const [wallets, total] = await Promise.all([
-    BonusWallet.find({})
+    BonusWallet.find(filter)
       .sort({ updatedAt: -1 })
       .skip((p - 1) * l)
       .limit(l)
       .populate('userId', 'email firstName lastName')
       .lean(),
-    BonusWallet.countDocuments({}),
+    BonusWallet.countDocuments(filter),
   ]);
   sendSuccess(res, { items: wallets, pagination: { page: p, limit: l, total, pages: Math.ceil(total / l) } });
 });

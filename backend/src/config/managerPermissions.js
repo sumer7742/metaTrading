@@ -15,13 +15,9 @@ const MANAGER_PERMISSIONS = [
   { key: 'WITHDRAWALS',         label: 'Withdrawals',         route: '/withdrawals' },
   { key: 'ORDERS_MANAGEMENT',   label: 'Orders Management',   route: '/orders' },
   { key: 'PORTFOLIO',           label: 'Portfolio',           route: '/portfolio' },
-  { key: 'WALLET_MANAGEMENT',   label: 'Wallet Management',   route: '/subscription-wallets' },
   { key: 'REPORTS',             label: 'Reports',             route: '/reports' },
   { key: 'AUDIT_LOGS',          label: 'Audit Logs',          route: '/audit' },
   { key: 'SUPPORT_TICKETS',     label: 'Support Tickets',     route: '/support-chats' },
-  { key: 'REFERRAL_MANAGEMENT', label: 'Referral Management', route: '/partners' },
-  { key: 'FINANCE_ACCESS',      label: 'Finance Access',      route: '/finance' },
-  { key: 'SETTINGS',            label: 'Settings',            route: '/settings' },
 ];
 
 const PERMISSION_KEYS = MANAGER_PERMISSIONS.map((p) => p.key);

@@ -149,7 +149,11 @@
       "Bash(node -e \"const p=require\\('./admin/package.json'\\); console.log\\(JSON.stringify\\({...p.dependencies,...p.devDependencies},null,0\\)\\)\")",
       "Bash(node --check src/services/copyTradingService.js)",
       "Bash(node --check src/services/copyEarningsService.js)",
-      "Bash(node -e \"const p=require\\('./client/package.json'\\); console.log\\('lightweight-charts:', p.dependencies['lightweight-charts']\\)\")"
+      "Bash(node -e \"const p=require\\('./client/package.json'\\); console.log\\('lightweight-charts:', p.dependencies['lightweight-charts']\\)\")",
+      "Bash(node --check src/config/db.js)",
+      "Bash(BENCH_N=400 node scripts/bench-engine.js)",
+      "Bash(node --check src/services/orderRouter.service.js)",
+      "Bash(node --check src/controllers/bonusWalletController.js)"
     ]
   }
 }
