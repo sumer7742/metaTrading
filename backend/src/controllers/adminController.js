@@ -135,6 +135,7 @@ const listUsers = asyncHandler(async (req, res) => {
 
   const { SubscriptionWallet } = require('../models/SubscriptionWallet');
   const { BonusWallet } = require('../models/BonusWallet');
+  const { WalletLedger } = require('../models/Wallet');
   const { Subscription, Plan } = require('../models/Subscription');
   const { Commission } = require('../models/Compliance');
   const currencyService = require('../services/currencyService');
@@ -172,6 +173,17 @@ const listUsers = asyncHandler(async (req, res) => {
         { $match: { $expr: { $and: [{ $eq: ['$userId', '$$uid'] }, { $eq: ['$status', 'COMPLETED'] }] } } },
         { $group: { _id: null, total: { $sum: num('$baseAmount') } } },
       ], as: '_wd' } },
+    // Internal user-to-user transfers (WalletLedger). Received (IN) counts as a
+    // deposit, sent (OUT) as a withdrawal. Amounts are in wallet currency → USD.
+    // OUT amounts are stored negative, so we take |sum| for the withdrawal side.
+    { $lookup: { from: WalletLedger.collection.collectionName, let: { uid: '$_id' }, pipeline: [
+        { $match: { $expr: { $and: [{ $eq: ['$userId', '$$uid'] }, { $eq: ['$type', 'INTERNAL_TRANSFER_IN'] }] } } },
+        { $group: { _id: null, total: { $sum: toUsd(num('$amount'), '$currency') } } },
+      ], as: '_tin' } },
+    { $lookup: { from: WalletLedger.collection.collectionName, let: { uid: '$_id' }, pipeline: [
+        { $match: { $expr: { $and: [{ $eq: ['$userId', '$$uid'] }, { $eq: ['$type', 'INTERNAL_TRANSFER_OUT'] }] } } },
+        { $group: { _id: null, total: { $sum: toUsd(num('$amount'), '$currency') } } },
+      ], as: '_tout' } },
     // Realized PnL + win/trade counts from CLOSED positions.
     { $lookup: { from: Position.collection.collectionName, let: { uid: '$_id' }, pipeline: [
         { $match: { $expr: { $and: [{ $eq: ['$userId', '$$uid'] }, { $eq: ['$status', 'CLOSED'] }] } } },
@@ -216,8 +228,16 @@ const listUsers = asyncHandler(async (req, res) => {
       ], as: '_sub' } },
 
     { $addFields: {
-        totalDeposit:    { $ifNull: [{ $arrayElemAt: ['$_dep.total', 0] }, 0] },
-        totalWithdrawal: { $ifNull: [{ $arrayElemAt: ['$_wd.total', 0] }, 0] },
+        // Deposit = confirmed deposits + transfers RECEIVED.
+        totalDeposit: { $add: [
+          { $ifNull: [{ $arrayElemAt: ['$_dep.total', 0] }, 0] },
+          { $ifNull: [{ $arrayElemAt: ['$_tin.total', 0] }, 0] },
+        ] },
+        // Withdrawal = completed withdrawals + transfers SENT (|negative sum|).
+        totalWithdrawal: { $add: [
+          { $ifNull: [{ $arrayElemAt: ['$_wd.total', 0] }, 0] },
+          { $abs: { $ifNull: [{ $arrayElemAt: ['$_tout.total', 0] }, 0] } },
+        ] },
         totalPnl:        { $ifNull: [{ $arrayElemAt: ['$_pos.pnl', 0] }, 0] },
         commission:      { $ifNull: [{ $arrayElemAt: ['$_pos.comm', 0] }, 0] },
         tradeCount:      { $ifNull: [{ $arrayElemAt: ['$_pos.trades', 0] }, 0] },

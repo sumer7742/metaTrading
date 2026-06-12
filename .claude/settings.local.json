@@ -153,7 +153,8 @@
       "Bash(node --check src/config/db.js)",
       "Bash(BENCH_N=400 node scripts/bench-engine.js)",
       "Bash(node --check src/services/orderRouter.service.js)",
-      "Bash(node --check src/controllers/bonusWalletController.js)"
+      "Bash(node --check src/controllers/bonusWalletController.js)",
+      "Bash(grep -nE 'Deposit|Withdrawal|baseAmount|totalDeposit|totalWithdrawal|$sum' controllers/financeController.js)"
     ]
   }
 }

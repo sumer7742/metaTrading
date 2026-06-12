@@ -1282,21 +1282,34 @@ function SidePriceCard({ label, price, prec, active, tone, C, onClick }) {
   );
 }
 
+// Custom hover tooltip — replaces the native `title=""` (which can't be
+// hovered, has a show delay, and looks plain). The popup sits flush above the
+// "?" (no gap) so the cursor can move into it; styled to match the panel.
+function HelpTip({ text, C }) {
+  return (
+    <span className="relative inline-flex group align-middle">
+      <span
+        className="w-4 h-4 rounded-full inline-flex items-center justify-center text-[10px] cursor-help select-none"
+        style={{ border: `1px solid ${C.muted}`, color: C.muted, opacity: 0.8 }}
+        aria-label={text}
+      >?</span>
+      <span
+        role="tooltip"
+        className="invisible opacity-0 group-hover:visible group-hover:opacity-100 transition-opacity duration-150 absolute right-0 bottom-full z-50 w-64 whitespace-pre-line rounded-lg p-2.5 text-[11px] leading-snug shadow-xl"
+        style={{ background: C.cardBg, color: C.text, border: `1px solid ${C.border}` }}
+      >
+        {text}
+      </span>
+    </span>
+  );
+}
+
 function FieldCard({ label, help, error, subtext, C, children }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
         <span className="text-[12px] font-normal" style={{ color: C.text }}>{label}</span>
-        {help && (
-          <span
-            title={help}
-            aria-label={help}
-            className="w-4 h-4 rounded-full inline-flex items-center justify-center text-[10px] cursor-help transition-opacity hover:opacity-100"
-            style={{ border: `1px solid ${C.muted}`, color: C.muted, opacity: 0.75 }}
-          >
-            ?
-          </span>
-        )}
+        {help && <HelpTip text={help} C={C} />}
       </div>
       {children}
       {error && (
@@ -1588,16 +1601,7 @@ function InfoRow({ label, value, help, C, valueColor }) {
       </span>
       <span className="inline-flex items-center gap-1.5 tabular-nums" style={{ color: valueColor || C.text }}>
         {value}
-        {help && (
-          <span
-            title={help}
-            aria-label={help}
-            className="w-4 h-4 rounded-full inline-flex items-center justify-center text-[10px] cursor-help"
-            style={{ border: `1px solid ${C.muted}`, color: C.muted, opacity: 0.7 }}
-          >
-            ?
-          </span>
-        )}
+        {help && <HelpTip text={help} C={C} />}
       </span>
     </div>
   );

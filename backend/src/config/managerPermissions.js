@@ -9,12 +9,10 @@
 // Every entry maps to a real manager-app page (`route`). Permissions without a
 // page were removed — toggling them did nothing.
 const MANAGER_PERMISSIONS = [
-  { key: 'DASHBOARD',           label: 'Dashboard',           route: '/dashboard' },
   { key: 'USER_MANAGEMENT',     label: 'User Management',     route: '/my-users' },
   { key: 'DEPOSITS',            label: 'Deposits',            route: '/deposits' },
   { key: 'WITHDRAWALS',         label: 'Withdrawals',         route: '/withdrawals' },
   { key: 'ORDERS_MANAGEMENT',   label: 'Orders Management',   route: '/orders' },
-  { key: 'PORTFOLIO',           label: 'Portfolio',           route: '/portfolio' },
   { key: 'REPORTS',             label: 'Reports',             route: '/reports' },
   { key: 'AUDIT_LOGS',          label: 'Audit Logs',          route: '/audit' },
   { key: 'SUPPORT_TICKETS',     label: 'Support Tickets',     route: '/support-chats' },
@@ -26,7 +24,6 @@ const PERMISSION_KEYS = MANAGER_PERMISSIONS.map((p) => p.key);
 // Support are ON. Everything else is OFF until a Super Admin (or delegated
 // Admin) grants it.
 const DEFAULT_MANAGER_PERMISSIONS = {
-  DASHBOARD: true,
   SUPPORT_TICKETS: true,
 };
 

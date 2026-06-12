@@ -17,12 +17,10 @@ const { effectiveAdminPermissions } = require('../config/adminPermissions');
 //   null     → Super-Admin-only module (never delegatable by an admin)
 //   (absent) → benign utility, always delegatable
 const MANAGER_PERM_ADMIN_REQ = {
-  DASHBOARD: 'DASHBOARD',
   USER_MANAGEMENT: 'USERS',
   DEPOSITS: 'DEPOSITS',
   WITHDRAWALS: 'WITHDRAWALS',
   ORDERS_MANAGEMENT: 'ORDERS', // admin must have the Orders module to delegate it
-  PORTFOLIO: null,            // /portfolio is Super-Admin-only — admins never have it
   REPORTS: 'REPORTS',
   AUDIT_LOGS: 'AUDIT_LOGS',
   SUPPORT_TICKETS: 'SUPPORT_CHATS',

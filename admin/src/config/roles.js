@@ -131,12 +131,10 @@ export const ADMIN_ROUTE_PERMISSION = Object.freeze({
 // permission is toggled ON (Super-Admin controlled). Unmapped routes fall
 // back to the static ROUTE_ACCESS allow-list above.
 export const MANAGER_ROUTE_PERMISSION = Object.freeze({
-  '/dashboard': 'DASHBOARD',
   '/my-users': 'USER_MANAGEMENT',
   '/deposits': 'DEPOSITS',
   '/withdrawals': 'WITHDRAWALS',
   '/orders': 'ORDERS_MANAGEMENT',
-  '/portfolio': 'PORTFOLIO',
   '/reports': 'REPORTS',
   '/audit': 'AUDIT_LOGS',
   '/support-chats': 'SUPPORT_TICKETS',
