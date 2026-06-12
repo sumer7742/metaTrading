@@ -30,10 +30,12 @@ const ADMIN_PERMISSIONS = [
   { key: 'MANAGERS',         label: 'Managers',          route: '/managers',             apiPrefix: [] },
   { key: 'ASSIGNMENTS',      label: 'Assignments',       route: '/assignments',          apiPrefix: [] },
   { key: 'REPORTS',          label: 'Reports',           route: '/reports',              apiPrefix: [] },
+  { key: 'ORDERS',           label: 'Orders Management', route: '/orders',               apiPrefix: [] },
   { key: 'EXECUTION',        label: 'Execution Stats',   route: '/execution',            apiPrefix: [] },
   { key: 'AUDIT_LOGS',       label: 'Audit Log',         route: '/audit',                apiPrefix: ['/audit-logs'] },
   { key: 'DATA_FEEDS',       label: 'Data Feeds',        route: '/data-feeds',           apiPrefix: ['/data-feeds'] },
   { key: 'SUPPORT_CHATS',    label: 'Support Chats',     route: '/support-chats',        apiPrefix: [] },
+  { key: 'CMS',              label: 'CMS & News',        route: '/cms-pages',            apiPrefix: ['/cms'] },
   { key: 'SETTINGS',         label: 'Settings',          route: '/settings',             apiPrefix: ['/system'] },
   { key: 'SECURITY',         label: 'Security',          route: '/security',             apiPrefix: [] },
 ];

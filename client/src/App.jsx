@@ -43,6 +43,11 @@ const MarketList = lazy(() => import('./pages/MarketList'));
 const Watchlist = lazy(() => import('./pages/Watchlist'));
 const OrderModalPreview = lazy(() => import('./pages/OrderModalPreview'));
 
+// Public CMS-driven content pages (no auth wrapper — SEO-friendly URLs).
+const CmsPageView = lazy(() => import('./pages/CmsPageView'));
+const News = lazy(() => import('./pages/News'));
+const NewsArticle = lazy(() => import('./pages/NewsArticle'));
+
 // Minimal fallback while a chunk is fetched. Branded so it doesn't feel
 // jarring; lasts <100ms on a warm cache, <500ms on first cold load.
 const RouteFallback = () => (
@@ -79,6 +84,11 @@ export default function App() {
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/verify-email" element={<VerifyEmail />} />
+
+        {/* Public CMS content — footer pages + Daily News Updates. */}
+        <Route path="/page/:slug" element={<Suspense fallback={<RouteFallback />}><CmsPageView /></Suspense>} />
+        <Route path="/news" element={<Suspense fallback={<RouteFallback />}><News /></Suspense>} />
+        <Route path="/news/:slug" element={<Suspense fallback={<RouteFallback />}><NewsArticle /></Suspense>} />
 
         <Route path="/" element={<Page><Navigate to="/explore" replace /></Page>} />
         <Route path="/dashboard" element={<Page><Dashboard /></Page>} />

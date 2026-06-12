@@ -2,6 +2,8 @@ const express = require('express');
 const c = require('../controllers/adminController');
 const mac = require('../controllers/managerAccessController');
 const aac = require('../controllers/adminAccessController');
+const cmsPages = require('../controllers/cmsPageController');
+const cmsNews = require('../controllers/cmsNewsController');
 const { authenticate, requireAdmin, requireRole } = require('../middleware/auth');
 const { ROLES } = require('../config/constants');
 const riskService = require('../services/riskService');
@@ -32,6 +34,24 @@ router.put('/admin-access/:id', aac.setPermissions);
 
 router.get('/dashboard', c.dashboard);
 router.get('/dashboard/analytics', c.getDashboardAnalytics);
+
+// ── CMS: Pages (footer/explore content). Gated by the CMS admin module. ──
+// `reorder` is declared before `:id` so the literal path isn't shadowed.
+router.get('/cms/pages', cmsPages.adminList);
+router.post('/cms/pages', cmsPages.adminCreate);
+router.put('/cms/pages/reorder', cmsPages.adminReorder);
+router.get('/cms/pages/:id', cmsPages.adminGet);
+router.put('/cms/pages/:id', cmsPages.adminUpdate);
+router.post('/cms/pages/:id/publish', cmsPages.adminPublish);
+router.delete('/cms/pages/:id', cmsPages.adminDelete);
+
+// ── CMS: News (Daily News Updates). ──
+router.get('/cms/news', cmsNews.adminList);
+router.post('/cms/news', cmsNews.adminCreate);
+router.get('/cms/news/:id', cmsNews.adminGet);
+router.put('/cms/news/:id', cmsNews.adminUpdate);
+router.post('/cms/news/:id/publish', cmsNews.adminPublish);
+router.delete('/cms/news/:id', cmsNews.adminDelete);
 
 // ── Manager Access Control (Super Admin; Admin when delegation is ON) ──
 // `settings` declared before `:id` so the literal path isn't shadowed.

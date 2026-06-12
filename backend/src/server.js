@@ -51,6 +51,8 @@ const watchlistRoutes = require('./routes/watchlist');
 const bonusWalletRoutes = require('./routes/bonusWallet');
 const hierarchyRoutes = require('./routes/hierarchy');
 const chatRoutes = require('./routes/chat');
+const adminOrdersRoutes = require('./routes/adminOrders');
+const cmsRoutes = require('./routes/cms');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -213,6 +215,11 @@ app.use('/api/bonus-wallet', bonusWalletRoutes);
 // would lock MANAGERs out of their scoped read endpoints.
 app.use('/api/hierarchy', hierarchyRoutes);
 app.use('/api/chat', chatRoutes);
+// Mounted OUTSIDE /api/admin so MANAGERs (blocked by requireAdmin) can reach
+// their scoped, view-only Orders Management endpoints. Role gating is inside.
+app.use('/api/order-management', adminOrdersRoutes);
+// Public CMS — footer pages + Daily News Updates. No auth (optional inside).
+app.use('/api/cms', cmsRoutes);
 
 // ─── Serve frontend SPAs out of backend/public ─────────────────────
 // Production flow: `vite build` in client/ + admin/ produces dist/

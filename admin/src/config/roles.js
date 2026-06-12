@@ -70,6 +70,9 @@ export const ROUTE_ACCESS = Object.freeze({
 
   '/my-users':       [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.MANAGER],
   '/support-chats':  [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.MANAGER],
+  // Orders Management — institutional dealing desk. Super/Admin platform-wide,
+  // Managers see only their own users' orders (backend-scoped).
+  '/orders':         [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.MANAGER],
   '/admins':         [ROLES.SUPER_ADMIN],
   '/managers':       [ROLES.SUPER_ADMIN, ROLES.ADMIN],
   '/assignments':    [ROLES.SUPER_ADMIN, ROLES.ADMIN],
@@ -110,6 +113,9 @@ export const ADMIN_ROUTE_PERMISSION = Object.freeze({
   '/managers': 'MANAGERS',
   '/assignments': 'ASSIGNMENTS',
   '/reports': 'REPORTS',
+  '/orders': 'ORDERS',
+  '/cms-pages': 'CMS',
+  '/cms-news': 'CMS',
   '/execution': 'EXECUTION',
   '/audit': 'AUDIT_LOGS',
   '/data-feeds': 'DATA_FEEDS',
@@ -127,6 +133,7 @@ export const MANAGER_ROUTE_PERMISSION = Object.freeze({
   '/my-users': 'USER_MANAGEMENT',
   '/deposits': 'DEPOSITS',
   '/withdrawals': 'WITHDRAWALS',
+  '/orders': 'ORDERS_MANAGEMENT',
   '/portfolio': 'PORTFOLIO',
   '/subscription-wallets': 'WALLET_MANAGEMENT',
   '/bonus-wallets': 'WALLET_MANAGEMENT',

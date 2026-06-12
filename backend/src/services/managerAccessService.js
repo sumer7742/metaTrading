@@ -19,13 +19,9 @@ const { effectiveAdminPermissions } = require('../config/adminPermissions');
 const MANAGER_PERM_ADMIN_REQ = {
   DASHBOARD: 'DASHBOARD',
   USER_MANAGEMENT: 'USERS',
-  KYC_MANAGEMENT: 'USERS',
   DEPOSITS: 'DEPOSITS',
   WITHDRAWALS: 'WITHDRAWALS',
-  TRADING: 'ACCOUNTS',
-  OPEN_POSITIONS: 'ACCOUNTS',
-  ORDERS: 'ACCOUNTS',
-  RISK_MANAGEMENT: 'ACCOUNTS',
+  ORDERS_MANAGEMENT: 'ORDERS', // admin must have the Orders module to delegate it
   PORTFOLIO: null,            // /portfolio is Super-Admin-only — admins never have it
   WALLET_MANAGEMENT: 'WALLETS',
   REPORTS: 'REPORTS',
@@ -34,7 +30,6 @@ const MANAGER_PERM_ADMIN_REQ = {
   REFERRAL_MANAGEMENT: 'PARTNERS',
   FINANCE_ACCESS: null,       // /finance is Super-Admin + finance-staff only — admins never have it
   SETTINGS: 'SETTINGS',
-  // NOTIFICATIONS → always delegatable (benign).
 };
 
 // Which manager-permission keys the actor is allowed to grant.

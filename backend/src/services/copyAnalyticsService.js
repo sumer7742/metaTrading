@@ -16,6 +16,7 @@ const Position = require('../models/Position');
 const CopyRelation = require('../models/CopyRelation');
 const CopyTrade = require('../models/CopyTrade');
 const TraderProfile = require('../models/TraderProfile');
+const CopyBox = require('../models/CopyBox');
 const User = require('../models/User');
 const Instrument = require('../models/Instrument');
 const { POSITION_STATUS } = require('../config/constants');
@@ -65,19 +66,26 @@ function isoWeekKey(d) {
 }
 
 /**
- * Full analytics payload for a trader's profile dashboard.
- * @param {string} userId   the trader (master) user id
+ * Full analytics payload for a trader's profile dashboard. When `accountId`
+ * is given, EVERYTHING is scoped to that single copy box / source account, so
+ * each of a master's accounts shows its own independent performance.
+ * @param {string} userId     the trader (master) user id
+ * @param {string} [accountId] optional source account (copy box) to scope to
  */
-async function getTraderAnalytics(userId) {
-  const [profile, user] = await Promise.all([
+async function getTraderAnalytics(userId, accountId) {
+  const [profile, user, box] = await Promise.all([
     TraderProfile.findOne({ userId: oid(userId) }).lean(),
     User.findById(userId).select('firstName lastName email createdAt isEmailVerified kycStatus country').lean(),
+    accountId ? CopyBox.findOne({ accountId: oid(accountId) }).lean() : null,
   ]);
 
-  const initialEquity = num(profile?.initialEquity) || 1000;
+  const initialEquity = num(box?.initialEquity) || num(profile?.initialEquity) || 1000;
 
-  // Closed positions = the trader's realized track record (read-only).
-  const closed = await Position.find({ userId: oid(userId), status: POSITION_STATUS.CLOSED })
+  // Closed positions = the realized track record (read-only), scoped to the
+  // box's source account when provided.
+  const posBase = { userId: oid(userId), status: POSITION_STATUS.CLOSED };
+  if (accountId) posBase.accountId = oid(accountId);
+  const closed = await Position.find(posBase)
     .select('symbol side realizedPnl openedAt closedAt leverage stopLoss')
     .sort({ closedAt: 1 })
     .limit(3000)
@@ -169,12 +177,15 @@ async function getTraderAnalytics(userId) {
 
   // ── follower analytics ──
   const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+  // Follower analytics scope: a single box (masterAccountId) or, for the
+  // user-level view, all of the master's relations.
+  const relScope = accountId ? { masterAccountId: oid(accountId) } : { masterId: oid(userId) };
   const [followersTotal, activeFollowers, newThisMonth, copiedTrades, activeRels] = await Promise.all([
-    CopyRelation.countDocuments({ masterId: oid(userId), status: { $ne: 'STOPPED' } }),
-    CopyRelation.countDocuments({ masterId: oid(userId), status: 'ACTIVE' }),
-    CopyRelation.countDocuments({ masterId: oid(userId), createdAt: { $gte: startOfMonth } }),
-    CopyTrade.countDocuments({ masterId: oid(userId) }),
-    CopyRelation.find({ masterId: oid(userId), status: 'ACTIVE' }).select('investment runningPnl').lean(),
+    CopyRelation.countDocuments({ ...relScope, status: { $ne: 'STOPPED' } }),
+    CopyRelation.countDocuments({ ...relScope, status: 'ACTIVE' }),
+    CopyRelation.countDocuments({ ...relScope, createdAt: { $gte: startOfMonth } }),
+    CopyTrade.countDocuments(relScope),
+    CopyRelation.find({ ...relScope, status: 'ACTIVE' }).select('investment runningPnl').lean(),
   ]);
   let aum = 0, roiSum = 0, roiN = 0;
   for (const r of activeRels) {
@@ -193,11 +204,14 @@ async function getTraderAnalytics(userId) {
   return {
     trader: {
       userId: String(userId),
-      displayName: profile?.displayName || [user?.firstName, user?.lastName].filter(Boolean).join(' ') || 'Trader',
-      avatarUrl: profile?.avatarUrl || '',
-      bio: profile?.bio || '',
-      riskBadge: profile?.riskBadge || riskTier(riskScore),
-      isPublic: !!profile?.isPublic,
+      accountId: accountId ? String(accountId) : null,
+      accountNumber: box?.accountNumber || null,
+      accountType: box?.accountType || null,
+      displayName: box?.displayName || profile?.displayName || [user?.firstName, user?.lastName].filter(Boolean).join(' ') || 'Trader',
+      avatarUrl: box?.avatarUrl || profile?.avatarUrl || '',
+      bio: box?.bio || profile?.bio || '',
+      riskBadge: box?.riskBadge || profile?.riskBadge || riskTier(riskScore),
+      isPublic: box ? !!box.isPublic : !!profile?.isPublic,
       verified: user?.kycStatus === 'APPROVED',
       joinedAt: profile?.createdAt || user?.createdAt || null,
       country: user?.country || null,
@@ -279,8 +293,10 @@ function buildDistribution(returns) {
 }
 
 /** Live-ish open positions for a trader (read-only; current price from instrument cache). */
-async function getTraderOpenPositions(userId) {
-  const pos = await Position.find({ userId: oid(userId), status: { $in: [POSITION_STATUS.OPEN, POSITION_STATUS.CLOSING] } })
+async function getTraderOpenPositions(userId, accountId) {
+  const m = { userId: oid(userId), status: { $in: [POSITION_STATUS.OPEN, POSITION_STATUS.CLOSING] } };
+  if (accountId) m.accountId = oid(accountId);
+  const pos = await Position.find(m)
     .select('symbol side positionSide quantity entryPrice unrealizedPnl leverage openedAt stopLoss takeProfit')
     .sort({ openedAt: -1 })
     .limit(200)
@@ -325,8 +341,9 @@ function periodRange(period, from, to) {
 }
 
 /** Paginated closed-trade history for a trader (read-only). */
-async function getTraderHistory(userId, { period = 'all', page = 1, limit = 20, from, to } = {}) {
+async function getTraderHistory(userId, { period = 'all', page = 1, limit = 20, from, to, accountId } = {}) {
   const q = { userId: oid(userId), status: POSITION_STATUS.CLOSED };
+  if (accountId) q.accountId = oid(accountId);
   const range = periodRange(period, from, to);
   if (range) q.closedAt = range;
   const p = Math.max(1, parseInt(page, 10) || 1);

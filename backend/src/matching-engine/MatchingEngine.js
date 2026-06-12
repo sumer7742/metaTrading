@@ -271,14 +271,15 @@ class MatchingEngine {
       const refPrice = instrument.lastPrice;
       if (refPrice && !eq(refPrice, '0')) {
         const remainingQty = remaining;
-        const spreadValue = D(instrument.spreadValue || '0');
+        // Half-spread per side — matches the quoted bid/ask (see B-book note).
+        const halfSpread = D(instrument.spreadValue || '0').times(D('0.5'));
         let executed = D(refPrice);
         if (instrument.spreadType === 'PERCENTAGE') {
           executed = order.side === 'BUY'
-            ? executed.times(D('1').plus(spreadValue))
-            : executed.times(D('1').minus(spreadValue));
+            ? executed.times(D('1').plus(halfSpread))
+            : executed.times(D('1').minus(halfSpread));
         } else {
-          executed = order.side === 'BUY' ? executed.plus(spreadValue) : executed.minus(spreadValue);
+          executed = order.side === 'BUY' ? executed.plus(halfSpread) : executed.minus(halfSpread);
         }
         const fillPx = executed.toString();
 
@@ -433,15 +434,17 @@ class MatchingEngine {
       return order;
     }
 
-    // Apply broker spread (markup) on B-book fills
-    const spreadValue = D(instrument.spreadValue || '0');
+    // Apply broker spread (markup) on B-book fills. HALF the spread per side so
+    // the executed fill matches the quoted bid/ask (ask = mid + spread/2,
+    // bid = mid − spread/2). `spreadValue` is the total bid-ask width.
+    const halfSpread = D(instrument.spreadValue || '0').times(D('0.5'));
     let executedPrice = D(fillPrice);
     if (instrument.spreadType === 'PERCENTAGE') {
       executedPrice = order.side === 'BUY'
-        ? executedPrice.times(D('1').plus(spreadValue))
-        : executedPrice.times(D('1').minus(spreadValue));
+        ? executedPrice.times(D('1').plus(halfSpread))
+        : executedPrice.times(D('1').minus(halfSpread));
     } else {
-      executedPrice = order.side === 'BUY' ? executedPrice.plus(spreadValue) : executedPrice.minus(spreadValue);
+      executedPrice = order.side === 'BUY' ? executedPrice.plus(halfSpread) : executedPrice.minus(halfSpread);
     }
     const finalPrice = executedPrice.toString();
 
@@ -572,16 +575,17 @@ class MatchingEngine {
     // Honor PERCENTAGE vs FIXED spread the same way B-book does, so EXTERNAL
     // fills aren't silently mispriced when an instrument is configured with a
     // percent spread.
-    const spreadValueD = D(instrument.spreadValue || '0');
+    // Half-spread per side — matches the quoted bid/ask (see B-book note).
+    const halfSpreadD = D(instrument.spreadValue || '0').times(D('0.5'));
     let executedExt = D(refPrice);
     if (instrument.spreadType === 'PERCENTAGE') {
       executedExt = order.side === 'BUY'
-        ? executedExt.times(D('1').plus(spreadValueD))
-        : executedExt.times(D('1').minus(spreadValueD));
+        ? executedExt.times(D('1').plus(halfSpreadD))
+        : executedExt.times(D('1').minus(halfSpreadD));
     } else {
       executedExt = order.side === 'BUY'
-        ? executedExt.plus(spreadValueD)
-        : executedExt.minus(spreadValueD);
+        ? executedExt.plus(halfSpreadD)
+        : executedExt.minus(halfSpreadD);
     }
     const finalPrice = executedExt.toString();
 

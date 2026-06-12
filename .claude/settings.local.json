@@ -139,7 +139,17 @@
       "Bash(sed -n '90,140p' src/services/managerAccessService.js)",
       "Read(//c/Users/rijju/OneDrive/Desktop/trading-platform  last and/admin/src/pages/**)",
       "Bash(node --check src/services/managerAccessService.js)",
-      "Bash(node --check src/config/managerPermissions.js)"
+      "Bash(node --check src/config/managerPermissions.js)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\rijju\\\\OneDrive\\\\Desktop\\\\trading-platform  last and\\\\admin\\\\src\" -Recurse -Directory)",
+      "Bash(Select-Object -First 20)",
+      "PowerShell(Get-ChildItem -Path \"c:\\\\Users\\\\rijju\\\\OneDrive\\\\Desktop\\\\trading-platform  last and\\\\admin\\\\src\" -Recurse -Directory | Select-Object -First 20 | ForEach-Object { $_.FullName })",
+      "Bash(node --check src/routes/adminOrders.js)",
+      "Bash(node --check src/controllers/adminOrdersController.js)",
+      "Bash(node -e \"const p=require\\('./client/package.json'\\); console.log\\(JSON.stringify\\({...p.dependencies,...p.devDependencies},null,0\\)\\)\")",
+      "Bash(node -e \"const p=require\\('./admin/package.json'\\); console.log\\(JSON.stringify\\({...p.dependencies,...p.devDependencies},null,0\\)\\)\")",
+      "Bash(node --check src/services/copyTradingService.js)",
+      "Bash(node --check src/services/copyEarningsService.js)",
+      "Bash(node -e \"const p=require\\('./client/package.json'\\); console.log\\('lightweight-charts:', p.dependencies['lightweight-charts']\\)\")"
     ]
   }
 }

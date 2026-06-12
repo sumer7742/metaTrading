@@ -138,4 +138,18 @@ const requireHierarchy = (req, res, next) => {
   next();
 };
 
-module.exports = { authenticate, requireRole, requireAdmin, allowRoles, allowPermission, requireManagerPermission, requireHierarchy };
+// Optional authentication — for PUBLIC endpoints that behave differently when
+// a user happens to be signed in (e.g. CMS pages with AUTH-only visibility).
+// Decodes the token if present; never throws — anonymous requests continue.
+const optionalAuthenticate = async (req, res, next) => {
+  try {
+    const header = req.headers.authorization;
+    if (!header || !header.startsWith('Bearer ')) return next();
+    const payload = verifyAccessToken(header.split(' ')[1]);
+    const user = await User.findById(payload.sub).lean();
+    if (user && user.isActive) { req.user = user; req.userId = user._id; }
+  } catch (_) { /* ignore — treat as anonymous */ }
+  next();
+};
+
+module.exports = { authenticate, optionalAuthenticate, requireRole, requireAdmin, allowRoles, allowPermission, requireManagerPermission, requireHierarchy };

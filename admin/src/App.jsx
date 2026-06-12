@@ -11,6 +11,9 @@ import Users from './pages/Users';
 import Accounts from './pages/Accounts';
 import Instruments from './pages/Instruments';
 import MarketExposure from './pages/MarketExposure';
+import Orders from './pages/Orders';
+import CmsPages from './pages/CmsPages';
+import CmsNews from './pages/CmsNews';
 import Withdrawals from './pages/Withdrawals';
 import Deposits from './pages/Deposits';
 import Finance from './pages/Finance';
@@ -97,6 +100,9 @@ export default function App() {
       <Route path="/accounts" element={wrap(<Accounts />)} />
       <Route path="/instruments" element={wrap(<Instruments />)} />
       <Route path="/market-exposure" element={wrap(<MarketExposure />)} />
+      <Route path="/orders" element={wrap(<Orders />)} />
+      <Route path="/cms-pages" element={wrap(<CmsPages />)} />
+      <Route path="/cms-news" element={wrap(<CmsNews />)} />
       <Route path="/withdrawals" element={wrap(<Withdrawals />)} />
       <Route path="/deposits" element={wrap(<Deposits />)} />
       <Route path="/finance" element={wrap(<Finance />)} />

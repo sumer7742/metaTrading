@@ -20,7 +20,14 @@ router.post('/pause',     authenticate, c.pauseCopy);
 router.post('/resume',    authenticate, c.resumeCopy);
 router.post('/stop',      authenticate, c.stopCopy);
 
-// Master profile (the user's own profile)
+// Copy boxes — master = a specific trading account. `boxes/me` & `eligible-
+// accounts` are literal paths declared before any `:id` route.
+router.get('/eligible-accounts', authenticate, c.eligibleAccounts);
+router.get('/boxes/me',          authenticate, c.myBoxes);
+router.post('/boxes',            authenticate, c.createBox);
+router.put('/boxes/:id',         authenticate, c.updateBox);
+
+// Master profile (owner-level — performance fee + earnings)
 router.get('/profile/me', authenticate, c.myProfile);
 router.put('/profile/me', authenticate, c.updateMyProfile);
 

@@ -21,9 +21,10 @@ export default function CopyTrade() {
   const [feed, setFeed] = useState([]);
   const [mine, setMine] = useState([]);
   const [myProfile, setMyProfile] = useState(null);
+  const [myBoxes, setMyBoxes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [copyTarget, setCopyTarget] = useState(null);
-  const [editProfile, setEditProfile] = useState(false);
+  const [becomeMaster, setBecomeMaster] = useState(false);
   const navigate = useNavigate();
   const [q, setQ] = useState('');
   const [riskFilter, setRiskFilter] = useState('ALL');
@@ -46,16 +47,18 @@ export default function CopyTrade() {
 
   const refresh = async () => {
     try {
-      const [lb, fd, mc, mp] = await Promise.allSettled([
+      const [lb, fd, mc, mp, bx] = await Promise.allSettled([
         api.get('/copy-trading/leaderboard?limit=50'),
         api.get('/copy-trading/feed?limit=50'),
         api.get('/copy-trading/my-copies'),
         api.get('/copy-trading/profile/me'),
+        api.get('/copy-trading/boxes/me'),
       ]);
       if (lb.status === 'fulfilled') setLeaders(lb.value.data.data || []);
       if (fd.status === 'fulfilled') setFeed(fd.value.data.data || []);
       if (mc.status === 'fulfilled') setMine(mc.value.data.data || []);
       if (mp.status === 'fulfilled') setMyProfile(mp.value.data.data || null);
+      if (bx.status === 'fulfilled') setMyBoxes(bx.value.data.data || []);
     } catch (e) {
       toast.error(errorMessage(e));
     } finally {
@@ -82,6 +85,14 @@ export default function CopyTrade() {
     } catch (e) { toast.error(errorMessage(e)); }
   };
 
+  const toggleBoxPublic = async (box) => {
+    try {
+      await api.put(`/copy-trading/boxes/${box._id}`, { isPublic: !box.isPublic });
+      toast.success(box.isPublic ? 'Box hidden from leaderboard' : 'Box is now live on the leaderboard');
+      refresh();
+    } catch (e) { toast.error(errorMessage(e)); }
+  };
+
   return (
     <div className="space-y-6 max-w-[1600px]">
       <PageHero
@@ -89,19 +100,15 @@ export default function CopyTrade() {
         title="Copy Trading"
         subtitle="Mirror the trades of top performers automatically. Pick a trader, set your investment, and the system copies their entries, closes and SL/TP for you."
         actions={
-          <button onClick={() => setEditProfile(true)} className="btn-secondary text-sm inline-flex items-center gap-1.5">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-            Master trader profile
+          <button onClick={() => setBecomeMaster(true)} className="btn-primary text-sm inline-flex items-center gap-1.5">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+            Become a master trader
           </button>
         }
       />
 
-      {/* Master-trader status card. Lives at the top so a new user
-          immediately sees how to opt in. Light banner-style; expands
-          into the editor modal on click. */}
-      {myProfile && (
-        <MyProfileBanner profile={myProfile} onEdit={() => setEditProfile(true)} />
-      )}
+      {/* My copy boxes — one per source trading account. */}
+      <MyBoxesSection boxes={myBoxes} onCreate={() => setBecomeMaster(true)} onToggle={toggleBoxPublic} />
 
       {/* Tab strip — mobile drives section, desktop shows all 3 in grid */}
       <div className="card p-1 inline-flex md:hidden">
@@ -133,7 +140,7 @@ export default function CopyTrade() {
           <section className={`md:col-span-7 ${tab === 'discover' ? '' : 'hidden md:block'}`}>
             <SectionHeader title="Top traders" count={leaders.length} />
             {leaders.length === 0 ? (
-              <div className="card p-10 text-center text-text-muted">No public traders yet — be the first to enable your profile in settings.</div>
+              <div className="card p-10 text-center text-text-muted">No public copy boxes yet — create one from your trading account to get listed.</div>
             ) : (
               <>
                 {/* Search + filters + sort */}
@@ -166,7 +173,7 @@ export default function CopyTrade() {
                         key={t._id}
                         trader={t}
                         badge={badges[t._id]}
-                        onView={() => navigate(`/copy-trading/trader/${t.userId}`)}
+                        onView={() => navigate(`/copy-trading/trader/${t.userId}?account=${t.accountId}`)}
                         onCopy={() => setCopyTarget(t)}
                       />
                     ))}
@@ -220,17 +227,203 @@ export default function CopyTrade() {
         />
       )}
 
-      {editProfile && (
-        <ProfileEditorModal
-          profile={myProfile}
-          onClose={() => setEditProfile(false)}
-          onSaved={(p) => {
-            setMyProfile(p);
-            setEditProfile(false);
-            refresh();
-          }}
+      {becomeMaster && (
+        <BecomeMasterModal
+          initialFee={myProfile?.performanceFeePercent ?? ''}
+          onClose={() => setBecomeMaster(false)}
+          onCreated={() => { setBecomeMaster(false); refresh(); setTab('mine'); }}
         />
       )}
+    </div>
+  );
+}
+
+/* ── Copy boxes (one per source trading account) ────────────────────── */
+function MyBoxesSection({ boxes, onCreate, onToggle }) {
+  if (!boxes.length) {
+    return (
+      <div className="card p-4 flex items-center gap-4 flex-wrap border-2 border-dashed border-border-dark">
+        <span className="shrink-0 w-12 h-12 rounded-full bg-primary-500/15 text-primary-600 flex items-center justify-center">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        </span>
+        <div className="flex-1 min-w-0">
+          <div className="font-extrabold text-text-primary">Become a master trader</div>
+          <p className="text-[12px] text-text-muted mt-0.5">
+            Create a copy box from one of your trading accounts. Only that account's trades are copied to your followers.
+          </p>
+        </div>
+        <button onClick={onCreate} className="btn-primary text-sm">Create a copy box</button>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3 px-1">
+        <h2 className="text-base font-extrabold text-text-primary tracking-tight">My copy boxes</h2>
+        <button onClick={onCreate} className="btn-ghost text-xs">+ New box</button>
+      </div>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {boxes.map((b) => (
+          <div key={b._id} className={`card p-4 border-2 ${b.isPublic ? 'border-emerald-300' : 'border-border-dark'}`}>
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="font-extrabold text-text-primary truncate">{b.displayName || b.accountNumber}</div>
+                <div className="text-[11px] text-text-secondary mt-0.5">
+                  <span className="font-semibold">{b.accountType}</span> · {b.accountNumber}
+                </div>
+              </div>
+              <span className={`shrink-0 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full ${b.isPublic ? 'bg-emerald-500/15 text-emerald-700' : 'bg-text-muted/15 text-text-muted'}`}>
+                {b.isPublic ? 'Live' : 'Private'}
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-center mt-3">
+              <Stat label="ROI" value={`${Number(b.roiPct || 0) >= 0 ? '+' : ''}${Number(b.roiPct || 0).toFixed(1)}%`} tone={Number(b.roiPct || 0) >= 0 ? 'bull' : 'bear'} />
+              <Stat label="Win" value={`${Number(b.winRate || 0).toFixed(0)}%`} />
+              <Stat label="Followers" value={Number(b.followers || 0)} />
+            </div>
+            {!b.acceptsFollowers && (
+              <div className="mt-2 text-[11px] text-bear bg-bear/10 rounded-lg px-2 py-1">
+                Source account disabled — not accepting new followers.
+              </div>
+            )}
+            <div className="mt-3 flex justify-end">
+              <button onClick={() => onToggle(b)} className="btn-ghost text-xs">
+                {b.isPublic ? 'Make private' : 'Go public'}
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BecomeMasterModal({ onClose, onCreated, initialFee = '' }) {
+  const [accounts, setAccounts] = useState([]);
+  const [accountId, setAccountId] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [riskBadge, setRiskBadge] = useState('MEDIUM');
+  const [isPublic, setIsPublic] = useState(true);
+  const [feePct, setFeePct] = useState(initialFee === null || initialFee === undefined ? '' : String(initialFee));
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await api.get('/copy-trading/eligible-accounts');
+        const list = r.data.data || [];
+        setAccounts(list);
+        const first = list.find((a) => !a.hasBox) || list[0];
+        if (first) setAccountId(first.accountId);
+      } catch (e) { toast.error(errorMessage(e)); }
+      finally { setLoading(false); }
+    })();
+  }, []);
+
+  const create = async () => {
+    if (!accountId) { toast.error('Select a trading account'); return; }
+    setSaving(true);
+    try {
+      await api.post('/copy-trading/boxes', { accountId, displayName: displayName.trim(), riskBadge, isPublic });
+      // Performance fee is owner-level (applies to all your boxes). Blank → platform default.
+      await api.put('/copy-trading/profile/me', {
+        performanceFeePercent: feePct === '' ? null : Number(feePct),
+      }).catch(() => {});
+      toast.success('Copy box created');
+      onCreated?.();
+    } catch (e) { toast.error(errorMessage(e)); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="card max-w-md w-full overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-border-subtle flex items-center justify-between">
+          <h3 className="text-base font-extrabold text-text-primary">Become a master trader</h3>
+          <button onClick={onClose} className="text-text-muted hover:text-text-primary text-xl leading-none">×</button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <div>
+            <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1.5">Source trading account</label>
+            <p className="text-[11px] text-text-muted mb-2 leading-snug">Pick the account to copy from. <span className="font-semibold text-text-secondary">Only this account's trades</span> are mirrored to followers.</p>
+            {loading ? (
+              <div className="text-text-muted text-sm py-4">Loading accounts…</div>
+            ) : accounts.length === 0 ? (
+              <div className="text-text-muted text-sm py-4">No active trading accounts found.</div>
+            ) : (
+              <div className="space-y-2">
+                {accounts.map((a) => (
+                  <label key={a.accountId}
+                    className={`flex items-center gap-3 rounded-xl border-2 px-3 py-2.5 cursor-pointer transition-all ${
+                      accountId === a.accountId ? 'border-primary-500 bg-primary-500/5' : 'border-border-dark hover:border-primary-500/50'}`}>
+                    <input type="radio" name="srcAcc" checked={accountId === a.accountId} onChange={() => setAccountId(a.accountId)} className="accent-primary-500" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-bold text-text-primary">{a.accountNumber} <span className="text-text-muted font-semibold">({a.accountType})</span></div>
+                      <div className="text-[11px] text-text-muted">
+                        {a.baseCurrency}
+                        {a.hasBox ? ' · box exists (will update)' : ''}
+                        {!a.acceptsFollowers ? ' · inactive' : ''}
+                      </div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1.5">Box name</label>
+            <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="e.g. Aggressive FX Scalper" maxLength={40}
+              className="w-full px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/15" />
+          </div>
+
+          <div>
+            <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1.5">Risk badge</label>
+            <div className="grid grid-cols-3 gap-2">
+              {[{ id: 'LOW', label: 'Low' }, { id: 'MEDIUM', label: 'Medium' }, { id: 'HIGH', label: 'High' }].map((r) => (
+                <button key={r.id} type="button" onClick={() => setRiskBadge(r.id)}
+                  className={`rounded-xl border-2 p-2 text-center text-sm font-extrabold transition-all ${
+                    riskBadge === r.id ? 'border-primary-500 bg-primary-500/5 text-primary-600' : 'border-border-dark text-text-secondary hover:border-primary-500'}`}>
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <label className="flex items-center justify-between gap-3 rounded-xl border border-border-dark px-3 py-2.5 cursor-pointer">
+            <div className="min-w-0">
+              <div className="text-sm font-bold text-text-primary">List on the leaderboard</div>
+              <div className="text-[11px] text-text-muted mt-0.5">Others can discover this box and copy it.</div>
+            </div>
+            <button type="button" onClick={() => setIsPublic((v) => !v)}
+              className={`shrink-0 relative w-11 h-6 rounded-full transition ${isPublic ? 'bg-emerald-500' : 'bg-border-dark'}`}>
+              <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition ${isPublic ? 'left-[22px]' : 'left-0.5'}`} />
+            </button>
+          </label>
+
+          {/* Performance fee — owner-level (applies to all your boxes). */}
+          <div>
+            <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1.5">Performance fee</label>
+            <div className="relative">
+              <input type="number" min="0" step="1" value={feePct} onChange={(e) => setFeePct(e.target.value)} placeholder="Platform default"
+                className="w-full pl-3 pr-8 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-mono font-bold focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/15" />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted">%</span>
+            </div>
+            <p className="text-[11px] text-text-muted mt-1.5 leading-snug">
+              Your cut of each follower's <span className="font-semibold text-text-secondary">profit</span> on winning copied trades — credited to your Main Wallet. No fee on losses. Blank = platform default. Applies to all your boxes.
+            </p>
+          </div>
+        </div>
+
+        <div className="px-5 py-3 border-t border-border-subtle flex justify-end gap-2">
+          <button onClick={onClose} disabled={saving} className="btn-ghost text-sm">Cancel</button>
+          <button onClick={create} disabled={saving || !accountId} className="btn-primary text-sm disabled:opacity-50">
+            {saving ? 'Creating…' : 'Create copy box'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -467,6 +660,13 @@ function TraderCard({ trader, onCopy, onView, badge }) {
               {trader.riskBadge || 'MED'}
             </span>
           </div>
+          {(trader.accountType || trader.ownerName) && (
+            <p className="text-[10px] text-text-secondary mt-0.5 truncate">
+              {trader.accountType && <span className="font-semibold">{trader.accountType}</span>}
+              {trader.accountType && trader.ownerName ? ' · ' : ''}
+              {trader.ownerName || ''}
+            </p>
+          )}
           <p className="text-[11px] text-text-muted line-clamp-2 mt-0.5">{trader.bio || 'Active trader on the platform.'}</p>
         </div>
       </div>

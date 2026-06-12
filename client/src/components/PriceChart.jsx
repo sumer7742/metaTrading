@@ -2109,6 +2109,33 @@ export default function PriceChart({
         axisLabelVisible: true,
         title: '',
       });
+
+      // ── Bid / Ask spread lines around the live (mid) price ──────────
+      // Mirrors the broker spread: ask = mid + spread/2 (Buy fills here),
+      // bid = mid − spread/2 (Sell fills here). Faint dashed lines so the
+      // spread is visible as a band hugging the live line.
+      const sv = Number(instrument?.spreadValue) || 0;
+      if (sv > 0) {
+        const mid = Number(livePrice);
+        const half = instrument?.spreadType === 'PERCENTAGE' ? mid * (sv / 2) : sv / 2;
+        // Plain neutral dashed lines — no name, no coloured axis label.
+        desired.set('live:ask', {
+          price: mid + half,
+          color: '#94a3b8',   // neutral
+          lineWidth: 1,
+          lineStyle: 2,       // dashed
+          axisLabelVisible: false,
+          title: '',
+        });
+        desired.set('live:bid', {
+          price: mid - half,
+          color: '#94a3b8',
+          lineWidth: 1,
+          lineStyle: 2,
+          axisLabelVisible: false,
+          title: '',
+        });
+      }
     }
 
     if (pendingPreview && pendingPreview.price && Number(pendingPreview.price) > 0) {
@@ -2197,7 +2224,7 @@ export default function PriceChart({
     if (!manualPriceScaleRef.current) {
       try { series.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
     }
-  }, [symbolOrders, symbolPositions, livePrice, pendingPreview, orderPreview, previewRealMatch, pricePrecision, chartType]);
+  }, [symbolOrders, symbolPositions, livePrice, pendingPreview, orderPreview, previewRealMatch, pricePrecision, chartType, instrument]);
 
   useEffect(() => {
     return () => { priceLinesRef.current.clear(); };

@@ -138,3 +138,16 @@ input[type="time"]::-webkit-calendar-picker-indicator:hover,
 input[type="month"]::-webkit-calendar-picker-indicator:hover {
   opacity: 1;
 }
+
+/* ── CMS rich-text editor + preview prose ─────────────────────────────── */
+.cms-editor:empty:before { content: attr(data-placeholder); color: rgb(var(--color-text-muted)); pointer-events: none; }
+.cms-editor h2, .cms-content h2 { font-size: 1.3rem; font-weight: 700; color: rgb(var(--color-text-primary)); margin: 1rem 0 .5rem; }
+.cms-editor h3, .cms-content h3 { font-size: 1.1rem; font-weight: 600; color: rgb(var(--color-text-primary)); margin: .85rem 0 .4rem; }
+.cms-editor p, .cms-content p { margin: 0 0 .75rem; }
+.cms-editor ul, .cms-content ul { list-style: disc; margin: 0 0 .75rem 1.4rem; }
+.cms-editor ol, .cms-content ol { list-style: decimal; margin: 0 0 .75rem 1.4rem; }
+.cms-editor a, .cms-content a { color: #FCD535; text-decoration: underline; }
+.cms-editor blockquote, .cms-content blockquote { border-left: 3px solid rgb(var(--color-border-dark)); padding-left: .75rem; margin: .75rem 0; color: rgb(var(--color-text-muted)); font-style: italic; }
+.cms-content { color: rgb(var(--color-text-secondary)); line-height: 1.7; }
+.cms-content h1 { font-size: 1.6rem; font-weight: 700; color: rgb(var(--color-text-primary)); margin: 1rem 0 .5rem; }
+.cms-content img, .cms-editor img { max-width: 100%; border-radius: .5rem; margin: .5rem 0; }

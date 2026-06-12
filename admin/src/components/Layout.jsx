@@ -20,6 +20,7 @@ const I = {
   settings: <Icon d={['M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z', 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z']} />,
   security: <Icon d={['M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z']} />,
   plans: <Icon d={['M20 7h-7l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z', 'M12 12v4', 'M10 14h4']} />,
+  orders: <Icon d={['M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2h-4', 'M9 3v4h6V3', 'M8 12l2 2 4-4']} />,
   logout: <Icon d={['M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4', 'M16 17l5-5-5-5', 'M21 12H9']} />,
 };
 
@@ -40,6 +41,7 @@ const NAV_SECTIONS = [
       { to: '/users', icon: I.users, label: 'Users' },
       { to: '/accounts', icon: I.plans, label: 'Accounts' },
       { to: '/instruments', icon: I.instruments, label: 'Instruments' },
+      { to: '/orders', icon: I.orders, label: 'Orders Management' },
       { to: '/market-exposure', icon: I.reports, label: 'Market Exposure' },
     ],
   },
@@ -82,6 +84,13 @@ const NAV_SECTIONS = [
       { to: '/execution', icon: I.instruments, label: 'Execution' },
       { to: '/audit-compliance', icon: I.security, label: 'Audit & Compliance' },
       { to: '/audit', icon: I.audit, label: 'Audit Log' },
+    ],
+  },
+  {
+    title: 'Content',
+    items: [
+      { to: '/cms-pages', icon: I.audit, label: 'CMS Pages' },
+      { to: '/cms-news', icon: I.reports, label: 'News' },
     ],
   },
   {

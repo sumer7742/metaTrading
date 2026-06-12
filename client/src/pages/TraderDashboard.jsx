@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, useSearchParams, Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { wsClient } from '../services/ws';
@@ -57,6 +57,8 @@ const RANGE_MS = { '1D': 864e5, '1W': 7 * 864e5, '1M': 30 * 864e5, '3M': 90 * 86
 
 export default function TraderDashboard() {
   const { id } = useParams();
+  const [sp] = useSearchParams();
+  const accountId = sp.get('account') || '';
   const { user } = useAuthStore();
   const myId = String(user?._id || user?.id || '');
   const [data, setData] = useState(null);
@@ -65,14 +67,14 @@ export default function TraderDashboard() {
 
   const load = async () => {
     try {
-      const { data: r } = await api.get(`/copy-trading/trader/${id}`);
+      const { data: r } = await api.get(`/copy-trading/trader/${id}`, { params: accountId ? { accountId } : {} });
       setData(r.data);
     } catch (e) {
       toast.error(errorMessage(e));
     } finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t); /* eslint-disable-next-line */ }, [id]);
+  useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t); /* eslint-disable-next-line */ }, [id, accountId]);
 
   if (loading) return <div className="max-w-[1500px] mx-auto p-6 text-text-muted">Loading trader…</div>;
   if (!data) {
@@ -140,7 +142,7 @@ export default function TraderDashboard() {
 
       {copyOpen && (
         <CopySetupModal
-          trader={{ userId: trader.userId, displayName: trader.displayName, riskBadge: trader.riskBadge, roiPct: pf.totalROI, winRate: pf.winRate, performanceFeePercent: trader.performanceFeePercent }}
+          trader={{ userId: trader.userId, accountId: trader.accountId, accountNumber: trader.accountNumber, accountType: trader.accountType, displayName: trader.displayName, riskBadge: trader.riskBadge, roiPct: pf.totalROI, winRate: pf.winRate, performanceFeePercent: trader.performanceFeePercent }}
           onClose={() => setCopyOpen(false)}
           onStarted={() => { setCopyOpen(false); toast.success(`Now copying ${trader.displayName}`); }}
         />
@@ -366,16 +368,18 @@ function RiskAnalytics({ risk }) {
 // OPEN POSITIONS (live)
 // ═══════════════════════════════════════════════════════════════════
 function OpenPositions({ traderId }) {
+  const [sp] = useSearchParams();
+  const accountId = sp.get('account') || '';
   const [rows, setRows] = useState([]);
   const [live, setLive] = useState({}); // symbol -> last price
   const rowsRef = useRef([]);
   useEffect(() => { rowsRef.current = rows; }, [rows]);
 
   const load = async () => {
-    try { const { data } = await api.get(`/copy-trading/trader/${traderId}/positions`); setRows(data.data || []); }
+    try { const { data } = await api.get(`/copy-trading/trader/${traderId}/positions`, { params: accountId ? { accountId } : {} }); setRows(data.data || []); }
     catch (_) { /* keep prior */ }
   };
-  useEffect(() => { load(); const t = setInterval(load, 5000); return () => clearInterval(t); /* eslint-disable-next-line */ }, [traderId]);
+  useEffect(() => { load(); const t = setInterval(load, 5000); return () => clearInterval(t); /* eslint-disable-next-line */ }, [traderId, accountId]);
 
   // Live price subscriptions per open symbol → recompute PnL client-side.
   const symbolsKey = useMemo(() => [...new Set(rows.map((r) => r.symbol))].sort().join('|'), [rows]);
@@ -449,6 +453,8 @@ function OpenPositions({ traderId }) {
 // ═══════════════════════════════════════════════════════════════════
 const HISTORY_PERIODS = [{ k: 'today', label: 'Today' }, { k: 'week', label: 'This Week' }, { k: 'month', label: 'This Month' }, { k: 'all', label: 'All' }, { k: 'custom', label: 'Custom' }];
 function TradeHistory({ traderId }) {
+  const [sp] = useSearchParams();
+  const accountId = sp.get('account') || '';
   const [period, setPeriod] = useState('all');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -460,6 +466,7 @@ function TradeHistory({ traderId }) {
     let cancelled = false;
     setLoading(true);
     const params = { period, page, limit: 10 };
+    if (accountId) params.accountId = accountId;
     if (period === 'custom') {
       if (from) params.from = from;
       // Make the end date inclusive of the whole selected day.
@@ -470,7 +477,7 @@ function TradeHistory({ traderId }) {
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [traderId, period, page, from, to]);
+  }, [traderId, period, page, from, to, accountId]);
 
   return (
     <div className="rounded-2xl border border-border-dark bg-white shadow-card overflow-hidden">

@@ -672,6 +672,18 @@ export default function OrderForm({
   const quoteCcy = instrument?.quoteCurrency || 'USD';
   const fmtQuote = (v) => `${Number(v).toFixed(2)} ${quoteCcy}`;
 
+  // Itemised fee breakdown for the "Fees ⓘ" tooltip — shows exactly which
+  // components add up to the total (flat commission + % commission + spread).
+  const commPctAmt = notional > 0 ? (notional * commPct / 100) : 0;
+  const feeHelp = [
+    'Total fee = commission + spread cost',
+    commFlat > 0 ? `• Flat commission: ${fmtQuote(commFlat)}` : null,
+    commPct > 0 ? `• Commission (${commPct}% × ${fmtQuote(notional)} notional): ${fmtQuote(commPctAmt)}` : null,
+    `• Spread cost (${spreadAbs.toFixed(prec)} ${quoteCcy} × ${qtyNum || 0} qty): ${fmtQuote(spreadCost)}`,
+    '──────────',
+    `Total ≈ ${fmtQuote(feeEstimate)}`,
+  ].filter(Boolean).join('\n');
+
   const sideIsBuy = side === 'BUY';
   const [moreOpen, setMoreOpen] = useState(false);
 
@@ -1054,7 +1066,7 @@ export default function OrderForm({
             C={C}
             label="Fees"
             value={feeEstimate > 0 ? `≈ ${fmtQuote(feeEstimate)}` : '—'}
-            help={`Commission ${commFlat} + ${commPct}% · spread ${spreadAbs.toFixed(prec)} ${quoteCcy}/unit`}
+            help={feeHelp}
           />
           <InfoRow
             C={C}

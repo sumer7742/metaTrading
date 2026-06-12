@@ -1,32 +1,31 @@
 /**
- * copyTradingService — minimal copy-trading engine.
+ * copyTradingService — copy-trading engine, scoped to COPY BOXES.
+ *
+ * A copy box is bound to ONE source trading account (CopyBox.accountId).
+ * Followers subscribe to a box (CopyRelation.masterAccountId). Only trades
+ * executed on that source account are mirrored to that box's followers —
+ * trades on the master's other accounts are never copied.
  *
  * Three event hooks fired from the order flow:
- *   1. onMasterOrderFilled(order, position) — mirror to active followers
- *   2. onMasterPositionClosed(position, pnl) — close every mirror
- *   3. onMasterSlTpChanged(position) — push SL/TP proportionally to mirrors
+ *   1. onMasterOrderFilled({ order, position }) — mirror to the box's followers
+ *   2. onMasterPositionClosed({ position, realizedPnl }) — close every mirror
+ *   3. onMasterSlTpChanged({ position }) — push SL/TP to mirrors
  *
- * Plus public methods used by the controller:
- *   - leaderboard()           — sorted list of public TraderProfiles
- *   - startCopying(...)       — follower → master enrolment
- *   - pauseCopying / stopCopying / resumeCopying
- *   - listMyCopies(userId)    — follower dashboard
- *   - feed({ limit })         — recent TradeFeedEvents
+ * Box management:
+ *   - listEligibleAccounts(userId) — accounts that can become a box
+ *   - createBox(...) / listMyBoxes / updateBox
+ * Follower actions:
+ *   - startCopying(...) / setStatus(...) / listMyCopies(userId)
+ * Reads:
+ *   - leaderboard() — public boxes
  *
- * Design choices:
- *   • Follower orders are placed against the follower's own oldest
- *     active TradingAccount unless they pick a specific one at copy
- *     setup (CopyRelation.followerAccountId).
- *   • Proportional sizing: followerQty = masterQty × (investment /
- *     masterEquity) × riskMultiplier. Rounded to the instrument's
- *     lot step (defaults to 0.01) and floored at the minimum tradable
- *     size.
- *   • All mirrors go through orderRouter.routeOrder — same execution
- *     path as a manual order. No special engine.
+ * Owner-level concerns (performance fee, Bonus-Wallet earnings) stay on the
+ * user's TraderProfile so the existing earnings pipeline is untouched.
  */
 
 const CopyRelation   = require('../models/CopyRelation');
 const CopyTrade      = require('../models/CopyTrade');
+const CopyBox        = require('../models/CopyBox');
 const TraderProfile  = require('../models/TraderProfile');
 const TradeFeedEvent = require('../models/TradeFeedEvent');
 const Order          = require('../models/Order');
@@ -35,12 +34,32 @@ const TradingAccount = require('../models/TradingAccount');
 const Instrument     = require('../models/Instrument');
 const User           = require('../models/User');
 const { ORDER_STATUS, POSITION_STATUS } = require('../config/constants');
-const { add, sub, mul, div, gt, gte, D } = require('../utils/decimal');
 
 const RISK_MULTIPLIER = { LOW: 0.5, MEDIUM: 1.0, HIGH: 1.5 };
 const MIN_QTY_FALLBACK = 0.01;
 
-// ── Stat helpers ──────────────────────────────────────────────────────
+// Human label for an account's plan/type (handles CUSTOM accounts).
+const accountTypeLabel = (a) => (a?.accountType === 'CUSTOM' ? (a.customTypeName || 'CUSTOM') : (a?.accountType || ''));
+
+// A box accepts NEW followers only while its source account is fully usable.
+// Disabled / suspended / blocked / archived → no new subscriptions.
+function accountAcceptsFollowers(acc) {
+  if (!acc) return false;
+  if (acc.isActive === false) return false;        // archived / removed
+  if (acc.isTradingEnabled === false) return false; // ops/fraud freeze
+  if (acc.status && acc.status !== 'ACTIVE') return false; // BLOCKED / SUSPENDED
+  if (acc.planSuspendedAt) return false;            // plan downgrade suspension
+  return true;
+}
+
+// Keep a box's denormalised follower count exact (count ACTIVE relations).
+async function recountFollowers(masterAccountId) {
+  if (!masterAccountId) return;
+  const n = await CopyRelation.countDocuments({ masterAccountId, status: 'ACTIVE' });
+  await CopyBox.updateOne({ accountId: masterAccountId }, { $set: { followers: n } });
+}
+
+// ── Owner profile (performance fee + earnings) ────────────────────────
 
 async function getOrCreateProfile(userId, opts = {}) {
   let profile = await TraderProfile.findOne({ userId });
@@ -57,47 +76,126 @@ async function getOrCreateProfile(userId, opts = {}) {
   return profile;
 }
 
-// ── Master-side hooks (called from orderRouter / orderController) ─────
+// ── Box management ────────────────────────────────────────────────────
+
+// All of a user's active accounts + whether each already has a copy box.
+async function listEligibleAccounts(userId) {
+  const accounts = await TradingAccount.find({ userId, isActive: { $ne: false } })
+    .select('accountNumber accountType customTypeName nickname baseCurrency isTradingEnabled status planSuspendedAt')
+    .sort({ createdAt: 1 }).lean();
+  const boxes = await CopyBox.find({ userId }).select('accountId isPublic').lean();
+  const boxByAcc = new Map(boxes.map((b) => [String(b.accountId), b]));
+  return accounts.map((a) => ({
+    accountId: String(a._id),
+    accountNumber: a.accountNumber,
+    accountType: accountTypeLabel(a),
+    nickname: a.nickname || '',
+    baseCurrency: a.baseCurrency || 'USD',
+    hasBox: boxByAcc.has(String(a._id)),
+    isPublic: boxByAcc.get(String(a._id))?.isPublic || false,
+    acceptsFollowers: accountAcceptsFollowers(a),
+  }));
+}
+
+// Create (or update) the copy box for a specific source account.
+async function createBox({ userId, accountId, displayName, bio, riskBadge, isPublic }) {
+  const account = await TradingAccount.findOne({ _id: accountId, userId }).lean();
+  if (!account) throw new Error('Trading account not found');
+  if (account.isActive === false) throw new Error('This account is inactive and cannot be a copy box.');
+
+  // Ensure the owner has a TraderProfile (drives performance fee + earnings).
+  const owner = await getOrCreateProfile(userId);
+
+  const set = {
+    userId,
+    accountNumber: account.accountNumber,
+    accountType: accountTypeLabel(account),
+    ...(bio !== undefined ? { bio: String(bio).trim() } : {}),
+    ...(riskBadge !== undefined ? { riskBadge } : {}),
+    ...(isPublic !== undefined ? { isPublic: !!isPublic } : {}),
+  };
+  const setOnInsert = {};
+  const trimmedName = displayName !== undefined ? String(displayName).trim() : '';
+  // displayName must live in exactly ONE of $set / $setOnInsert (Mongo rejects
+  // the same path in both). Provided name → always set it; otherwise only seed
+  // a default on first insert (don't clobber an existing box's name).
+  if (trimmedName) set.displayName = trimmedName;
+  else setOnInsert.displayName = `${owner.displayName} · ${account.accountNumber}`;
+
+  const update = { $set: set };
+  if (Object.keys(setOnInsert).length) update.$setOnInsert = setOnInsert;
+
+  const box = await CopyBox.findOneAndUpdate({ accountId }, update, { upsert: true, new: true });
+  return box;
+}
+
+async function listMyBoxes(userId) {
+  const boxes = await CopyBox.find({ userId }).sort({ createdAt: 1 }).lean();
+  if (!boxes.length) return [];
+  const accIds = boxes.map((b) => b.accountId);
+  const accounts = await TradingAccount.find({ _id: { $in: accIds } })
+    .select('isActive isTradingEnabled status planSuspendedAt').lean();
+  const accById = new Map(accounts.map((a) => [String(a._id), a]));
+  return boxes.map((b) => {
+    const acc = accById.get(String(b.accountId));
+    return {
+      ...b,
+      winRate: b.totalTrades ? (b.wins / b.totalTrades) * 100 : 0,
+      acceptsFollowers: accountAcceptsFollowers(acc),
+      accountActive: !!acc && acc.isActive !== false,
+    };
+  });
+}
+
+async function updateBox({ userId, boxId, displayName, bio, riskBadge, isPublic }) {
+  const box = await CopyBox.findOne({ _id: boxId, userId });
+  if (!box) throw new Error('Copy box not found');
+  if (displayName !== undefined) box.displayName = String(displayName).trim();
+  if (bio !== undefined) box.bio = String(bio).trim();
+  if (riskBadge !== undefined) box.riskBadge = riskBadge;
+  if (isPublic !== undefined) box.isPublic = !!isPublic;
+  await box.save();
+  return box;
+}
+
+// ── Master-side hooks ─────────────────────────────────────────────────
 
 /**
- * Fan out a freshly-filled master order to every ACTIVE follower.
- * Best-effort: a single follower failure (insufficient margin, blocked
- * instrument) doesn't abort the rest.
+ * Fan out a freshly-filled master order to the followers of the box bound to
+ * the SOURCE account (order.accountId). Other accounts are never copied.
  */
 async function onMasterOrderFilled({ order, position }) {
   if (!order || !position) return;
   if (position.status !== POSITION_STATUS.OPEN) return;
 
+  // Only this account's box followers — scoped strictly by source account.
   const followers = await CopyRelation.find({
-    masterId: order.userId,
+    masterAccountId: order.accountId,
     status: 'ACTIVE',
   }).lean();
+
+  const box = await CopyBox.findOne({ accountId: order.accountId }).lean();
+  const masterName = box?.displayName || 'Trader';
+
+  // Feed event once per master action (only if this account is a box).
+  if (box) {
+    await TradeFeedEvent.create({
+      masterId: order.userId,
+      masterName,
+      type:     'OPEN',
+      symbol:   order.symbol,
+      side:     order.side,
+      qty:      String(order.quantity),
+      price:    String(order.price || position.entryPrice || 0),
+      note:     `${masterName} ${order.side === 'BUY' ? 'bought' : 'sold'} ${order.symbol}`,
+    }).catch(() => {});
+  }
+
   if (!followers.length) return;
 
-  // Emit the FEED event once per master action.
-  const masterProfile = await TraderProfile.findOne({ userId: order.userId }).lean();
-  const masterName = masterProfile?.displayName || 'Trader';
-  await TradeFeedEvent.create({
-    masterId: order.userId,
-    masterName,
-    type:     'OPEN',
-    symbol:   order.symbol,
-    side:     order.side,
-    qty:      String(order.quantity),
-    price:    String(order.price || position.entryPrice || 0),
-    note:     `${masterName} ${order.side === 'BUY' ? 'bought' : 'sold'} ${order.symbol}`,
-  }).catch(() => {});
-
-  // Master equity estimate — used as the proportional denominator. We
-  // use their primary account balance + locked margin as a cheap proxy
-  // for free equity. Bad approximation? Sure — but this is MVP.
-  const masterAccount = await TradingAccount.findOne({
-    userId: order.userId, isActive: true,
-  }).sort({ createdAt: 1 }).lean();
+  // Master equity = the SOURCE account's wallet balance (proportional base).
   const { Wallet } = require('../models/Wallet');
-  const masterWallet = masterAccount
-    ? await Wallet.findOne({ userId: order.userId, accountId: masterAccount._id }).lean()
-    : null;
+  const masterWallet = await Wallet.findOne({ userId: order.userId, accountId: order.accountId }).lean();
   const masterEquity = Math.max(1, Number(masterWallet?.balance || 0));
 
   const instrument = await Instrument.findById(order.instrumentId).lean();
@@ -109,14 +207,10 @@ async function onMasterOrderFilled({ order, position }) {
       const investment = Math.max(0, Number(rel.investment));
       const ratio = investment / masterEquity;
       const rawQty = Number(order.quantity) * ratio * risk;
-      // Snap to lot step and clamp to floor.
       let qty = Math.floor(rawQty / lotStep) * lotStep;
       if (qty < lotStep) qty = lotStep;
-
       if (!Number.isFinite(qty) || qty <= 0) continue;
 
-      // Mirror order — same instrument, same side, scaled qty. Always
-      // MARKET so the mirror fills now instead of waiting on triggers.
       const mirrorOrder = await Order.create({
         userId: rel.followerId,
         accountId: rel.followerAccountId,
@@ -127,21 +221,14 @@ async function onMasterOrderFilled({ order, position }) {
         type: 'MARKET',
         quantity: String(qty),
         leverage: order.leverage,
-        // Inherit SL/TP scaled by the same ratio? Simpler — copy the raw
-        // prices. The trader is following the master's risk plan.
         stopLoss:   order.stopLoss   || undefined,
         takeProfit: order.takeProfit || undefined,
         status: ORDER_STATUS.PENDING,
       });
 
-      // Route via the same router the manual flow uses.
       const orderRouter = require('./orderRouter.service');
-      const { settledOrder } = await orderRouter.routeOrder({
-        order: mirrorOrder,
-        userId: rel.followerId,
-      });
+      const { settledOrder } = await orderRouter.routeOrder({ order: mirrorOrder, userId: rel.followerId });
 
-      // Find the resulting OPEN position so we can link master ↔ mirror.
       let mirrorPos = null;
       try {
         mirrorPos = await Position.findOne({
@@ -155,6 +242,7 @@ async function onMasterOrderFilled({ order, position }) {
       await CopyTrade.create({
         relationId: rel._id,
         masterId: order.userId,
+        masterAccountId: order.accountId,
         followerId: rel.followerId,
         masterOrderId: order._id,
         masterPositionId: position._id,
@@ -168,34 +256,20 @@ async function onMasterOrderFilled({ order, position }) {
         status: 'OPEN',
       });
 
-      await CopyRelation.updateOne(
-        { _id: rel._id },
-        { $inc: { tradesCopied: 1 } }
-      );
+      await CopyRelation.updateOne({ _id: rel._id }, { $inc: { tradesCopied: 1 } });
 
-      // Notify the follower via WS for the live "active copies" panel.
       try {
-        const wsServer = require('../websocket/server');
-        wsServer.notifyUser(String(rel.followerId), 'copytrading', {
-          event: 'MIRROR_OPENED',
-          masterId: order.userId,
-          symbol: order.symbol,
-          qty,
+        require('../websocket/server').notifyUser(String(rel.followerId), 'copytrading', {
+          event: 'MIRROR_OPENED', masterAccountId: String(order.accountId), symbol: order.symbol, qty,
         });
       } catch (_) {}
     } catch (err) {
       console.error('[copyTrading] mirror open failed:', err.message);
       try {
         await CopyTrade.create({
-          relationId: rel._id,
-          masterId: order.userId,
-          followerId: rel.followerId,
-          masterOrderId: order._id,
-          masterPositionId: position._id,
-          symbol: order.symbol,
-          side: order.side,
-          status: 'FAILED',
-          closeReason: 'failed',
+          relationId: rel._id, masterId: order.userId, masterAccountId: order.accountId,
+          followerId: rel.followerId, masterOrderId: order._id, masterPositionId: position._id,
+          symbol: order.symbol, side: order.side, status: 'FAILED', closeReason: 'failed',
         });
       } catch (_) {}
     }
@@ -203,40 +277,37 @@ async function onMasterOrderFilled({ order, position }) {
 }
 
 /**
- * Master closed a position — close every linked follower mirror.
+ * Master closed a position — close every linked follower mirror and roll up
+ * the owning box's performance stats.
  */
 async function onMasterPositionClosed({ position, realizedPnl }) {
   if (!position) return;
 
-  const mirrors = await CopyTrade.find({
-    masterPositionId: position._id,
-    status: 'OPEN',
-  });
-  if (mirrors.length === 0 && !position) return;
+  const mirrors = await CopyTrade.find({ masterPositionId: position._id, status: 'OPEN' });
 
-  // Feed event + master profile stats.
+  // Box stats + feed (keyed by the SOURCE account).
   try {
-    const profile = await TraderProfile.findOne({ userId: position.userId });
-    if (profile) {
+    const box = await CopyBox.findOne({ accountId: position.accountId });
+    if (box) {
       const pnl = Number(realizedPnl) || 0;
-      profile.totalTrades += 1;
-      if (pnl > 0) profile.wins += 1;
-      profile.cumulativePnl = String((Number(profile.cumulativePnl) || 0) + pnl);
-      const init = Math.max(1, Number(profile.initialEquity));
-      profile.roiPct = (Number(profile.cumulativePnl) / init) * 100;
-      await profile.save();
+      box.totalTrades += 1;
+      if (pnl > 0) box.wins += 1;
+      box.cumulativePnl = String((Number(box.cumulativePnl) || 0) + pnl);
+      const init = Math.max(1, Number(box.initialEquity));
+      box.roiPct = (Number(box.cumulativePnl) / init) * 100;
+      await box.save();
 
-      const pctMove = position.entryPrice && position.exitPrice
-        ? (((Number(position.exitPrice) - Number(position.entryPrice)) / Number(position.entryPrice)) * 100 * (position.side === 'BUY' ? 1 : -1))
+      const pctMove = position.entryPrice && position.closePrice
+        ? (((Number(position.closePrice) - Number(position.entryPrice)) / Number(position.entryPrice)) * 100 * (position.side === 'BUY' ? 1 : -1))
         : null;
       await TradeFeedEvent.create({
         masterId: position.userId,
-        masterName: profile.displayName,
-        type:    pnl >= 0 ? 'CLOSE' : 'CLOSE',
+        masterName: box.displayName,
+        type:    'CLOSE',
         symbol:  position.symbol,
         side:    position.side,
         qty:     String(position.quantity),
-        price:   String(position.exitPrice || position.entryPrice || 0),
+        price:   String(position.closePrice || position.entryPrice || 0),
         pnl:     String(pnl),
         pctMove: pctMove != null ? pctMove.toFixed(2) : null,
         note:    `${position.symbol} trade closed ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} USD`,
@@ -255,16 +326,12 @@ async function onMasterPositionClosed({ position, realizedPnl }) {
         await mirror.save();
         continue;
       }
-      // Try the atomic OPEN→CLOSING claim that closePosition uses.
       const followerPos = await Position.findOneAndUpdate(
         { _id: mirror.followerPositionId, status: POSITION_STATUS.OPEN, settled: { $ne: true } },
         { $set: { status: POSITION_STATUS.CLOSING, closeReason: 'COPY_MASTER_CLOSED' } },
         { new: true }
       );
       if (!followerPos) {
-        // Position already settled (e.g. the follower's own SL/TP fired
-        // before the master closed) — close the link AND still settle the
-        // performance fee on its realized profit.
         mirror.status = 'CLOSED';
         mirror.closeReason = 'already_closed';
         mirror.closedAt = new Date();
@@ -304,16 +371,11 @@ async function onMasterPositionClosed({ position, realizedPnl }) {
       } catch (_) {}
       await mirror.save();
 
-      // Master Trader Earnings — performance fee on profitable closes only.
-      // Purely additive: debits the follower's account, credits the master's
-      // Bonus Wallet. Idempotent and never throws into the close flow.
       await copyEarnings.applyPerformanceFee(mirror);
 
       try {
-        const wsServer = require('../websocket/server');
-        wsServer.notifyUser(String(mirror.followerId), 'copytrading', {
-          event: 'MIRROR_CLOSED',
-          symbol: followerPos.symbol,
+        require('../websocket/server').notifyUser(String(mirror.followerId), 'copytrading', {
+          event: 'MIRROR_CLOSED', symbol: followerPos.symbol,
         });
       } catch (_) {}
     } catch (err) {
@@ -322,17 +384,9 @@ async function onMasterPositionClosed({ position, realizedPnl }) {
   }
 }
 
-/**
- * Master changed SL/TP on a position — mirror the new prices onto each
- * linked follower position (raw prices, not scaled; the follower is
- * following the master's exact targets).
- */
 async function onMasterSlTpChanged({ position }) {
   if (!position) return;
-  const mirrors = await CopyTrade.find({
-    masterPositionId: position._id,
-    status: 'OPEN',
-  });
+  const mirrors = await CopyTrade.find({ masterPositionId: position._id, status: 'OPEN' });
   for (const m of mirrors) {
     if (!m.followerPositionId) continue;
     try {
@@ -351,25 +405,42 @@ async function onMasterSlTpChanged({ position }) {
 
 // ── Public read APIs ─────────────────────────────────────────────────
 
-async function leaderboard({ limit = 50 } = {}) {
-  const list = await TraderProfile.find({ isPublic: true })
+// Leaderboard of PUBLIC copy boxes, each with its linked account + owner.
+// `excludeUserId` hides the viewer's own boxes (they live in "My boxes" and
+// you can't copy yourself).
+async function leaderboard({ limit = 50, excludeUserId } = {}) {
+  const q = { isPublic: true };
+  if (excludeUserId) q.userId = { $ne: excludeUserId };
+  const boxes = await CopyBox.find(q)
     .sort({ roiPct: -1, followers: -1, totalTrades: -1 })
     .limit(Math.min(200, Math.max(1, Number(limit) || 50)))
     .lean();
-  // Resolve each master's EFFECTIVE performance fee once (own override or
-  // platform default, clamped) so cards/the copy modal can disclose it.
+  if (!boxes.length) return [];
+
+  const ownerIds = [...new Set(boxes.map((b) => String(b.userId)))];
+  const [users, profiles] = await Promise.all([
+    User.find({ _id: { $in: ownerIds } }).select('firstName lastName email').lean(),
+    TraderProfile.find({ userId: { $in: ownerIds } }).select('userId performanceFeePercent').lean(),
+  ]);
+  const userById = new Map(users.map((u) => [String(u._id), u]));
+  const profByUser = new Map(profiles.map((p) => [String(p.userId), p]));
+
   const copyEarnings = require('./copyEarningsService');
   const s = await copyEarnings.getFeeSettings();
-  const effFee = (p) => {
+  const effFee = (ownerId) => {
     if (!s.enabled) return 0;
-    let pct = p.performanceFeePercent != null ? Number(p.performanceFeePercent) : s.defaultFee;
+    const p = profByUser.get(String(ownerId));
+    let pct = p && p.performanceFeePercent != null ? Number(p.performanceFeePercent) : s.defaultFee;
     if (!Number.isFinite(pct)) pct = s.defaultFee;
     return Math.max(s.minFee, Math.min(s.maxFee, pct));
   };
-  return list.map((p) => ({
-    ...p,
-    winRate: p.totalTrades ? (p.wins / p.totalTrades) * 100 : 0,
-    performanceFeePercent: effFee(p),
+  const ownerName = (u) => (u ? ([u.firstName, u.lastName].filter(Boolean).join(' ') || u.email?.split('@')[0]) : 'Trader');
+
+  return boxes.map((b) => ({
+    ...b,
+    winRate: b.totalTrades ? (b.wins / b.totalTrades) * 100 : 0,
+    ownerName: ownerName(userById.get(String(b.userId))),
+    performanceFeePercent: effFee(b.userId),
   }));
 }
 
@@ -382,17 +453,25 @@ async function feed({ limit = 50 } = {}) {
 
 // ── Follower actions ─────────────────────────────────────────────────
 
-async function startCopying({ followerId, masterId, investment, riskLevel = 'MEDIUM', syncSlTp = true, followerAccountId }) {
-  if (String(followerId) === String(masterId)) {
-    throw new Error('You cannot copy yourself');
+async function startCopying({ followerId, masterAccountId, investment, riskLevel = 'MEDIUM', syncSlTp = true, followerAccountId }) {
+  if (!masterAccountId) throw new Error('masterAccountId is required');
+  const box = await CopyBox.findOne({ accountId: masterAccountId });
+  if (!box) throw new Error('Copy box not found');
+  if (String(box.userId) === String(followerId)) throw new Error('You cannot copy your own box');
+  if (!box.isPublic) throw new Error('This copy box is private');
+
+  // Source account must be live to accept NEW followers.
+  const sourceAcc = await TradingAccount.findById(masterAccountId)
+    .select('isActive isTradingEnabled status planSuspendedAt').lean();
+  if (!accountAcceptsFollowers(sourceAcc)) {
+    throw new Error('This copy box is not accepting new followers — the source account is disabled, suspended or archived.');
   }
+
   // Resolve follower account if not given.
   let accId = followerAccountId;
   if (!accId) {
     const acc = await TradingAccount.findOne({
-      userId: followerId,
-      isActive: true,
-      accountType: { $nin: ['DEMO', 'VIRTUAL'] },
+      userId: followerId, isActive: true, accountType: { $nin: ['DEMO', 'VIRTUAL'] },
     }).sort({ createdAt: 1 });
     if (!acc) throw new Error('You need a live trading account to copy.');
     accId = acc._id;
@@ -400,9 +479,11 @@ async function startCopying({ followerId, masterId, investment, riskLevel = 'MED
   const amount = String(Math.max(0, Number(investment) || 0));
 
   const rel = await CopyRelation.findOneAndUpdate(
-    { followerId, masterId },
+    { followerId, masterAccountId },
     {
       $set: {
+        masterId: box.userId,
+        masterBoxId: box._id,
         investment: amount,
         riskLevel,
         syncSlTp: !!syncSlTp,
@@ -416,20 +497,12 @@ async function startCopying({ followerId, masterId, investment, riskLevel = 'MED
     { upsert: true, new: true }
   );
 
-  // Maintain denormalised follower count on master profile.
-  await TraderProfile.updateOne(
-    { userId: masterId },
-    { $inc: { followers: 1 } },
-    { upsert: false }
-  );
-
+  await recountFollowers(masterAccountId);
   return rel;
 }
 
 async function setStatus({ followerId, relationId, status }) {
-  if (!['ACTIVE', 'PAUSED', 'STOPPED'].includes(status)) {
-    throw new Error('Invalid status');
-  }
+  if (!['ACTIVE', 'PAUSED', 'STOPPED'].includes(status)) throw new Error('Invalid status');
   const rel = await CopyRelation.findOne({ _id: relationId, followerId });
   if (!rel) throw new Error('Copy relation not found');
   rel.status = status;
@@ -437,25 +510,18 @@ async function setStatus({ followerId, relationId, status }) {
   if (status === 'STOPPED') rel.stoppedAt = new Date();
   if (status === 'ACTIVE')  { rel.pausedAt = null; rel.stoppedAt = null; }
   await rel.save();
-
-  if (status === 'STOPPED') {
-    await TraderProfile.updateOne(
-      { userId: rel.masterId },
-      { $inc: { followers: -1 } },
-      { upsert: false }
-    );
-  }
+  await recountFollowers(rel.masterAccountId);
   return rel;
 }
 
 async function listMyCopies(userId) {
   const relations = await CopyRelation.find({ followerId: userId }).lean();
   if (!relations.length) return [];
-  const masterIds = [...new Set(relations.map((r) => String(r.masterId)))];
-  const profiles = await TraderProfile.find({ userId: { $in: masterIds } }).lean();
-  const profByUser = new Map(profiles.map((p) => [String(p.userId), p]));
 
-  // Open mirror trades per relation
+  const accIds = [...new Set(relations.map((r) => r.masterAccountId).filter(Boolean).map(String))];
+  const boxes = await CopyBox.find({ accountId: { $in: accIds } }).lean();
+  const boxByAcc = new Map(boxes.map((b) => [String(b.accountId), b]));
+
   const openTrades = await CopyTrade.find({
     relationId: { $in: relations.map((r) => r._id) },
     status: 'OPEN',
@@ -467,15 +533,30 @@ async function listMyCopies(userId) {
     tradesByRel.get(k).push(t);
   }
 
-  return relations.map((r) => ({
-    ...r,
-    master: profByUser.get(String(r.masterId)) || null,
-    openMirrors: tradesByRel.get(String(r.relationId)) || [],
-  }));
+  return relations.map((r) => {
+    const box = boxByAcc.get(String(r.masterAccountId));
+    return {
+      ...r,
+      master: box ? {
+        displayName: box.displayName,
+        accountNumber: box.accountNumber,
+        accountType: box.accountType,
+        riskBadge: box.riskBadge,
+        roiPct: box.roiPct,
+        userId: box.userId,
+      } : null,
+      openMirrors: tradesByRel.get(String(r._id)) || [],
+    };
+  });
 }
 
 module.exports = {
   getOrCreateProfile,
+  // box management
+  listEligibleAccounts,
+  createBox,
+  listMyBoxes,
+  updateBox,
   // master hooks
   onMasterOrderFilled,
   onMasterPositionClosed,

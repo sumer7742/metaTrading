@@ -3618,6 +3618,7 @@ function PositionsTable({ positions, onClose, onModify, fxRate, instrumentsBySym
           <th className="text-right p-2">Current price</th>
           <th className="text-right p-2">T/P</th>
           <th className="text-right p-2">S/L</th>
+          <th className="text-right p-2">Commission</th>
           <th className="text-left p-2">Open time</th>
           <th className="text-right p-2 sticky right-[120px] z-10 bg-white border-l border-border-subtle">P/L, USD</th>
           <th className="text-right p-2 sticky right-0 z-10 bg-white w-[120px]"></th>
@@ -3637,6 +3638,7 @@ function PositionsTable({ positions, onClose, onModify, fxRate, instrumentsBySym
           // We display USD throughout, so for INR-quoted positions convert
           // to USD; otherwise show the native number as-is.
           const pnlUsd = quote === 'INR' ? pnl / Math.max(Number(fxRate || 0), 1) : pnl;
+          const commUsd = quote === 'INR' ? Number(p.commission || 0) / Math.max(Number(fxRate || 0), 1) : Number(p.commission || 0);
           return (
             <tr key={p._id} className="table-row group">
               <td className="p-2 font-mono text-xs text-text-secondary" title={p._id}>{ticketShort(p._id)}</td>
@@ -3660,6 +3662,7 @@ function PositionsTable({ positions, onClose, onModify, fxRate, instrumentsBySym
               </td>
               <td className="p-2 text-right font-mono">{tpPx?.primary || '—'}</td>
               <td className="p-2 text-right font-mono">{slPx?.primary || '—'}</td>
+              <td className="p-2 text-right font-mono text-text-secondary">{commUsd ? fmtPnlSimple(-Math.abs(commUsd), 'USD') : '—'}</td>
               <td className="p-2 text-left text-xs text-text-secondary">{fmtDate(p.openedAt || p.createdAt)}</td>
               <td className={`p-2 text-right font-mono sticky right-[120px] z-10 bg-white group-hover:bg-bg-hover border-l border-border-subtle ${pnl >= 0 ? 'text-bull' : 'text-bear'}`}>
                 <div>{fmtPnlSimple(pnlUsd, 'USD')}</div>
@@ -3804,13 +3807,19 @@ function ClosedTable({ trades, fxRate, instrumentsBySymbol }) {
     <table className="w-full text-sm whitespace-nowrap [&_td]:align-middle [&_th]:align-middle">
       <thead className="text-xs text-gray-500 uppercase">
         <tr>
+          <th className="text-left p-2">Order ID</th>
           <th className="text-left p-2">Symbol</th>
           <th className="text-left p-2">Type</th>
           <th className="text-right p-2">Volume, lot</th>
           <th className="text-right p-2">Open price</th>
           <th className="text-right p-2">Close price</th>
+          <th className="text-right p-2">T/P</th>
+          <th className="text-right p-2">S/L</th>
+          <th className="text-right p-2">Commission</th>
+          <th className="text-left p-2">Open time</th>
           <th className="text-left p-2">Closed time</th>
-          <th className="text-right p-2">P/L, USD</th>
+          <th className="text-left p-2">Reason</th>
+          <th className="text-right p-2 sticky right-0 z-10 bg-white border-l border-border-subtle">P/L, USD</th>
         </tr>
       </thead>
       <tbody>
@@ -3820,10 +3829,15 @@ function ClosedTable({ trades, fxRate, instrumentsBySymbol }) {
           const prec = inst?.pricePrecision || 4;
           const entry = fmtPriceDual(t.entryPrice, quote, fxRate, prec);
           const close = t.closePrice ? fmtPriceDual(t.closePrice, quote, fxRate, prec) : null;
+          const tpPx = t.takeProfit ? fmtPriceDual(t.takeProfit, quote, fxRate, prec) : null;
+          const slPx = t.stopLoss ? fmtPriceDual(t.stopLoss, quote, fxRate, prec) : null;
+          const toUsd = (v) => (quote === 'INR' ? Number(v || 0) / Math.max(Number(fxRate || 0), 1) : Number(v || 0));
           const pnl = Number(t.realizedPnl || 0);
-          const pnlUsd = quote === 'INR' ? pnl / Math.max(Number(fxRate || 0), 1) : pnl;
+          const pnlUsd = toUsd(pnl);
+          const commUsd = toUsd(t.commission);
           return (
-            <tr key={t._id} className="table-row">
+            <tr key={t._id} className="table-row group">
+              <td className="p-2 font-mono text-xs text-text-secondary" title={t._id}>{ticketShort(t._id)}</td>
               <td className="p-2 font-medium">
                 <div className="flex items-center gap-2">
                   <AssetIcon row={inst || { symbol: t.symbol }} size={22} round />
@@ -3832,16 +3846,42 @@ function ClosedTable({ trades, fxRate, instrumentsBySymbol }) {
               </td>
               <td className={`p-2 font-semibold ${t.side === 'BUY' ? 'text-bull' : 'text-bear'}`}>{t.side === 'BUY' ? 'Buy' : 'Sell'}</td>
               <td className="p-2 text-right font-mono">{fmtNum(Number(t.closedQuantity) > 0 ? t.closedQuantity : t.quantity, 4)}</td>
-              <td className="p-2 text-right font-mono">{entry.primary}</td>
-              <td className="p-2 text-right font-mono">{close?.primary || '—'}</td>
+              <td className="p-2 text-right font-mono">
+                <div>{entry.primary}</div>
+                {entry.secondary && <div className="text-[10px] text-gray-500">{entry.secondary}</div>}
+              </td>
+              <td className="p-2 text-right font-mono">
+                <div>{close?.primary || '—'}</div>
+                {close?.secondary && <div className="text-[10px] text-gray-500">{close.secondary}</div>}
+              </td>
+              <td className="p-2 text-right font-mono">{tpPx?.primary || '—'}</td>
+              <td className="p-2 text-right font-mono">{slPx?.primary || '—'}</td>
+              <td className="p-2 text-right font-mono text-text-secondary">{commUsd ? fmtPnlSimple(-Math.abs(commUsd), 'USD') : '—'}</td>
+              <td className="p-2 text-left text-xs text-text-secondary">{fmtDate(t.openedAt || t.createdAt)}</td>
               <td className="p-2 text-left text-xs text-text-secondary">{fmtDate(t.closedAt)}</td>
-              <td className={`p-2 text-right font-mono font-semibold ${pnl >= 0 ? 'text-bull' : 'text-bear'}`}>{fmtPnlSimple(pnlUsd, 'USD')}</td>
+              <td className="p-2 text-left text-xs">{closeReasonLabel(t.closeReason)}</td>
+              <td className={`p-2 text-right font-mono font-semibold sticky right-0 z-10 bg-white group-hover:bg-bg-hover border-l border-border-subtle ${pnl >= 0 ? 'text-bull' : 'text-bear'}`}>{fmtPnlSimple(pnlUsd, 'USD')}</td>
             </tr>
           );
         })}
       </tbody>
     </table>
   );
+}
+
+// Friendly label for why a position closed (set by the SL/TP/stop-out worker;
+// manual user/admin closes render as "Manual").
+function closeReasonLabel(reason) {
+  const map = {
+    TAKE_PROFIT: { t: 'Take Profit', c: 'text-bull' },
+    STOP_LOSS: { t: 'Stop Loss', c: 'text-bear' },
+    TRAILING_STOP: { t: 'Trailing Stop', c: 'text-bear' },
+    MARGIN_STOPOUT: { t: 'Stop Out', c: 'text-bear' },
+    NEGATIVE_BALANCE: { t: 'Neg. Balance', c: 'text-bear' },
+    MANUAL: { t: 'Manual', c: 'text-text-secondary' },
+  };
+  const r = map[reason];
+  return r ? <span className={r.c}>{r.t}</span> : <span className="text-text-muted">Manual</span>;
 }
 
 // ─── Position SL/TP / partial-close modal ──────────────────────────────

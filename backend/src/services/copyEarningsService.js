@@ -12,7 +12,7 @@
  * post-settlement transfer:
  *
  *     follower trading account  −= masterFee   (account currency)
- *     master Bonus Wallet       += masterFee   (converted to USD)
+ *     master Main Wallet        += masterFee   (converted to USD)
  *
  * This is purely ADDITIVE — execution, settlement, margin, wallet engines
  * and followerAccountId selection are never touched. Existing copy trading
@@ -86,7 +86,7 @@ async function resolveFeePercent(masterId, settings) {
  * profit additively — without touching execution / sync / margin / routing:
  *
  *   follower trading account  −= realizedProfit       (remove profit; margin stays)
- *   master  Bonus Wallet      += masterFee   (USD)    (performance fee, if any)
+ *   master  Main Wallet       += masterFee   (USD)    (performance fee, if any)
  *   follower MAIN  Wallet      += followerNet (USD)    (realizedProfit − masterFee)
  *
  * So follower copy-trading PROFIT lands in the MAIN WALLET, not the trading
@@ -194,7 +194,8 @@ async function settleCopyTradeProfit(mirror) {
     let masterCredited = false;
     try {
       if (feeUsd > 0) {
-        await bonusWalletService.credit({
+        // Master performance fee → master's MAIN WALLET (subscription wallet).
+        await subscriptionWalletService.credit({
           userId:     mirror.masterId,
           amount:     round2s(feeUsd),
           reason:     'COPY_PERFORMANCE_FEE',
@@ -216,7 +217,7 @@ async function settleCopyTradeProfit(mirror) {
       // Compensate so nothing is lost, then unclaim for a possible retry.
       console.error('[copyEarnings] credit failed — compensating:', err.message);
       if (masterCredited) {
-        try { await bonusWalletService.debit({ userId: mirror.masterId, amount: round2s(feeUsd), reason: 'ADMIN_DEBIT', note: 'Reverse copy fee (settlement failed)' }); } catch (_) {}
+        try { await subscriptionWalletService.debit({ userId: mirror.masterId, amount: round2s(feeUsd), reason: 'ADMIN_DEBIT', note: 'Reverse copy fee (settlement failed)' }); } catch (_) {}
       }
       try {
         await walletService.credit({

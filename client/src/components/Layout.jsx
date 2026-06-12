@@ -5,6 +5,7 @@ import { useThemeStore } from '../store/theme';
 import SearchModal from './SearchModal';
 import InstrumentStrip from './InstrumentStrip';
 import NotificationCenter from './NotificationCenter';
+import CmsFooter from './CmsFooter';
 import { api } from '../services/api';
 import { wsClient } from '../services/ws';
 import { useFxRate } from '../hooks/useFxRate';
@@ -453,7 +454,11 @@ export default function Layout({ children }) {
           // its own slim `p-2` inner padding.
           <div className="flex-1 flex flex-col min-h-0">{children}</div>
         ) : (
-          <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-6">{children}</div>
+          <>
+            <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-6">{children}</div>
+            {/* CMS-driven footer — links managed entirely from the admin panel. */}
+            <CmsFooter />
+          </>
         )}
       </main>
 

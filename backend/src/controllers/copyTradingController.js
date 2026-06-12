@@ -17,17 +17,29 @@ const copyTradingService = require('../services/copyTradingService');
 const copyAnalytics      = require('../services/copyAnalyticsService');
 const copyEarnings       = require('../services/copyEarningsService');
 const TraderProfile      = require('../models/TraderProfile');
+const CopyBox            = require('../models/CopyBox');
 
-// A trader's analytics are visible to the trader themselves, or to anyone if
-// the trader has a PUBLIC profile (same rule as the leaderboard listing).
-async function assertViewable(userId, requesterId) {
+// A trader's analytics are visible to themselves, or to anyone if the target
+// is public. When an accountId (box) is given, that specific box must be
+// public; otherwise any public box (or legacy public profile) suffices.
+async function assertViewable(userId, requesterId, accountId) {
   if (String(userId) === String(requesterId)) return;
-  const profile = await TraderProfile.findOne({ userId }).select('isPublic').lean();
-  if (!profile || !profile.isPublic) throw new AppError('This trader profile is private', 403, 'PROFILE_PRIVATE');
+  if (accountId) {
+    const box = await CopyBox.exists({ accountId, isPublic: true });
+    if (!box) throw new AppError('This copy box is private', 403, 'PROFILE_PRIVATE');
+    return;
+  }
+  const [publicBox, profile] = await Promise.all([
+    CopyBox.exists({ userId, isPublic: true }),
+    TraderProfile.findOne({ userId }).select('isPublic').lean(),
+  ]);
+  if (!publicBox && !(profile && profile.isPublic)) {
+    throw new AppError('This trader profile is private', 403, 'PROFILE_PRIVATE');
+  }
 }
 
 const leaderboard = asyncHandler(async (req, res) => {
-  const list = await copyTradingService.leaderboard({ limit: req.query.limit });
+  const list = await copyTradingService.leaderboard({ limit: req.query.limit, excludeUserId: req.userId });
   sendSuccess(res, list);
 });
 
@@ -42,13 +54,13 @@ const myCopies = asyncHandler(async (req, res) => {
 });
 
 const startCopy = asyncHandler(async (req, res) => {
-  const { masterId, investment, riskLevel, syncSlTp, followerAccountId } = req.body;
-  if (!masterId) throw new AppError('masterId required', 400);
+  const { masterAccountId, investment, riskLevel, syncSlTp, followerAccountId } = req.body;
+  if (!masterAccountId) throw new AppError('masterAccountId required', 400);
   if (!investment || Number(investment) <= 0) throw new AppError('Investment must be > 0', 400);
   try {
     const rel = await copyTradingService.startCopying({
       followerId: req.userId,
-      masterId,
+      masterAccountId,
       investment,
       riskLevel,
       syncSlTp,
@@ -58,6 +70,32 @@ const startCopy = asyncHandler(async (req, res) => {
   } catch (e) {
     throw new AppError(e.message, 400);
   }
+});
+
+// ── Copy boxes (master = a specific trading account) ─────────────────
+// All of the user's active accounts + whether each already has a box.
+const eligibleAccounts = asyncHandler(async (req, res) => {
+  sendSuccess(res, await copyTradingService.listEligibleAccounts(req.userId));
+});
+
+const myBoxes = asyncHandler(async (req, res) => {
+  sendSuccess(res, await copyTradingService.listMyBoxes(req.userId));
+});
+
+const createBox = asyncHandler(async (req, res) => {
+  const { accountId, displayName, bio, riskBadge, isPublic } = req.body;
+  if (!accountId) throw new AppError('accountId required', 400);
+  try {
+    const box = await copyTradingService.createBox({ userId: req.userId, accountId, displayName, bio, riskBadge, isPublic });
+    sendSuccess(res, box, 201);
+  } catch (e) { throw new AppError(e.message, 400); }
+});
+
+const updateBox = asyncHandler(async (req, res) => {
+  try {
+    const box = await copyTradingService.updateBox({ userId: req.userId, boxId: req.params.id, ...req.body });
+    sendSuccess(res, box);
+  } catch (e) { throw new AppError(e.message, 400); }
 });
 
 const setStatus = (status) => asyncHandler(async (req, res) => {
@@ -73,22 +111,26 @@ const setStatus = (status) => asyncHandler(async (req, res) => {
   } catch (e) { throw new AppError(e.message, 400); }
 });
 
-// ── Read-only trader analytics (profile dashboard) ──────────────────
+// ── Read-only trader analytics (profile dashboard). `accountId` query scopes
+// the whole payload to a single copy box (per-account performance). ────────
 const traderProfile = asyncHandler(async (req, res) => {
-  await assertViewable(req.params.userId, req.userId);
-  sendSuccess(res, await copyAnalytics.getTraderAnalytics(req.params.userId));
+  const accountId = req.query.accountId || null;
+  await assertViewable(req.params.userId, req.userId, accountId);
+  sendSuccess(res, await copyAnalytics.getTraderAnalytics(req.params.userId, accountId));
 });
 
 const traderPositions = asyncHandler(async (req, res) => {
-  await assertViewable(req.params.userId, req.userId);
-  sendSuccess(res, await copyAnalytics.getTraderOpenPositions(req.params.userId));
+  const accountId = req.query.accountId || null;
+  await assertViewable(req.params.userId, req.userId, accountId);
+  sendSuccess(res, await copyAnalytics.getTraderOpenPositions(req.params.userId, accountId));
 });
 
 const traderHistory = asyncHandler(async (req, res) => {
-  await assertViewable(req.params.userId, req.userId);
+  const accountId = req.query.accountId || null;
+  await assertViewable(req.params.userId, req.userId, accountId);
   sendSuccess(res, await copyAnalytics.getTraderHistory(req.params.userId, {
     period: req.query.period, page: req.query.page, limit: req.query.limit,
-    from: req.query.from, to: req.query.to,
+    from: req.query.from, to: req.query.to, accountId,
   }));
 });
 
@@ -147,6 +189,10 @@ module.exports = {
   leaderboard,
   feed,
   myCopies,
+  eligibleAccounts,
+  myBoxes,
+  createBox,
+  updateBox,
   startCopy,
   pauseCopy:  setStatus('PAUSED'),
   resumeCopy: setStatus('ACTIVE'),

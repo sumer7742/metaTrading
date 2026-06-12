@@ -62,7 +62,7 @@ export default function CopySetupModal({ trader, onClose, onStarted }) {
     setSaving(true);
     try {
       const r = await api.post('/copy-trading/copy', {
-        masterId: trader.userId,
+        masterAccountId: trader.accountId,
         investment: amt,
         riskLevel,
         syncSlTp,
@@ -92,7 +92,12 @@ export default function CopySetupModal({ trader, onClose, onStarted }) {
             {(trader.displayName || 'T').slice(0, 2).toUpperCase()}
           </span>
           <div className="min-w-0 flex-1">
-            <h3 className="font-extrabold text-text-primary">Copy {trader.displayName}</h3>
+            <h3 className="font-extrabold text-text-primary truncate">Copy {trader.displayName}</h3>
+            {(trader.accountType || trader.ownerName) && (
+              <p className="text-[11px] text-text-secondary truncate">
+                {trader.accountType || ''}{trader.accountType && trader.ownerName ? ' · ' : ''}{trader.ownerName || ''}
+              </p>
+            )}
             <p className="text-[11px] text-text-muted truncate">
               ROI {Number(trader.roiPct || 0).toFixed(1)}% · {Number(trader.winRate || 0).toFixed(0)}% win · {trader.followers || 0} followers
             </p>

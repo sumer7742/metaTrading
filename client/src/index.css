@@ -312,3 +312,21 @@
 body.impersonating { padding-top: var(--imp-offset, 56px); }
 body.impersonating header { top: var(--imp-offset, 56px) !important; }
 body.impersonating .imp-subnav { top: calc(4rem + var(--imp-offset, 56px)) !important; }
+
+/* ── CMS prose content (admin-authored HTML rendered on public pages) ──── */
+.cms-content { color: rgb(var(--color-text-secondary)); font-size: 0.975rem; line-height: 1.75; }
+.cms-content h1 { font-size: 1.75rem; font-weight: 700; color: rgb(var(--color-text-primary)); margin: 1.5rem 0 0.75rem; }
+.cms-content h2 { font-size: 1.4rem; font-weight: 700; color: rgb(var(--color-text-primary)); margin: 1.5rem 0 0.6rem; }
+.cms-content h3 { font-size: 1.15rem; font-weight: 600; color: rgb(var(--color-text-primary)); margin: 1.25rem 0 0.5rem; }
+.cms-content p { margin: 0 0 1rem; }
+.cms-content a { color: rgb(var(--color-primary-500, 29 78 216)); text-decoration: underline; }
+.cms-content ul, .cms-content ol { margin: 0 0 1rem 1.5rem; }
+.cms-content ul { list-style: disc; }
+.cms-content ol { list-style: decimal; }
+.cms-content li { margin: 0.25rem 0; }
+.cms-content blockquote { border-left: 3px solid rgb(var(--color-border-dark)); padding-left: 1rem; margin: 1rem 0; color: rgb(var(--color-text-muted)); font-style: italic; }
+.cms-content img { max-width: 100%; border-radius: 0.5rem; margin: 1rem 0; }
+.cms-content strong { color: rgb(var(--color-text-primary)); font-weight: 700; }
+.cms-content table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+.cms-content th, .cms-content td { border: 1px solid rgb(var(--color-border-dark)); padding: 0.5rem 0.75rem; text-align: left; }
+.cms-content hr { border: 0; border-top: 1px solid rgb(var(--color-border-dark)); margin: 1.5rem 0; }

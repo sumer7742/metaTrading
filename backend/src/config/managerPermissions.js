@@ -6,23 +6,20 @@
  * so the UI never hard-codes the list. `route` (when present) is the admin-app
  * path the permission gates; backend enforcement uses `requireManagerPermission`.
  */
+// Every entry maps to a real manager-app page (`route`). Permissions without a
+// page were removed — toggling them did nothing.
 const MANAGER_PERMISSIONS = [
   { key: 'DASHBOARD',           label: 'Dashboard',           route: '/dashboard' },
   { key: 'USER_MANAGEMENT',     label: 'User Management',     route: '/my-users' },
   { key: 'DEPOSITS',            label: 'Deposits',            route: '/deposits' },
   { key: 'WITHDRAWALS',         label: 'Withdrawals',         route: '/withdrawals' },
-  { key: 'TRADING',             label: 'Trading',             route: null },
-  { key: 'OPEN_POSITIONS',      label: 'Open Positions',      route: null },
-  { key: 'ORDERS',              label: 'Orders',              route: null },
+  { key: 'ORDERS_MANAGEMENT',   label: 'Orders Management',   route: '/orders' },
   { key: 'PORTFOLIO',           label: 'Portfolio',           route: '/portfolio' },
   { key: 'WALLET_MANAGEMENT',   label: 'Wallet Management',   route: '/subscription-wallets' },
-  { key: 'KYC_MANAGEMENT',      label: 'KYC Management',      route: null },
   { key: 'REPORTS',             label: 'Reports',             route: '/reports' },
   { key: 'AUDIT_LOGS',          label: 'Audit Logs',          route: '/audit' },
   { key: 'SUPPORT_TICKETS',     label: 'Support Tickets',     route: '/support-chats' },
-  { key: 'NOTIFICATIONS',       label: 'Notifications',       route: null },
   { key: 'REFERRAL_MANAGEMENT', label: 'Referral Management', route: '/partners' },
-  { key: 'RISK_MANAGEMENT',     label: 'Risk Management',     route: null },
   { key: 'FINANCE_ACCESS',      label: 'Finance Access',      route: '/finance' },
   { key: 'SETTINGS',            label: 'Settings',            route: '/settings' },
 ];

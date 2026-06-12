@@ -12,6 +12,8 @@ const copyTradeSchema = new mongoose.Schema(
   {
     relationId:        { type: mongoose.Schema.Types.ObjectId, ref: 'CopyRelation', required: true, index: true },
     masterId:          { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    // Source account (box) this mirror came from — trades only copy per-account.
+    masterAccountId:   { type: mongoose.Schema.Types.ObjectId, ref: 'TradingAccount', index: true },
     followerId:        { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
 
     // Source (master) trade refs
