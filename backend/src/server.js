@@ -254,11 +254,64 @@ if (fs.existsSync(adminIndex)) {
 // Client SPA at /*
 if (fs.existsSync(clientIndex)) {
   app.use(express.static(clientDir, { maxAge: '1y', index: false }));
+
+  // ── Server-side SEO meta injection for public CMS content ──────────
+  // Crawlers + social link-preview bots (WhatsApp/Twitter/FB) don't run JS,
+  // so client-side <head> updates aren't enough. For /page/:slug and
+  // /news/:slug we inject the real <title> + description/keywords/OG tags
+  // into index.html before serving — guaranteeing correct SEO + previews.
+  let _indexHtml = null;
+  const indexHtml = () => (_indexHtml == null ? (_indexHtml = fs.readFileSync(clientIndex, 'utf8')) : _indexHtml);
+  const escA = (s) => String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const escH = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const injectMeta = (html, m) => {
+    const t = [];
+    if (m.title) t.push(`<meta property="og:title" content="${escA(m.title)}">`, `<meta name="twitter:title" content="${escA(m.title)}">`);
+    if (m.description) t.push(`<meta name="description" content="${escA(m.description)}">`, `<meta property="og:description" content="${escA(m.description)}">`, `<meta name="twitter:description" content="${escA(m.description)}">`);
+    if (m.keywords) t.push(`<meta name="keywords" content="${escA(m.keywords)}">`);
+    if (m.image) t.push(`<meta property="og:image" content="${escA(m.image)}">`, `<meta name="twitter:image" content="${escA(m.image)}">`);
+    if (m.url) t.push(`<meta property="og:url" content="${escA(m.url)}">`);
+    t.push(`<meta property="og:type" content="article">`, `<meta name="twitter:card" content="${m.image ? 'summary_large_image' : 'summary'}">`);
+    let out = m.title ? html.replace(/<title>[\s\S]*?<\/title>/i, `<title>${escH(m.title)}</title>`) : html;
+    return out.replace('</head>', `${t.join('')}</head>`);
+  };
+  const serveWithMeta = (res, meta) => res.set('Content-Type', 'text/html; charset=utf-8').send(injectMeta(indexHtml(), meta));
+
+  app.get('/page/:slug', async (req, res, next) => {
+    try {
+      const CmsPage = require('./models/CmsPage');
+      const p = await CmsPage.findOne({ slug: String(req.params.slug).toLowerCase(), status: 'PUBLISHED' }).lean();
+      if (!p) return res.sendFile(clientIndex);
+      return serveWithMeta(res, {
+        title: p.seoTitle || p.title,
+        description: p.seoDescription,
+        keywords: (p.metaKeywords || []).join(', '),
+        image: p.featuredImageUrl,
+        url: `${req.protocol}://${req.get('host')}${req.originalUrl}`,
+      });
+    } catch (_) { return next(); }
+  });
+
+  app.get('/news/:slug', async (req, res, next) => {
+    try {
+      const CmsNews = require('./models/CmsNews');
+      const a = await CmsNews.findOne({ slug: String(req.params.slug).toLowerCase(), status: 'PUBLISHED' }).lean();
+      if (!a) return res.sendFile(clientIndex);
+      return serveWithMeta(res, {
+        title: `${a.title} · TradePro`,
+        description: a.excerpt,
+        keywords: (a.tags || []).join(', '),
+        image: a.featuredImageUrl,
+        url: `${req.protocol}://${req.get('host')}${req.originalUrl}`,
+      });
+    } catch (_) { return next(); }
+  });
+
   app.get('*', (req, res, next) => {
     if (req.path.startsWith('/api/')) return next();
     res.sendFile(clientIndex);
   });
-  logger.info('Client SPA mounted at /');
+  logger.info('Client SPA mounted at / (with SEO meta injection for /page/:slug & /news/:slug)');
 } else {
   logger.info('No frontend build found in backend/public — running API-only');
 }

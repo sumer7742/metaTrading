@@ -353,23 +353,19 @@ function BecomeMasterModal({ onClose, onCreated, initialFee = '' }) {
             ) : accounts.length === 0 ? (
               <div className="text-text-muted text-sm py-4">No active trading accounts found.</div>
             ) : (
-              <div className="space-y-2">
+              <select
+                value={accountId}
+                onChange={(e) => setAccountId(e.target.value)}
+                className="w-full px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/15"
+              >
                 {accounts.map((a) => (
-                  <label key={a.accountId}
-                    className={`flex items-center gap-3 rounded-xl border-2 px-3 py-2.5 cursor-pointer transition-all ${
-                      accountId === a.accountId ? 'border-primary-500 bg-primary-500/5' : 'border-border-dark hover:border-primary-500/50'}`}>
-                    <input type="radio" name="srcAcc" checked={accountId === a.accountId} onChange={() => setAccountId(a.accountId)} className="accent-primary-500" />
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-bold text-text-primary">{a.accountNumber} <span className="text-text-muted font-semibold">({a.accountType})</span></div>
-                      <div className="text-[11px] text-text-muted">
-                        {a.baseCurrency}
-                        {a.hasBox ? ' · box exists (will update)' : ''}
-                        {!a.acceptsFollowers ? ' · inactive' : ''}
-                      </div>
-                    </div>
-                  </label>
+                  <option key={a.accountId} value={a.accountId}>
+                    {a.accountNumber} ({a.accountType}) · {a.baseCurrency}
+                    {a.hasBox ? ' · box exists' : ''}
+                    {!a.acceptsFollowers ? ' · inactive' : ''}
+                  </option>
                 ))}
-              </div>
+              </select>
             )}
           </div>
 

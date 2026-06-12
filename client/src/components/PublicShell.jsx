@@ -1,13 +1,19 @@
 import { Link } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
+import Layout from './Layout';
 import CmsFooter from './CmsFooter';
 
 /**
- * Lightweight chrome for public CMS / news pages — works for both anonymous
- * visitors and signed-in users. Minimal header + the CMS-driven footer.
+ * Chrome for public CMS / news pages.
+ *   • Logged-in user → the FULL app Layout (same header/sidebar as every other
+ *     page) so CMS/News feel native to the app.
+ *   • Anonymous visitor → a minimal public header + the CMS-driven footer.
  */
 export default function PublicShell({ children }) {
   const { user } = useAuthStore();
+
+  if (user) return <Layout>{children}</Layout>;
+
   return (
     <div className="min-h-screen flex flex-col bg-bg-dark">
       <header className="border-b border-border-dark">
@@ -17,12 +23,7 @@ export default function PublicShell({ children }) {
               style={{ background: 'linear-gradient(135deg, #1D4ED8 0%, #1E40AF 100%)' }}>T</span>
             TradePro
           </Link>
-          <div className="flex items-center gap-2">
-            <Link to="/news" className="text-sm text-text-secondary hover:text-primary-500 transition-colors px-3 py-1.5">News</Link>
-            <Link to={user ? '/explore' : '/login'} className="btn-primary text-sm px-4 py-1.5">
-              {user ? 'Back to App' : 'Sign In'}
-            </Link>
-          </div>
+          <Link to="/login" className="btn-primary text-sm px-4 py-1.5">Sign In</Link>
         </div>
       </header>
       <main className="flex-1">{children}</main>
