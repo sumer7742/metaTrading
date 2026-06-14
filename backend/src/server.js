@@ -53,6 +53,7 @@ const hierarchyRoutes = require('./routes/hierarchy');
 const chatRoutes = require('./routes/chat');
 const adminOrdersRoutes = require('./routes/adminOrders');
 const cmsRoutes = require('./routes/cms');
+const globalAlertRoutes = require('./routes/globalAlerts');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -220,6 +221,8 @@ app.use('/api/chat', chatRoutes);
 app.use('/api/order-management', adminOrdersRoutes);
 // Public CMS — footer pages + Daily News Updates. No auth (optional inside).
 app.use('/api/cms', cmsRoutes);
+// Global Alert Popups — user pending/ack (any authed user) + admin management.
+app.use('/api/alerts', globalAlertRoutes);
 
 // ─── Serve frontend SPAs out of backend/public ─────────────────────
 // Production flow: `vite build` in client/ + admin/ produces dist/

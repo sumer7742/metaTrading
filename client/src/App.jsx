@@ -7,6 +7,7 @@ import ComingSoon from './components/ComingSoon';
 import ErrorBoundary from './components/ErrorBoundary';
 import WatchlistModalProvider from './components/WatchlistModalProvider';
 import ImpersonationBanner from './components/ImpersonationBanner';
+import GlobalAlertPopup from './components/GlobalAlertPopup';
 
 // Auth pages are eager-loaded — they're the first thing a logged-out
 // user sees, and they're small.
@@ -77,6 +78,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <ImpersonationBanner />
+      <GlobalAlertPopup />
       <WatchlistModalProvider>
       <Routes>
         <Route path="/login" element={<Login />} />

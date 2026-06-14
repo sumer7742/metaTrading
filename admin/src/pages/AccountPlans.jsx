@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import PageHero from '../components/PageHero';
 import { useConfirm } from '../components/ConfirmProvider';
+import { feeTypeText } from '../utils/feeType';
 
 /**
  * Account Plans management — dynamic CRUD over the AccountPlan
@@ -163,7 +164,10 @@ export default function AccountPlans() {
                     <td className="py-2 px-3 font-mono text-xs text-text-secondary">{p.code}</td>
                     <td className="py-2 px-3 text-right font-mono tabular-nums">${p.minDeposit}</td>
                     <td className="py-2 px-3 text-right font-mono tabular-nums">{p.maxLeverage ? `1:${p.maxLeverage}` : '1:∞'}</td>
-                    <td className="py-2 px-3 text-text-secondary text-xs">{p.feeDisplay || `${p.feeKind} ${p.feeValue}`}</td>
+                    <td className="py-2 px-3 text-text-secondary text-xs">
+                      <div className="font-semibold text-text-primary">{feeTypeText(p.feeKind) || '—'}</div>
+                      {(p.feeDisplay || p.feeValue != null) && <div className="text-[11px] text-text-muted">{p.feeDisplay || `${p.feeValue}`}</div>}
+                    </td>
                     <td className="py-2 px-3 text-center">{p.buyCloseOnly ? <span className="text-[10px] font-bold text-warn">Yes</span> : <span className="text-text-muted">—</span>}</td>
                     <td className="py-2 px-3 text-right font-mono tabular-nums font-bold">{a.totalAccounts ?? 0}</td>
                     <td className="py-2 px-3 text-center">
@@ -298,9 +302,13 @@ function PlanForm({ plan, onClose, onSaved }) {
             <div className="grid grid-cols-2 gap-3">
               <Field label="Kind">
                 <select className="input" value={form.feeKind} onChange={(e) => set('feeKind', e.target.value)}>
-                  <option value="PCT_OF_VALUE">% of trade value</option>
-                  <option value="FIXED_PER_TRADE">Fixed per trade</option>
-                  <option value="PCT_OF_PROFIT">% of profit</option>
+                  <optgroup label="Commission">
+                    <option value="PCT_OF_VALUE">Percentage</option>
+                  </optgroup>
+                  <optgroup label="Charges">
+                    <option value="FIXED_PER_TRADE">Fixed</option>
+                    <option value="PCT_OF_PROFIT">Percentage of Profit</option>
+                  </optgroup>
                 </select>
               </Field>
               <Field label="Value (decimal — 0.00005 = 0.005%)">

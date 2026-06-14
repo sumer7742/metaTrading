@@ -15,6 +15,9 @@ import { useConfirm } from '../components/ConfirmProvider';
  * Tabs let the user jump between them on mobile; on desktop they sit
  * side-by-side. Feed auto-refreshes on focus and every 30s.
  */
+// My-copies sort order: live first, then paused, then stopped.
+const COPY_STATUS_RANK = { ACTIVE: 0, PAUSED: 1, STOPPED: 2 };
+
 export default function CopyTrade() {
   const [tab, setTab] = useState('discover'); // 'discover' | 'feed' | 'mine'
   const [leaders, setLeaders] = useState([]);
@@ -25,6 +28,8 @@ export default function CopyTrade() {
   const [loading, setLoading] = useState(true);
   const [copyTarget, setCopyTarget] = useState(null);
   const [becomeMaster, setBecomeMaster] = useState(false);
+  const [editingBox, setEditingBox] = useState(null);
+  const confirm = useConfirm();
   const navigate = useNavigate();
   const [q, setQ] = useState('');
   const [riskFilter, setRiskFilter] = useState('ALL');
@@ -44,6 +49,12 @@ export default function CopyTrade() {
     };
     return [...list].sort(sorters[sortBy] || sorters.roi);
   }, [leaders, q, riskFilter, sortBy]);
+
+  // My copies — ACTIVE first, then PAUSED, then STOPPED (stable within a group).
+  const sortedMine = useMemo(
+    () => [...mine].sort((a, b) => (COPY_STATUS_RANK[a.status] ?? 9) - (COPY_STATUS_RANK[b.status] ?? 9)),
+    [mine]
+  );
 
   const refresh = async () => {
     try {
@@ -93,6 +104,19 @@ export default function CopyTrade() {
     } catch (e) { toast.error(errorMessage(e)); }
   };
 
+  const deleteBox = async (box) => {
+    const name = box.displayName || box.accountNumber;
+    const msg = Number(box.followers) > 0
+      ? `Delete "${name}"? Its ${box.followers} follower(s) will be stopped (open mirrored trades stay open until they close). This can't be undone.`
+      : `Delete "${name}"? This permanently removes the copy box.`;
+    if (!(await confirm(msg))) return;
+    try {
+      await api.delete(`/copy-trading/boxes/${box._id}`);
+      toast.success('Copy box deleted');
+      refresh();
+    } catch (e) { toast.error(errorMessage(e)); }
+  };
+
   return (
     <div className="space-y-6 max-w-[1600px]">
       <PageHero
@@ -108,7 +132,7 @@ export default function CopyTrade() {
       />
 
       {/* My copy boxes — one per source trading account. */}
-      <MyBoxesSection boxes={myBoxes} onCreate={() => setBecomeMaster(true)} onToggle={toggleBoxPublic} />
+      <MyBoxesSection boxes={myBoxes} onCreate={() => setBecomeMaster(true)} onToggle={toggleBoxPublic} onEdit={setEditingBox} onDelete={deleteBox} />
 
       {/* Tab strip — mobile drives section, desktop shows all 3 in grid */}
       <div className="card p-1 inline-flex md:hidden">
@@ -205,7 +229,7 @@ export default function CopyTrade() {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {mine.map((rel) => (
+                  {sortedMine.map((rel) => (
                     <MyCopyRow key={rel._id} rel={rel} onAction={setStatus} />
                   ))}
                 </div>
@@ -234,12 +258,20 @@ export default function CopyTrade() {
           onCreated={() => { setBecomeMaster(false); refresh(); setTab('mine'); }}
         />
       )}
+
+      {editingBox && (
+        <EditBoxModal
+          box={editingBox}
+          onClose={() => setEditingBox(null)}
+          onSaved={() => { setEditingBox(null); refresh(); }}
+        />
+      )}
     </div>
   );
 }
 
 /* ── Copy boxes (one per source trading account) ────────────────────── */
-function MyBoxesSection({ boxes, onCreate, onToggle }) {
+function MyBoxesSection({ boxes, onCreate, onToggle, onEdit, onDelete }) {
   if (!boxes.length) {
     return (
       <div className="card p-4 flex items-center gap-4 flex-wrap border-2 border-dashed border-border-dark">
@@ -281,18 +313,121 @@ function MyBoxesSection({ boxes, onCreate, onToggle }) {
               <Stat label="Win" value={`${Number(b.winRate || 0).toFixed(0)}%`} />
               <Stat label="Followers" value={Number(b.followers || 0)} />
             </div>
+            <div className="mt-2 text-[11px] text-text-muted">
+              Performance fee: <span className="font-bold text-text-secondary">{Number(b.effectivePerformanceFee || 0)}%</span>
+              {b.performanceFeePercent == null && <span className="text-text-muted"> (default)</span>}
+            </div>
             {!b.acceptsFollowers && (
               <div className="mt-2 text-[11px] text-bear bg-bear/10 rounded-lg px-2 py-1">
                 Source account disabled — not accepting new followers.
               </div>
             )}
-            <div className="mt-3 flex justify-end">
+            <div className="mt-3 flex justify-end gap-1">
+              <button onClick={() => onEdit(b)} className="btn-ghost text-xs">Edit</button>
               <button onClick={() => onToggle(b)} className="btn-ghost text-xs">
                 {b.isPublic ? 'Make private' : 'Go public'}
+              </button>
+              <button onClick={() => onDelete(b)} className="text-xs px-2 py-1 rounded-lg text-bear hover:bg-bear/10 font-semibold">
+                Delete
               </button>
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── Edit an existing copy box (name, risk badge, visibility) ───────── */
+function EditBoxModal({ box, onClose, onSaved }) {
+  const [displayName, setDisplayName] = useState(box.displayName || '');
+  const [riskBadge, setRiskBadge] = useState(box.riskBadge || 'MEDIUM');
+  const [isPublic, setIsPublic] = useState(!!box.isPublic);
+  // Raw per-box fee: blank = use platform default. (effectivePerformanceFee is
+  // the resolved value shown as the placeholder hint.)
+  const [feePct, setFeePct] = useState(box.performanceFeePercent != null ? String(box.performanceFeePercent) : '');
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    if (isPublic && !displayName.trim()) { toast.error('Give your box a name before listing it publicly'); return; }
+    setSaving(true);
+    try {
+      await api.put(`/copy-trading/boxes/${box._id}`, {
+        displayName: displayName.trim(),
+        riskBadge,
+        isPublic,
+        performanceFeePercent: feePct === '' ? null : Number(feePct),
+      });
+      toast.success('Copy box updated');
+      onSaved?.();
+    } catch (e) { toast.error(errorMessage(e)); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div className="card max-w-md w-full overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-border-subtle flex items-center justify-between">
+          <h3 className="text-base font-extrabold text-text-primary">Edit copy box</h3>
+          <button onClick={onClose} className="text-text-muted hover:text-text-primary text-xl leading-none">×</button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <div className="rounded-xl bg-bg-hover px-3 py-2 text-[12px] text-text-secondary">
+            <span className="font-semibold text-text-primary">{box.accountType}</span> · {box.accountNumber}
+            <span className="text-text-muted"> · source account can't be changed</span>
+          </div>
+
+          <div>
+            <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1.5">Box name</label>
+            <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="e.g. Aggressive FX Scalper" maxLength={40}
+              className="w-full px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/15" />
+          </div>
+
+          <div>
+            <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1.5">Risk badge</label>
+            <div className="grid grid-cols-3 gap-2">
+              {[{ id: 'LOW', label: 'Low' }, { id: 'MEDIUM', label: 'Medium' }, { id: 'HIGH', label: 'High' }].map((r) => (
+                <button key={r.id} type="button" onClick={() => setRiskBadge(r.id)}
+                  className={`rounded-xl border-2 p-2 text-center text-sm font-extrabold transition-all ${
+                    riskBadge === r.id ? 'border-primary-500 bg-primary-500/5 text-primary-600' : 'border-border-dark text-text-secondary hover:border-primary-500'}`}>
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <label className="flex items-center justify-between gap-3 rounded-xl border border-border-dark px-3 py-2.5 cursor-pointer">
+            <div className="min-w-0">
+              <div className="text-sm font-bold text-text-primary">List on the leaderboard</div>
+              <div className="text-[11px] text-text-muted mt-0.5">Others can discover this box and copy it.</div>
+            </div>
+            <button type="button" onClick={() => setIsPublic((v) => !v)}
+              className={`shrink-0 relative w-11 h-6 rounded-full transition ${isPublic ? 'bg-emerald-500' : 'bg-border-dark'}`}>
+              <span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition ${isPublic ? 'left-[22px]' : 'left-0.5'}`} />
+            </button>
+          </label>
+
+          <div>
+            <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1.5">Performance fee</label>
+            <div className="relative">
+              <input type="number" min="0" step="1" value={feePct} onChange={(e) => setFeePct(e.target.value)}
+                placeholder={box.effectivePerformanceFee != null ? `Default (${box.effectivePerformanceFee}%)` : 'Platform default'}
+                className="w-full pl-3 pr-8 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-mono font-bold focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/15" />
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted">%</span>
+            </div>
+            <p className="text-[11px] text-text-muted mt-1.5 leading-snug">
+              Your cut of each follower's <span className="font-semibold text-text-secondary">profit</span> on winning copied trades — credited to your Main Wallet. No fee on losses. Blank = platform default. <span className="font-semibold text-text-secondary">Applies to this box only.</span>
+            </p>
+          </div>
+        </div>
+
+        <div className="px-5 py-3 border-t border-border-subtle flex justify-end gap-2">
+          <button onClick={onClose} disabled={saving} className="btn-ghost text-sm">Cancel</button>
+          <button onClick={save} disabled={saving} className="btn-primary text-sm disabled:opacity-50">
+            {saving ? 'Saving…' : 'Save changes'}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -325,11 +460,12 @@ function BecomeMasterModal({ onClose, onCreated, initialFee = '' }) {
     if (!accountId) { toast.error('Select a trading account'); return; }
     setSaving(true);
     try {
-      await api.post('/copy-trading/boxes', { accountId, displayName: displayName.trim(), riskBadge, isPublic });
-      // Performance fee is owner-level (applies to all your boxes). Blank → platform default.
-      await api.put('/copy-trading/profile/me', {
+      // Performance fee is per-box now. Blank → platform default (or your
+      // profile fallback).
+      await api.post('/copy-trading/boxes', {
+        accountId, displayName: displayName.trim(), riskBadge, isPublic,
         performanceFeePercent: feePct === '' ? null : Number(feePct),
-      }).catch(() => {});
+      });
       toast.success('Copy box created');
       onCreated?.();
     } catch (e) { toast.error(errorMessage(e)); }
@@ -408,7 +544,7 @@ function BecomeMasterModal({ onClose, onCreated, initialFee = '' }) {
               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted">%</span>
             </div>
             <p className="text-[11px] text-text-muted mt-1.5 leading-snug">
-              Your cut of each follower's <span className="font-semibold text-text-secondary">profit</span> on winning copied trades — credited to your Main Wallet. No fee on losses. Blank = platform default. Applies to all your boxes.
+              Your cut of each follower's <span className="font-semibold text-text-secondary">profit</span> on winning copied trades — credited to your Main Wallet. No fee on losses. Blank = platform default. <span className="font-semibold text-text-secondary">This fee applies to this box only.</span>
             </p>
           </div>
         </div>
@@ -760,8 +896,10 @@ function MyCopyRow({ rel, onAction }) {
           </div>
           <div className="text-[11px] text-text-muted mt-0.5 flex items-center gap-2 flex-wrap">
             <span>${Number(rel.investment).toFixed(2)} · {rel.riskLevel}</span>
+            {Number(rel.heldAmount) > 0 && <span className="text-primary-600">· ${Number(rel.heldAmount).toFixed(2)} reserved</span>}
             <span>· {rel.tradesCopied || 0} copies</span>
             <span>· {(rel.openMirrors || []).length} open</span>
+            {rel.followerAccountNumber && <span>· → {rel.followerAccountNumber}</span>}
           </div>
         </div>
         <div className="text-right">

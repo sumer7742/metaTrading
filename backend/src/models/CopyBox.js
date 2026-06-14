@@ -28,6 +28,12 @@ const copyBoxSchema = new mongoose.Schema(
     isPublic:    { type: Boolean, default: false, index: true },
     riskBadge:   { type: String, enum: ['LOW', 'MEDIUM', 'HIGH'], default: 'MEDIUM' },
 
+    // Per-box performance fee (% of a follower's winning copied-trade profit,
+    // credited to this owner's Main Wallet). null = fall back to the owner's
+    // TraderProfile fee, then the platform default. Always clamped to
+    // [copyTrading.minFee, copyTrading.maxFee] when set.
+    performanceFeePercent: { type: Number, default: null },
+
     // Denormalised performance stats — updated on each closed copied trade.
     totalTrades:   { type: Number, default: 0 },
     wins:          { type: Number, default: 0 },

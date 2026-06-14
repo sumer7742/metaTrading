@@ -30,6 +30,15 @@ class WSBroadcaster {
     this.userSockets = new Map();
     // presence subscribers: fn(userId, online:boolean)
     this.presenceHandlers = [];
+    // ── Tick coalescing (throttle) ───────────────────────────────────
+    // High-frequency, latest-value-only channels (ticker / orderbook /
+    // candles) are buffered and flushed at most once per WS_TICK_FLUSH_MS,
+    // sending only the LATEST value per channel. This caps each client's
+    // message rate under heavy tick volume × many users — the main WS
+    // broadcast bottleneck — without losing the current price.
+    this._coalesce = new Map();
+    this._flushTimer = null;
+    this._flushMs = Number(process.env.WS_TICK_FLUSH_MS) || 150;
   }
 
   attach(server) {
@@ -48,6 +57,12 @@ class WSBroadcaster {
       // Memory protection — drop messages too large to broadcast
       maxPayload: 1 * 1024 * 1024, // 1MB
     });
+
+    // Start the coalesced-broadcast flush loop for high-frequency channels.
+    if (!this._flushTimer) {
+      this._flushTimer = setInterval(() => this._flush(), this._flushMs);
+      if (this._flushTimer.unref) this._flushTimer.unref();
+    }
 
     this.wss.on('connection', (ws, req) => {
       ws.subscriptions = new Set();
@@ -180,13 +195,33 @@ class WSBroadcaster {
     }
   }
 
+  // ticker / orderbook / candles are coalesced (latest value, flushed every
+  // _flushMs). Everything else (trades tape, user/order/wallet events) sends
+  // immediately — those are low-frequency and must not drop intermediate events.
+  _isCoalesced(channel) {
+    return channel.startsWith('ticker:') || channel.startsWith('orderbook:') || channel.startsWith('candles:');
+  }
+
   publish(channel, data) {
+    if (this._isCoalesced(channel)) { this._coalesce.set(channel, data); return; }
+    this._send(channel, data);
+  }
+
+  _send(channel, data) {
     const set = this.subscriptions.get(channel);
-    if (!set) return;
+    if (!set || set.size === 0) return;
     const msg = JSON.stringify({ type: 'event', channel, data });
     for (const ws of set) {
       if (ws.readyState === WebSocket.OPEN) ws.send(msg);
     }
+  }
+
+  // Flush all coalesced channels — at most once per _flushMs (the throttle).
+  _flush() {
+    if (!this._coalesce.size) return;
+    const batch = this._coalesce;
+    this._coalesce = new Map();
+    for (const [channel, data] of batch) this._send(channel, data);
   }
 
   // Convenience methods used by matching engine
@@ -230,6 +265,7 @@ class WSBroadcaster {
   // client socket so the frontend reconnect logic kicks in cleanly
   // instead of seeing TCP resets.
   close() {
+    if (this._flushTimer) { clearInterval(this._flushTimer); this._flushTimer = null; }
     if (!this.wss) return;
     try {
       this.wss.clients.forEach((ws) => {

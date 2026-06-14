@@ -28,7 +28,26 @@ const _playPing = () => {
 
 const STORAGE_KEY = 'tradepro:notifications:v1';
 const PREFS_KEY = 'tradepro:notifications:prefs:v1';
+// "Clear all" timestamp — server notifications older than this are hidden from
+// the bell (so Clear all sticks across reloads without a server delete).
+const CLEARED_KEY = 'tradepro:notifications:clearedAt:v1';
 const MAX_NOTIFICATIONS = 50;
+
+const readCleared = () => { try { return Number(localStorage.getItem(CLEARED_KEY)) || 0; } catch (_) { return 0; } };
+const writeCleared = (ts) => { try { localStorage.setItem(CLEARED_KEY, String(ts)); } catch (_) {} };
+
+// Map a server Notification document → bell entry (stable id = `srv:<_id>`).
+const mapServerNotification = (n) => ({
+  id: `srv:${n._id}`,
+  type: NOTIFICATION_META[n.type] ? n.type : 'ACCOUNT',
+  title: n.title || 'Notification',
+  message: n.message || '',
+  timestamp: new Date(n.createdAt || Date.now()).getTime(),
+  status: (n.data && n.data.status) || n.status || 'info',
+  link: (n.data && n.data.link) || n.link || null,
+  symbol: null,
+  read: !!n.isRead,
+});
 
 const DEFAULT_PREFS = {
   muteSounds: true,  // sounds disabled entirely — kept in prefs only for backward compat
@@ -47,6 +66,8 @@ export const NOTIFICATION_META = {
   VOLATILITY:  { tab: 'Markets', icon: 'bolt',   tint: '#8B5CF6', label: 'Volatility alert' },
   SCREENER:    { tab: 'Markets', icon: 'filter', tint: '#EC4899', label: 'Screener alert' },
   ACCOUNT:     { tab: 'Account', icon: 'user',   tint: '#475569', label: 'Account' },
+  // Admin-pushed announcements (persisted server-side, delivered to the bell).
+  ANNOUNCEMENT:{ tab: 'Account', icon: 'bell',   tint: '#1D4ED8', label: 'Announcement' },
 };
 
 const readState = () => {
@@ -165,13 +186,24 @@ export function useNotifications() {
 
   const markRead = useCallback((id) => {
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
+    // Persist read for server-backed notifications.
+    if (String(id).startsWith('srv:')) {
+      api.post('/user/notifications/read', { ids: [String(id).slice(4)] }).catch(() => {});
+    }
   }, []);
 
   const markAllRead = useCallback(() => {
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    api.post('/user/notifications/read', { all: true }).catch(() => {});
   }, []);
 
-  const clear = useCallback(() => setNotifications([]), []);
+  const clear = useCallback(() => {
+    // Hide everything: remember the cutoff so server items don't re-appear on
+    // reload, and mark them read so the badge clears.
+    writeCleared(Date.now());
+    setNotifications([]);
+    api.post('/user/notifications/read', { all: true }).catch(() => {});
+  }, []);
 
   const updatePrefs = useCallback((patch) => {
     setPrefs((prev) => ({ ...prev, ...patch }));
@@ -437,6 +469,48 @@ export function useNotifications() {
     }, 5000);
     return () => { cancelled = true; u1 && u1(); u2 && u2(); clearInterval(tickId); };
   }, [add]);
+
+  // ── Server-backed notifications (admin sends + persisted system events) ──
+  // Fetched on mount (so they survive reloads / appear after offline) and
+  // pushed live on the `notifications` WS channel. Merged by stable `srv:<id>`
+  // so a live push and a later fetch reconcile to one entry. "Clear all" hides
+  // anything created on/before the local clear cutoff.
+  useEffect(() => {
+    let cancelled = false;
+
+    const mergeServer = (srvList) => {
+      const clearedAt = readCleared();
+      const fresh = srvList.map(mapServerNotification).filter((e) => e.timestamp > clearedAt);
+      setNotifications((prev) => {
+        const local = prev.filter((n) => !String(n.id).startsWith('srv:'));
+        const prevSrv = prev.filter((n) => String(n.id).startsWith('srv:'));
+        const byId = new Map();
+        for (const e of [...fresh, ...prevSrv]) if (!byId.has(e.id)) byId.set(e.id, e); // fresh wins
+        return [...byId.values(), ...local].sort((a, b) => b.timestamp - a.timestamp).slice(0, MAX_NOTIFICATIONS);
+      });
+    };
+
+    (async () => {
+      try {
+        const { data } = await api.get('/user/notifications', { params: { limit: 50 } });
+        if (!cancelled) mergeServer(Array.isArray(data?.data) ? data.data : []);
+      } catch (_) { /* best-effort */ }
+    })();
+
+    // Backend pushes via notifyUser(id,'notifications',…) → `user:notifications:<id>`,
+    // so we subscribe with the `user:` prefix (the ws client maps the scoped
+    // channel back to this base key).
+    const unsub = wsClient.subscribe('user:notifications', (payload) => {
+      if (!payload) return;
+      const entry = mapServerNotification({ ...payload, isRead: false });
+      if (entry.timestamp <= readCleared()) return;
+      setNotifications((prev) => (prev.some((n) => n.id === entry.id)
+        ? prev
+        : [entry, ...prev].slice(0, MAX_NOTIFICATIONS)));
+    });
+
+    return () => { cancelled = true; unsub && unsub(); };
+  }, []);
 
   const unreadCount = useMemo(() => notifications.filter((n) => !n.read).length, [notifications]);
 

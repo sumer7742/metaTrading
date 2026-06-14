@@ -27,9 +27,15 @@ const bookChip = (b) => (b === 'A_BOOK'
   : 'bg-amber-500/15 text-amber-400 border-amber-500/30');
 
 const EMPTY_FILTERS = {
-  user: '', accountNumber: '', symbol: '', side: '', orderType: '', book: '',
+  user: '', orderId: '', accountNumber: '', accountType: '', symbol: '', side: '', orderType: '', book: '',
   pnl: '', from: '', to: '', minVolume: '', maxVolume: '',
 };
+
+// Short ticket from a Mongo _id (last 6 hex, upper) — full id on hover.
+const ticket = (id) => (id ? `#${String(id).slice(-6).toUpperCase()}` : '—');
+
+// Account types offered in the filter dropdown.
+const ACCOUNT_TYPES = ['STANDARD', 'STANDARD_IC', 'PRO', 'PRO_IC', 'FREE', 'FREE_IC', 'CUSTOM', 'REAL', 'VIRTUAL', 'DEMO'];
 
 export default function Orders() {
   const { user } = useAuthStore();
@@ -40,6 +46,8 @@ export default function Orders() {
   const [tab, setTab] = useState('open'); // open | pending | closed | risk
   const [summary, setSummary] = useState(null);
   const [rows, setRows] = useState([]);
+  // Column sort (low/high toggle). dir 1 = ascending (low→high), -1 = descending.
+  const [sort, setSort] = useState({ key: '', dir: 1 });
   const [pagination, setPagination] = useState({ page: 1, pages: 1, total: 0 });
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -107,6 +115,20 @@ export default function Orders() {
   const resetFilters = () => { setDraft(EMPTY_FILTERS); setFilters(EMPTY_FILTERS); setPage(1); };
 
   const refreshAll = () => { loadSummary(); tab === 'risk' ? loadRisk() : loadList(); };
+
+  /* ── column sort (low/high toggle) — sorts the loaded page ── */
+  const toggleSort = (key) => setSort((s) => (s.key === key ? { key, dir: -s.dir } : { key, dir: 1 }));
+  const sortedRows = useMemo(() => {
+    if (!sort.key) return rows;
+    const col = (COLUMNS[tab] || []).find((c) => c.key === sort.key);
+    if (!col) return rows;
+    const val = col.sortVal || ((r) => r[sort.key]);
+    return [...rows].sort((a, b) => {
+      const av = val(a), bv = val(b);
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * sort.dir;
+      return String(av ?? '').localeCompare(String(bv ?? '')) * sort.dir;
+    });
+  }, [rows, sort, tab]);
 
   /* ── selection ── */
   const toggleSel = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -199,7 +221,7 @@ export default function Orders() {
       {/* Tabs */}
       <div className="flex items-center gap-1 border-b border-border-dark">
         {[['open', 'Open Orders'], ['pending', 'Pending Orders'], ['closed', 'Closed History'], ['risk', 'Risk Management']].map(([k, label]) => (
-          <button key={k} onClick={() => { setTab(k); setPage(1); }}
+          <button key={k} onClick={() => { setTab(k); setPage(1); setSort({ key: '', dir: 1 }); }}
             className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px transition-colors ${tab === k ? 'border-primary-500 text-white' : 'border-transparent text-text-muted hover:text-text-secondary'}`}>
             {label}
             {k === 'open' && summary ? <span className="ml-1.5 text-xs text-text-muted">{summary.totalOpenOrders}</span> : null}
@@ -241,14 +263,21 @@ export default function Orders() {
                       <th key="_sel" className="p-2.5 w-8 text-left"><input type="checkbox" checked={allOnPage} onChange={toggleAll} /></th>
                     ) : null;
                     if (c.key === '_act') return <th key="_act" className="p-2.5 text-right">Actions</th>;
-                    return <th key={c.key} className={`p-2.5 ${c.align === 'right' ? 'text-right' : 'text-left'}`}>{c.label}</th>;
+                    return (
+                      <th key={c.key}
+                        onClick={c.sortable ? () => toggleSort(c.key) : undefined}
+                        className={`p-2.5 ${c.align === 'right' ? 'text-right' : 'text-left'} ${c.sortable ? 'cursor-pointer select-none hover:text-text-secondary' : ''}`}>
+                        {c.label}
+                        {c.sortable && <span className="ml-0.5 text-[10px]">{sort.key === c.key ? (sort.dir === 1 ? '↑' : '↓') : '⇅'}</span>}
+                      </th>
+                    );
                   })}
                 </tr>
               </thead>
               <tbody>
                 {loading ? <SkeletonRows cols={COLUMNS[tab].length} /> : rows.length === 0 ? (
                   <tr><td colSpan={COLUMNS[tab].length} className="p-10 text-center text-text-muted">No {tab} orders match the filters.</td></tr>
-                ) : rows.map((r) => (
+                ) : sortedRows.map((r) => (
                   <Row key={r._id} tab={tab} r={r} canManage={canManage} selected={selected.has(r._id)} onSel={() => toggleSel(r._id)}
                     onView={() => setDrawer({ kind: r.kind, id: r._id })}
                     onSltp={() => setSltpModal(r)} onComment={() => setCommentModal(r)} onClose={() => doForceClose(r)}
@@ -310,7 +339,14 @@ function FilterBar({ tab, draft, setDraft, onApply, onReset, onExport }) {
     <form onSubmit={(e) => { e.preventDefault(); onApply(); }}
       className="card p-3 sticky top-0 z-20 flex flex-wrap gap-2.5 items-end">
       <Field label="User (id/email/name)"><input className="input w-44" value={draft.user} onChange={set('user')} placeholder="search user" /></Field>
+      <Field label="Order ID"><input className="input w-28" value={draft.orderId} onChange={set('orderId')} placeholder="#ABC123" /></Field>
       <Field label="Account #"><input className="input w-32" value={draft.accountNumber} onChange={set('accountNumber')} /></Field>
+      <Field label="Acct Type">
+        <select className="input w-28" value={draft.accountType} onChange={set('accountType')}>
+          <option value="">All</option>
+          {ACCOUNT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+      </Field>
       <Field label="Instrument"><input className="input w-28" value={draft.symbol} onChange={set('symbol')} placeholder="EURUSD" /></Field>
       <Field label="Side"><select className="input w-24" value={draft.side} onChange={set('side')}><option value="">All</option><option value="BUY">Buy</option><option value="SELL">Sell</option></select></Field>
       {tab === 'pending' && (
@@ -335,45 +371,66 @@ const Field = ({ label, children }) => (
 );
 
 /* ───────────────────────── table columns + row ───────────────────────── */
+const byTime = (k) => (r) => (r[k] ? new Date(r[k]).getTime() : 0);
 const COLUMNS = {
   open: [
     { key: '_sel' },
+    { key: 'orderId', label: 'Order ID', csv: (r) => ticket(r._id) },
     { key: 'symbol', label: 'Symbol' }, { key: 'side', label: 'Type' },
-    { key: 'volume', label: 'Volume', align: 'right', csv: (r) => r.volume },
-    { key: 'openPrice', label: 'Open', align: 'right' }, { key: 'currentPrice', label: 'Current', align: 'right' },
-    { key: 'floatingPnl', label: 'Floating PnL', align: 'right' },
-    { key: 'commission', label: 'Comm.', align: 'right' }, { key: 'swap', label: 'Swap', align: 'right' },
+    { key: 'volume', label: 'Volume', align: 'right', sortable: true, csv: (r) => r.volume },
+    { key: 'openPrice', label: 'Open', align: 'right', sortable: true },
+    { key: 'currentPrice', label: 'Current', align: 'right', sortable: true },
+    { key: 'floatingPnl', label: 'Floating PnL', align: 'right', sortable: true },
+    { key: 'commission', label: 'Commission', align: 'right', sortable: true },
+    { key: 'charges', label: 'Charges', align: 'right', sortable: true },
     { key: 'stopLoss', label: 'SL', align: 'right' }, { key: 'takeProfit', label: 'TP', align: 'right' },
-    { key: 'margin', label: 'Margin', align: 'right' }, { key: 'book', label: 'Exec' },
-    { key: 'userName', label: 'User' }, { key: 'accountNumber', label: 'Account' },
-    { key: 'openTime', label: 'Open Time', csv: (r) => fmtDate(r.openTime) }, { key: '_act' },
+    { key: 'margin', label: 'Margin', align: 'right', sortable: true }, { key: 'book', label: 'Exec' },
+    { key: 'userUid', label: 'User ID' }, { key: 'userName', label: 'User' },
+    { key: 'accountNumber', label: 'Account' }, { key: 'accountType', label: 'Acct Type' },
+    { key: 'openTime', label: 'Open Time', sortable: true, sortVal: byTime('openTime'), csv: (r) => fmtDate(r.openTime) }, { key: '_act' },
   ],
   pending: [
     { key: '_sel' },
+    { key: 'orderId', label: 'Order ID', csv: (r) => ticket(r._id) },
     { key: 'symbol', label: 'Symbol' }, { key: 'side', label: 'Side' }, { key: 'orderType', label: 'Type' },
-    { key: 'entryPrice', label: 'Entry', align: 'right' }, { key: 'volume', label: 'Volume', align: 'right' },
+    { key: 'entryPrice', label: 'Entry', align: 'right', sortable: true }, { key: 'volume', label: 'Volume', align: 'right', sortable: true },
+    { key: 'commission', label: 'Commission (est)', align: 'right', sortable: true },
+    { key: 'charges', label: 'Charges (est)', align: 'right', sortable: true },
     { key: 'stopLoss', label: 'SL', align: 'right' }, { key: 'takeProfit', label: 'TP', align: 'right' },
-    { key: 'userName', label: 'User' }, { key: 'accountNumber', label: 'Account' },
-    { key: 'createdTime', label: 'Created', csv: (r) => fmtDate(r.createdTime) }, { key: '_act' },
+    { key: 'userUid', label: 'User ID' }, { key: 'userName', label: 'User' },
+    { key: 'accountNumber', label: 'Account' }, { key: 'accountType', label: 'Acct Type' },
+    { key: 'createdTime', label: 'Created', sortable: true, sortVal: byTime('createdTime'), csv: (r) => fmtDate(r.createdTime) }, { key: '_act' },
   ],
   closed: [
     { key: '_sel' },
+    { key: 'orderId', label: 'Order ID', csv: (r) => ticket(r._id) },
     { key: 'symbol', label: 'Symbol' }, { key: 'side', label: 'Type' },
-    { key: 'volume', label: 'Volume', align: 'right' },
-    { key: 'openPrice', label: 'Open', align: 'right' }, { key: 'closePrice', label: 'Close', align: 'right' },
-    { key: 'realizedPnl', label: 'Realized PnL', align: 'right' },
-    { key: 'commission', label: 'Comm.', align: 'right' }, { key: 'swap', label: 'Swap', align: 'right' },
-    { key: 'book', label: 'Exec' }, { key: 'userName', label: 'User' }, { key: 'accountNumber', label: 'Account' },
-    { key: 'openTime', label: 'Open', csv: (r) => fmtDate(r.openTime) }, { key: 'closeTime', label: 'Close', csv: (r) => fmtDate(r.closeTime) },
+    { key: 'volume', label: 'Volume', align: 'right', sortable: true },
+    { key: 'openPrice', label: 'Open', align: 'right', sortable: true }, { key: 'closePrice', label: 'Close', align: 'right', sortable: true },
+    { key: 'realizedPnl', label: 'Realized PnL', align: 'right', sortable: true },
+    { key: 'commission', label: 'Commission', align: 'right', sortable: true },
+    { key: 'charges', label: 'Charges', align: 'right', sortable: true },
+    { key: 'book', label: 'Exec' }, { key: 'userUid', label: 'User ID' }, { key: 'userName', label: 'User' },
+    { key: 'accountNumber', label: 'Account' }, { key: 'accountType', label: 'Acct Type' },
+    { key: 'openTime', label: 'Open', sortable: true, sortVal: byTime('openTime'), csv: (r) => fmtDate(r.openTime) },
+    { key: 'closeTime', label: 'Close', sortable: true, sortVal: byTime('closeTime'), csv: (r) => fmtDate(r.closeTime) },
     { key: '_act' },
   ],
 };
 
 function Row({ tab, r, canManage, selected, onSel, onView, onSltp, onComment, onClose, onMove, onCancel, onExecute, onModifyPending }) {
   const price = (v) => (v == null ? '—' : fmtNum(v, 5));
+  const charge = (v) => (Number(v) ? <span className="text-text-secondary">{signed(-Math.abs(Number(v)))}</span> : '—');
+  // A trade's single fee belongs to ONE group (by type): commission-type →
+  // Commission column; charge-type → Charges column. Swap is always a charge.
+  const _isCharge = r.feeCategory === 'CHARGES';
+  const _fee = Number(r.commission) || 0;
+  const commCell = _isCharge ? 0 : _fee;
+  const chargeCell = (_isCharge ? _fee : 0) + (Number(r.swap) || 0);
   return (
     <tr className="table-row align-middle">
       {canManage && <td className="p-2.5"><input type="checkbox" checked={selected} onChange={onSel} /></td>}
+      <td className="p-2.5 font-mono text-[11px] text-text-muted" title={r._id}>{ticket(r._id)}</td>
       <td className="p-2.5 font-semibold text-white">{r.symbol}</td>
       {tab === 'open' && <>
         <td className="p-2.5"><span className={`px-1.5 py-0.5 rounded text-[11px] font-bold border ${sideChip(r.side)}`}>{r.side}</span></td>
@@ -381,8 +438,8 @@ function Row({ tab, r, canManage, selected, onSel, onView, onSltp, onComment, on
         <td className="p-2.5 text-right text-text-secondary">{price(r.openPrice)}</td>
         <td className="p-2.5 text-right">{price(r.currentPrice)}</td>
         <td className={`p-2.5 text-right font-semibold ${sgn(r.floatingPnl)}`}>{signed(r.floatingPnl)}</td>
-        <td className="p-2.5 text-right text-text-muted">{fmtNum(r.commission, 2)}</td>
-        <td className="p-2.5 text-right text-text-muted">{fmtNum(r.swap, 2)}</td>
+        <td className="p-2.5 text-right text-text-muted">{charge(commCell)}</td>
+        <td className="p-2.5 text-right text-text-muted">{charge(chargeCell)}</td>
         <td className="p-2.5 text-right text-text-secondary">{price(r.stopLoss)}</td>
         <td className="p-2.5 text-right text-text-secondary">{price(r.takeProfit)}</td>
         <td className="p-2.5 text-right text-text-muted">{fmtMoney(r.margin)}</td>
@@ -393,6 +450,8 @@ function Row({ tab, r, canManage, selected, onSel, onView, onSltp, onComment, on
         <td className="p-2.5 text-text-secondary">{r.orderType}</td>
         <td className="p-2.5 text-right">{price(r.entryPrice)}</td>
         <td className="p-2.5 text-right">{fmtNum(r.volume, 4)}</td>
+        <td className="p-2.5 text-right text-text-muted" title="Estimated — charged when the order fills & the position closes">{charge(commCell)}</td>
+        <td className="p-2.5 text-right text-text-muted" title="Estimated — charged when the order fills & the position closes">{charge(chargeCell)}</td>
         <td className="p-2.5 text-right text-text-secondary">{price(r.stopLoss)}</td>
         <td className="p-2.5 text-right text-text-secondary">{price(r.takeProfit)}</td>
       </>}
@@ -402,12 +461,14 @@ function Row({ tab, r, canManage, selected, onSel, onView, onSltp, onComment, on
         <td className="p-2.5 text-right text-text-secondary">{price(r.openPrice)}</td>
         <td className="p-2.5 text-right">{price(r.closePrice)}</td>
         <td className={`p-2.5 text-right font-semibold ${sgn(r.realizedPnl)}`}>{signed(r.realizedPnl)}</td>
-        <td className="p-2.5 text-right text-text-muted">{fmtNum(r.commission, 2)}</td>
-        <td className="p-2.5 text-right text-text-muted">{fmtNum(r.swap, 2)}</td>
+        <td className="p-2.5 text-right text-text-muted">{charge(commCell)}</td>
+        <td className="p-2.5 text-right text-text-muted">{charge(chargeCell)}</td>
         <td className="p-2.5"><span className={`px-1.5 py-0.5 rounded text-[10px] font-bold border ${bookChip(r.book)}`}>{r.book === 'A_BOOK' ? 'A' : 'B'}</span></td>
       </>}
+      <td className="p-2.5 font-mono text-[11px] text-text-secondary">{r.userUid || '—'}</td>
       <td className="p-2.5 text-text-secondary">{r.userName}</td>
       <td className="p-2.5 text-text-muted">{r.accountNumber}</td>
+      <td className="p-2.5 text-text-muted text-xs">{r.accountType || '—'}</td>
       {tab === 'open' && <><td className="p-2.5 text-text-muted text-xs">{fmtDate(r.openTime)}</td></>}
       {tab === 'pending' && <td className="p-2.5 text-text-muted text-xs">{fmtDate(r.createdTime)}</td>}
       {tab === 'closed' && <><td className="p-2.5 text-text-muted text-xs">{fmtDate(r.openTime)}</td><td className="p-2.5 text-text-muted text-xs">{fmtDate(r.closeTime)}</td></>}
@@ -450,13 +511,24 @@ function BookMenu({ onMove, current }) {
 
 /* ───────────────────────── risk view ───────────────────────── */
 function RiskView({ risk, loading }) {
+  const [q, setQ] = useState('');
   if (loading && !risk) return <div className="space-y-2">{[0, 1, 2].map((i) => <div key={i} className="h-40 rounded-xl bg-bg-hover animate-pulse" />)}</div>;
   if (!risk) return <div className="card p-8 text-center text-text-muted text-sm">No exposure data.</div>;
-  const maxNet = Math.max(1, ...risk.exposures.map((e) => Math.abs(e.netExposure)));
+  const query = q.trim().toLowerCase();
+  const exposures = query ? risk.exposures.filter((e) => String(e.symbol).toLowerCase().includes(query)) : risk.exposures;
+  const maxNet = Math.max(1, ...exposures.map((e) => Math.abs(e.netExposure)));
   return (
     <div className="space-y-4">
       <div className="card overflow-x-auto">
-        <div className="p-3 text-sm font-semibold text-white border-b border-border-dark">Live Net Exposure per Instrument</div>
+        <div className="p-3 flex items-center justify-between gap-3 border-b border-border-dark">
+          <span className="text-sm font-semibold text-white">Live Net Exposure per Instrument</span>
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Search symbol…"
+            className="input w-48 text-xs py-1"
+          />
+        </div>
         <table className="w-full text-sm whitespace-nowrap">
           <thead className="text-[11px] text-text-muted uppercase border-b border-border-dark">
             <tr>
@@ -467,9 +539,9 @@ function RiskView({ risk, loading }) {
             </tr>
           </thead>
           <tbody>
-            {risk.exposures.length === 0 ? (
-              <tr><td colSpan={10} className="p-8 text-center text-text-muted">No open B-book/A-book exposure.</td></tr>
-            ) : risk.exposures.map((e) => (
+            {exposures.length === 0 ? (
+              <tr><td colSpan={10} className="p-8 text-center text-text-muted">{query ? 'No instruments match your search.' : 'No open B-book/A-book exposure.'}</td></tr>
+            ) : exposures.map((e) => (
               <tr key={e.symbol} className="table-row">
                 <td className="p-2.5 font-semibold text-white">{e.symbol}</td>
                 <td className="p-2.5 text-right text-bull">{fmtMoney(e.longExposure)}</td>
@@ -549,11 +621,11 @@ function DetailDrawer({ target, onClose }) {
           <div className="p-4 space-y-4">
             <Section title="Overview">
               <Grid items={target.kind === 'order' ? [
-                ['Order ID', String(o._id)], ['Symbol', o.symbol], ['Side', o.side], ['Type', o.type],
+                ['Order ID', ticket(o._id)], ['Symbol', o.symbol], ['Side', o.side], ['Type', o.type],
                 ['Status', o.status], ['Quantity', fmtNum(o.quantity, 4)], ['Filled', fmtNum(o.filledQuantity, 4)],
                 ['Limit', o.price ?? '—'], ['Stop', o.stopPrice ?? '—'], ['SL', o.stopLoss ?? '—'], ['TP', o.takeProfit ?? '—'],
               ] : [
-                ['Order ID', String(p._id)], ['Symbol', p.symbol], ['Side', p.side], ['Book', p.book],
+                ['Order ID', ticket(p._id)], ['Symbol', p.symbol], ['Side', p.side], ['Book', p.book],
                 ['Volume', fmtNum(p.quantity, 4)], ['Open Price', fmtNum(p.entryPrice, 5)], ['Current', fmtNum(p.currentPrice, 5)],
                 ['Floating PnL', signed(p.floatingPnl)], ['Margin', fmtMoney(p.margin)], ['SL', p.stopLoss ?? '—'], ['TP', p.takeProfit ?? '—'],
                 ['Status', p.status],

@@ -14,6 +14,8 @@ import MarketExposure from './pages/MarketExposure';
 import Orders from './pages/Orders';
 import CmsPages from './pages/CmsPages';
 import CmsNews from './pages/CmsNews';
+import GlobalAlerts from './pages/GlobalAlerts';
+import GlobalAlertPopup from './components/GlobalAlertPopup';
 import Withdrawals from './pages/Withdrawals';
 import Deposits from './pages/Deposits';
 import Finance from './pages/Finance';
@@ -88,6 +90,8 @@ export default function App() {
   }, [refresh]);
 
   return (
+    <>
+    <GlobalAlertPopup />
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/" element={<ProtectedRoute><HomeRedirect /></ProtectedRoute>} />
@@ -103,6 +107,7 @@ export default function App() {
       <Route path="/orders" element={wrap(<Orders />)} />
       <Route path="/cms-pages" element={wrap(<CmsPages />)} />
       <Route path="/cms-news" element={wrap(<CmsNews />)} />
+      <Route path="/global-alerts" element={wrap(<GlobalAlerts />)} />
       <Route path="/withdrawals" element={wrap(<Withdrawals />)} />
       <Route path="/deposits" element={wrap(<Deposits />)} />
       <Route path="/finance" element={wrap(<Finance />)} />
@@ -133,5 +138,6 @@ export default function App() {
 
       <Route path="*" element={<HomeRedirect />} />
     </Routes>
+    </>
   );
 }

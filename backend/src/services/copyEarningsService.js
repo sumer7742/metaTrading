@@ -28,6 +28,7 @@
  */
 const mongoose          = require('mongoose');
 const CopyTradeEarnings = require('../models/CopyTradeEarnings');
+const CopyBox           = require('../models/CopyBox');
 const TraderProfile     = require('../models/TraderProfile');
 const Position          = require('../models/Position');
 const Wallet            = require('../models/Wallet');
@@ -62,18 +63,24 @@ async function getFeeSettings() {
 }
 
 /**
- * Effective fee percent for a master: their own override (if set) or the
- * platform default, always clamped to [minFee, maxFee]. Returns 0 when the
- * system is disabled.
+ * Effective fee percent, resolved in order of precedence:
+ *   1. the BOX's own fee (per source account)         — when masterAccountId given
+ *   2. the owner's TraderProfile fee                   — fallback
+ *   3. the platform default
+ * Always clamped to [minFee, maxFee]. Returns 0 when the system is disabled.
  */
-async function resolveFeePercent(masterId, settings) {
+async function resolveFeePercent(masterId, settings, masterAccountId) {
   const s = settings || (await getFeeSettings());
   if (!s.enabled) return 0;
-  const profile = await TraderProfile.findOne({ userId: masterId })
-    .select('performanceFeePercent').lean();
-  let pct = profile && profile.performanceFeePercent != null
-    ? Number(profile.performanceFeePercent)
-    : s.defaultFee;
+  let pct = null;
+  if (masterAccountId) {
+    const box = await CopyBox.findOne({ accountId: masterAccountId }).select('performanceFeePercent').lean();
+    if (box && box.performanceFeePercent != null) pct = Number(box.performanceFeePercent);
+  }
+  if (pct == null) {
+    const profile = await TraderProfile.findOne({ userId: masterId }).select('performanceFeePercent').lean();
+    pct = profile && profile.performanceFeePercent != null ? Number(profile.performanceFeePercent) : s.defaultFee;
+  }
   if (!Number.isFinite(pct)) pct = s.defaultFee;
   return Math.max(s.minFee, Math.min(s.maxFee, pct));
 }
@@ -119,7 +126,7 @@ async function settleCopyTradeProfit(mirror) {
 
     // ── Compute the split (follower account currency). Fee may be 0. ──
     const settings = await getFeeSettings();
-    const feePercent = settings.enabled ? await resolveFeePercent(mirror.masterId, settings) : 0;
+    const feePercent = settings.enabled ? await resolveFeePercent(mirror.masterId, settings, mirror.masterAccountId) : 0;
 
     const realizedStr = String(pos.realizedPnl);
     const feeAmount = feePercent > 0 ? round2s(mul(realizedStr, div(String(feePercent), '100'))) : '0.00';

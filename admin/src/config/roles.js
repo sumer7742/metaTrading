@@ -75,6 +75,8 @@ export const ROUTE_ACCESS = Object.freeze({
   // Orders Management — institutional dealing desk. Super/Admin platform-wide,
   // Managers see only their own users' orders (backend-scoped).
   '/orders':         [ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.MANAGER],
+  // Global Alert Popups — Super/Admin only (Admin scoped to own subtree + ALERTS module).
+  '/global-alerts':  [ROLES.SUPER_ADMIN, ROLES.ADMIN],
   '/admins':         [ROLES.SUPER_ADMIN],
   '/managers':       [ROLES.SUPER_ADMIN, ROLES.ADMIN],
   '/assignments':    [ROLES.SUPER_ADMIN, ROLES.ADMIN],
@@ -118,6 +120,7 @@ export const ADMIN_ROUTE_PERMISSION = Object.freeze({
   '/orders': 'ORDERS',
   '/cms-pages': 'CMS',
   '/cms-news': 'CMS',
+  '/global-alerts': 'ALERTS',
   '/execution': 'EXECUTION',
   '/audit': 'AUDIT_LOGS',
   '/data-feeds': 'DATA_FEEDS',

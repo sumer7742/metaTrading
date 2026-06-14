@@ -27,6 +27,10 @@ const copyRelationSchema = new mongoose.Schema(
     followerAccountId: { type: mongoose.Schema.Types.ObjectId, ref: 'TradingAccount', required: true },
 
     investment:  { type: String,  default: '0' },   // string-decimal USD
+    // How much of `investment` is currently LOCKED (held) on the follower's
+    // funding account as the copy allocation. Reserved on start/resume, released
+    // on stop. Kept separate from per-trade margin so the hold is exact.
+    heldAmount:  { type: String,  default: '0' },
     riskLevel:   { type: String, enum: ['LOW', 'MEDIUM', 'HIGH'], default: 'MEDIUM' },
     syncSlTp:    { type: Boolean, default: true },
 

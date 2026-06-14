@@ -36,6 +36,7 @@ const ADMIN_PERMISSIONS = [
   { key: 'DATA_FEEDS',       label: 'Data Feeds',        route: '/data-feeds',           apiPrefix: ['/data-feeds'] },
   { key: 'SUPPORT_CHATS',    label: 'Support Chats',     route: '/support-chats',        apiPrefix: [] },
   { key: 'CMS',              label: 'CMS & News',        route: '/cms-pages',            apiPrefix: ['/cms'] },
+  { key: 'ALERTS',           label: 'Global Alerts',     route: '/global-alerts',        apiPrefix: [] },
   { key: 'SETTINGS',         label: 'Settings',          route: '/settings',             apiPrefix: ['/system'] },
   { key: 'SECURITY',         label: 'Security',          route: '/security',             apiPrefix: [] },
 ];

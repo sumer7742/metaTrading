@@ -17,7 +17,17 @@
  */
 const accountPlansService = require('./accountPlansService');
 const { mul, gt } = require('../utils/decimal');
-const { computeInstrumentCommission, findCommissionOverride, computeOverrideCommission } = require('../utils/commission');
+const { computeInstrumentCommission, findCommissionOverride, computeOverrideCommission, resolveCommissionType } = require('../utils/commission');
+
+// Display grouping for a fee TYPE — the SAME categorization the UI uses:
+//   COMMISSION ← PERCENTAGE / PCT_OF_VALUE
+//   CHARGES    ← FIXED / FIXED_PER_TRADE / PCT_OF_PROFIT
+// A trade incurs exactly ONE fee, so it belongs to exactly one of these.
+function feeCategoryForKind(kind) {
+  const k = String(kind || '').toUpperCase();
+  if (k === 'FIXED' || k === 'FIXED_PER_TRADE' || k === 'PCT_OF_PROFIT') return 'CHARGES';
+  return 'COMMISSION';
+}
 
 /**
  * Resolve the live AccountPlan for an account from the cached
@@ -79,6 +89,20 @@ async function computeCloseFee({ account, instrument, closeQty, closePrice, clos
 }
 
 /**
+ * Resolve the DISPLAY fee category ('COMMISSION' | 'CHARGES') for a trade,
+ * mirroring computeCloseFee's resolution order (override → account plan →
+ * legacy instrument) but returning the TYPE's group rather than an amount.
+ * Used only to decide which column a trade's single fee shows under.
+ */
+async function resolveFeeCategory({ account, instrument }) {
+  const override = findCommissionOverride(instrument, account?.accountType);
+  if (override) return feeCategoryForKind(override.commissionType);
+  const plan = await _resolvePlan(account);
+  if (plan && plan.feeKind) return feeCategoryForKind(plan.feeKind);
+  return feeCategoryForKind(resolveCommissionType(instrument));
+}
+
+/**
  * Leverage cap for the account's tier. Returns null when the tier is
  * unlimited (every tier except STANDARD per the default spec).
  */
@@ -105,6 +129,8 @@ async function getMinDeposit(account) {
 
 module.exports = {
   computeCloseFee,
+  resolveFeeCategory,
+  feeCategoryForKind,
   getAccountMaxLeverage,
   isBuyCloseOnly,
   getMinDeposit,

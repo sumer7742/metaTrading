@@ -176,6 +176,8 @@ const notificationSchema = new mongoose.Schema(
     data: mongoose.Schema.Types.Mixed,
     channels: [String], // ['IN_APP', 'EMAIL', 'SMS', 'PUSH']
     isRead: { type: Boolean, default: false },
+    // Set when an admin/super-admin pushed this notification (vs system-generated).
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }
 );

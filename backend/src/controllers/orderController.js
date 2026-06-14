@@ -567,6 +567,44 @@ const listOpen = asyncHandler(async (req, res) => {
   })
     .sort({ createdAt: -1 })
     .lean();
+  if (!orders.length) return sendSuccess(res, []);
+
+  // A pending order carries no fee yet — it's only charged when it fills into a
+  // Position and that position closes. Surface an ESTIMATE (account fee model at
+  // the order price, pnl=0) + the fee category so the UI shows it under the
+  // right column. Display estimate only; no stored value/calculation changes.
+  const accountFeeService = require('../services/accountFeeService');
+  const acctIds = [...new Set(orders.map((o) => String(o.accountId)).filter(Boolean))];
+  const symbols = [...new Set(orders.map((o) => o.symbol).filter(Boolean))];
+  const [accts, insts] = await Promise.all([
+    acctIds.length ? TradingAccount.find({ _id: { $in: acctIds } }).select('accountType').lean() : [],
+    symbols.length ? Instrument.find({ symbol: { $in: symbols } }).select('symbol commissionOverrides commissionType commissionPercent commissionPerTrade').lean() : [],
+  ]);
+  const accMap = new Map(accts.map((a) => [String(a._id), a]));
+  const iMap = new Map(insts.map((i) => [i.symbol, i]));
+
+  for (const o of orders) {
+    const acct = accMap.get(String(o.accountId));
+    const inst = iMap.get(o.symbol);
+    const px = o.price != null ? Number(o.price) : (o.stopPrice != null ? Number(o.stopPrice) : null);
+    let est = 0;
+    try {
+      if (inst && acct && px != null && Number(o.quantity) > 0) {
+        est = Number(await accountFeeService.computeCloseFee({
+          account: { accountType: acct.accountType },
+          instrument: inst,
+          closeQty: Number(o.quantity),
+          closePrice: px,
+          closePnl: 0,
+        })) || 0;
+      }
+    } catch (_) { est = 0; }
+    let cat = 'COMMISSION';
+    try { if (inst) cat = await accountFeeService.resolveFeeCategory({ account: { accountType: acct?.accountType }, instrument: inst }); } catch (_) { cat = 'COMMISSION'; }
+    o.commission = Math.round((est + Number.EPSILON) * 100) / 100;
+    o.feeCategory = cat;
+    o.commissionEstimated = true;
+  }
   sendSuccess(res, orders);
 });
 
@@ -597,6 +635,37 @@ const listHistory = asyncHandler(async (req, res) => {
  * TOTAL LOT, WINS, LOSSES and NET P/L. The summary is intentionally cheap
  * — a single Mongo aggregation, no per-doc work.
  */
+// Tag each position/trade row with its DISPLAY fee category ('COMMISSION' |
+// 'CHARGES'), derived from the account's fee type (+ instrument override). The
+// UI uses this so a trade's single fee shows under exactly one column. This is
+// display metadata only — no stored value or calculation changes.
+async function attachFeeCategory(rows) {
+  if (!rows || !rows.length) return rows;
+  const acctIds = [...new Set(rows.map((r) => String(r.accountId)).filter(Boolean))];
+  const instIds = [...new Set(rows.map((r) => String(r.instrumentId)).filter(Boolean))];
+  const [accts, insts] = await Promise.all([
+    acctIds.length ? TradingAccount.find({ _id: { $in: acctIds } }).select('accountType').lean() : [],
+    instIds.length ? Instrument.find({ _id: { $in: instIds } }).select('commissionOverrides commissionType commissionPercent commissionPerTrade').lean() : [],
+  ]);
+  const accMap = new Map(accts.map((a) => [String(a._id), a]));
+  const instMap = new Map(insts.map((i) => [String(i._id), i]));
+  const accountFeeService = require('../services/accountFeeService');
+  const cache = new Map(); // (accountType|instrumentId) → category
+  for (const r of rows) {
+    const acct = accMap.get(String(r.accountId));
+    const inst = instMap.get(String(r.instrumentId));
+    const key = `${acct?.accountType || ''}|${String(r.instrumentId)}`;
+    let cat = cache.get(key);
+    if (cat === undefined) {
+      try { cat = await accountFeeService.resolveFeeCategory({ account: acct, instrument: inst }); }
+      catch (_) { cat = 'COMMISSION'; }
+      cache.set(key, cat);
+    }
+    r.feeCategory = cat;
+  }
+  return rows;
+}
+
 const positionHistory = asyncHandler(async (req, res) => {
   const {
     accountId,
@@ -637,6 +706,7 @@ const positionHistory = asyncHandler(async (req, res) => {
     Position.find(filter).sort({ closedAt: -1 }).skip(skip).limit(limit).lean(),
     Position.countDocuments(filter),
   ]);
+  await attachFeeCategory(items);
 
   // Aggregate summary across the filtered set (not just this page).
   // We keep numbers as JS Number here — cumulative trade counts and lot sums
@@ -685,6 +755,7 @@ const listPositions = asyncHandler(async (req, res) => {
         ? mul(sub(p.markPrice, p.entryPrice), p.quantity)
         : mul(sub(p.entryPrice, p.markPrice), p.quantity);
   }
+  await attachFeeCategory(positions);
   sendSuccess(res, positions);
 });
 

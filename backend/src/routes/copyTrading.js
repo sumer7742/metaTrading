@@ -26,6 +26,7 @@ router.get('/eligible-accounts', authenticate, c.eligibleAccounts);
 router.get('/boxes/me',          authenticate, c.myBoxes);
 router.post('/boxes',            authenticate, c.createBox);
 router.put('/boxes/:id',         authenticate, c.updateBox);
+router.delete('/boxes/:id',      authenticate, c.deleteBox);
 
 // Master profile (owner-level — performance fee + earnings)
 router.get('/profile/me', authenticate, c.myProfile);

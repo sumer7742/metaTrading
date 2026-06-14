@@ -5,6 +5,7 @@ import { api, errorMessage } from '../services/api';
 import PageHero from '../components/PageHero';
 import WalletSidebar from '../components/WalletSidebar';
 import LeverageDropdown, { UNLIMITED_LEVERAGE } from '../components/LeverageDropdown';
+import { feeTypeWithDetail } from '../utils/feeType';
 
 /**
  * Page 2 of the new-account flow — pick mode (Real/Demo) then fill
@@ -184,7 +185,7 @@ export default function NewAccountConfigure() {
           <div className="flex-1 min-w-0">
             <div className="font-extrabold text-text-primary">{plan.name}</div>
             <div className="text-[11px] text-text-muted">
-              Min ${minDep} · {plan.maxLeverage ? `1:${plan.maxLeverage}` : '1:Unlimited'} · Fee {plan.feeDisplay}
+              Min ${minDep} · {plan.maxLeverage ? `1:${plan.maxLeverage}` : '1:Unlimited'} · Fee {feeTypeWithDetail(plan.feeKind || plan.feeModel?.kind, plan.feeDisplay)}
               {plan.buyCloseOnly && <span className="ml-2 text-warn font-bold">· Buy-only</span>}
             </div>
           </div>

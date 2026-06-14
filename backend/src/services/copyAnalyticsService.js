@@ -198,7 +198,7 @@ async function getTraderAnalytics(userId, accountId) {
   const copyEarnings = require('./copyEarningsService');
   const [earnings, performanceFeePercent] = await Promise.all([
     copyEarnings.getMasterEarnings(userId),
-    copyEarnings.resolveFeePercent(userId),
+    copyEarnings.resolveFeePercent(userId, null, accountId),
   ]);
 
   return {

@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import WalletSidebar from '../components/WalletSidebar';
+import { feeTypeWithDetail } from '../utils/feeType';
 
 /**
  * Page 1 of the new-account flow — premium tier picker styled as
@@ -185,7 +186,7 @@ function TierRow({ plan, selected, onSelect, ownedCount }) {
   const accent = plan.accentColor || tintForCode(plan.code);
   const minDep = Number(plan.minDeposit || 0);
   const lev = plan.maxLeverage ? `1:${plan.maxLeverage}` : '1:Unlimited';
-  const commission = plan.feeDisplay || '—';
+  const commission = feeTypeWithDetail(plan.feeKind || plan.feeModel?.kind, plan.feeDisplay);
   const initials = (plan.name || plan.code || 'A').replace(/[^A-Za-z]/g, '').slice(0, 2).toUpperCase();
 
   return (

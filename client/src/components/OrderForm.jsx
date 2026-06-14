@@ -675,10 +675,13 @@ export default function OrderForm({
   // Itemised fee breakdown for the "Fees ⓘ" tooltip — shows exactly which
   // components add up to the total (flat commission + % commission + spread).
   const commPctAmt = notional > 0 ? (notional * commPct / 100) : 0;
+  // Grouped fee breakdown (display only — amounts/calculations unchanged):
+  //   Commission → Percentage   ·   Charges → Fixed   ·   Spread
   const feeHelp = [
-    'Total fee = commission + spread cost',
-    commFlat > 0 ? `• Flat commission: ${fmtQuote(commFlat)}` : null,
-    commPct > 0 ? `• Commission (${commPct}% × ${fmtQuote(notional)} notional): ${fmtQuote(commPctAmt)}` : null,
+    'Total fee = commission + charges + spread cost',
+    ...(commPct > 0 ? ['Commission', `• Percentage (${commPct}% × ${fmtQuote(notional)} notional): ${fmtQuote(commPctAmt)}`] : []),
+    ...(commFlat > 0 ? ['Charges', `• Fixed: ${fmtQuote(commFlat)}`] : []),
+    'Spread',
     `• Spread cost (${spreadAbs.toFixed(prec)} ${quoteCcy} × ${qtyNum || 0} qty): ${fmtQuote(spreadCost)}`,
     '──────────',
     `Total ≈ ${fmtQuote(feeEstimate)}`,

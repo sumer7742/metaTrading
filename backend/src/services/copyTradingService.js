@@ -55,8 +55,41 @@ function accountAcceptsFollowers(acc) {
 // Keep a box's denormalised follower count exact (count ACTIVE relations).
 async function recountFollowers(masterAccountId) {
   if (!masterAccountId) return;
-  const n = await CopyRelation.countDocuments({ masterAccountId, status: 'ACTIVE' });
-  await CopyBox.updateOne({ accountId: masterAccountId }, { $set: { followers: n } });
+  // Count DISTINCT followers (a follower may now hold several copies of the
+  // same master across different accounts — that's still one follower).
+  const ids = await CopyRelation.distinct('followerId', { masterAccountId, status: 'ACTIVE' });
+  await CopyBox.updateOne({ accountId: masterAccountId }, { $set: { followers: ids.length } });
+}
+
+// ── Copy allocation hold ───────────────────────────────────────────────
+// Reserve (lock) the follower's investment on their funding account so it is a
+// real "cut" from free balance AND a funds check (lockMargin throws when the
+// follower lacks the free balance). Released when the copy is stopped.
+async function _holdAllocation(rel, amount) {
+  const amt = String(Math.max(0, Number(amount) || 0));
+  if (!(Number(amt) > 0)) return '0';
+  const walletService = require('./walletService');
+  const fAcc = await TradingAccount.findById(rel.followerAccountId).select('baseCurrency').lean();
+  const currency = fAcc?.baseCurrency || 'USD';
+  await walletService.lockMargin({
+    userId: rel.followerId, accountId: rel.followerAccountId, currency,
+    amount: amt, orderId: rel._id, note: 'Copy allocation',
+  });
+  return amt;
+}
+
+async function _releaseAllocation(rel) {
+  const held = String(rel.heldAmount || '0');
+  if (!(Number(held) > 0)) return;
+  const walletService = require('./walletService');
+  const fAcc = await TradingAccount.findById(rel.followerAccountId).select('baseCurrency').lean();
+  const currency = fAcc?.baseCurrency || 'USD';
+  try {
+    await walletService.releaseMargin({
+      userId: rel.followerId, accountId: rel.followerAccountId, currency,
+      amount: held, orderId: rel._id, note: 'Copy allocation released',
+    });
+  } catch (_) { /* best-effort */ }
 }
 
 // ── Owner profile (performance fee + earnings) ────────────────────────
@@ -97,8 +130,21 @@ async function listEligibleAccounts(userId) {
   }));
 }
 
+// Clamp a raw per-box fee input to the admin [minFee, maxFee] range.
+//   undefined → returns undefined (caller leaves the field untouched)
+//   '' / null → returns null      (clears the override → fall back to default)
+//   number    → clamped number
+async function clampBoxFee(raw) {
+  if (raw === undefined) return undefined;
+  if (raw === null || raw === '') return null;
+  const pct = Number(raw);
+  if (!Number.isFinite(pct)) return null;
+  const s = await require('./copyEarningsService').getFeeSettings();
+  return Math.max(s.minFee, Math.min(s.maxFee, pct));
+}
+
 // Create (or update) the copy box for a specific source account.
-async function createBox({ userId, accountId, displayName, bio, riskBadge, isPublic }) {
+async function createBox({ userId, accountId, displayName, bio, riskBadge, isPublic, performanceFeePercent }) {
   const account = await TradingAccount.findOne({ _id: accountId, userId }).lean();
   if (!account) throw new Error('Trading account not found');
   if (account.isActive === false) throw new Error('This account is inactive and cannot be a copy box.');
@@ -106,6 +152,7 @@ async function createBox({ userId, accountId, displayName, bio, riskBadge, isPub
   // Ensure the owner has a TraderProfile (drives performance fee + earnings).
   const owner = await getOrCreateProfile(userId);
 
+  const feeVal = await clampBoxFee(performanceFeePercent);
   const set = {
     userId,
     accountNumber: account.accountNumber,
@@ -113,6 +160,7 @@ async function createBox({ userId, accountId, displayName, bio, riskBadge, isPub
     ...(bio !== undefined ? { bio: String(bio).trim() } : {}),
     ...(riskBadge !== undefined ? { riskBadge } : {}),
     ...(isPublic !== undefined ? { isPublic: !!isPublic } : {}),
+    ...(feeVal !== undefined ? { performanceFeePercent: feeVal } : {}),
   };
   const setOnInsert = {};
   const trimmedName = displayName !== undefined ? String(displayName).trim() : '';
@@ -133,29 +181,62 @@ async function listMyBoxes(userId) {
   const boxes = await CopyBox.find({ userId }).sort({ createdAt: 1 }).lean();
   if (!boxes.length) return [];
   const accIds = boxes.map((b) => b.accountId);
-  const accounts = await TradingAccount.find({ _id: { $in: accIds } })
-    .select('isActive isTradingEnabled status planSuspendedAt').lean();
+  const [accounts, profile, feeS] = await Promise.all([
+    TradingAccount.find({ _id: { $in: accIds } }).select('isActive isTradingEnabled status planSuspendedAt').lean(),
+    TraderProfile.findOne({ userId }).select('performanceFeePercent').lean(),
+    require('./copyEarningsService').getFeeSettings(),
+  ]);
   const accById = new Map(accounts.map((a) => [String(a._id), a]));
+  const profileFee = profile && profile.performanceFeePercent != null ? Number(profile.performanceFeePercent) : null;
+  const clamp = (pct) => Math.max(feeS.minFee, Math.min(feeS.maxFee, pct));
   return boxes.map((b) => {
     const acc = accById.get(String(b.accountId));
+    // Effective fee for display: box override → profile → platform default.
+    let effPct = b.performanceFeePercent != null ? Number(b.performanceFeePercent)
+      : (profileFee != null ? profileFee : feeS.defaultFee);
+    if (!Number.isFinite(effPct)) effPct = feeS.defaultFee;
     return {
       ...b,
       winRate: b.totalTrades ? (b.wins / b.totalTrades) * 100 : 0,
       acceptsFollowers: accountAcceptsFollowers(acc),
       accountActive: !!acc && acc.isActive !== false,
+      // `performanceFeePercent` (raw, may be null = "default") stays for editing;
+      // `effectivePerformanceFee` is the resolved % actually charged.
+      effectivePerformanceFee: feeS.enabled ? clamp(effPct) : 0,
     };
   });
 }
 
-async function updateBox({ userId, boxId, displayName, bio, riskBadge, isPublic }) {
+async function updateBox({ userId, boxId, displayName, bio, riskBadge, isPublic, performanceFeePercent }) {
   const box = await CopyBox.findOne({ _id: boxId, userId });
   if (!box) throw new Error('Copy box not found');
   if (displayName !== undefined) box.displayName = String(displayName).trim();
   if (bio !== undefined) box.bio = String(bio).trim();
   if (riskBadge !== undefined) box.riskBadge = riskBadge;
   if (isPublic !== undefined) box.isPublic = !!isPublic;
+  const feeVal = await clampBoxFee(performanceFeePercent);
+  if (feeVal !== undefined) box.performanceFeePercent = feeVal;
   await box.save();
   return box;
+}
+
+// Delete a copy box. Active/paused followers are STOPPED cleanly first so they
+// don't keep mirroring a box that no longer exists (their already-open mirrored
+// trades stay open until they close on their own).
+async function deleteBox({ userId, boxId }) {
+  const box = await CopyBox.findOne({ _id: boxId, userId });
+  if (!box) throw new Error('Copy box not found');
+  // Release each follower's held allocation, then stop them.
+  const affected = await CopyRelation.find({ masterAccountId: box.accountId, status: { $in: ['ACTIVE', 'PAUSED'] } });
+  for (const r of affected) {
+    await _releaseAllocation(r);
+    r.heldAmount = '0';
+    r.status = 'STOPPED';
+    r.stoppedAt = new Date();
+    await r.save();
+  }
+  await CopyBox.deleteOne({ _id: box._id });
+  return { ok: true };
 }
 
 // ── Master-side hooks ─────────────────────────────────────────────────
@@ -200,8 +281,21 @@ async function onMasterOrderFilled({ order, position }) {
 
   const instrument = await Instrument.findById(order.instrumentId).lean();
   const lotStep = Number(instrument?.lotStep) || MIN_QTY_FALLBACK;
+  // Reference price for sizing + margin. No live price → we cannot safely size
+  // or margin-check the mirror, so we skip the fan-out entirely for this fill.
+  const refPrice = Number(instrument?.lastPrice || 0);
+  if (!(refPrice > 0)) {
+    console.warn('[copyTrading] no live price for', order.symbol, '— skipping mirror fan-out');
+    return;
+  }
+
+  const walletService = require('./walletService');
+  const orderRouter = require('./orderRouter.service');
 
   for (const rel of followers) {
+    let currency = 'USD';
+    let lockedAmt = 0;
+    let mirrorOrder = null;
     try {
       const risk = RISK_MULTIPLIER[rel.riskLevel] || 1;
       const investment = Math.max(0, Number(rel.investment));
@@ -211,7 +305,25 @@ async function onMasterOrderFilled({ order, position }) {
       if (qty < lotStep) qty = lotStep;
       if (!Number.isFinite(qty) || qty <= 0) continue;
 
-      const mirrorOrder = await Order.create({
+      // Funding account currency.
+      const fAcc = await TradingAccount.findById(rel.followerAccountId).select('baseCurrency').lean();
+      currency = fAcc?.baseCurrency || 'USD';
+
+      // Required margin = (newly-opened qty × price) / leverage — mirrors the
+      // normal placeOrder math. An existing opposite position reduces the new
+      // exposure (that overlap is just closing, no margin needed).
+      const lev = Number(order.leverage) || 1;
+      let openQty = qty;
+      const existingPos = await Position.findOne({
+        accountId: rel.followerAccountId, symbol: order.symbol, status: POSITION_STATUS.OPEN,
+      }).select('side quantity').lean();
+      if (existingPos && existingPos.side !== order.side) {
+        const exQty = Number(existingPos.quantity) || 0;
+        openQty = exQty >= qty ? 0 : (qty - exQty);
+      }
+      const marginAmount = openQty > 0 ? (openQty * refPrice) / lev : 0;
+
+      mirrorOrder = await Order.create({
         userId: rel.followerId,
         accountId: rel.followerAccountId,
         instrumentId: order.instrumentId,
@@ -226,7 +338,57 @@ async function onMasterOrderFilled({ order, position }) {
         status: ORDER_STATUS.PENDING,
       });
 
-      const orderRouter = require('./orderRouter.service');
+      // ── Fund the trade margin FROM the copy's held allocation ──
+      // The investment was already locked as the copy budget on start, so we
+      // move the trade margin OUT of that hold and onto the mirror order (net
+      // locked unchanged → no double-reservation). If the budget can't cover
+      // it, REJECT this mirror (don't open a position the allocation can't fund).
+      if (marginAmount > 0) {
+        // Take it out of the hold first…
+        try {
+          await walletService.releaseMargin({
+            userId: rel.followerId, accountId: rel.followerAccountId, currency,
+            amount: String(marginAmount), orderId: rel._id, note: 'Copy: fund trade from allocation',
+          });
+        } catch (_) {}
+        // …then lock it on the mirror order (this is the funds guard).
+        try {
+          await walletService.lockMargin({
+            userId: rel.followerId,
+            accountId: rel.followerAccountId,
+            currency,
+            amount: String(marginAmount),
+            orderId: mirrorOrder._id,
+            note: `Copy margin for ${order.side} ${order.symbol}`,
+          });
+          lockedAmt = marginAmount;
+          mirrorOrder.lockedMargin = String(marginAmount);
+          await mirrorOrder.save();
+        } catch (lockErr) {
+          // Couldn't fund the trade → restore the hold + reject the mirror.
+          try {
+            await walletService.lockMargin({
+              userId: rel.followerId, accountId: rel.followerAccountId, currency,
+              amount: String(marginAmount), orderId: rel._id, note: 'Copy: restore allocation',
+            });
+          } catch (_) {}
+          mirrorOrder.status = ORDER_STATUS.REJECTED;
+          mirrorOrder.rejectionReason = lockErr.message;
+          await mirrorOrder.save();
+          await CopyTrade.create({
+            relationId: rel._id, masterId: order.userId, masterAccountId: order.accountId,
+            followerId: rel.followerId, masterOrderId: order._id, masterPositionId: position._id,
+            symbol: order.symbol, side: order.side, status: 'FAILED', closeReason: 'insufficient_margin',
+          }).catch(() => {});
+          try {
+            require('../websocket/server').notifyUser(String(rel.followerId), 'copytrading', {
+              event: 'MIRROR_REJECTED', reason: 'insufficient_margin', symbol: order.symbol,
+            });
+          } catch (_) {}
+          continue; // skip routing — allocation can't fund it
+        }
+      }
+
       const { settledOrder } = await orderRouter.routeOrder({ order: mirrorOrder, userId: rel.followerId });
 
       let mirrorPos = null;
@@ -265,6 +427,23 @@ async function onMasterOrderFilled({ order, position }) {
       } catch (_) {}
     } catch (err) {
       console.error('[copyTrading] mirror open failed:', err.message);
+      // Routing/other failure AFTER we moved margin onto the mirror order →
+      // unlock it and return it to the copy's allocation hold (so the budget
+      // isn't lost on a mirror that never opened).
+      if (lockedAmt > 0 && mirrorOrder) {
+        try {
+          await walletService.releaseMargin({
+            userId: rel.followerId, accountId: rel.followerAccountId, currency,
+            amount: String(lockedAmt), orderId: mirrorOrder._id, note: 'Copy mirror failed',
+          });
+        } catch (_) {}
+        try {
+          await walletService.lockMargin({
+            userId: rel.followerId, accountId: rel.followerAccountId, currency,
+            amount: String(lockedAmt), orderId: rel._id, note: 'Copy: restore allocation after failure',
+          });
+        } catch (_) {}
+      }
       try {
         await CopyTrade.create({
           relationId: rel._id, masterId: order.userId, masterAccountId: order.accountId,
@@ -316,6 +495,7 @@ async function onMasterPositionClosed({ position, realizedPnl }) {
   } catch (_) {}
 
   const copyEarnings = require('./copyEarningsService');
+  const walletService = require('./walletService');
 
   for (const mirror of mirrors) {
     try {
@@ -343,6 +523,9 @@ async function onMasterPositionClosed({ position, realizedPnl }) {
         await copyEarnings.applyPerformanceFee(mirror);
         continue;
       }
+      // The engine will release this position's margin from `locked` on settle;
+      // we'll return it to the copy's allocation hold afterwards.
+      const releasedMargin = String(followerPos.margin || '0');
       const oppositeSide = followerPos.side === 'BUY' ? 'SELL' : 'BUY';
       const sourcePositionSide = followerPos.positionSide || (followerPos.side === 'BUY' ? 'LONG' : 'SHORT');
       const closeOrd = await Order.create({
@@ -361,6 +544,20 @@ async function onMasterPositionClosed({ position, realizedPnl }) {
       });
       const orderRouter = require('./orderRouter.service');
       await orderRouter.routeOrder({ order: closeOrd, userId: followerPos.userId });
+
+      // Return the trade margin to the copy's allocation hold (best-effort; on a
+      // loss the wallet may not cover the full re-lock, which correctly leaves
+      // the allocation reduced by the shortfall).
+      if (Number(releasedMargin) > 0) {
+        try {
+          const acc = await TradingAccount.findById(followerPos.accountId).select('baseCurrency').lean();
+          await walletService.lockMargin({
+            userId: followerPos.userId, accountId: followerPos.accountId,
+            currency: acc?.baseCurrency || 'USD', amount: releasedMargin,
+            orderId: mirror.relationId, note: 'Copy: return margin to allocation',
+          });
+        } catch (_) {}
+      }
 
       mirror.status = 'CLOSED';
       mirror.closeReason = 'master_closed';
@@ -427,10 +624,14 @@ async function leaderboard({ limit = 50, excludeUserId } = {}) {
 
   const copyEarnings = require('./copyEarningsService');
   const s = await copyEarnings.getFeeSettings();
-  const effFee = (ownerId) => {
+  // Per-box fee → owner profile fee → platform default (clamped).
+  const effFee = (box) => {
     if (!s.enabled) return 0;
-    const p = profByUser.get(String(ownerId));
-    let pct = p && p.performanceFeePercent != null ? Number(p.performanceFeePercent) : s.defaultFee;
+    let pct = box.performanceFeePercent != null ? Number(box.performanceFeePercent) : null;
+    if (pct == null) {
+      const p = profByUser.get(String(box.userId));
+      pct = p && p.performanceFeePercent != null ? Number(p.performanceFeePercent) : s.defaultFee;
+    }
     if (!Number.isFinite(pct)) pct = s.defaultFee;
     return Math.max(s.minFee, Math.min(s.maxFee, pct));
   };
@@ -440,7 +641,7 @@ async function leaderboard({ limit = 50, excludeUserId } = {}) {
     ...b,
     winRate: b.totalTrades ? (b.wins / b.totalTrades) * 100 : 0,
     ownerName: ownerName(userById.get(String(b.userId))),
-    performanceFeePercent: effFee(b.userId),
+    performanceFeePercent: effFee(b),
   }));
 }
 
@@ -478,24 +679,37 @@ async function startCopying({ followerId, masterAccountId, investment, riskLevel
   }
   const amount = String(Math.max(0, Number(investment) || 0));
 
-  const rel = await CopyRelation.findOneAndUpdate(
-    { followerId, masterAccountId },
-    {
-      $set: {
-        masterId: box.userId,
-        masterBoxId: box._id,
-        investment: amount,
-        riskLevel,
-        syncSlTp: !!syncSlTp,
-        followerAccountId: accId,
-        status: 'ACTIVE',
-        startedAt: new Date(),
-        pausedAt: null,
-        stoppedAt: null,
-      },
-    },
-    { upsert: true, new: true }
-  );
+  // MULTIPLE independent copies of the same master are allowed — every "Copy"
+  // creates a NEW relation (its own investment / risk / funding account). No
+  // upsert, no dedupe: re-copying never replaces an existing copy. Copies into
+  // the SAME account add to that account's exposure (positions net in hedge
+  // mode); copies into different accounts run fully independently.
+  const rel = await CopyRelation.create({
+    followerId,
+    masterId: box.userId,
+    masterAccountId,
+    masterBoxId: box._id,
+    followerAccountId: accId,
+    investment: amount,
+    heldAmount: '0',
+    riskLevel,
+    syncSlTp: !!syncSlTp,
+    status: 'ACTIVE',
+    startedAt: new Date(),
+  });
+
+  // Reserve the investment on the funding account NOW — this is the visible
+  // "amount cut" on copy + the funds check. If the follower can't cover it,
+  // roll the copy back so nothing is half-created.
+  if (Number(amount) > 0) {
+    try {
+      rel.heldAmount = await _holdAllocation(rel, amount);
+      await rel.save();
+    } catch (e) {
+      await CopyRelation.deleteOne({ _id: rel._id });
+      throw e; // surfaces "Insufficient free balance …" to the user
+    }
+  }
 
   await recountFollowers(masterAccountId);
   return rel;
@@ -505,6 +719,20 @@ async function setStatus({ followerId, relationId, status }) {
   if (!['ACTIVE', 'PAUSED', 'STOPPED'].includes(status)) throw new Error('Invalid status');
   const rel = await CopyRelation.findOne({ _id: relationId, followerId });
   if (!rel) throw new Error('Copy relation not found');
+  const prev = rel.status;
+
+  // Resume from STOPPED → re-reserve the allocation first (funds check; throws
+  // if the follower can no longer cover it).
+  if (status === 'ACTIVE' && prev === 'STOPPED' && Number(rel.investment) > 0 && !(Number(rel.heldAmount) > 0)) {
+    rel.heldAmount = await _holdAllocation(rel, rel.investment);
+  }
+  // STOPPED → give the held allocation back to free balance.
+  if (status === 'STOPPED') {
+    await _releaseAllocation(rel);
+    rel.heldAmount = '0';
+  }
+  // PAUSED keeps the allocation held (still committed, just not mirroring).
+
   rel.status = status;
   if (status === 'PAUSED')  rel.pausedAt  = new Date();
   if (status === 'STOPPED') rel.stoppedAt = new Date();
@@ -522,6 +750,12 @@ async function listMyCopies(userId) {
   const boxes = await CopyBox.find({ accountId: { $in: accIds } }).lean();
   const boxByAcc = new Map(boxes.map((b) => [String(b.accountId), b]));
 
+  // Funding (follower) accounts — so the UI can distinguish multiple copies of
+  // the same master that land in different accounts.
+  const fAccIds = [...new Set(relations.map((r) => r.followerAccountId).filter(Boolean).map(String))];
+  const fAccs = fAccIds.length ? await TradingAccount.find({ _id: { $in: fAccIds } }).select('accountNumber accountType nickname').lean() : [];
+  const fAccById = new Map(fAccs.map((a) => [String(a._id), a]));
+
   const openTrades = await CopyTrade.find({
     relationId: { $in: relations.map((r) => r._id) },
     status: 'OPEN',
@@ -535,8 +769,11 @@ async function listMyCopies(userId) {
 
   return relations.map((r) => {
     const box = boxByAcc.get(String(r.masterAccountId));
+    const fAcc = fAccById.get(String(r.followerAccountId));
     return {
       ...r,
+      followerAccountNumber: fAcc?.accountNumber || null,
+      followerAccountType: fAcc?.accountType || null,
       master: box ? {
         displayName: box.displayName,
         accountNumber: box.accountNumber,
@@ -557,6 +794,7 @@ module.exports = {
   createBox,
   listMyBoxes,
   updateBox,
+  deleteBox,
   // master hooks
   onMasterOrderFilled,
   onMasterPositionClosed,

@@ -154,7 +154,21 @@
       "Bash(BENCH_N=400 node scripts/bench-engine.js)",
       "Bash(node --check src/services/orderRouter.service.js)",
       "Bash(node --check src/controllers/bonusWalletController.js)",
-      "Bash(grep -nE 'Deposit|Withdrawal|baseAmount|totalDeposit|totalWithdrawal|$sum' controllers/financeController.js)"
+      "Bash(grep -nE 'Deposit|Withdrawal|baseAmount|totalDeposit|totalWithdrawal|$sum' controllers/financeController.js)",
+      "Bash(node --check src/websocket/server.js)",
+      "Bash(Get-ChildItem -Recurse -Depth 2 -Directory)",
+      "Bash(Select-Object FullName)",
+      "Bash(node --check src/models/GlobalAlert.js)",
+      "Bash(node --check src/models/AlertAcknowledgement.js)",
+      "Bash(node --check src/controllers/globalAlertController.js)",
+      "Bash(node --check src/routes/globalAlerts.js)",
+      "Bash(node --check src/services/notificationService.js)",
+      "Bash(node --check src/controllers/notificationController.js)",
+      "Bash(node --check src/routes/user.js)",
+      "Bash(node --check src/models/index.js)",
+      "Bash(node --check src/controllers/orderController.js)",
+      "Bash(node --check src/models/CopyBox.js)",
+      "Bash(node --check src/models/CopyRelation.js)"
     ]
   }
 }

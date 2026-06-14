@@ -1,6 +1,7 @@
 const express = require('express');
 const c = require('../controllers/userController');
 const dash = require('../controllers/dashboardController');
+const notifications = require('../controllers/notificationController');
 const { authenticate } = require('../middleware/auth');
 
 const router = express.Router();
@@ -50,6 +51,10 @@ router.get('/leverage', async (req, res, next) => {
 // Feedback
 router.post('/feedback', c.submitFeedback);
 router.get('/feedback', c.listMyFeedback);
+
+// In-app notifications (bell) — persisted list + mark-read.
+router.get('/notifications', notifications.listMine);
+router.post('/notifications/read', notifications.markRead);
 
 // Push notification tokens
 const pushService = require('../services/pushService');

@@ -83,10 +83,10 @@ const myBoxes = asyncHandler(async (req, res) => {
 });
 
 const createBox = asyncHandler(async (req, res) => {
-  const { accountId, displayName, bio, riskBadge, isPublic } = req.body;
+  const { accountId, displayName, bio, riskBadge, isPublic, performanceFeePercent } = req.body;
   if (!accountId) throw new AppError('accountId required', 400);
   try {
-    const box = await copyTradingService.createBox({ userId: req.userId, accountId, displayName, bio, riskBadge, isPublic });
+    const box = await copyTradingService.createBox({ userId: req.userId, accountId, displayName, bio, riskBadge, isPublic, performanceFeePercent });
     sendSuccess(res, box, 201);
   } catch (e) { throw new AppError(e.message, 400); }
 });
@@ -95,6 +95,13 @@ const updateBox = asyncHandler(async (req, res) => {
   try {
     const box = await copyTradingService.updateBox({ userId: req.userId, boxId: req.params.id, ...req.body });
     sendSuccess(res, box);
+  } catch (e) { throw new AppError(e.message, 400); }
+});
+
+const deleteBox = asyncHandler(async (req, res) => {
+  try {
+    await copyTradingService.deleteBox({ userId: req.userId, boxId: req.params.id });
+    sendSuccess(res, { ok: true });
   } catch (e) { throw new AppError(e.message, 400); }
 });
 
@@ -193,6 +200,7 @@ module.exports = {
   myBoxes,
   createBox,
   updateBox,
+  deleteBox,
   startCopy,
   pauseCopy:  setStatus('PAUSED'),
   resumeCopy: setStatus('ACTIVE'),

@@ -105,12 +105,18 @@ const userName = (u) => (u ? ([u.firstName, u.lastName].filter(Boolean).join(' '
 
 /* ────────────── shared filter builders ────────────── */
 
-// Resolve free-text user search + account number into id constraints, merged
-// with the caller's scope. Returns { userId?, accountId? } match fragments.
+// Resolve user search + account number/type + order-id into match fragments,
+// merged with the caller's scope. Returns { filter, idExpr } — `filter` holds
+// userId/accountId/_id constraints; `idExpr` is a raw $expr (order-id suffix
+// match) to combine via applyExprs. An empty result is forced with a sentinel
+// id so callers don't need a special null-check.
+const EMPTY = '000000000000000000000000';
 async function resolveFilters(req, scopeIds) {
-  const out = {};
-  let userIdSet = scopeIds ? scopeIds.map(String) : null;
+  const filter = {};
+  let idExpr = null;
 
+  // ── user (id / email / name / uid), intersected with scope ──
+  let userIdSet = scopeIds ? scopeIds.map(String) : null;
   const q = (req.query.user || '').trim();
   if (q) {
     const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
@@ -119,16 +125,34 @@ async function resolveFilters(req, scopeIds) {
     const matched = await User.find({ $or: or }).select('_id').lean();
     const ids = matched.map((u) => String(u._id));
     userIdSet = userIdSet ? userIdSet.filter((id) => ids.includes(id)) : ids;
-    if (!userIdSet.length) userIdSet = ['000000000000000000000000']; // force empty result
+    if (!userIdSet.length) userIdSet = [EMPTY];
   }
-  if (userIdSet) out.userId = { $in: userIdSet };
+  if (userIdSet) filter.userId = { $in: userIdSet };
 
+  // ── account number + account type (intersected) ──
+  let accIdSet = null;
   const accNo = (req.query.accountNumber || '').trim();
   if (accNo) {
     const acc = await TradingAccount.findOne({ accountNumber: accNo }).select('_id').lean();
-    out.accountId = acc ? acc._id : null; // null → no rows
+    accIdSet = acc ? [String(acc._id)] : [EMPTY];
   }
-  return out;
+  const acctType = (req.query.accountType || '').trim();
+  if (acctType) {
+    const accs = await TradingAccount.find({ accountType: acctType.toUpperCase() }).select('_id').lean();
+    const typeIds = accs.map((a) => String(a._id));
+    accIdSet = accIdSet ? accIdSet.filter((id) => typeIds.includes(id)) : typeIds;
+    if (!accIdSet.length) accIdSet = [EMPTY];
+  }
+  if (accIdSet) filter.accountId = { $in: accIdSet };
+
+  // ── order / position id: full 24-hex → exact; else #XXXXXX ticket suffix ──
+  const oidQ = (req.query.orderId || '').trim().replace(/^#/, '');
+  if (oidQ) {
+    if (/^[0-9a-fA-F]{24}$/.test(oidQ)) filter._id = oidQ;
+    else idExpr = { $regexMatch: { input: { $toString: '$_id' }, regex: oidQ.replace(/[^0-9a-fA-F]/g, ''), options: 'i' } };
+  }
+
+  return { filter, idExpr };
 }
 
 // volume range on the stringified quantity field — returns a RAW aggregation
@@ -212,15 +236,41 @@ const summary = asyncHandler(async (req, res) => {
   });
 });
 
+// Resolve each row's DISPLAY fee category ('COMMISSION' | 'CHARGES') from its
+// account fee type (+ instrument override). Returns _id → category. Used so a
+// trade's single fee shows under exactly one column. Display metadata only.
+async function feeCategoryMap(rows, aMap) {
+  const out = new Map();
+  if (!rows.length) return out;
+  const accountFeeService = require('../services/accountFeeService');
+  const symbols = [...new Set(rows.map((r) => r.symbol).filter(Boolean))];
+  const insts = symbols.length
+    ? await Instrument.find({ symbol: { $in: symbols } }).select('symbol commissionOverrides commissionType commissionPercent commissionPerTrade').lean()
+    : [];
+  const iMap = new Map(insts.map((i) => [i.symbol, i]));
+  const cache = new Map();
+  for (const r of rows) {
+    const accountType = aMap.get(String(r.accountId))?.accountType;
+    const key = `${accountType || ''}|${r.symbol}`;
+    let cat = cache.get(key);
+    if (cat === undefined) {
+      try { cat = await accountFeeService.resolveFeeCategory({ account: { accountType }, instrument: iMap.get(r.symbol) }); }
+      catch (_) { cat = 'COMMISSION'; }
+      cache.set(key, cat);
+    }
+    out.set(String(r._id), cat);
+  }
+  return out;
+}
+
 /* ────────────────────────── OPEN ORDERS (positions) ────────────────────────── */
 
 const openOrders = asyncHandler(async (req, res) => {
   const scopeIds = await scopeUserIds(req);
   const { page, limit, skip } = pageOf(req);
-  const f = await resolveFilters(req, scopeIds);
-  if (f.accountId === null) return sendSuccess(res, { items: [], pagination: { page, limit, total: 0, pages: 0 } });
+  const { filter, idExpr } = await resolveFilters(req, scopeIds);
 
-  const match = { status: POSITION_STATUS.OPEN, ...f };
+  const match = { status: POSITION_STATUS.OPEN, ...filter };
   if (req.query.symbol) match.symbol = new RegExp(String(req.query.symbol), 'i');
   if (req.query.side) match.side = String(req.query.side).toUpperCase();
   if (req.query.book) match.book = String(req.query.book).toUpperCase();
@@ -229,12 +279,13 @@ const openOrders = asyncHandler(async (req, res) => {
     if (req.query.from) match.openedAt.$gte = new Date(req.query.from);
     if (req.query.to) match.openedAt.$lte = new Date(new Date(req.query.to).setHours(23, 59, 59, 999));
   }
-  applyExprs(match, [volumeExpr(req)]);
+  applyExprs(match, [idExpr, volumeExpr(req)]);
 
   const total = await Position.countDocuments(match);
   const rows = await Position.find(match).sort({ openedAt: -1 }).skip(skip).limit(limit).lean();
   const { uMap, aMap } = await attachOwners(rows);
   const prices = await priceMap(rows.map((r) => r.symbol));
+  const catMap = await feeCategoryMap(rows, aMap);
 
   const items = rows.map((p) => {
     const inst = prices.get(p.symbol) || {};
@@ -243,10 +294,13 @@ const openOrders = asyncHandler(async (req, res) => {
       kind: 'position', _id: p._id,
       userId: p.userId, userName: userName(uMap.get(String(p.userId))), userUid: uMap.get(String(p.userId))?.userUid,
       accountId: p.accountId, accountNumber: aMap.get(String(p.accountId))?.accountNumber || '—',
+      accountType: aMap.get(String(p.accountId))?.accountType || '—',
       symbol: p.symbol, side: p.side, positionSide: p.positionSide,
       volume: num(p.quantity), openPrice: num(p.entryPrice), currentPrice: mark,
       floatingPnl: round(floatingPnl(p, mark), 2),
       commission: num(p.commission), swap: num(p.swap),
+      charges: round(num(p.commission) + num(p.swap), 2),
+      feeCategory: catMap.get(String(p._id)) || 'COMMISSION',
       stopLoss: p.stopLoss != null ? num(p.stopLoss) : null,
       takeProfit: p.takeProfit != null ? num(p.takeProfit) : null,
       margin: num(p.margin), book: p.book, leverage: p.leverage,
@@ -261,10 +315,9 @@ const openOrders = asyncHandler(async (req, res) => {
 const pendingOrders = asyncHandler(async (req, res) => {
   const scopeIds = await scopeUserIds(req);
   const { page, limit, skip } = pageOf(req);
-  const f = await resolveFilters(req, scopeIds);
-  if (f.accountId === null) return sendSuccess(res, { items: [], pagination: { page, limit, total: 0, pages: 0 } });
+  const { filter, idExpr } = await resolveFilters(req, scopeIds);
 
-  const match = { status: { $in: [ORDER_STATUS.PENDING, ORDER_STATUS.PARTIALLY_FILLED] }, ...f };
+  const match = { status: { $in: [ORDER_STATUS.PENDING, ORDER_STATUS.PARTIALLY_FILLED] }, ...filter };
   if (req.query.symbol) match.symbol = new RegExp(String(req.query.symbol), 'i');
   if (req.query.side) match.side = String(req.query.side).toUpperCase();
   if (req.query.orderType) match.type = String(req.query.orderType).toUpperCase();
@@ -273,23 +326,57 @@ const pendingOrders = asyncHandler(async (req, res) => {
     if (req.query.from) match.createdAt.$gte = new Date(req.query.from);
     if (req.query.to) match.createdAt.$lte = new Date(new Date(req.query.to).setHours(23, 59, 59, 999));
   }
-  applyExprs(match, [volumeExpr(req)]);
+  applyExprs(match, [idExpr, volumeExpr(req)]);
 
   const total = await Order.countDocuments(match);
   const rows = await Order.find(match).sort({ createdAt: -1 }).skip(skip).limit(limit).lean();
   const { uMap, aMap } = await attachOwners(rows);
 
-  const items = rows.map((o) => ({
-    kind: 'order', _id: o._id,
-    userId: o.userId, userName: userName(uMap.get(String(o.userId))), userUid: uMap.get(String(o.userId))?.userUid,
-    accountId: o.accountId, accountNumber: aMap.get(String(o.accountId))?.accountNumber || '—',
-    symbol: o.symbol, side: o.side, orderType: o.type, status: o.status,
-    entryPrice: o.price != null ? num(o.price) : (o.stopPrice != null ? num(o.stopPrice) : null),
-    stopPrice: o.stopPrice != null ? num(o.stopPrice) : null,
-    volume: num(o.quantity), filled: num(o.filledQuantity),
-    stopLoss: o.stopLoss != null ? num(o.stopLoss) : null,
-    takeProfit: o.takeProfit != null ? num(o.takeProfit) : null,
-    createdTime: o.createdAt,
+  // A pending order carries no commission yet — it's only charged when the
+  // order fills into a Position and that position is closed. So we surface an
+  // ESTIMATE of the commission it will incur, using the account's fee model at
+  // the order price (pnl=0). Charges = same estimate (no swap until held).
+  // This is display-only; it does not change any stored value or charging logic.
+  const accountFeeService = require('../services/accountFeeService');
+  const symbols = [...new Set(rows.map((o) => o.symbol).filter(Boolean))];
+  const instList = symbols.length ? await Instrument.find({ symbol: { $in: symbols } }).lean() : [];
+  const iMap = new Map(instList.map((i) => [i.symbol, i]));
+
+  const items = await Promise.all(rows.map(async (o) => {
+    const acct = aMap.get(String(o.accountId));
+    const inst = iMap.get(o.symbol);
+    const px = o.price != null ? num(o.price) : (o.stopPrice != null ? num(o.stopPrice) : null);
+    let commissionEst = 0;
+    try {
+      if (inst && acct && px != null && num(o.quantity) > 0) {
+        commissionEst = round(num(await accountFeeService.computeCloseFee({
+          account: { accountType: acct.accountType },
+          instrument: inst,
+          closeQty: num(o.quantity),
+          closePrice: px,
+          closePnl: 0,
+        })), 2);
+      }
+    } catch (_) { commissionEst = 0; }
+    let feeCat = 'COMMISSION';
+    try { if (inst) feeCat = await accountFeeService.resolveFeeCategory({ account: { accountType: acct?.accountType }, instrument: inst }); } catch (_) { feeCat = 'COMMISSION'; }
+    return {
+      kind: 'order', _id: o._id,
+      userId: o.userId, userName: userName(uMap.get(String(o.userId))), userUid: uMap.get(String(o.userId))?.userUid,
+      accountId: o.accountId, accountNumber: aMap.get(String(o.accountId))?.accountNumber || '—',
+      accountType: aMap.get(String(o.accountId))?.accountType || '—',
+      symbol: o.symbol, side: o.side, orderType: o.type, status: o.status,
+      entryPrice: o.price != null ? num(o.price) : (o.stopPrice != null ? num(o.stopPrice) : null),
+      stopPrice: o.stopPrice != null ? num(o.stopPrice) : null,
+      volume: num(o.quantity), filled: num(o.filledQuantity),
+      stopLoss: o.stopLoss != null ? num(o.stopLoss) : null,
+      takeProfit: o.takeProfit != null ? num(o.takeProfit) : null,
+      commission: commissionEst,
+      charges: commissionEst,
+      commissionEstimated: true,
+      feeCategory: feeCat,
+      createdTime: o.createdAt,
+    };
   }));
   sendSuccess(res, { items, pagination: { page, limit, total, pages: Math.ceil(total / limit) } });
 });
@@ -299,10 +386,9 @@ const pendingOrders = asyncHandler(async (req, res) => {
 const closedOrders = asyncHandler(async (req, res) => {
   const scopeIds = await scopeUserIds(req);
   const { page, limit, skip } = pageOf(req);
-  const f = await resolveFilters(req, scopeIds);
-  if (f.accountId === null) return sendSuccess(res, { items: [], pagination: { page, limit, total: 0, pages: 0 } });
+  const { filter, idExpr } = await resolveFilters(req, scopeIds);
 
-  const match = { status: POSITION_STATUS.CLOSED, ...f };
+  const match = { status: POSITION_STATUS.CLOSED, ...filter };
   if (req.query.symbol) match.symbol = new RegExp(String(req.query.symbol), 'i');
   if (req.query.side) match.side = String(req.query.side).toUpperCase();
   if (req.query.book) match.book = String(req.query.book).toUpperCase();
@@ -312,24 +398,28 @@ const closedOrders = asyncHandler(async (req, res) => {
     if (req.query.to) match.closedAt.$lte = new Date(new Date(req.query.to).setHours(23, 59, 59, 999));
   }
   // Profit / loss filter on realized PnL (a real DB field for closed positions),
-  // combined with the volume filter into a single $expr.
+  // combined with the volume + order-id filters into a single $expr.
   let pnlExpr = null;
   if (req.query.pnl === 'profit') pnlExpr = { $gt: [{ $toDouble: '$realizedPnl' }, 0] };
   else if (req.query.pnl === 'loss') pnlExpr = { $lt: [{ $toDouble: '$realizedPnl' }, 0] };
-  applyExprs(match, [pnlExpr, volumeExpr(req)]);
+  applyExprs(match, [pnlExpr, idExpr, volumeExpr(req)]);
 
   const total = await Position.countDocuments(match);
   const rows = await Position.find(match).sort({ closedAt: -1 }).skip(skip).limit(limit).lean();
   const { uMap, aMap } = await attachOwners(rows);
+  const catMap = await feeCategoryMap(rows, aMap);
 
   const items = rows.map((p) => ({
     kind: 'position', _id: p._id,
     userId: p.userId, userName: userName(uMap.get(String(p.userId))), userUid: uMap.get(String(p.userId))?.userUid,
     accountId: p.accountId, accountNumber: aMap.get(String(p.accountId))?.accountNumber || '—',
+    accountType: aMap.get(String(p.accountId))?.accountType || '—',
     symbol: p.symbol, side: p.side,
     volume: num(p.closedQuantity) > 0 ? num(p.closedQuantity) : num(p.quantity),
     openPrice: num(p.entryPrice), closePrice: num(p.closePrice),
     realizedPnl: round(num(p.realizedPnl), 2), commission: num(p.commission), swap: num(p.swap),
+    charges: round(num(p.commission) + num(p.swap), 2),
+    feeCategory: catMap.get(String(p._id)) || 'COMMISSION',
     book: p.book, closeReason: p.closeReason,
     openTime: p.openedAt, closeTime: p.closedAt,
   }));
