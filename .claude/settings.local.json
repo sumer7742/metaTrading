@@ -175,7 +175,9 @@
       "Bash(node --check scripts/bench-engine-multi.js)",
       "Bash(BENCH_ACCOUNTS=50 BENCH_PER=30 node scripts/bench-engine-multi.js)",
       "Bash(node --check src/matching-engine/LedgerCache.js)",
-      "Bash(git rev-list *)"
+      "Bash(git rev-list *)",
+      "Bash(node --check src/models/CmsPage.js)",
+      "Bash(node --check src/controllers/cmsPageController.js)"
     ]
   }
 }

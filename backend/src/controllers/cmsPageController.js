@@ -9,6 +9,7 @@ const CmsPage = require('../models/CmsPage');
 const { AuditLog } = require('../models');
 const { sendSuccess, asyncHandler, AppError } = require('../utils/errors');
 const { uniqueSlug, sanitizeHtml } = require('../utils/cms');
+const systemSettings = require('../services/systemSettings.service');
 
 const PUBLIC_CACHE = 'public, max-age=60, stale-while-revalidate=120';
 
@@ -25,21 +26,47 @@ async function audit(req, action, targetId, metadata = {}) {
 
 /* ───────────────────────── PUBLIC ───────────────────────── */
 
-// Footer links — published, flagged for footer, ordered. Minimal payload.
+// Footer links + footer config (brand / address / socials / copyright). Links
+// carry their column group so the client renders a multi-column footer.
 const footerLinks = asyncHandler(async (req, res) => {
   const lang = req.query.lang || 'en';
-  const pages = await CmsPage.find({ status: 'PUBLISHED', showInFooter: true, language: lang })
-    .select('slug title footerLabel openInNewTab order visibility')
-    .sort({ order: 1, title: 1 }).lean();
+  const [pages, config] = await Promise.all([
+    CmsPage.find({ status: 'PUBLISHED', showInFooter: true, language: lang })
+      .select('slug title footerLabel footerColumn openInNewTab order visibility')
+      .sort({ order: 1, title: 1 }).lean(),
+    systemSettings.getSetting('footer.config'),
+  ]);
   const links = pages.map((p) => ({
     slug: p.slug,
     label: p.footerLabel || p.title,
     href: `/page/${p.slug}`,
+    column: p.footerColumn || 'Company',
     openInNewTab: !!p.openInNewTab,
     authOnly: p.visibility === 'AUTH',
   }));
   res.set('Cache-Control', PUBLIC_CACHE);
-  sendSuccess(res, links);
+  sendSuccess(res, { links, config: config || {} });
+});
+
+// Admin: read the footer config (brand / address / socials / copyright).
+const getFooterConfig = asyncHandler(async (req, res) => {
+  sendSuccess(res, (await systemSettings.getSetting('footer.config')) || {});
+});
+
+// Admin: update the footer config.
+const setFooterConfig = asyncHandler(async (req, res) => {
+  const b = req.body || {};
+  const cur = (await systemSettings.getSetting('footer.config')) || {};
+  const next = {
+    brand:     b.brand     !== undefined ? String(b.brand)     : (cur.brand || ''),
+    tagline:   b.tagline   !== undefined ? String(b.tagline)   : (cur.tagline || ''),
+    address:   b.address   !== undefined ? String(b.address)   : (cur.address || ''),
+    copyright: b.copyright !== undefined ? String(b.copyright) : (cur.copyright || ''),
+    socials:   { ...(cur.socials || {}), ...(b.socials || {}) },
+  };
+  await systemSettings.setSetting('footer.config', next, req.userId);
+  await audit(req, 'CMS_FOOTER_CONFIG_UPDATE', null, {});
+  sendSuccess(res, next);
 });
 
 // Single published page by slug. Honors visibility; tracks views.
@@ -91,6 +118,7 @@ const adminCreate = asyncHandler(async (req, res) => {
     metaKeywords: normalizeKeywords(b.metaKeywords),
     showInFooter: b.showInFooter !== false,
     footerLabel: b.footerLabel || '',
+    footerColumn: b.footerColumn || 'Company',
     openInNewTab: !!b.openInNewTab,
     order: Number.isFinite(+b.order) ? +b.order : ((maxOrder?.order || 0) + 1),
     language: b.language || 'en',
@@ -116,6 +144,7 @@ const adminUpdate = asyncHandler(async (req, res) => {
   if (b.metaKeywords !== undefined) page.metaKeywords = normalizeKeywords(b.metaKeywords);
   if (b.showInFooter !== undefined) page.showInFooter = !!b.showInFooter;
   if (b.footerLabel !== undefined) page.footerLabel = b.footerLabel || '';
+  if (b.footerColumn !== undefined) page.footerColumn = b.footerColumn || 'Company';
   if (b.openInNewTab !== undefined) page.openInNewTab = !!b.openInNewTab;
   if (b.order !== undefined && Number.isFinite(+b.order)) page.order = +b.order;
   if (b.language !== undefined) page.language = b.language || 'en';
@@ -169,4 +198,5 @@ function normalizeKeywords(v) {
 module.exports = {
   footerLinks, getPublicBySlug,
   adminList, adminGet, adminCreate, adminUpdate, adminPublish, adminReorder, adminDelete,
+  getFooterConfig, setFooterConfig,
 };

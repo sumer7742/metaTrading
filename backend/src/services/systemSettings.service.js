@@ -16,6 +16,20 @@ const TTL_MS = Number(process.env.SETTINGS_CACHE_TTL_MS) || 60_000;
 const DEFAULTS = {
   routingMode: 'B_BOOK',
   defaultLpProvider: 'NONE',
+  // ── Public footer (CMS-driven multi-column footer) ──
+  // Brand + address + socials + copyright shown alongside the column links.
+  // Edited from Admin → CMS Pages → Footer Settings.
+  'footer.config': {
+    brand: 'TradePro',
+    tagline: '',
+    address: 'Chirala, Ganjipalem area Bapatla district,\nAndhra Pradesh, India 523155',
+    copyright: '', // empty → "© <year> · <brand> · All rights reserved"
+    // Dummy '#' so the icons render out-of-the-box; admin swaps in real URLs.
+    socials: {
+      facebook: '#', twitter: '#', youtube: '#', linkedin: '#',
+      instagram: '#', whatsapp: '#', telegram: '#', skype: '#',
+    },
+  },
   // Max number of top-level platform admins (Hierarchy → Admins). Super-admin
   // editable; falls back to the hard cap in config/hierarchy.js when unset.
   'hierarchy.maxAdmins': 4,

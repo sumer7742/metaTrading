@@ -27,6 +27,7 @@ const cmsPageSchema = new mongoose.Schema(
     // Footer placement
     showInFooter: { type: Boolean, default: true, index: true },
     footerLabel: { type: String, default: '' }, // overrides title in the footer when set
+    footerColumn: { type: String, default: 'Company' }, // column group in the footer (e.g. Company / Products / Resources / Support)
     openInNewTab: { type: Boolean, default: false },
     order: { type: Number, default: 0, index: true },
 

@@ -45,6 +45,10 @@ router.put('/cms/pages/:id', cmsPages.adminUpdate);
 router.post('/cms/pages/:id/publish', cmsPages.adminPublish);
 router.delete('/cms/pages/:id', cmsPages.adminDelete);
 
+// Footer brand / address / socials / copyright (the multi-column footer chrome).
+router.get('/cms/footer-config', cmsPages.getFooterConfig);
+router.put('/cms/footer-config', cmsPages.setFooterConfig);
+
 // ── CMS: News (Daily News Updates). ──
 router.get('/cms/news', cmsNews.adminList);
 router.post('/cms/news', cmsNews.adminCreate);

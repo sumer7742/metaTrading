@@ -107,8 +107,61 @@ export default function CmsPages() {
         </table>
       </div>
 
-      {editing && <PageEditor page={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} onPreview={(p) => setPreview(p)} />}
+      <FooterSettings />
+
+      {editing && <PageEditor page={editing} columns={[...new Set(rows.map((r) => r.footerColumn).filter(Boolean))]} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} onPreview={(p) => setPreview(p)} />}
       {preview && <PreviewModal page={preview} onClose={() => setPreview(null)} />}
+    </div>
+  );
+}
+
+// Footer brand / address / socials / copyright — the multi-column footer chrome.
+const SOCIAL_KEYS = ['facebook', 'twitter', 'youtube', 'linkedin', 'instagram', 'whatsapp', 'telegram', 'skype'];
+function FooterSettings() {
+  const [f, setF] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
+  const setSocial = (k, v) => setF((s) => ({ ...s, socials: { ...(s.socials || {}), [k]: v } }));
+
+  useEffect(() => {
+    api.get('/admin/cms/footer-config')
+      .then((r) => setF({ brand: '', tagline: '', address: '', copyright: '', socials: {}, ...(r.data.data || {}) }))
+      .catch(() => setF({ brand: '', tagline: '', address: '', copyright: '', socials: {} }));
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    try { await api.put('/admin/cms/footer-config', f); toast.success('Footer settings saved'); }
+    catch (e) { toast.error(errorMessage(e)); } finally { setSaving(false); }
+  };
+
+  if (!f) return null;
+  return (
+    <div className="card p-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-base font-bold text-white">Footer Settings</h3>
+        <button onClick={save} disabled={saving} className="btn-primary text-sm">{saving ? 'Saving…' : 'Save Footer'}</button>
+      </div>
+      <p className="text-[11px] text-text-muted">Brand, address & socials shown on the public footer. Links/columns are the pages above (set each page's Footer Column).</p>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div><label className="label">Brand name</label><input className="input" value={f.brand} onChange={(e) => set('brand', e.target.value)} placeholder="TradePro" /></div>
+        <div><label className="label">Tagline <span className="text-text-muted">(optional)</span></label><input className="input" value={f.tagline} onChange={(e) => set('tagline', e.target.value)} /></div>
+        <div className="md:col-span-2"><label className="label">Address</label><textarea className="input min-h-[60px]" value={f.address} onChange={(e) => set('address', e.target.value)} placeholder={'Chirala, Bapatla district,\nAndhra Pradesh, India 523155'} /></div>
+        <div className="md:col-span-2"><label className="label">Copyright <span className="text-text-muted">(blank = auto)</span></label><input className="input" value={f.copyright} onChange={(e) => set('copyright', e.target.value)} placeholder="© 2026 · TradePro · All rights reserved" /></div>
+      </div>
+
+      <div>
+        <div className="text-xs uppercase tracking-wide text-primary-500 font-bold mb-2">Social links <span className="text-text-muted normal-case">(blank = hidden)</span></div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          {SOCIAL_KEYS.map((k) => (
+            <div key={k} className="flex items-center gap-2">
+              <span className="text-xs text-text-muted w-20 capitalize shrink-0">{k}</span>
+              <input className="input" value={f.socials?.[k] || ''} onChange={(e) => setSocial(k, e.target.value)} placeholder={`https://…/${k}`} />
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
@@ -117,13 +170,14 @@ const Badge = ({ status }) => (
   <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${status === 'PUBLISHED' ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' : 'bg-bg-hover text-text-muted border-border-dark'}`}>{status}</span>
 );
 
-function PageEditor({ page, onClose, onSaved, onPreview }) {
+function PageEditor({ page, columns = [], onClose, onSaved, onPreview }) {
   const isNew = !page._id;
   const [f, setF] = useState({
     title: page.title || '', slug: page.slug || '', content: page.content || '',
     featuredImageUrl: page.featuredImageUrl || '', seoTitle: page.seoTitle || '',
     seoDescription: page.seoDescription || '', metaKeywords: (page.metaKeywords || []).join(', '),
     showInFooter: page.showInFooter !== false, footerLabel: page.footerLabel || '',
+    footerColumn: page.footerColumn || 'Company',
     openInNewTab: !!page.openInNewTab, visibility: page.visibility || 'PUBLIC',
     status: page.status || 'DRAFT',
   });
@@ -167,6 +221,18 @@ function PageEditor({ page, onClose, onSaved, onPreview }) {
           <div className="grid grid-cols-2 gap-3">
             <div><label className="label">Visibility</label><select className="input" value={f.visibility} onChange={(e) => set('visibility', e.target.value)}><option value="PUBLIC">Public</option><option value="AUTH">Logged-in users only</option></select></div>
             <div><label className="label">Footer Label <span className="text-text-muted">(optional)</span></label><input className="input" value={f.footerLabel} onChange={(e) => set('footerLabel', e.target.value)} placeholder={f.title} /></div>
+            <div><label className="label">Footer Column <span className="text-text-muted">(group)</span></label>
+              <input className="input" value={f.footerColumn} onChange={(e) => set('footerColumn', e.target.value)} placeholder="Type a column, e.g. Products" />
+              <div className="flex flex-wrap gap-1.5 mt-1.5">
+                {[...new Set(['Company', 'Products', 'Resources', 'Support', ...columns])].map((c) => (
+                  <button type="button" key={c} onClick={() => set('footerColumn', c)}
+                    className={`text-[11px] px-2 py-0.5 rounded-full border transition-colors ${f.footerColumn === c ? 'bg-primary-500/15 text-primary-500 border-primary-500/40' : 'bg-bg-hover text-text-muted border-border-dark hover:text-text-secondary'}`}>
+                    {c}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-text-muted mt-1">Pick one, or type any name to create a new column.</p>
+            </div>
           </div>
 
           <div className="flex flex-wrap gap-4">
