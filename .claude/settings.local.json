@@ -168,7 +168,13 @@
       "Bash(node --check src/models/index.js)",
       "Bash(node --check src/controllers/orderController.js)",
       "Bash(node --check src/models/CopyBox.js)",
-      "Bash(node --check src/models/CopyRelation.js)"
+      "Bash(node --check src/models/CopyRelation.js)",
+      "Bash(BENCH_N=800 node scripts/bench-engine.js)",
+      "Bash(node --check src/matching-engine/WriteBehind.js)",
+      "Bash(node --check src/matching-engine/Journal.js)",
+      "Bash(node --check scripts/bench-engine-multi.js)",
+      "Bash(BENCH_ACCOUNTS=50 BENCH_PER=30 node scripts/bench-engine-multi.js)",
+      "Bash(node --check src/matching-engine/LedgerCache.js)"
     ]
   }
 }

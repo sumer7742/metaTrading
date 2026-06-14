@@ -1,8 +1,10 @@
+const mongoose = require('mongoose');
 const OrderBook = require('./OrderBook');
 const Order = require('../models/Order');
 const Trade = require('../models/Trade');
 const Instrument = require('../models/Instrument');
 const Position = require('../models/Position');
+const TradingAccount = require('../models/TradingAccount');
 const { ORDER_STATUS, ORDER_SIDE, POSITION_STATUS, ROUTING } = require('../config/constants');
 const { add, sub, mul, div, eq, gt, lte, D } = require('../utils/decimal');
 const { computeInstrumentCommission } = require('../utils/commission');
@@ -26,6 +28,16 @@ class MatchingEngine {
     this.books = new Map(); // symbol -> OrderBook
     this.queues = new Map(); // symbol -> Promise (serializer)
     this.broadcaster = null; // injected: WebSocket broadcaster
+    // Phase 0 throughput: short-TTL instrument cache so the per-order intake
+    // read + the per-settle read don't both hit Mongo every order. Safe under
+    // the per-symbol single-writer model (no concurrent mutation within a
+    // symbol). TTL bounds price staleness for B-book fills.
+    this._instrCache = new Map(); // instrumentId -> { doc, exp }
+    this._instrCacheMs = Number(process.env.MATCHING_INSTRUMENT_CACHE_MS) || 50;
+    // Account META cache (baseCurrency + accountType ONLY — both static). Never
+    // caches balance/locked; those are always read/written fresh by the wallet
+    // service. Used to drop the per-settle account read.
+    this._acctCache = new Map(); // accountId -> { doc, exp }
   }
 
   setBroadcaster(broadcaster) {
@@ -35,6 +47,42 @@ class MatchingEngine {
   getBook(symbol) {
     if (!this.books.has(symbol)) this.books.set(symbol, new OrderBook(symbol));
     return this.books.get(symbol);
+  }
+
+  // Short-TTL instrument fetch (Phase 0). Returns the cached Mongoose doc when
+  // fresh, else reloads. Removes the redundant intake + settle reads per order.
+  async _getInstrument(instrumentId) {
+    const key = String(instrumentId);
+    const hit = this._instrCache.get(key);
+    if (hit && hit.exp > Date.now()) return hit.doc;
+    const doc = await Instrument.findById(instrumentId);
+    if (doc) this._instrCache.set(key, { doc, exp: Date.now() + this._instrCacheMs });
+    return doc;
+  }
+
+  // Static account fields (baseCurrency + accountType) for fee/currency
+  // resolution at settle. Balance/locked are NEVER taken from here.
+  async _getAccountMeta(accountId) {
+    const key = String(accountId);
+    const hit = this._acctCache.get(key);
+    if (hit && hit.exp > Date.now()) return hit.doc;
+    const doc = await TradingAccount.findById(accountId).select('baseCurrency accountType').lean();
+    if (doc) this._acctCache.set(key, { doc, exp: Date.now() + this._instrCacheMs });
+    return doc;
+  }
+
+  // Persist a new lastPrice WITHOUT a full doc.save() — updateOne avoids
+  // Mongoose version conflicts when the same cached doc is reused across orders,
+  // and stays fire-and-forget (off the hot path). Also updates the cached doc
+  // so the next order in the TTL window sees the latest price.
+  _persistLastPrice(instrument, price) {
+    if (!instrument || price == null) return;
+    instrument.lastPrice = price;
+    instrument.lastPriceUpdatedAt = new Date();
+    Instrument.updateOne(
+      { _id: instrument._id },
+      { $set: { lastPrice: price, lastPriceUpdatedAt: instrument.lastPriceUpdatedAt } }
+    ).catch(() => {});
   }
 
   /** Rebuild order books from open orders on engine start (crash recovery). */
@@ -63,20 +111,40 @@ class MatchingEngine {
     console.log(`[ME] Hydrated ${restored}/${openOrders.length} open orders into order books`);
   }
 
-  /** Serialize processing per symbol. */
+  /**
+   * Serialization key for an order.
+   *   • Book-matched orders (internal LIMIT/STOP) mutate the SHARED per-symbol
+   *     order book → must serialize per SYMBOL.
+   *   • B-book / EXTERNAL fills are synthetic: they never touch the order book,
+   *     and they only mutate their OWN position + (atomically) their OWN wallet.
+   *     So they serialize per (account, symbol) — which lets DIFFERENT accounts
+   *     trade the SAME symbol fully in parallel (the real-market case, and the
+   *     key lever for per-symbol throughput).
+   */
+  _queueKey(order) {
+    const r = String(order.routing || '').toUpperCase();
+    if (r === 'B_BOOK' || r === 'EXTERNAL') return `pos:${order.accountId}:${order.symbol}`;
+    return `sym:${order.symbol}`;
+  }
+
+  /** Serialize processing per queue key (see _queueKey). */
   async submit(order) {
-    const symbol = order.symbol;
-    const prev = this.queues.get(symbol) || Promise.resolve();
+    const key = this._queueKey(order);
+    const prev = this.queues.get(key) || Promise.resolve();
     const next = prev.then(() => this._processOrder(order)).catch((e) => {
       console.error('[ME] processOrder error:', e);
       throw e;
     });
-    this.queues.set(symbol, next.catch(() => {})); // chain even on error
+    const tracked = next.catch(() => {}); // chain even on error
+    this.queues.set(key, tracked);
+    // Drop the key once its chain fully drains (prevents unbounded growth of
+    // per-account keys), but only if no newer order has chained onto it.
+    tracked.finally(() => { if (this.queues.get(key) === tracked) this.queues.delete(key); });
     return next;
   }
 
   async _processOrder(order) {
-    const instrument = await Instrument.findById(order.instrumentId);
+    const instrument = await this._getInstrument(order.instrumentId);
     if (!instrument || !instrument.isActive) {
       order.status = ORDER_STATUS.REJECTED;
       order.rejectionReason = 'Instrument inactive';
@@ -236,9 +304,7 @@ class MatchingEngine {
       avgFillPrice = eq(totalFilled, '0') ? '0' : div(weightedSum, totalFilled);
 
       // Update last price on instrument
-      instrument.lastPrice = fills[fills.length - 1].price;
-      instrument.lastPriceUpdatedAt = new Date();
-      instrument.save().catch(() => {}); // fire-and-forget: lastPrice off the hot path
+      this._persistLastPrice(instrument, fills[fills.length - 1].price);
     }
 
     // Update incoming order
@@ -328,9 +394,7 @@ class MatchingEngine {
 
         // Update instrument last-price + broadcast tape so the chart & UI
         // reflect this fill, same as a real match would.
-        instrument.lastPrice = fillPx;
-        instrument.lastPriceUpdatedAt = new Date();
-        instrument.save().catch(() => {}); // fire-and-forget: lastPrice off the hot path
+        this._persistLastPrice(instrument, fillPx);
         {
           const { updateCandlesForTrade } = require('../services/candleService');
           updateCandlesForTrade({
@@ -454,24 +518,13 @@ class MatchingEngine {
     // Record a Trade with the broker as the synthetic counterparty.
     // We use the user as both buyer and seller (with B_BOOK routing flag) for simplicity;
     // real systems use a "broker account" entity. Either way, the trail is in the routing field.
-    const bbookTrade = await Trade.create({
-      instrumentId: order.instrumentId,
-      symbol: order.symbol,
-      buyOrderId: order._id,
-      sellOrderId: order._id,
-      buyUserId: order.userId,
-      sellUserId: order.userId,
-      buyAccountId: order.accountId,
-      sellAccountId: order.accountId,
-      price: finalPrice,
-      quantity: order.quantity,
-      routing: 'B_BOOK',
-    });
+    // Pre-generate the trade id so the trade record and the position settle can
+    // be persisted IN PARALLEL — the settle only needs the id (for its
+    // idempotent dedupeKey), not the persisted Trade doc.
+    const tradeId = new mongoose.Types.ObjectId();
 
-    // Update instrument lastPrice and aggregate into candles
-    instrument.lastPrice = finalPrice;
-    instrument.lastPriceUpdatedAt = new Date();
-    instrument.save().catch(() => {}); // fire-and-forget: lastPrice off the hot path
+    // Update instrument lastPrice (version-safe) + aggregate into candles.
+    this._persistLastPrice(instrument, finalPrice);
     {
       const { updateCandlesForTrade } = require('../services/candleService');
       updateCandlesForTrade({
@@ -482,23 +535,39 @@ class MatchingEngine {
       }).catch((e) => console.error('[ME] B-book candle update failed:', e.message)); // fire-and-forget
     }
 
-    // Update the trader's position. tradeId enables idempotent settle.
-    await this._updatePosition(
-      order.accountId,
-      order.userId,
-      order.instrumentId,
-      order.symbol,
-      order.side,
-      order.quantity,
-      finalPrice,
-      order.leverage,
-      bbookTrade._id,
-      order.closeOnly,
-      order.stopLoss,
-      order.takeProfit,
-      order.positionSide,
-      bookOf(order)
-    );
+    // Trade record + position settle are independent writes → run in parallel.
+    await Promise.all([
+      Trade.create({
+        _id: tradeId,
+        instrumentId: order.instrumentId,
+        symbol: order.symbol,
+        buyOrderId: order._id,
+        sellOrderId: order._id,
+        buyUserId: order.userId,
+        sellUserId: order.userId,
+        buyAccountId: order.accountId,
+        sellAccountId: order.accountId,
+        price: finalPrice,
+        quantity: order.quantity,
+        routing: 'B_BOOK',
+      }),
+      this._updatePosition(
+        order.accountId,
+        order.userId,
+        order.instrumentId,
+        order.symbol,
+        order.side,
+        order.quantity,
+        finalPrice,
+        order.leverage,
+        tradeId,
+        order.closeOnly,
+        order.stopLoss,
+        order.takeProfit,
+        order.positionSide,
+        bookOf(order)
+      ),
+    ]);
 
     order.status = ORDER_STATUS.FILLED;
     order.filledQuantity = order.quantity;
@@ -517,7 +586,7 @@ class MatchingEngine {
         feeAmount = await subscriptionService.applyFeeDiscount(order.userId, feeAmount);
         if (gt(feeAmount, '0')) {
           await affiliateService.distributeCommissions({
-            tradeId: bbookTrade._id,
+            tradeId,
             userId: order.userId,
             feeAmount,
             currency: instrument.quoteCurrency,
@@ -609,9 +678,7 @@ class MatchingEngine {
     });
 
     // Update lastPrice + candles so chart reflects the activity
-    instrument.lastPrice = finalPrice;
-    instrument.lastPriceUpdatedAt = new Date();
-    instrument.save().catch(() => {}); // fire-and-forget: lastPrice off the hot path
+    this._persistLastPrice(instrument, finalPrice);
     {
       const { updateCandlesForTrade } = require('../services/candleService');
       updateCandlesForTrade({
@@ -825,8 +892,8 @@ class MatchingEngine {
     const walletService = require('../services/walletService');
     const subscriptionService = require('../services/subscriptionService');
 
-    const instrument = await Instrument.findById(instrumentId).lean();
-    const account = await TradingAccount.findById(accountId).lean();
+    const instrument = await this._getInstrument(instrumentId);
+    const account = await this._getAccountMeta(accountId);
     const currency = account?.baseCurrency || 'USD';
 
     // Reduce qty caps at remaining size — no flip leg in hedge mode.
