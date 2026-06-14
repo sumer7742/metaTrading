@@ -17,6 +17,8 @@ COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev || npm install --omit=dev --no-audit --no-fund
 
 COPY src ./src
+# Ops/maintenance scripts (engine benchmarks, migrations, etc.).
+COPY scripts ./scripts
 
 EXPOSE 5000
 CMD ["node", "src/server.js"]
