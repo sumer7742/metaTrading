@@ -267,3 +267,167 @@ export const keltner = (candles, period = 20, multiplier = 2, atrPeriod = 10) =>
   }
   return { upper, middle, lower };
 };
+
+/* ─────────── Additional moving averages + overlays ─────────── */
+
+// Weighted Moving Average — linearly weighted toward recent prices.
+export const wma = (closes, period) => {
+  const out = new Array(closes.length).fill(null);
+  const denom = (period * (period + 1)) / 2;
+  for (let i = period - 1; i < closes.length; i++) {
+    let s = 0;
+    for (let k = 0; k < period; k++) s += closes[i - k] * (period - k);
+    out[i] = s / denom;
+  }
+  return out;
+};
+
+// Hull MA — WMA(2·WMA(n/2) − WMA(n), √n). Very responsive, low lag.
+export const hma = (closes, period) => {
+  const half = Math.max(1, Math.floor(period / 2));
+  const sq = Math.max(1, Math.round(Math.sqrt(period)));
+  const wHalf = wma(closes, half);
+  const wFull = wma(closes, period);
+  const diff = closes.map((_, i) => (wHalf[i] != null && wFull[i] != null ? 2 * wHalf[i] - wFull[i] : 0));
+  const h = wma(diff, sq);
+  return h.map((v, i) => (i < period + sq ? null : v));
+};
+
+// EMA over an array that may have leading nulls (re-aligned). Internal helper.
+const _emaOf = (arr, period) => {
+  const out = new Array(arr.length).fill(null);
+  const start = arr.findIndex((v) => v != null && Number.isFinite(v));
+  if (start < 0 || arr.length - start < period) return out;
+  const k = 2 / (period + 1);
+  let prev = 0;
+  for (let i = start; i < start + period; i++) prev += arr[i];
+  prev /= period;
+  out[start + period - 1] = prev;
+  for (let i = start + period; i < arr.length; i++) { prev = arr[i] * k + prev * (1 - k); out[i] = prev; }
+  return out;
+};
+
+// Double / Triple EMA — reduced lag.
+export const dema = (closes, period) => {
+  const e1 = ema(closes, period); const e2 = _emaOf(e1, period);
+  return closes.map((_, i) => (e1[i] != null && e2[i] != null ? 2 * e1[i] - e2[i] : null));
+};
+export const tema = (closes, period) => {
+  const e1 = ema(closes, period); const e2 = _emaOf(e1, period); const e3 = _emaOf(e2, period);
+  return closes.map((_, i) => (e1[i] != null && e2[i] != null && e3[i] != null ? 3 * e1[i] - 3 * e2[i] + e3[i] : null));
+};
+
+// Smoothed / Wilder's MA (a.k.a. RMA).
+export const smma = (closes, period) => {
+  const out = new Array(closes.length).fill(null);
+  if (closes.length < period) return out;
+  let prev = 0;
+  for (let i = 0; i < period; i++) prev += closes[i];
+  prev /= period; out[period - 1] = prev;
+  for (let i = period; i < closes.length; i++) { prev = (prev * (period - 1) + closes[i]) / period; out[i] = prev; }
+  return out;
+};
+
+// Volume-Weighted Moving Average (falls back to SMA when no volume).
+export const vwma = (candles, period) => {
+  const out = new Array(candles.length).fill(null);
+  for (let i = period - 1; i < candles.length; i++) {
+    let pv = 0, v = 0;
+    for (let k = 0; k < period; k++) { const c = candles[i - k]; const vol = Number(c.volume) || 1; pv += Number(c.close) * vol; v += vol; }
+    out[i] = v > 0 ? pv / v : null;
+  }
+  return out;
+};
+
+// Arnaud Legoux MA — Gaussian-weighted, low lag + smooth.
+export const alma = (closes, period, offset = 0.85, sigma = 6) => {
+  const out = new Array(closes.length).fill(null);
+  const m = offset * (period - 1);
+  const s = period / sigma;
+  const w = []; let norm = 0;
+  for (let k = 0; k < period; k++) { const wk = Math.exp(-((k - m) ** 2) / (2 * s * s)); w[k] = wk; norm += wk; }
+  for (let i = period - 1; i < closes.length; i++) {
+    let sum = 0;
+    for (let k = 0; k < period; k++) sum += closes[i - period + 1 + k] * w[k];
+    out[i] = sum / norm;
+  }
+  return out;
+};
+
+// Moving-average envelopes — SMA ± a fixed percentage.
+export const envelopes = (closes, period = 20, pct = 2) => {
+  const middle = sma(closes, period);
+  const f = pct / 100;
+  return {
+    middle,
+    upper: middle.map((v) => (v == null ? null : v * (1 + f))),
+    lower: middle.map((v) => (v == null ? null : v * (1 - f))),
+  };
+};
+
+// Linear-regression value at the end of each rolling window.
+export const linreg = (closes, period = 14) => {
+  const out = new Array(closes.length).fill(null);
+  const n = period;
+  for (let i = period - 1; i < closes.length; i++) {
+    let sx = 0, sy = 0, sxy = 0, sxx = 0;
+    for (let k = 0; k < period; k++) { const x = k; const y = closes[i - period + 1 + k]; sx += x; sy += y; sxy += x * y; sxx += x * x; }
+    const denom = n * sxx - sx * sx;
+    if (!denom) { out[i] = null; continue; }
+    const slope = (n * sxy - sx * sy) / denom;
+    const intercept = (sy - slope * sx) / n;
+    out[i] = slope * (period - 1) + intercept;
+  }
+  return out;
+};
+
+// Parabolic SAR — trailing stop-and-reverse dots. step/max are the
+// acceleration-factor increment and ceiling (Wilder defaults 0.02 / 0.2).
+export const psar = (candles, step = 0.02, max = 0.2) => {
+  const n = candles.length;
+  const out = new Array(n).fill(null);
+  if (n < 2) return out;
+  let isUp = candles[1].close >= candles[0].close;
+  let af = step;
+  let ep = isUp ? candles[0].high : candles[0].low;       // extreme point
+  let sar = isUp ? candles[0].low : candles[0].high;
+  out[0] = sar;
+  for (let i = 1; i < n; i++) {
+    const h = candles[i].high, l = candles[i].low;
+    sar = sar + af * (ep - sar);
+    if (isUp) {
+      // SAR must not exceed the prior two lows.
+      sar = Math.min(sar, candles[i - 1].low, candles[i - 2] ? candles[i - 2].low : candles[i - 1].low);
+      if (l < sar) { isUp = false; sar = ep; ep = l; af = step; }       // reverse
+      else if (h > ep) { ep = h; af = Math.min(af + step, max); }
+    } else {
+      sar = Math.max(sar, candles[i - 1].high, candles[i - 2] ? candles[i - 2].high : candles[i - 1].high);
+      if (h > sar) { isUp = true; sar = ep; ep = h; af = step; }        // reverse
+      else if (l < ep) { ep = l; af = Math.min(af + step, max); }
+    }
+    out[i] = sar;
+  }
+  return out;
+};
+
+// SuperTrend — ATR-banded trend line that flips with price.
+export const supertrend = (candles, period = 10, multiplier = 3) => {
+  const n = candles.length;
+  const out = new Array(n).fill(null);
+  const a = atr(candles, period);
+  let upperBand = null, lowerBand = null, trendUp = true;
+  for (let i = 0; i < n; i++) {
+    if (a[i] == null) continue;
+    const hl2 = (candles[i].high + candles[i].low) / 2;
+    const basicUpper = hl2 + multiplier * a[i];
+    const basicLower = hl2 - multiplier * a[i];
+    const prevClose = candles[i - 1] ? candles[i - 1].close : candles[i].close;
+    upperBand = (upperBand == null || basicUpper < upperBand || prevClose > upperBand) ? basicUpper : upperBand;
+    lowerBand = (lowerBand == null || basicLower > lowerBand || prevClose < lowerBand) ? basicLower : lowerBand;
+    const close = candles[i].close;
+    if (close > upperBand) trendUp = true;
+    else if (close < lowerBand) trendUp = false;
+    out[i] = trendUp ? lowerBand : upperBand;
+  }
+  return out;
+};

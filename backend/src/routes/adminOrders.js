@@ -40,6 +40,7 @@ router.use((req, res, next) => {
 });
 
 /* ── Reads (all three roles; manager auto-scoped to own users) ── */
+router.get('/account-types', c.accountTypes);   // distinct types actually in use
 router.get('/summary', c.summary);
 router.get('/open', c.openOrders);
 router.get('/pending', c.pendingOrders);

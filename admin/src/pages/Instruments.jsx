@@ -130,6 +130,21 @@ export default function Instruments() {
   const [liveVol, setLiveVol] = useState({}); // symbol -> { buy, sell, net }
   const [editing, setEditing] = useState(null);
   const [overridesFor, setOverridesFor] = useState(null);
+  // Bulk routing-override selection (keyed by symbol).
+  const [selected, setSelected] = useState(() => new Set());
+  const [bulkRoute, setBulkRoute] = useState('B_BOOK');
+  const [bulkSaving, setBulkSaving] = useState(false);
+
+  const toggleSel = (symbol) => setSelected((s) => { const n = new Set(s); n.has(symbol) ? n.delete(symbol) : n.add(symbol); return n; });
+  const applyBulkRouting = async () => {
+    setBulkSaving(true);
+    try {
+      const { data } = await api.post('/instruments/bulk-routing', { symbols: [...selected], routingOverride: bulkRoute });
+      toast.success(`Routing → ${bulkRoute} for ${data.data.modified} instrument(s)`);
+      setSelected(new Set());
+      load();
+    } catch (e) { toast.error(errorMessage(e)); } finally { setBulkSaving(false); }
+  };
 
   const load = async () => {
     const [inst, lv] = await Promise.allSettled([
@@ -178,10 +193,31 @@ export default function Instruments() {
         }
       />
 
+      {selected.size > 0 && (
+        <div className="card p-3 flex flex-wrap items-center gap-3">
+          <span className="text-sm font-semibold text-white">{selected.size} selected</span>
+          <span className="text-text-muted text-sm">Set routing →</span>
+          <select className="input w-52" value={bulkRoute} onChange={(e) => setBulkRoute(e.target.value)}>
+            <option value="INHERIT">INHERIT</option>
+            <option value="INTERNAL_MATCHING">INTERNAL_MATCHING</option>
+            <option value="A_BOOK">A_BOOK</option>
+            <option value="B_BOOK">B_BOOK</option>
+            <option value="HYBRID">HYBRID</option>
+          </select>
+          <button onClick={applyBulkRouting} disabled={bulkSaving} className="btn-primary text-sm">{bulkSaving ? 'Applying…' : `Apply to ${selected.size}`}</button>
+          <button onClick={() => setSelected(new Set())} className="btn-ghost text-sm">Clear</button>
+        </div>
+      )}
+
       <div className="card overflow-x-auto">
         <table className="w-full text-sm whitespace-nowrap">
           <thead className="text-xs text-gray-500 uppercase">
             <tr>
+              <th className="p-3 w-8">
+                <input type="checkbox"
+                  checked={items.length > 0 && items.every((it) => selected.has(it.symbol))}
+                  onChange={(e) => setSelected(e.target.checked ? new Set(items.map((it) => it.symbol)) : new Set())} />
+              </th>
               <th className="text-left p-3">Symbol</th>
               <th className="text-left p-3">Name</th>
               <th className="text-left p-3">Category</th>
@@ -213,6 +249,7 @@ export default function Instruments() {
                                         'bg-bg-card text-gray-500 border-border-dark';
               return (
                 <tr key={it._id} className="table-row">
+                  <td className="p-3"><input type="checkbox" checked={selected.has(it.symbol)} onChange={() => toggleSel(it.symbol)} /></td>
                   <td className="p-3 font-medium">{it.symbol}</td>
                   <td className="p-3 text-gray-400">{it.name}</td>
                   <td className="p-3 text-xs">{it.category}</td>

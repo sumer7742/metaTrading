@@ -41,6 +41,12 @@ const copyBoxSchema = new mongoose.Schema(
     initialEquity: { type: String, default: '1000' }, // ROI denominator
     roiPct:        { type: Number, default: 0 },
     followers:     { type: Number, default: 0, index: true },
+
+    // Soft-delete / archive — a "deleted" box is archived (kept for history),
+    // hidden from the owner's active list + leaderboard. Can be restored or
+    // permanently purged.
+    archived:   { type: Boolean, default: false, index: true },
+    archivedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

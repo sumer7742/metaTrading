@@ -334,4 +334,15 @@ const remove = asyncHandler(async (req, res) => {
   sendSuccess(res, inst);
 });
 
-module.exports = { list, watchlist, getOne, volumeUsage, candles, orderbook, create, update, remove };
+// Bulk set routingOverride on many instruments at once.
+const VALID_ROUTING = ['INHERIT', 'INTERNAL_MATCHING', 'A_BOOK', 'B_BOOK', 'HYBRID'];
+const bulkRouting = asyncHandler(async (req, res) => {
+  const { symbols, routingOverride } = req.body || {};
+  if (!Array.isArray(symbols) || !symbols.length) throw new AppError('symbols[] required', 400);
+  if (!VALID_ROUTING.includes(routingOverride)) throw new AppError('Invalid routingOverride', 400);
+  const up = symbols.map((s) => String(s).toUpperCase());
+  const r = await Instrument.updateMany({ symbol: { $in: up } }, { $set: { routingOverride } });
+  sendSuccess(res, { matched: r.matchedCount ?? r.n ?? 0, modified: r.modifiedCount ?? r.nModified ?? 0, routingOverride });
+});
+
+module.exports = { list, watchlist, getOne, volumeUsage, candles, orderbook, create, update, remove, bulkRouting };

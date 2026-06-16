@@ -25,6 +25,8 @@ export default function CopyTrade() {
   const [mine, setMine] = useState([]);
   const [myProfile, setMyProfile] = useState(null);
   const [myBoxes, setMyBoxes] = useState([]);
+  const [archivedBoxes, setArchivedBoxes] = useState([]);
+  const [mineQ, setMineQ] = useState(''); // "My copies" search
   const [loading, setLoading] = useState(true);
   const [copyTarget, setCopyTarget] = useState(null);
   const [becomeMaster, setBecomeMaster] = useState(false);
@@ -55,21 +57,33 @@ export default function CopyTrade() {
     () => [...mine].sort((a, b) => (COPY_STATUS_RANK[a.status] ?? 9) - (COPY_STATUS_RANK[b.status] ?? 9)),
     [mine]
   );
+  // Filter by trader name / account / status / risk.
+  const filteredMine = useMemo(() => {
+    const q = mineQ.trim().toLowerCase();
+    if (!q) return sortedMine;
+    return sortedMine.filter((r) => {
+      const m = r.master || {};
+      return [m.displayName, m.accountNumber, r.followerAccountNumber, r.status, r.riskLevel]
+        .some((v) => String(v || '').toLowerCase().includes(q));
+    });
+  }, [sortedMine, mineQ]);
 
   const refresh = async () => {
     try {
-      const [lb, fd, mc, mp, bx] = await Promise.allSettled([
+      const [lb, fd, mc, mp, bx, ar] = await Promise.allSettled([
         api.get('/copy-trading/leaderboard?limit=50'),
         api.get('/copy-trading/feed?limit=50'),
         api.get('/copy-trading/my-copies'),
         api.get('/copy-trading/profile/me'),
         api.get('/copy-trading/boxes/me'),
+        api.get('/copy-trading/boxes/archived'),
       ]);
       if (lb.status === 'fulfilled') setLeaders(lb.value.data.data || []);
       if (fd.status === 'fulfilled') setFeed(fd.value.data.data || []);
       if (mc.status === 'fulfilled') setMine(mc.value.data.data || []);
       if (mp.status === 'fulfilled') setMyProfile(mp.value.data.data || null);
       if (bx.status === 'fulfilled') setMyBoxes(bx.value.data.data || []);
+      if (ar.status === 'fulfilled') setArchivedBoxes(ar.value.data.data || []);
     } catch (e) {
       toast.error(errorMessage(e));
     } finally {
@@ -107,14 +121,25 @@ export default function CopyTrade() {
   const deleteBox = async (box) => {
     const name = box.displayName || box.accountNumber;
     const msg = Number(box.followers) > 0
-      ? `Delete "${name}"? Its ${box.followers} follower(s) will be stopped (open mirrored trades stay open until they close). This can't be undone.`
-      : `Delete "${name}"? This permanently removes the copy box.`;
+      ? `Delete "${name}"? Its ${box.followers} follower(s) will be stopped (open mirrored trades stay open). The box is moved to Archived — you can restore it later.`
+      : `Delete "${name}"? It's moved to Archived (kept in history) — you can restore it later.`;
     if (!(await confirm(msg))) return;
     try {
       await api.delete(`/copy-trading/boxes/${box._id}`);
-      toast.success('Copy box deleted');
+      toast.success('Copy box archived');
       refresh();
     } catch (e) { toast.error(errorMessage(e)); }
+  };
+
+  const restoreBox = async (box) => {
+    try { await api.post(`/copy-trading/boxes/${box._id}/restore`); toast.success('Copy box restored'); refresh(); }
+    catch (e) { toast.error(errorMessage(e)); }
+  };
+  const purgeBox = async (box) => {
+    const name = box.displayName || box.accountNumber;
+    if (!(await confirm(`Permanently delete "${name}"? Its history is wiped and this cannot be undone.`))) return;
+    try { await api.delete(`/copy-trading/boxes/${box._id}/purge`); toast.success('Copy box permanently deleted'); refresh(); }
+    catch (e) { toast.error(errorMessage(e)); }
   };
 
   return (
@@ -133,6 +158,8 @@ export default function CopyTrade() {
 
       {/* My copy boxes — one per source trading account. */}
       <MyBoxesSection boxes={myBoxes} onCreate={() => setBecomeMaster(true)} onToggle={toggleBoxPublic} onEdit={setEditingBox} onDelete={deleteBox} />
+
+      <ArchivedBoxesSection boxes={archivedBoxes} onRestore={restoreBox} onPurge={purgeBox} />
 
       {/* Tab strip — mobile drives section, desktop shows all 3 in grid */}
       <div className="card p-1 inline-flex md:hidden">
@@ -228,11 +255,21 @@ export default function CopyTrade() {
                   You aren't copying anyone yet — pick a trader on the left to start.
                 </div>
               ) : (
-                <div className="space-y-3">
-                  {sortedMine.map((rel) => (
-                    <MyCopyRow key={rel._id} rel={rel} onAction={setStatus} />
-                  ))}
-                </div>
+                <>
+                  <input
+                    value={mineQ}
+                    onChange={(e) => setMineQ(e.target.value)}
+                    placeholder="Search by trader, account or status…"
+                    className="w-full mb-3 px-3 py-2 rounded-xl border border-border-dark bg-white text-sm focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/15"
+                  />
+                  <div className="space-y-3 max-h-[560px] overflow-y-auto pr-1">
+                    {filteredMine.length === 0 ? (
+                      <div className="card p-6 text-center text-[12px] text-text-muted">No copies match “{mineQ}”.</div>
+                    ) : filteredMine.map((rel) => (
+                      <MyCopyRow key={rel._id} rel={rel} onAction={setStatus} />
+                    ))}
+                  </div>
+                </>
               )}
             </section>
           </aside>
@@ -330,6 +367,38 @@ function MyBoxesSection({ boxes, onCreate, onToggle, onEdit, onDelete }) {
               <button onClick={() => onDelete(b)} className="text-xs px-2 py-1 rounded-lg text-bear hover:bg-bear/10 font-semibold">
                 Delete
               </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── Archived (deleted) copy boxes — read-only history + restore/purge ── */
+function ArchivedBoxesSection({ boxes, onRestore, onPurge }) {
+  if (!boxes.length) return null;
+  return (
+    <div>
+      <h2 className="text-base font-extrabold text-text-primary tracking-tight mb-3 px-1">Archived boxes</h2>
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {boxes.map((b) => (
+          <div key={b._id} className="card p-4 border-2 border-dashed border-border-dark">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="font-extrabold text-text-primary truncate">{b.displayName || b.accountNumber}</div>
+                <div className="text-[11px] text-text-secondary mt-0.5"><span className="font-semibold">{b.accountType}</span> · {b.accountNumber}</div>
+              </div>
+              <span className="shrink-0 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-text-muted/15 text-text-muted">Archived</span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-center mt-3">
+              <Stat label="ROI" value={`${Number(b.roiPct || 0) >= 0 ? '+' : ''}${Number(b.roiPct || 0).toFixed(1)}%`} tone={Number(b.roiPct || 0) >= 0 ? 'bull' : 'bear'} />
+              <Stat label="Win" value={`${Number(b.winRate || 0).toFixed(0)}%`} />
+              <Stat label="Trades" value={Number(b.totalTrades || 0)} />
+            </div>
+            <div className="mt-3 flex justify-end gap-1">
+              <button onClick={() => onRestore(b)} className="btn-ghost text-xs">Restore</button>
+              <button onClick={() => onPurge(b)} className="text-xs px-2 py-1 rounded-lg text-bear hover:bg-bear/10 font-semibold">Delete permanently</button>
             </div>
           </div>
         ))}

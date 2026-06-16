@@ -105,6 +105,24 @@ const deleteBox = asyncHandler(async (req, res) => {
   } catch (e) { throw new AppError(e.message, 400); }
 });
 
+const restoreBox = asyncHandler(async (req, res) => {
+  try {
+    const box = await copyTradingService.restoreBox({ userId: req.userId, boxId: req.params.id });
+    sendSuccess(res, box);
+  } catch (e) { throw new AppError(e.message, 400); }
+});
+
+const purgeBox = asyncHandler(async (req, res) => {
+  try {
+    await copyTradingService.purgeBox({ userId: req.userId, boxId: req.params.id });
+    sendSuccess(res, { ok: true });
+  } catch (e) { throw new AppError(e.message, 400); }
+});
+
+const archivedBoxes = asyncHandler(async (req, res) => {
+  sendSuccess(res, await copyTradingService.listArchivedBoxes(req.userId));
+});
+
 const setStatus = (status) => asyncHandler(async (req, res) => {
   const { relationId } = req.body;
   if (!relationId) throw new AppError('relationId required', 400);
@@ -201,6 +219,9 @@ module.exports = {
   createBox,
   updateBox,
   deleteBox,
+  restoreBox,
+  purgeBox,
+  archivedBoxes,
   startCopy,
   pauseCopy:  setStatus('PAUSED'),
   resumeCopy: setStatus('ACTIVE'),

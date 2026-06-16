@@ -44,6 +44,9 @@ const MarketList = lazy(() => import('./pages/MarketList'));
 const Watchlist = lazy(() => import('./pages/Watchlist'));
 const OrderModalPreview = lazy(() => import('./pages/OrderModalPreview'));
 
+// Public marketing landing (shown at "/" to logged-out visitors).
+const Landing = lazy(() => import('./pages/Landing'));
+
 // Public CMS-driven content pages (no auth wrapper — SEO-friendly URLs).
 const CmsPageView = lazy(() => import('./pages/CmsPageView'));
 const News = lazy(() => import('./pages/News'));
@@ -67,6 +70,15 @@ const Page = ({ children }) => (
     </Layout>
   </ProtectedRoute>
 );
+
+// Root route: logged-out visitors see the marketing landing; signed-in users
+// go straight to the app.
+function RootRoute() {
+  const { user, loading } = useAuthStore();
+  if (loading) return <RouteFallback />;
+  if (user) return <Navigate to="/explore" replace />;
+  return <Suspense fallback={<RouteFallback />}><Landing /></Suspense>;
+}
 
 export default function App() {
   const { init } = useAuthStore();
@@ -92,7 +104,7 @@ export default function App() {
         <Route path="/news" element={<Suspense fallback={<RouteFallback />}><News /></Suspense>} />
         <Route path="/news/:slug" element={<Suspense fallback={<RouteFallback />}><NewsArticle /></Suspense>} />
 
-        <Route path="/" element={<Page><Navigate to="/explore" replace /></Page>} />
+        <Route path="/" element={<RootRoute />} />
         <Route path="/dashboard" element={<Page><Dashboard /></Page>} />
         <Route path="/explore" element={<Page><Explore /></Page>} />
         <Route path="/markets" element={<Page><MarketList /></Page>} />

@@ -34,8 +34,10 @@ const EMPTY_FILTERS = {
 // Short ticket from a Mongo _id (last 6 hex, upper) — full id on hover.
 const ticket = (id) => (id ? `#${String(id).slice(-6).toUpperCase()}` : '—');
 
-// Account types offered in the filter dropdown.
-const ACCOUNT_TYPES = ['STANDARD', 'STANDARD_IC', 'PRO', 'PRO_IC', 'FREE', 'FREE_IC', 'CUSTOM', 'REAL', 'VIRTUAL', 'DEMO'];
+// Fallback account-type list (used until the live /account-types list loads).
+// Only the real, current tiers — demo/legacy are covered by the All Real /
+// All Demo group options instead of individual rows.
+const ACCOUNT_TYPES = ['STANDARD', 'STANDARD_IC', 'PRO', 'PRO_IC', 'FREE', 'FREE_IC'];
 
 export default function Orders() {
   const { user } = useAuthStore();
@@ -52,6 +54,14 @@ export default function Orders() {
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [risk, setRisk] = useState(null);
+  // Account types actually present in the DB → drives the filter dropdown so it
+  // only ever lists types that exist (no dead/legacy options).
+  const [acctTypeOptions, setAcctTypeOptions] = useState(ACCOUNT_TYPES);
+  useEffect(() => {
+    api.get('/order-management/account-types')
+      .then(({ data }) => { if (Array.isArray(data.data) && data.data.length) setAcctTypeOptions(data.data); })
+      .catch(() => {});
+  }, []);
 
   const [draft, setDraft] = useState(EMPTY_FILTERS); // filter inputs
   const [filters, setFilters] = useState(EMPTY_FILTERS); // applied filters
@@ -231,7 +241,7 @@ export default function Orders() {
       </div>
 
       {tab !== 'risk' && (
-        <FilterBar tab={tab} draft={draft} setDraft={setDraft} onApply={applyFilters} onReset={resetFilters} onExport={exportCsv} />
+        <FilterBar tab={tab} draft={draft} setDraft={setDraft} onApply={applyFilters} onReset={resetFilters} onExport={exportCsv} acctTypeOptions={acctTypeOptions} />
       )}
 
       {/* Bulk toolbar */}
@@ -333,7 +343,7 @@ function SummaryCards({ s }) {
 }
 
 /* ───────────────────────── filter bar ───────────────────────── */
-function FilterBar({ tab, draft, setDraft, onApply, onReset, onExport }) {
+function FilterBar({ tab, draft, setDraft, onApply, onReset, onExport, acctTypeOptions = ACCOUNT_TYPES }) {
   const set = (k) => (e) => setDraft((d) => ({ ...d, [k]: e.target.value }));
   return (
     <form onSubmit={(e) => { e.preventDefault(); onApply(); }}
@@ -344,7 +354,9 @@ function FilterBar({ tab, draft, setDraft, onApply, onReset, onExport }) {
       <Field label="Acct Type">
         <select className="input w-28" value={draft.accountType} onChange={set('accountType')}>
           <option value="">All</option>
-          {ACCOUNT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+          <option value="__ALL_REAL__">All Real</option>
+          <option value="__ALL_DEMO__">All Demo</option>
+          {acctTypeOptions.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
       </Field>
       <Field label="Instrument"><input className="input w-28" value={draft.symbol} onChange={set('symbol')} placeholder="EURUSD" /></Field>

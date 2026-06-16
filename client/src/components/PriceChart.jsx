@@ -2,10 +2,28 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createChart } from 'lightweight-charts';
 import { api } from '../services/api';
 import { wsClient } from '../services/ws';
-import { sma, ema, rsi, macd, bollinger, vwap, stochastic, atr, williamsR, cci, donchian, keltner } from '../utils/indicators';
+import { sma, ema, rsi, macd, bollinger, vwap, stochastic, atr, williamsR, cci, donchian, keltner, wma, hma, dema, tema, smma, vwma, alma, envelopes, linreg, psar, supertrend } from '../utils/indicators';
+
+// Moving-average families (single source of truth for the overlay configs,
+// the indicator menu, and the on/off defaults). Each (code, period) pair is
+// one toggleable indicator → this drives the bulk of the 60+ indicator count.
+const MA_DEFS = [
+  { code: 'ema',  name: 'EMA',  color: '#1D4ED8', fn: ema,  src: 'closes',  periods: [5, 8, 9, 10, 12, 13, 15, 20, 21, 26, 30, 34, 50, 55, 89, 100, 150, 200] },
+  { code: 'sma',  name: 'SMA',  color: '#F59E0B', fn: sma,  src: 'closes',  periods: [5, 8, 10, 13, 15, 20, 21, 25, 30, 34, 50, 55, 89, 100, 150, 200] },
+  { code: 'wma',  name: 'WMA',  color: '#22C55E', fn: wma,  src: 'closes',  periods: [9, 14, 20, 21, 30, 34, 50, 55, 89, 100, 200] },
+  { code: 'hma',  name: 'HMA',  color: '#EC4899', fn: hma,  src: 'closes',  periods: [9, 14, 16, 21, 34, 55, 89, 100] },
+  { code: 'dema', name: 'DEMA', color: '#14B8A6', fn: dema, src: 'closes',  periods: [9, 14, 20, 21, 34, 50, 100, 200] },
+  { code: 'tema', name: 'TEMA', color: '#8B5CF6', fn: tema, src: 'closes',  periods: [9, 14, 20, 21, 34, 50, 100, 200] },
+  { code: 'smma', name: 'SMMA', color: '#0EA5E9', fn: smma, src: 'closes',  periods: [7, 10, 14, 21, 34, 50, 100, 200] },
+  { code: 'vwma', name: 'VWMA', color: '#F97316', fn: vwma, src: 'candles', periods: [14, 20, 30, 50, 89, 100, 200] },
+  { code: 'alma', name: 'ALMA', color: '#A855F7', fn: alma, src: 'closes',  periods: [9, 14, 21, 34, 50, 100, 200] },
+];
+const MA_KEYS = MA_DEFS.flatMap((d) => d.periods.map((p) => `${d.code}${p}`));
 import { useThemeStore } from '../store/theme';
 import { useChartDrawings } from '../hooks/useChartDrawings';
 import ChartDrawingToolbar from './ChartDrawingToolbar';
+import DrawingContextMenu from './DrawingContextMenu';
+import DrawingProperties from './DrawingProperties';
 import WatchlistButton from './WatchlistButton';
 
 // ─── Theme palette helpers ───────────────────────────────────────────
@@ -680,18 +698,16 @@ function updateSeriesPoint(series, chartType, point, allCandles) {
 const TF_OPTIONS = ['1m', '5m', '15m', '1h', '4h', '1d'];
 
 const INDICATOR_DEFAULTS = {
-  // Overlays on main chart
-  ema12: false,
-  ema26: false,
-  ema50: false,
-  ema200: false,
-  sma20: false,
-  sma50: false,
-  sma200: false,
+  // Overlays on main chart — all moving-average variants (ema5, sma20, hma9, …)
+  ...MA_KEYS.reduce((o, k) => { o[k] = false; return o; }, {}),
   bb: false,        // Bollinger Bands
   donchian: false,  // Donchian Channels
   keltner: false,   // Keltner Channels
+  envelopes: false, // MA envelopes
   vwap: false,      // Volume-Weighted Average Price
+  linreg: false,    // Linear regression line
+  psar: false,      // Parabolic SAR
+  supertrend: false,// SuperTrend
   // Sub-panels
   volume: false,    // Volume histogram (separate pane below candles)
   rsi: false,
@@ -778,6 +794,13 @@ export default function PriceChart({
   onOrderUpdateTp = null,
   onOrderRemoveSl = null,
   onOrderRemoveTp = null,
+  // Optional: called with (chart, getSeries) once the chart is created, and
+  // with (null) on teardown. Used by the multi-chart layout to wire crosshair
+  // / time-axis synchronisation across panes.
+  onReady = null,
+  // Optional node rendered in the toolbar's right cluster (e.g. the layout
+  // picker) so it sits beside the expand / fullscreen controls.
+  toolbarExtra = null,
 }) {
   const containerRef = useRef(null);
   const rsiContainerRef = useRef(null);
@@ -811,6 +834,16 @@ export default function PriceChart({
   // line (TradingView-style). Keyed by line identifier; y = pixel offset
   // from the top of the chart container.
   const [positionPills, setPositionPills] = useState([]);
+  // Brand logo overlaid bottom-left of the chart (where TradingView's logo was).
+  // Reuses the admin-uploaded footer brand logo.
+  const [brandLogo, setBrandLogo] = useState('');
+  useEffect(() => {
+    let on = true;
+    api.get('/cms/footer-links')
+      .then((r) => { const cfg = r.data?.data?.config || {}; if (on && cfg.logoUrl) setBrandLogo(cfg.logoUrl); })
+      .catch(() => {});
+    return () => { on = false; };
+  }, []);
   // Live drag state for SL/TP lines. Non-null while the user is dragging
   // a pill — overrides the rAF-computed pill Y for that key and pushes
   // the new price to the underlying lightweight-charts price line on every
@@ -871,6 +904,7 @@ export default function PriceChart({
   const [chartType, setChartType] = useState('candles');
   const [chartTypeOpen, setChartTypeOpen] = useState(false);
   const [indicatorsOpen, setIndicatorsOpen] = useState(false);
+  const [indicatorSearch, setIndicatorSearch] = useState('');
   const [timeframeOpen, setTimeframeOpen] = useState(false);
   const theme = useThemeStore((s) => s.theme);
 
@@ -982,7 +1016,11 @@ export default function PriceChart({
     return out;
   }, [candles, showSignals, showHmr, showCalendar, instrument, calendarFilters.high, calendarFilters.medium, calendarFilters.low, calendarFilters.lowest]);
 
-  const drawingControls = useChartDrawings({ chartRef, candleSeriesRef, containerRef, symbol, externalMarkers });
+  const drawingControls = useChartDrawings({ chartRef, candleSeriesRef, containerRef, symbol, externalMarkers, candles });
+  // Mirror into a ref so the once-bound container handlers (contextmenu /
+  // dblclick) always read the latest drawing controls without re-binding.
+  const dcRef = useRef(drawingControls);
+  dcRef.current = drawingControls;
 
   // ─── 1. Initialize chart (no main series yet — handled by chartType effect) ─
   useEffect(() => {
@@ -1091,9 +1129,13 @@ export default function PriceChart({
         // on regular displays.
         fontSize: 12,
         fontFamily: 'Inter, -apple-system, BlinkMacSystemFont, sans-serif',
+        // Hide the built-in TradingView attribution logo (lightweight-charts
+        // v4.1+); our own brand logo is overlaid in its place.
+        attributionLogo: false,
       },
     });
     chartRef.current = chart;
+    try { onReady?.(chart, () => candleSeriesRef.current); } catch (_) { /* */ }
 
     // ── Subscribe to visible-range changes so the Y axis re-fits on every
     // pan / zoom. lightweight-charts will call our autoscaleInfoProvider
@@ -1184,6 +1226,7 @@ export default function PriceChart({
       }
       subPanelChartsRef.current = {};
       try { chart.remove(); } catch (_) {}
+      try { onReady?.(null); } catch (_) { /* */ }
       chartRef.current = null;
       candleSeriesRef.current = null;
       overlayRef.current = {};
@@ -1261,6 +1304,11 @@ export default function PriceChart({
     // standard TradingView gesture. Clears the manual lock and re-fits.
     const onDblClick = (e) => {
       const rect = container.getBoundingClientRect();
+      // Double-click a drawing → open its property/settings panel.
+      const dc = dcRef.current;
+      const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+      const hitId = dc?.hitTestAt?.(cx, cy);
+      if (hitId) { e.preventDefault(); dc.openSettings(hitId, e.clientX, e.clientY); return; }
       const xFromRight = rect.right - e.clientX;
       const insideY = e.clientY >= rect.top && e.clientY <= rect.bottom;
       if (xFromRight >= 0 && xFromRight < AXIS_HIT_PX && insideY) {
@@ -1270,7 +1318,21 @@ export default function PriceChart({
     };
 
     const onContextMenu = (e) => {
+      // Right-click over a drawing object → its own context menu (priority over
+      // the chart scale menu). Coordinates are container-relative for the
+      // overlay-anchored menu.
+      const dc = dcRef.current;
+      const rect = container.getBoundingClientRect();
+      const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+      const hitId = dc?.hitTestAt?.(cx, cy);
+      if (hitId) {
+        e.preventDefault();
+        setChartCtxMenu(null);
+        dc.openContextMenu(hitId, e.clientX, e.clientY);
+        return;
+      }
       e.preventDefault();
+      dc?.closeContextMenu?.();
       // Position the menu at the cursor; clamp to viewport so it doesn't
       // overflow the right edge (the menu renders right of `x`).
       const MENU_W = 220;
@@ -1750,15 +1812,11 @@ export default function PriceChart({
     if (!chartRef.current || !candles.length) return;
 
     const overlayConfigs = [
-      // ── EMAs
-      { key: 'ema12',  period: 12,  color: '#1D4ED8', title: 'EMA 12',  compute: () => ema(closes, 12) },
-      { key: 'ema26',  period: 26,  color: '#60A5FA', title: 'EMA 26',  compute: () => ema(closes, 26) },
-      { key: 'ema50',  period: 50,  color: '#A78BFA', title: 'EMA 50',  compute: () => ema(closes, 50) },
-      { key: 'ema200', period: 200, color: '#F472B6', title: 'EMA 200', compute: () => ema(closes, 200) },
-      // ── SMAs
-      { key: 'sma20',  period: 20,  color: '#F59E0B', title: 'SMA 20',  compute: () => sma(closes, 20) },
-      { key: 'sma50',  period: 50,  color: '#EAB308', title: 'SMA 50',  compute: () => sma(closes, 50) },
-      { key: 'sma200', period: 200, color: '#DC2626', title: 'SMA 200', compute: () => sma(closes, 200) },
+      // ── All moving-average variants (EMA/SMA/WMA/HMA/DEMA/TEMA/SMMA/VWMA/ALMA)
+      ...MA_DEFS.flatMap((d) => d.periods.map((p) => ({
+        key: `${d.code}${p}`, color: d.color, title: `${d.name} ${p}`,
+        compute: () => d.fn(d.src === 'candles' ? candles : closes, p),
+      }))),
       // ── Bollinger Bands — 3 lines share the toggle key
       { key: 'bb',  subKey: 'bbU', color: '#0EA5E9', lineWidth: 1, title: 'BB Upper',  compute: () => bollinger(closes, 20, 2).upper },
       { key: 'bb',  subKey: 'bbM', color: '#0EA5E9', lineWidth: 1, lineStyle: 'dashed', title: 'BB Middle', compute: () => bollinger(closes, 20, 2).middle },
@@ -1773,6 +1831,16 @@ export default function PriceChart({
       { key: 'keltner', subKey: 'ktL', color: '#F97316', lineWidth: 1, title: 'KC Lower',  compute: () => keltner(candles, 20, 2, 10).lower },
       // ── VWAP
       { key: 'vwap', color: '#7C3AED', lineWidth: 2, title: 'VWAP', compute: () => vwap(candles) },
+      // ── MA Envelopes — SMA ± 2%
+      { key: 'envelopes', subKey: 'envU', color: '#64748B', lineWidth: 1, title: 'Env Upper', compute: () => envelopes(closes, 20, 2).upper },
+      { key: 'envelopes', subKey: 'envM', color: '#64748B', lineWidth: 1, lineStyle: 'dashed', title: 'Env Mid', compute: () => envelopes(closes, 20, 2).middle },
+      { key: 'envelopes', subKey: 'envL', color: '#64748B', lineWidth: 1, title: 'Env Lower', compute: () => envelopes(closes, 20, 2).lower },
+      // ── Linear Regression
+      { key: 'linreg', color: '#0D9488', lineWidth: 2, title: 'Linear Regression', compute: () => linreg(closes, 14) },
+      // ── Parabolic SAR — rendered as dots (point markers, no joining line)
+      { key: 'psar', color: '#DC2626', lineWidth: 1, pointMarkers: true, title: 'Parabolic SAR', compute: () => psar(candles) },
+      // ── SuperTrend
+      { key: 'supertrend', color: '#0891B2', lineWidth: 2, title: 'SuperTrend', compute: () => supertrend(candles, 10, 3) },
     ];
 
     for (const cfg of overlayConfigs) {
@@ -1792,6 +1860,11 @@ export default function PriceChart({
           // lightweight-charts LineStyle.Dashed = 1
           seriesOpts.lineStyle = 1;
         }
+        if (cfg.pointMarkers) {
+          // Render as dots (e.g. Parabolic SAR): show point markers, hide the line.
+          seriesOpts.pointMarkersVisible = true;
+          seriesOpts.lineVisible = false;
+        }
         const series = chartRef.current.addLineSeries(seriesOpts);
         overlayRef.current[refKey] = series;
       } else if (!enabled && exists) {
@@ -1806,12 +1879,7 @@ export default function PriceChart({
         overlayRef.current[refKey].setData(data);
       }
     }
-  }, [
-    indicators.ema12, indicators.ema26, indicators.ema50, indicators.ema200,
-    indicators.sma20, indicators.sma50, indicators.sma200,
-    indicators.bb, indicators.donchian, indicators.keltner, indicators.vwap,
-    candles, closes,
-  ]);
+  }, [indicators, candles, closes]);
 
   // ─── 6. RSI sub-panel ────────────────────────────────────────────────
   useEffect(() => {
@@ -2776,32 +2844,30 @@ export default function PriceChart({
 
           {/* Indicators dropdown */}
           {(() => {
+            // One flat, alphabetically-sorted list of every indicator.
             const indicatorList = [
-              { group: 'Moving Averages — EMA' },
-              { key: 'ema12',  label: 'EMA 12',  color: '#1D4ED8' },
-              { key: 'ema26',  label: 'EMA 26',  color: '#60A5FA' },
-              { key: 'ema50',  label: 'EMA 50',  color: '#A78BFA' },
-              { key: 'ema200', label: 'EMA 200', color: '#F472B6' },
-              { group: 'Moving Averages — SMA' },
-              { key: 'sma20',  label: 'SMA 20',  color: '#F59E0B' },
-              { key: 'sma50',  label: 'SMA 50',  color: '#EAB308' },
-              { key: 'sma200', label: 'SMA 200', color: '#DC2626' },
-              { group: 'Channels & Bands' },
-              { key: 'bb',       label: 'Bollinger Bands',   color: '#0EA5E9' },
-              { key: 'donchian', label: 'Donchian Channels', color: '#10B981' },
-              { key: 'keltner',  label: 'Keltner Channels',  color: '#F97316' },
-              { group: 'Volume' },
-              { key: 'volume',   label: 'Volume',            color: TV_COLORS.volumeUp },
-              { key: 'vwap',     label: 'VWAP',              color: '#7C3AED' },
-              { group: 'Oscillators (sub-panel)' },
-              { key: 'rsi',      label: 'RSI',           color: '#8B5CF6' },
-              { key: 'macd',     label: 'MACD',          color: '#2DD4BF' },
-              { key: 'stoch',    label: 'Stochastic',    color: '#3B82F6' },
-              { key: 'atr',      label: 'ATR',           color: '#0EA5E9' },
-              { key: 'wr',       label: 'Williams %R',   color: '#DB2777' },
-              { key: 'cci',      label: 'CCI',           color: '#7C3AED' },
-            ];
-            const activeCount = indicatorList.filter((i) => i.key && indicators[i.key]).length;
+              ...MA_DEFS.flatMap((d) => d.periods.map((p) => ({ key: `${d.code}${p}`, label: `${d.name} ${p}`, color: d.color }))),
+              { key: 'bb',        label: 'Bollinger Bands',   color: '#0EA5E9' },
+              { key: 'donchian',  label: 'Donchian Channels', color: '#10B981' },
+              { key: 'keltner',   label: 'Keltner Channels',  color: '#F97316' },
+              { key: 'envelopes', label: 'Envelopes',         color: '#64748B' },
+              { key: 'vwap',      label: 'VWAP',              color: '#7C3AED' },
+              { key: 'linreg',    label: 'Linear Regression', color: '#0D9488' },
+              { key: 'psar',      label: 'Parabolic SAR',     color: '#DC2626' },
+              { key: 'supertrend',label: 'SuperTrend',        color: '#0891B2' },
+              { key: 'volume',    label: 'Volume',            color: TV_COLORS.volumeUp },
+              { key: 'rsi',       label: 'RSI',           color: '#8B5CF6' },
+              { key: 'macd',      label: 'MACD',          color: '#2DD4BF' },
+              { key: 'stoch',     label: 'Stochastic',    color: '#3B82F6' },
+              { key: 'atr',       label: 'ATR',           color: '#0EA5E9' },
+              { key: 'wr',        label: 'Williams %R',   color: '#DB2777' },
+              { key: 'cci',       label: 'CCI',           color: '#7C3AED' },
+            ].sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' }));
+            const activeCount = indicatorList.filter((i) => indicators[i.key]).length;
+            const totalCount = indicatorList.length;
+            // Apply search — simple substring match on the label.
+            const q = indicatorSearch.trim().toLowerCase();
+            const visibleList = q ? indicatorList.filter((i) => i.label.toLowerCase().includes(q)) : indicatorList;
             return (
               <div className="relative">
                 <button
@@ -2819,8 +2885,30 @@ export default function PriceChart({
                 {indicatorsOpen && (
                   <>
                     <div className="fixed inset-0 z-30" onClick={() => setIndicatorsOpen(false)} />
-                    <div className="absolute left-0 top-full mt-1 z-40 w-52 bg-white border border-border-dark rounded-lg shadow-elevated overflow-hidden max-h-[400px] overflow-y-auto">
-                      {indicatorList.map((ind, idx) => {
+                    <div className="absolute left-0 top-full mt-1 z-40 w-60 bg-white border border-border-dark rounded-lg shadow-elevated overflow-hidden max-h-[420px] overflow-y-auto">
+                      {/* Sticky search */}
+                      <div className="sticky top-0 z-10 bg-white border-b border-border-subtle p-2">
+                        <div className="relative">
+                          <svg className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.3-4.3" /></svg>
+                          <input
+                            type="text"
+                            autoFocus
+                            value={indicatorSearch}
+                            onChange={(e) => setIndicatorSearch(e.target.value)}
+                            placeholder={`Search ${totalCount} indicators…`}
+                            className="w-full h-7 pl-7 pr-7 text-[11px] rounded border border-border-dark bg-bg-hover/40 text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary-500"
+                          />
+                          {indicatorSearch && (
+                            <button type="button" onClick={() => setIndicatorSearch('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      {visibleList.length === 0 && (
+                        <div className="px-3 py-6 text-center text-[11px] text-text-muted">No indicators match “{indicatorSearch}”.</div>
+                      )}
+                      {visibleList.map((ind, idx) => {
                         if (ind.group) {
                           return (
                             <div key={`g-${idx}`} className="px-3 pt-2.5 pb-1 text-[9px] uppercase tracking-wider font-bold text-text-muted bg-bg-hover/40 border-b border-border-subtle">
@@ -2971,6 +3059,10 @@ export default function PriceChart({
             </button>
           )}
 
+          {/* Layout picker (or any parent-supplied toolbar control) — sits
+              beside the watchlist / expand / fullscreen actions. */}
+          {toolbarExtra}
+
           {/* Add to Watchlist — saves the chart's current instrument. Sits
               with the expand / fullscreen chart actions on the right; always
               visible (persistent) with a filled/active state when saved. */}
@@ -3016,6 +3108,13 @@ export default function PriceChart({
           pixel under the toolbar instead of falling back to a 460 px tile. */}
       <div className="relative w-full flex-1 min-h-0" style={{ background: tvCanvas(theme).background }}>
         <div ref={containerRef} className="w-full h-full" />
+        {brandLogo && (
+          <img
+            src={brandLogo}
+            alt=""
+            className="absolute bottom-8 left-2 h-5 max-w-[130px] object-contain z-10 pointer-events-none opacity-90 select-none"
+          />
+        )}
 
         {/* ── Position pills overlay ─────────────────────────────────
             TradingView / Exness-style draggable labels rendered on top
@@ -3094,6 +3193,13 @@ export default function PriceChart({
         )}
 
         <ChartDrawingToolbar controls={drawingControls} />
+
+        {/* Drawing-object right-click menu + double-click property panel.
+            Both render inside this relative chart container (container-relative
+            coords) and take priority over the chart scale menu when a drawing
+            is hit. */}
+        <DrawingContextMenu controls={drawingControls} theme={theme} />
+        <DrawingProperties controls={drawingControls} theme={theme} />
 
         {/* Right-click chart context menu — TradingView-style. Theme-aware:
             white card on light, slate-900 on dark. A full-screen backdrop

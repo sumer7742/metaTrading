@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { useAuthStore, errorMessage } from '../store/auth';
 import BrandMark from '../components/BrandMark';
+import AuthShell from '../components/AuthShell';
 import PasswordInput from '../components/PasswordInput';
 import { COUNTRY_OPTIONS } from '../utils/countries';
 import { v, sanitize } from '../utils/validation';
@@ -136,7 +137,7 @@ export default function Register() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4 py-8">
+    <AuthShell>
       <div className="card p-8 w-full max-w-md">
         <div className="text-center mb-7">
           <BrandMark />
@@ -309,7 +310,7 @@ export default function Register() {
           </Link>
         </div>
       </div>
-    </div>
+    </AuthShell>
   );
 }
 

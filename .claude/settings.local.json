@@ -177,7 +177,11 @@
       "Bash(node --check src/matching-engine/LedgerCache.js)",
       "Bash(git rev-list *)",
       "Bash(node --check src/models/CmsPage.js)",
-      "Bash(node --check src/controllers/cmsPageController.js)"
+      "Bash(node --check src/controllers/cmsPageController.js)",
+      "Bash(node --check src/controllers/instrumentController.js)",
+      "Bash(node --check src/routes/instrument.js)",
+      "Bash(node -c src/controllers/adminOrdersController.js)",
+      "Bash(node -c src/routes/adminOrders.js)"
     ]
   }
 }

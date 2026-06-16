@@ -59,10 +59,16 @@ const setFooterConfig = asyncHandler(async (req, res) => {
   const cur = (await systemSettings.getSetting('footer.config')) || {};
   const next = {
     brand:     b.brand     !== undefined ? String(b.brand)     : (cur.brand || ''),
+    logoUrl:   b.logoUrl   !== undefined ? String(b.logoUrl)   : (cur.logoUrl || ''),
     tagline:   b.tagline   !== undefined ? String(b.tagline)   : (cur.tagline || ''),
     address:   b.address   !== undefined ? String(b.address)   : (cur.address || ''),
     copyright: b.copyright !== undefined ? String(b.copyright) : (cur.copyright || ''),
     socials:   { ...(cur.socials || {}), ...(b.socials || {}) },
+    customSocials: Array.isArray(b.customSocials)
+      ? b.customSocials
+          .map((c) => ({ label: String(c.label || '').slice(0, 40), url: String(c.url || ''), icon: String(c.icon || '') }))
+          .filter((c) => c.url)
+      : (cur.customSocials || []),
   };
   await systemSettings.setSetting('footer.config', next, req.userId);
   await audit(req, 'CMS_FOOTER_CONFIG_UPDATE', null, {});

@@ -24,9 +24,12 @@ router.post('/stop',      authenticate, c.stopCopy);
 // accounts` are literal paths declared before any `:id` route.
 router.get('/eligible-accounts', authenticate, c.eligibleAccounts);
 router.get('/boxes/me',          authenticate, c.myBoxes);
+router.get('/boxes/archived',    authenticate, c.archivedBoxes); // before :id
 router.post('/boxes',            authenticate, c.createBox);
 router.put('/boxes/:id',         authenticate, c.updateBox);
-router.delete('/boxes/:id',      authenticate, c.deleteBox);
+router.delete('/boxes/:id',      authenticate, c.deleteBox);     // soft-delete (archive)
+router.post('/boxes/:id/restore', authenticate, c.restoreBox);
+router.delete('/boxes/:id/purge', authenticate, c.purgeBox);     // permanent
 
 // Master profile (owner-level — performance fee + earnings)
 router.get('/profile/me', authenticate, c.myProfile);

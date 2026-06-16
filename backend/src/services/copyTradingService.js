@@ -178,7 +178,7 @@ async function createBox({ userId, accountId, displayName, bio, riskBadge, isPub
 }
 
 async function listMyBoxes(userId) {
-  const boxes = await CopyBox.find({ userId }).sort({ createdAt: 1 }).lean();
+  const boxes = await CopyBox.find({ userId, archived: { $ne: true } }).sort({ createdAt: 1 }).lean();
   if (!boxes.length) return [];
   const accIds = boxes.map((b) => b.accountId);
   const [accounts, profile, feeS] = await Promise.all([
@@ -220,13 +220,13 @@ async function updateBox({ userId, boxId, displayName, bio, riskBadge, isPublic,
   return box;
 }
 
-// Delete a copy box. Active/paused followers are STOPPED cleanly first so they
-// don't keep mirroring a box that no longer exists (their already-open mirrored
-// trades stay open until they close on their own).
+// "Delete" a copy box → ARCHIVE it (soft delete). The record + its lifetime
+// stats are kept for history; it's hidden from the owner's active list and the
+// leaderboard. Active/paused followers are STOPPED cleanly first (their already-
+// open mirrored trades stay open until they close on their own).
 async function deleteBox({ userId, boxId }) {
   const box = await CopyBox.findOne({ _id: boxId, userId });
   if (!box) throw new Error('Copy box not found');
-  // Release each follower's held allocation, then stop them.
   const affected = await CopyRelation.find({ masterAccountId: box.accountId, status: { $in: ['ACTIVE', 'PAUSED'] } });
   for (const r of affected) {
     await _releaseAllocation(r);
@@ -235,8 +235,42 @@ async function deleteBox({ userId, boxId }) {
     r.stoppedAt = new Date();
     await r.save();
   }
+  box.archived = true;
+  box.archivedAt = new Date();
+  box.isPublic = false; // never discoverable while archived
+  await box.save();
+  await recountFollowers(box.accountId);
+  return { ok: true, archived: true };
+}
+
+// Bring an archived box back to the active list (stays PRIVATE until the owner
+// re-publishes it). Followers were stopped on archive and don't auto-resume.
+async function restoreBox({ userId, boxId }) {
+  const box = await CopyBox.findOne({ _id: boxId, userId });
+  if (!box) throw new Error('Copy box not found');
+  box.archived = false;
+  box.archivedAt = null;
+  await box.save();
+  return box;
+}
+
+// Permanently remove an archived box (history wiped). Only archived boxes can
+// be purged — guards against accidental hard-deletes of live boxes.
+async function purgeBox({ userId, boxId }) {
+  const box = await CopyBox.findOne({ _id: boxId, userId });
+  if (!box) throw new Error('Copy box not found');
+  if (!box.archived) throw new Error('Archive the box first before deleting it permanently');
   await CopyBox.deleteOne({ _id: box._id });
   return { ok: true };
+}
+
+// Archived boxes for the history view.
+async function listArchivedBoxes(userId) {
+  const boxes = await CopyBox.find({ userId, archived: true }).sort({ archivedAt: -1 }).lean();
+  return boxes.map((b) => ({
+    ...b,
+    winRate: b.totalTrades ? (b.wins / b.totalTrades) * 100 : 0,
+  }));
 }
 
 // ── Master-side hooks ─────────────────────────────────────────────────
@@ -606,7 +640,7 @@ async function onMasterSlTpChanged({ position }) {
 // `excludeUserId` hides the viewer's own boxes (they live in "My boxes" and
 // you can't copy yourself).
 async function leaderboard({ limit = 50, excludeUserId } = {}) {
-  const q = { isPublic: true };
+  const q = { isPublic: true, archived: { $ne: true } };
   if (excludeUserId) q.userId = { $ne: excludeUserId };
   const boxes = await CopyBox.find(q)
     .sort({ roiPct: -1, followers: -1, totalTrades: -1 })
@@ -795,6 +829,9 @@ module.exports = {
   listMyBoxes,
   updateBox,
   deleteBox,
+  restoreBox,
+  purgeBox,
+  listArchivedBoxes,
   // master hooks
   onMasterOrderFilled,
   onMasterPositionClosed,

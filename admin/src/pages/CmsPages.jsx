@@ -123,10 +123,30 @@ function FooterSettings() {
   const set = (k, v) => setF((s) => ({ ...s, [k]: v }));
   const setSocial = (k, v) => setF((s) => ({ ...s, socials: { ...(s.socials || {}), [k]: v } }));
 
+  // Read an image file → base64 data URL (same pattern as deposit proofs).
+  const readImage = (e, cb) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-selecting the same file
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { toast.error('Please choose an image file'); return; }
+    if (file.size > 400 * 1024) { toast.error('Image too large — use one under 400KB'); return; }
+    const reader = new FileReader();
+    reader.onload = () => cb(reader.result);
+    reader.onerror = () => toast.error('Could not read the image');
+    reader.readAsDataURL(file);
+  };
+  const onLogoFile = (e) => readImage(e, (url) => set('logoUrl', url));
+
+  // Custom social links (beyond the built-in 8) — each with its own icon.
+  const customs = f?.customSocials || [];
+  const addCustom = () => setF((s) => ({ ...s, customSocials: [...(s.customSocials || []), { label: '', url: '', icon: '' }] }));
+  const updateCustom = (i, k, v) => setF((s) => ({ ...s, customSocials: (s.customSocials || []).map((c, idx) => (idx === i ? { ...c, [k]: v } : c)) }));
+  const removeCustom = (i) => setF((s) => ({ ...s, customSocials: (s.customSocials || []).filter((_, idx) => idx !== i) }));
+
   useEffect(() => {
     api.get('/admin/cms/footer-config')
-      .then((r) => setF({ brand: '', tagline: '', address: '', copyright: '', socials: {}, ...(r.data.data || {}) }))
-      .catch(() => setF({ brand: '', tagline: '', address: '', copyright: '', socials: {} }));
+      .then((r) => setF({ brand: '', logoUrl: '', tagline: '', address: '', copyright: '', socials: {}, customSocials: [], ...(r.data.data || {}) }))
+      .catch(() => setF({ brand: '', logoUrl: '', tagline: '', address: '', copyright: '', socials: {}, customSocials: [] }));
   }, []);
 
   const save = async () => {
@@ -147,6 +167,19 @@ function FooterSettings() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div><label className="label">Brand name</label><input className="input" value={f.brand} onChange={(e) => set('brand', e.target.value)} placeholder="TradePro" /></div>
         <div><label className="label">Tagline <span className="text-text-muted">(optional)</span></label><input className="input" value={f.tagline} onChange={(e) => set('tagline', e.target.value)} /></div>
+        <div className="md:col-span-2"><label className="label">Brand logo <span className="text-text-muted">(blank = letter mark)</span></label>
+          <div className="flex items-center gap-3 flex-wrap">
+            {f.logoUrl
+              ? <img src={f.logoUrl} alt="logo preview" className="h-10 rounded border border-border-dark object-contain bg-white/5 px-2" />
+              : <span className="text-xs text-text-muted h-10 flex items-center px-2 rounded border border-dashed border-border-dark">No logo</span>}
+            <label className="btn-secondary text-sm cursor-pointer">
+              {f.logoUrl ? 'Change image' : 'Upload image'}
+              <input type="file" accept="image/*" className="hidden" onChange={onLogoFile} />
+            </label>
+            {f.logoUrl && <button type="button" onClick={() => set('logoUrl', '')} className="text-xs text-bear hover:underline">Remove</button>}
+          </div>
+          <p className="text-[11px] text-text-muted mt-1">PNG / SVG / JPG, up to ~400&nbsp;KB. Saved with the footer.</p>
+        </div>
         <div className="md:col-span-2"><label className="label">Address</label><textarea className="input min-h-[60px]" value={f.address} onChange={(e) => set('address', e.target.value)} placeholder={'Chirala, Bapatla district,\nAndhra Pradesh, India 523155'} /></div>
         <div className="md:col-span-2"><label className="label">Copyright <span className="text-text-muted">(blank = auto)</span></label><input className="input" value={f.copyright} onChange={(e) => set('copyright', e.target.value)} placeholder="© 2026 · TradePro · All rights reserved" /></div>
       </div>
@@ -161,6 +194,33 @@ function FooterSettings() {
             </div>
           ))}
         </div>
+      </div>
+
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <div className="text-xs uppercase tracking-wide text-primary-500 font-bold">Custom links <span className="text-text-muted normal-case">(your own icon + URL)</span></div>
+          <button type="button" onClick={addCustom} className="btn-ghost text-xs">+ Add custom link</button>
+        </div>
+        {customs.length === 0 ? (
+          <p className="text-[11px] text-text-muted">No custom links. Add platforms beyond the 8 above (e.g. Discord, Reddit) with a custom uploaded icon.</p>
+        ) : (
+          <div className="space-y-2">
+            {customs.map((c, i) => (
+              <div key={i} className="flex items-center gap-2 flex-wrap">
+                {c.icon
+                  ? <img src={c.icon} alt="" className="w-8 h-8 rounded border border-border-dark object-contain bg-white/5 shrink-0" />
+                  : <span className="w-8 h-8 rounded border border-dashed border-border-dark shrink-0" />}
+                <label className="btn-secondary text-xs cursor-pointer shrink-0">
+                  Icon
+                  <input type="file" accept="image/*" className="hidden" onChange={(e) => readImage(e, (url) => updateCustom(i, 'icon', url))} />
+                </label>
+                <input className="input w-32" value={c.label} onChange={(e) => updateCustom(i, 'label', e.target.value)} placeholder="Label" />
+                <input className="input flex-1 min-w-[160px]" value={c.url} onChange={(e) => updateCustom(i, 'url', e.target.value)} placeholder="https://…" />
+                <button type="button" onClick={() => removeCustom(i)} className="text-xs text-bear hover:underline shrink-0">Remove</button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

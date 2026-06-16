@@ -23,7 +23,7 @@ const { AuditLog } = require('../models');
 const orderRouter = require('../services/orderRouter.service');
 const walletService = require('../services/walletService');
 const { sendSuccess, asyncHandler, AppError } = require('../utils/errors');
-const { ORDER_TYPE, ORDER_STATUS, POSITION_STATUS, ROLES } = require('../config/constants');
+const { ORDER_TYPE, ORDER_STATUS, POSITION_STATUS, ROLES, ACCOUNT_TYPES } = require('../config/constants');
 const { gt, mul, div, sub } = require('../utils/decimal');
 
 /* ────────────────────────── helpers ────────────────────────── */
@@ -138,7 +138,13 @@ async function resolveFilters(req, scopeIds) {
   }
   const acctType = (req.query.accountType || '').trim();
   if (acctType) {
-    const accs = await TradingAccount.find({ accountType: acctType.toUpperCase() }).select('_id').lean();
+    // '__ALL_REAL__' → every non-demo account; '__ALL_DEMO__' → demo accounts.
+    const typeQuery = acctType === '__ALL_REAL__'
+      ? { accountType: { $nin: DEMO_TYPES } }
+      : acctType === '__ALL_DEMO__'
+        ? { accountType: { $in: DEMO_TYPES } }
+        : { accountType: acctType.toUpperCase() };
+    const accs = await TradingAccount.find(typeQuery).select('_id').lean();
     const typeIds = accs.map((a) => String(a._id));
     accIdSet = accIdSet ? accIdSet.filter((id) => typeIds.includes(id)) : typeIds;
     if (!accIdSet.length) accIdSet = [EMPTY];
@@ -179,6 +185,18 @@ const pageOf = (req) => {
   const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 25));
   return { page, limit, skip: (page - 1) * limit };
 };
+
+/* ────────────────────────── ACCOUNT TYPES (filter dropdown) ────────────────────────── */
+// Real, current account tiers only — demo/legacy (DEMO / VIRTUAL / REAL /
+// CUSTOM) are NOT listed individually; the "All Real" / "All Demo" group
+// options in the dropdown cover them instead.
+const DEMO_TYPES = ['DEMO', 'VIRTUAL'];
+const HIDDEN_TYPES = new Set(['DEMO', 'VIRTUAL', 'REAL', 'CUSTOM']);
+const accountTypes = asyncHandler(async (req, res) => {
+  const inDb = await TradingAccount.distinct('accountType');
+  const all = [...new Set([...Object.values(ACCOUNT_TYPES), ...inDb.filter(Boolean)])].filter((t) => !HIDDEN_TYPES.has(t));
+  sendSuccess(res, all);
+});
 
 /* ────────────────────────── SUMMARY CARDS ────────────────────────── */
 
@@ -864,6 +882,7 @@ async function modifySLTPOne(req, id, stopLoss, takeProfit) {
 }
 
 module.exports = {
+  accountTypes,
   summary, openOrders, pendingOrders, closedOrders, risk, detail,
   modifySLTP, forceClose, transferBook, addComment,
   cancelPending, forceExecute, modifyPending, bulk,

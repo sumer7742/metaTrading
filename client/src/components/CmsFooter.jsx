@@ -81,6 +81,10 @@ export default function CmsFooter() {
     () => Object.keys(SOCIAL_ICONS).filter((k) => socials[k] && String(socials[k]).trim()),
     [socials]
   );
+  const customSocials = useMemo(
+    () => (config.customSocials || []).filter((c) => c && c.url),
+    [config.customSocials]
+  );
 
   // Group links by column (preserve first-seen order). When no CMS footer pages
   // exist, fall back to the default dummy columns so the footer looks complete.
@@ -109,12 +113,16 @@ export default function CmsFooter() {
           {/* Brand + address + socials */}
           <div className="lg:col-span-4">
             <div className="flex items-center gap-2.5">
-              <span
-                className="w-9 h-9 rounded-xl flex items-center justify-center font-extrabold text-white text-base shrink-0"
-                style={{ background: 'linear-gradient(135deg,#3B82F6 0%,#1D4ED8 100%)' }}
-              >
-                {brand.slice(0, 1).toUpperCase()}
-              </span>
+              {config.logoUrl ? (
+                <img src={config.logoUrl} alt={brand} className="h-9 max-w-[150px] object-contain shrink-0" />
+              ) : (
+                <span
+                  className="w-9 h-9 rounded-xl flex items-center justify-center font-extrabold text-white text-base shrink-0"
+                  style={{ background: 'linear-gradient(135deg,#3B82F6 0%,#1D4ED8 100%)' }}
+                >
+                  {brand.slice(0, 1).toUpperCase()}
+                </span>
+              )}
               <span className="text-lg font-extrabold text-text-primary tracking-tight">{brand}</span>
             </div>
 
@@ -126,8 +134,8 @@ export default function CmsFooter() {
               </p>
             )}
 
-            {activeSocials.length > 0 && (
-              <div className="flex items-center gap-3 mt-4">
+            {(activeSocials.length > 0 || customSocials.length > 0) && (
+              <div className="flex items-center gap-3 mt-4 flex-wrap">
                 {activeSocials.map((k) => {
                   const url = socials[k];
                   const dummy = url === '#';
@@ -141,6 +149,23 @@ export default function CmsFooter() {
                       className="text-text-muted hover:text-primary-500 transition-colors"
                     >
                       <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d={SOCIAL_ICONS[k]} /></svg>
+                    </a>
+                  );
+                })}
+                {customSocials.map((c, i) => {
+                  const dummy = c.url === '#';
+                  return (
+                    <a
+                      key={`c-${i}`}
+                      href={c.url}
+                      {...(dummy ? { onClick: (e) => e.preventDefault() } : { target: '_blank', rel: 'noopener noreferrer' })}
+                      aria-label={c.label || 'link'}
+                      title={c.label || ''}
+                      className="text-text-muted hover:text-primary-500 transition-colors inline-flex"
+                    >
+                      {c.icon
+                        ? <img src={c.icon} alt={c.label || ''} className="w-5 h-5 object-contain" />
+                        : <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm6.9 6h-2.8a15.7 15.7 0 0 0-1.3-3.4A8 8 0 0 1 18.9 8zM12 4c.8 1.2 1.5 2.5 1.9 4h-3.8c.4-1.5 1.1-2.8 1.9-4zM4.3 14a8 8 0 0 1 0-4h3.2a17 17 0 0 0 0 4H4.3zm.8 2h2.8c.3 1.2.8 2.4 1.3 3.4A8 8 0 0 1 5.1 16zM7.9 8H5.1a8 8 0 0 1 4.1-3.4C8.7 5.6 8.2 6.8 7.9 8zM12 20c-.8-1.2-1.5-2.5-1.9-4h3.8c-.4 1.5-1.1 2.8-1.9 4zm2.4-6H9.6a15 15 0 0 1 0-4h4.8a15 15 0 0 1 0 4zm.3 5.4c.5-1 1-2.2 1.3-3.4h2.8a8 8 0 0 1-4.1 3.4zM16.5 14a17 17 0 0 0 0-4h3.2a8 8 0 0 1 0 4h-3.2z" /></svg>}
                     </a>
                   );
                 })}

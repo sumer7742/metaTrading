@@ -4,6 +4,8 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { wsClient } from '../services/ws';
 import PriceChart from '../components/PriceChart';
+import ChartLayoutPicker from '../components/ChartLayoutPicker';
+import { getLayout, DEFAULT_SYNC } from '../components/chartLayouts';
 import OrderForm from '../components/OrderForm';
 import NotificationCenter from '../components/NotificationCenter';
 import MarketWatch from '../components/MarketWatch';
@@ -26,6 +28,97 @@ export default function Trade() {
   const [params, setParams] = useSearchParams();
   const symbol = params.get('symbol') || 'BTCUSD';
   const [timeframe, setTimeframe] = useState('1m');
+
+  // ── Multi-chart layout system ─────────────────────────────────────────
+  // `layoutId` picks a template (1-8 panes); `panes` holds each pane's
+  // { symbol, timeframe } (the active pane mirrors the page symbol/timeframe);
+  // `sync` mirrors the "SYNC IN LAYOUT" toggles. All persisted.
+  const LAYOUT_KEY = 'tradepro:chart-layout';
+  const SYNC_KEY = 'tradepro:chart-sync';
+  const PANES_KEY = 'tradepro:chart-panes';
+  const [layoutId, setLayoutId] = useState(() => { try { return localStorage.getItem(LAYOUT_KEY) || '1'; } catch { return '1'; } });
+  const [activePane, setActivePane] = useState(0);
+  const [sync, setSync] = useState(() => { try { return { ...DEFAULT_SYNC, ...JSON.parse(localStorage.getItem(SYNC_KEY) || '{}') }; } catch { return { ...DEFAULT_SYNC }; } });
+  const [panes, setPanes] = useState(() => {
+    const base = params.get('symbol') || 'BTCUSD';
+    let saved = []; try { saved = JSON.parse(localStorage.getItem(PANES_KEY) || '[]'); } catch { /* */ }
+    return Array.from({ length: 8 }, (_, i) => (saved[i] && saved[i].symbol ? saved[i] : { symbol: base, timeframe: '1m' }));
+  });
+  const layout = getLayout(layoutId);
+  useEffect(() => { try { localStorage.setItem(LAYOUT_KEY, layoutId); } catch { /* */ } }, [layoutId]);
+  useEffect(() => { try { localStorage.setItem(SYNC_KEY, JSON.stringify(sync)); } catch { /* */ } }, [sync]);
+  useEffect(() => { try { localStorage.setItem(PANES_KEY, JSON.stringify(panes)); } catch { /* */ } }, [panes]);
+  // Registry of live chart instances per pane → drives crosshair / time sync.
+  const chartRegRef = useRef(new Map());
+  const [chartRegVersion, setChartRegVersion] = useState(0);
+  const registerChart = useCallback((idx, chart, getSeries) => {
+    if (chart) chartRegRef.current.set(idx, { chart, getSeries });
+    else chartRegRef.current.delete(idx);
+    setChartRegVersion((v) => v + 1);
+  }, []);
+  // Per-pane symbol / timeframe (active pane mirrors the page state).
+  const paneSymbol = (i) => (i === activePane ? symbol : (panes[i]?.symbol || symbol));
+  const paneTimeframe = (i) => (i === activePane ? timeframe : (panes[i]?.timeframe || timeframe));
+  // Click a pane → it becomes active and drives the page symbol/timeframe.
+  const activatePane = useCallback((i) => {
+    if (i === activePane) return;
+    setPanes((prev) => { const next = [...prev]; next[activePane] = { symbol, timeframe }; return next; });
+    const target = panes[i] || { symbol, timeframe };
+    setActivePane(i);
+    if (target.symbol !== symbol) setParams({ symbol: target.symbol });
+    setTimeframe(target.timeframe);
+  }, [activePane, symbol, timeframe, panes, setParams]);
+  const setPaneTimeframe = useCallback((i, tf) => {
+    if (sync.interval) { setTimeframe(tf); setPanes((prev) => prev.map((p) => ({ ...p, timeframe: tf }))); return; }
+    if (i === activePane) setTimeframe(tf);
+    else setPanes((prev) => { const n = [...prev]; n[i] = { ...n[i], timeframe: tf }; return n; });
+  }, [sync.interval, activePane]);
+  const setSyncField = useCallback((key, val) => setSync((s) => ({ ...s, [key]: val })), []);
+  // Symbol / Interval sync — the active pane propagates to every pane.
+  useEffect(() => { if (sync.symbol && layout.n > 1) setPanes((prev) => prev.map((p) => ({ ...p, symbol }))); }, [symbol, sync.symbol, layout.n]);
+  useEffect(() => { if (sync.interval && layout.n > 1) setPanes((prev) => prev.map((p) => ({ ...p, timeframe }))); }, [timeframe, sync.interval, layout.n]);
+  // Crosshair + time/date-range sync — cross-subscribe the live chart instances.
+  useEffect(() => {
+    const wantTime = (sync.time || sync.dateRange) && layout.n > 1;
+    const wantCh = sync.crosshair && layout.n > 1;
+    if (!wantTime && !wantCh) return;
+    const charts = [...chartRegRef.current.values()].filter((e) => e && e.chart);
+    if (charts.length < 2) return;
+    const unsubs = [];
+    if (wantTime) {
+      let guard = false;
+      charts.forEach((src) => {
+        const handler = (range) => {
+          if (guard || !range) return; guard = true;
+          charts.forEach((t) => { if (t !== src) { try { t.chart.timeScale().setVisibleLogicalRange(range); } catch { /* */ } } });
+          guard = false;
+        };
+        try { src.chart.timeScale().subscribeVisibleLogicalRangeChange(handler); } catch { /* */ }
+        unsubs.push(() => { try { src.chart.timeScale().unsubscribeVisibleLogicalRangeChange(handler); } catch { /* */ } });
+      });
+    }
+    if (wantCh) {
+      charts.forEach((src) => {
+        const handler = (param) => {
+          const t = param.time;
+          charts.forEach((tg) => {
+            if (tg === src) return;
+            try {
+              if (t == null) { tg.chart.clearCrosshairPosition?.(); return; }
+              const tgS = tg.getSeries?.(), srcS = src.getSeries?.();
+              const d = srcS ? param.seriesData?.get(srcS) : null;
+              const price = d ? (d.close ?? d.value) : undefined;
+              if (tgS && price != null) tg.chart.setCrosshairPosition(price, t, tgS);
+            } catch { /* */ }
+          });
+        };
+        try { src.chart.subscribeCrosshairMove(handler); } catch { /* */ }
+        unsubs.push(() => { try { src.chart.unsubscribeCrosshairMove(handler); } catch { /* */ } });
+      });
+    }
+    return () => unsubs.forEach((f) => f());
+  }, [sync.time, sync.dateRange, sync.crosshair, layout.n, layout.id, chartRegVersion]);
+
   const [instruments, setInstruments] = useState([]);
   const [accounts, setAccounts] = useState([]);
   // Restore the user's last-selected trading account from localStorage on
@@ -189,6 +282,17 @@ export default function Trade() {
     try { localStorage.setItem(FLOAT_H_KEY, String(floatHeight)); } catch (_) {}
   }, [floatHeight]);
   const floatResizeRef = useRef({ resizing: false, startY: 0, startH: 0 });
+  // Resizable WIDTH for the floating order modal (corner-resize). Persisted,
+  // clamped 240–560 px.
+  const FLOAT_W_KEY = 'tradepro:float-order-width';
+  const [floatWidth, setFloatWidth] = useState(() => {
+    if (typeof window === 'undefined') return 300;
+    try { const raw = localStorage.getItem(FLOAT_W_KEY); const n = raw ? Number(raw) : 300; return Number.isFinite(n) ? Math.max(240, Math.min(560, n)) : 300; } catch (_) { return 300; }
+  });
+  useEffect(() => { try { localStorage.setItem(FLOAT_W_KEY, String(floatWidth)); } catch (_) {} }, [floatWidth]);
+  // Corner resize state — adjusts width + height together. Compensates the
+  // right/centre anchors via floatPos so the top and left edges stay put.
+  const floatCornerRef = useRef({ resizing: false, startX: 0, startY: 0, startW: 0, startH: 0, startPosX: 0, startPosY: 0 });
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   // The account dropdown has two sub-views: 'metrics' (Exness-style
   // numbers + quick-actions) and 'switch' (account picker list).
@@ -1112,6 +1216,51 @@ export default function Trade() {
     floatResizeRef.current = { resizing: true, startY: clientY, startH: floatHeight };
     document.body.style.userSelect = 'none';
     document.body.style.cursor = 'ns-resize';
+  };
+
+  // ── Floating order overlay — CORNER resize (width + height together) ──
+  // Works from any of the 4 corners. The panel is right-pinned and vertically
+  // centred, so we shift floatPos to keep the DIAGONALLY-OPPOSITE corner fixed
+  // → the grabbed corner tracks the cursor in both axes.
+  useEffect(() => {
+    const onMove = (e) => {
+      const st = floatCornerRef.current;
+      if (!st.resizing) return;
+      if (e.cancelable) e.preventDefault?.();
+      const cx = e.touches?.[0]?.clientX ?? e.clientX;
+      const cy = e.touches?.[0]?.clientY ?? e.clientY;
+      if (cx == null || cy == null) return;
+      const dx = cx - st.startX, dy = cy - st.startY;
+      const east = st.corner === 'ne' || st.corner === 'se';   // moving the right edge
+      const south = st.corner === 'sw' || st.corner === 'se';   // moving the bottom edge
+      const newW = Math.max(240, Math.min(560, st.startW + (east ? dx : -dx)));
+      const newH = Math.max(320, Math.min(820, st.startH + (south ? dy : -dy)));
+      const dW = newW - st.startW, dH = newH - st.startH;
+      // East corner: right edge moves out by dW (left fixed). West corner: right
+      // edge fixed (left tracks). South corner: top fixed (bottom +dH). North:
+      // bottom fixed (top -dH).
+      setFloatWidth(newW);
+      setFloatHeight(newH);
+      setFloatPos({ x: st.startPosX + (east ? dW : 0), y: st.startPosY + (south ? dH / 2 : -dH / 2) });
+    };
+    const onUp = () => { floatCornerRef.current.resizing = false; document.body.style.userSelect = ''; document.body.style.cursor = ''; };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    window.addEventListener('touchmove', onMove, { passive: false });
+    window.addEventListener('touchend', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onUp);
+    };
+  }, []);
+  const startFloatCorner = (e, corner) => {
+    const cx = e.touches?.[0]?.clientX ?? e.clientX;
+    const cy = e.touches?.[0]?.clientY ?? e.clientY;
+    floatCornerRef.current = { resizing: true, corner, startX: cx, startY: cy, startW: floatWidth, startH: floatHeight, startPosX: floatPos.x, startPosY: floatPos.y };
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = (corner === 'ne' || corner === 'sw') ? 'nesw-resize' : 'nwse-resize';
   };
 
   const startFloatDrag = (e) => {
@@ -2315,8 +2464,14 @@ export default function Trade() {
                 PriceChart toolbar's right cluster (no floating overlay
                 that could overlap the Sell/Buy chip). */}
             <div className="relative flex-1 min-w-0 bg-bg-card border border-border-dark rounded-xl overflow-hidden">
-              {instrument && (
+              {instrument && (() => {
+                // The active pane = the fully-integrated chart (order overlays,
+                // drag-to-form, quick-trade). In a multi-pane layout the other
+                // cells are plain independent charts.
+                const primary = (
                 <PriceChart
+                  onReady={(c, gs) => registerChart(activePane, c, gs)}
+                  toolbarExtra={<ChartLayoutPicker value={layoutId} onChange={setLayoutId} sync={sync} onSyncChange={setSyncField} theme={theme} />}
                   symbol={symbol}
                   timeframe={timeframe}
                   onTimeframeChange={setTimeframe}
@@ -2472,7 +2627,44 @@ export default function Trade() {
                   fullscreen={isFullscreen}
                   onToggleFullscreen={() => setChartView((v) => (v === 'fullscreen' ? 'normal' : 'fullscreen'))}
                 />
-              )}
+                );
+                // Single layout (or fullscreen) → just the active chart.
+                if (layout.n === 1 || isFullscreen) return primary;
+                // Multi-pane → CSS grid; active cell = primary, others = plain.
+                return (
+                  <div
+                    className="absolute inset-0 grid gap-0.5 p-0.5"
+                    style={{ gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${layout.rows}, minmax(0, 1fr))` }}
+                  >
+                    {layout.cells.slice(0, layout.n).map((cell, i) => (
+                      <div
+                        key={i}
+                        onPointerDownCapture={() => activatePane(i)}
+                        style={{ gridColumn: `${cell[0]} / span ${cell[1]}`, gridRow: `${cell[2]} / span ${cell[3]}` }}
+                        className={`relative min-w-0 min-h-0 rounded-lg overflow-hidden border transition-colors ${i === activePane ? 'border-primary-500 ring-1 ring-primary-500/50 z-10' : 'border-border-dark/70'}`}
+                      >
+                        {i === activePane ? primary : (
+                          <PriceChart
+                            key={`pane-${i}`}
+                            symbol={paneSymbol(i)}
+                            timeframe={paneTimeframe(i)}
+                            onTimeframeChange={(tf) => setPaneTimeframe(i, tf)}
+                            instrument={instrumentsBySymbol[paneSymbol(i)] || null}
+                            pricePrecision={instrumentsBySymbol[paneSymbol(i)]?.pricePrecision ?? 2}
+                            timeZone={tradeSettings.trading.timeZone}
+                            showAlerts={false}
+                            onReady={(c, gs) => registerChart(i, c, gs)}
+                          />
+                        )}
+                        {/* Symbol badge — click a pane to make it active */}
+                        <div className={`absolute top-1 left-1 z-20 px-1.5 py-0.5 rounded text-[10px] font-bold pointer-events-none ${i === activePane ? 'bg-primary-500 text-white' : 'bg-bg-card/80 text-text-muted border border-border-dark'}`}>
+                          {paneSymbol(i)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
 
               {/* ── Floating order overlay (fullscreen only) ─────────
                   In fullscreen the side-panel OrderForm is hidden, so a
@@ -2484,7 +2676,7 @@ export default function Trade() {
                   zooming, indicators) behind the panel. */}
               {isFullscreen && instrument && account && (
                 <div
-                  className={`absolute w-[280px] max-w-[calc(100vw-1.5rem)] z-30 transition-opacity duration-200 ease-out ${
+                  className={`absolute max-w-[calc(100vw-1.5rem)] z-30 transition-opacity duration-200 ease-out ${
                     showFloatingOrder
                       ? 'opacity-100 pointer-events-auto'
                       : 'opacity-0 pointer-events-none'
@@ -2493,6 +2685,7 @@ export default function Trade() {
                     top: `calc(50% + ${floatPos.y}px)`,
                     right: `calc(30% - ${floatPos.x}px)`,
                     transform: 'translateY(-50%)',
+                    width: floatWidth,
                     height: Math.min(floatHeight, Math.max(320, (typeof window !== 'undefined' ? window.innerHeight : 800) - 40)),
                     maxHeight: 'calc(100% - 1.5rem)',
                   }}
@@ -2500,9 +2693,10 @@ export default function Trade() {
                   role="dialog"
                   aria-label="Place order"
                 >
-                  {/* Glass card wraps OrderForm. Drag handle at top moves
-                      the panel; resize grip at bottom changes height. */}
-                  <div className="glass border border-border-dark rounded-xl shadow-2xl flex flex-col backdrop-blur-xl h-full overflow-hidden">
+                  {/* Glass card wraps OrderForm. Drag handle at top moves the
+                      panel; bottom grip changes height; bottom-right corner
+                      grip resizes width + height together. */}
+                  <div className="relative glass border border-border-dark rounded-xl shadow-2xl flex flex-col backdrop-blur-xl h-full overflow-hidden">
                     {/* Drag handle bar */}
                     <div
                       onMouseDown={startFloatDrag}
@@ -2548,6 +2742,31 @@ export default function Trade() {
                         <circle cx="18" cy="3" r="1.2" fill="currentColor" />
                       </svg>
                     </div>
+                    {/* Four CORNER grips — drag any to resize width + height
+                        together (opposite corner stays put). Double-click any
+                        corner resets to the default size. */}
+                    {[
+                      { c: 'nw', pos: 'top-0 left-0',     cur: 'cursor-nwse-resize', flip: 'rotate(180deg)' },
+                      { c: 'ne', pos: 'top-0 right-0',    cur: 'cursor-nesw-resize', flip: 'scaleY(-1)' },
+                      { c: 'sw', pos: 'bottom-0 left-0',  cur: 'cursor-nesw-resize', flip: 'scaleX(-1)' },
+                      { c: 'se', pos: 'bottom-0 right-0', cur: 'cursor-nwse-resize', flip: 'none' },
+                    ].map(({ c, pos, cur, flip }) => (
+                      <div
+                        key={c}
+                        onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); startFloatCorner(e, c); }}
+                        onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); startFloatCorner(e, c); }}
+                        onDoubleClick={() => { setFloatWidth(300); setFloatHeight(560); }}
+                        className={`absolute ${pos} z-20 w-5 h-5 ${cur} flex items-end justify-end p-0.5 text-text-muted/60 hover:text-primary-500 transition-colors`}
+                        title="Drag corner to resize · double-click to reset"
+                        role="separator"
+                        aria-label={`Resize from ${c} corner`}
+                      >
+                        <svg width="11" height="11" viewBox="0 0 12 12" fill="currentColor" style={{ transform: flip }}>
+                          <circle cx="10" cy="6" r="1" /><circle cx="6" cy="10" r="1" />
+                          <circle cx="10" cy="10" r="1" />
+                        </svg>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}

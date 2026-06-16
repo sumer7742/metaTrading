@@ -21,6 +21,7 @@ const DEFAULTS = {
   // Edited from Admin → CMS Pages → Footer Settings.
   'footer.config': {
     brand: 'TradePro',
+    logoUrl: '', // brand logo image URL (blank → letter mark)
     tagline: '',
     address: 'Chirala, Ganjipalem area Bapatla district,\nAndhra Pradesh, India 523155',
     copyright: '', // empty → "© <year> · <brand> · All rights reserved"
@@ -29,6 +30,9 @@ const DEFAULTS = {
       facebook: '#', twitter: '#', youtube: '#', linkedin: '#',
       instagram: '#', whatsapp: '#', telegram: '#', skype: '#',
     },
+    // Extra links beyond the built-in 8 — each with its own uploaded icon.
+    // [{ label, url, icon (data URL / image URL) }]
+    customSocials: [],
   },
   // Max number of top-level platform admins (Hierarchy → Admins). Super-admin
   // editable; falls back to the hard cap in config/hierarchy.js when unset.
