@@ -16,7 +16,7 @@ const TABS = [
   { id: 'canvas', label: 'Canvas', icon: 'canvas' },
 ];
 
-export default function ChartSettings({ prefs, onChange, onClose, theme }) {
+export default function ChartSettings({ prefs, onChange, onReset, onClose, theme }) {
   const dark = theme === 'dark';
   const [tab, setTab] = useState('scales');
   const snapshot = useRef(prefs);   // for Cancel revert
@@ -69,6 +69,9 @@ export default function ChartSettings({ prefs, onChange, onClose, theme }) {
 
         {/* footer */}
         <div className="flex items-center justify-end gap-2 px-5 py-3.5" style={{ borderTop: `1px solid ${c.border}` }}>
+          {onReset && (
+            <button type="button" onClick={() => onReset()} className="px-4 py-2 rounded-lg text-sm font-semibold mr-auto" style={{ border: `1px solid ${c.border}`, color: c.muted }}>Reset to defaults</button>
+          )}
           <button type="button" onClick={cancel} className="px-5 py-2 rounded-lg text-sm font-semibold" style={{ border: `1px solid ${c.border}`, color: c.text }}>Cancel</button>
           <button type="button" onClick={onClose} className="px-6 py-2 rounded-lg text-sm font-bold text-white" style={{ background: '#1D4ED8' }}>Ok</button>
         </div>
@@ -132,6 +135,7 @@ function CanvasTab({ prefs, onChange, c }) {
   return (
     <Section title="Canvas" c={c}>
       <Toggle label="Grid lines" checked={prefs.gridLines} onChange={(v) => onChange({ gridLines: v })} c={c} />
+      <Toggle label="Candle diagnostics overlay" checked={prefs.diagnostics} onChange={(v) => onChange({ diagnostics: v })} c={c} />
     </Section>
   );
 }

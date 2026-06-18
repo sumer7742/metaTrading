@@ -61,10 +61,11 @@ const TV_COLORS = {
   border: 'rgba(17, 24, 39, 0.10)',
   text: '#6B7280',
   crosshair: 'rgba(17, 24, 39, 0.25)',
-  up: '#00C853',
-  down: '#FF3B57',
-  volumeUp: 'rgba(0, 200, 83, 0.45)',
-  volumeDown: 'rgba(255, 59, 87, 0.45)',
+  // TradingView's exact candle palette — clean teal-green up / red down.
+  up: '#26A69A',
+  down: '#EF5350',
+  volumeUp: 'rgba(38, 166, 154, 0.45)',
+  volumeDown: 'rgba(239, 83, 80, 0.45)',
 };
 
 // Theme-aware canvas palette — only the surface-level tokens flip.
@@ -185,21 +186,36 @@ function writeCachedCandles(symbol, timeframe, candles) {
  * — visually a flat tick, which is the right semantic for "no trades this
  * minute" without inventing price movement.
  */
+// Outlier threshold — a single candle whose O/H/L/C deviates from the rolling
+// median reference by more than this fraction is treated as a corrupt tick and
+// neutralised (carried forward) so it can't blow up the autoscale. 0.6 = 60%;
+// real single-bar moves are far smaller, so only corruption is ever caught.
+const MAX_BAR_MOVE = 0.6;
+
 export function fillCandleGaps(candles, tfSec) {
   if (!Array.isArray(candles) || candles.length === 0) return [];
+  // Drop candles dated in the future (clock skew / bad feed) — they push the
+  // time axis past "now" and create a blank rail. Allow the current forming
+  // bucket (+1 tf tolerance).
+  const maxTime = Math.floor(Date.now() / 1000) + tfSec;
   // 1. Filter out null / invalid OHLC entries that would create visible
   //    gaps in the chart (lightweight-charts skips bars with NaN).
   const valid = candles.filter((c) =>
     c &&
-    Number.isFinite(c.time) &&
+    Number.isFinite(c.time) && c.time <= maxTime &&
     Number.isFinite(c.open) && Number.isFinite(c.high) &&
     Number.isFinite(c.low)  && Number.isFinite(c.close)
   );
   if (valid.length === 0) return [];
-  // 2. Snap every candle to its bucket and sort ascending — guards
-  //    against backends that return unsorted data.
+  // 2. Snap to bucket, REPAIR OHLC structure (high = max, low = min — so a bad
+  //    feed can never produce an inverted/impossible candle), and sort.
   const snapped = valid
-    .map((c) => ({ ...c, time: bucketFloor(c.time, tfSec) }))
+    .map((c) => {
+      const o = Number(c.open), cl = Number(c.close);
+      const high = Math.max(Number(c.high), o, cl, Number(c.low));
+      const low = Math.min(Number(c.low), o, cl, Number(c.high));
+      return { ...c, open: o, close: cl, high, low, time: bucketFloor(c.time, tfSec) };
+    })
     .sort((a, b) => a.time - b.time);
   // 3. Dedupe: when two candles share a bucket, the LATER one wins
   //    (rolling-bar updates from the server).
@@ -210,6 +226,40 @@ export function fillCandleGaps(candles, tfSec) {
     else deduped.push(c);
   }
   if (deduped.length < 2) return deduped;
+  // 3b. OUTLIER PROTECTION — a single corrupt candle (a 0-price low, a 10×
+  //     spike, a bad tick) must never blow up the autoscale and flatten every
+  //     other candle. Walk with a rolling reference (running median of recent
+  //     closes); any candle whose O/H/L/C deviates from the reference by more
+  //     than MAX_BAR_MOVE is treated as a bad tick and carried forward (flat at
+  //     the reference) so it can't distort the visible range. A legitimate move
+  //     is always gradual across bars, so this only ever neutralises corruption.
+  {
+    const recent = [];                       // rolling window of valid closes
+    let ref = null, rejected = 0;
+    for (let i = 0; i < deduped.length; i++) {
+      const c = deduped[i];
+      if (ref != null && ref > 0) {
+        const dev = Math.max(
+          Math.abs(c.high - ref), Math.abs(c.low - ref),
+          Math.abs(c.open - ref), Math.abs(c.close - ref),
+        ) / ref;
+        if (!Number.isFinite(dev) || dev > MAX_BAR_MOVE) {
+          c.open = c.high = c.low = c.close = ref; // carry forward — neutralise
+          rejected++;
+        }
+      }
+      // Update the rolling reference from the (now-clean) close.
+      if (Number.isFinite(c.close) && c.close > 0) {
+        recent.push(c.close);
+        if (recent.length > 20) recent.shift();
+        const sorted = [...recent].sort((a, b) => a - b);
+        ref = sorted[Math.floor(sorted.length / 2)];   // median = robust to spikes
+      }
+    }
+    if (rejected > 0 && typeof console !== 'undefined') {
+      console.warn(`[candles] outlier-protection neutralised ${rejected} corrupt candle(s) (>${Math.round(MAX_BAR_MOVE * 100)}% single-bar deviation) to keep the price scale stable`);
+    }
+  }
   // 4. Carry-forward fill every missing bucket between consecutive
   //    candles so the time axis is fully contiguous (no white rail).
   const out = [deduped[0]];
@@ -225,6 +275,41 @@ export function fillCandleGaps(candles, tfSec) {
     out.push(next);
   }
   return out;
+}
+
+/**
+ * Audit RAW candles (pre-repair) for structural quality. Pure + O(n) — drives
+ * the optional on-chart diagnostics panel. Detects: invalid/impossible OHLC,
+ * duplicate timestamps, out-of-order timestamps, future candles, missing
+ * buckets (gaps), and the latency of the newest candle.
+ */
+export function analyzeCandles(raw, tfSec) {
+  const s = { total: 0, invalid: 0, duplicates: 0, outOfOrder: 0, future: 0, gaps: 0, lastAgeSec: null };
+  if (!Array.isArray(raw) || !raw.length) return s;
+  s.total = raw.length;
+  const nowSec = Date.now() / 1000;
+  let prev = -Infinity;
+  const seen = new Set();
+  const times = [];
+  for (const c of raw) {
+    if (!c || !Number.isFinite(c.time)) { s.invalid++; continue; }
+    const o = +c.open, h = +c.high, l = +c.low, cl = +c.close;
+    if (![o, h, l, cl].every(Number.isFinite) || h < Math.max(o, cl) || l > Math.min(o, cl) || h < l) s.invalid++;
+    if (c.time > nowSec + 1) s.future++;
+    if (seen.has(c.time)) s.duplicates++; else { seen.add(c.time); times.push(c.time); }
+    if (c.time < prev) s.outOfOrder++;
+    if (c.time > prev) prev = c.time;
+  }
+  if (times.length > 1 && tfSec > 0) {
+    times.sort((a, b) => a - b);
+    for (let i = 1; i < times.length; i++) {
+      const d = Math.round((times[i] - times[i - 1]) / tfSec);
+      if (d > 1) s.gaps += d - 1;
+    }
+  }
+  const last = raw[raw.length - 1];
+  if (last && Number.isFinite(last.time)) s.lastAgeSec = Math.max(0, Math.round(nowSec - last.time));
+  return s;
 }
 
 // ─── Data converters ─────────────────────────────────────────────────
@@ -742,8 +827,9 @@ export const DEFAULT_CHART_PREFS = {
   hours24: true,           // 24h vs 12h time labels
   secondsVisible: false,   // seconds on time labels
   gridLines: true,         // chart grid
-  // candle colours (applied when the series is a candlestick variant)
-  upColor: '#00C853', downColor: '#FF3B57',
+  diagnostics: false,      // candle-quality diagnostics overlay
+  // candle colours (applied when the series is a candlestick variant) — TV palette
+  upColor: '#26A69A', downColor: '#EF5350',
   // order-line / pill colours (TP / SL / entry) — client-customisable
   tpColor: '#10b981', slColor: '#ef4444', entryColor: '#EAB308',
 };
@@ -977,6 +1063,11 @@ export default function PriceChart({
     if (vLineRef.current) vLineRef.current.style.opacity = '0';
     if (hLineRef.current) hLineRef.current.style.opacity = '0';
   };
+  // Candle-quality diagnostics (only computed when the overlay is enabled).
+  const candleDiag = useMemo(
+    () => (chartPrefs.diagnostics ? analyzeCandles(candles, tfToSeconds(timeframe)) : null),
+    [chartPrefs.diagnostics, candles, timeframe]
+  );
   const setPref = useCallback((patch) => setChartPrefs((p) => {
     const next = { ...p, ...patch };
     try { localStorage.setItem(CHART_PREFS_KEY, JSON.stringify(next)); } catch { /* */ }
@@ -1802,23 +1893,37 @@ export default function PriceChart({
           as.animLo = as.animHi = as.fromLo = as.fromHi = as.targetLo = as.targetHi = null;
           as.startedAt = 0; as.duration = 0;
         }
-        try { candleSeriesRef.current.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
         try {
-          // 120 candles × 8px barSpacing ≈ 960px of candle area —
-          // matches the autoscale window (recent 100) with a small
-          // lead-in so price-scale fit feels stable as new bars arrive.
+          // Show a comfortable recent window first, THEN recompute the price
+          // autoscale on that settled range. Previously autoScale was applied
+          // before the visible range was set, so on first load the scale was
+          // computed over the entire 500-bar dataset (→ compressed, flat
+          // candles, giant range) and only corrected after the user scrolled.
           const visibleCount = 120;
-          if (deduped.length > visibleCount && chartRef.current) {
-            chartRef.current.timeScale().setVisibleLogicalRange({
-              from: deduped.length - visibleCount,
-              to: deduped.length - 1,
-            });
-          } else if (chartRef.current) {
-            chartRef.current.timeScale().fitContent();
-          }
-          // Pin to the latest candle so the chart always opens "at now",
-          // never on a historical/yesterday bar.
+          const fitView = () => {
+            if (!chartRef.current) return;
+            if (deduped.length > visibleCount) {
+              chartRef.current.timeScale().setVisibleLogicalRange({
+                from: deduped.length - visibleCount,
+                to: deduped.length - 1,
+              });
+            } else {
+              chartRef.current.timeScale().fitContent();
+            }
+            // Force the price scale to re-evaluate for the NOW-visible bars
+            // (toggle off→on; setting `true` when already true is a no-op).
+            try {
+              const ps = candleSeriesRef.current?.priceScale();
+              ps?.applyOptions({ autoScale: false });
+              ps?.applyOptions({ autoScale: true });
+            } catch (_) {}
+          };
+          fitView();
+          // Pin to the latest candle so the chart always opens "at now".
           chartRef.current?.timeScale().scrollToRealTime();
+          // Re-apply one frame later — after layout + scroll have settled — so
+          // the initial render matches the post-scroll (correct) appearance.
+          requestAnimationFrame(fitView);
         } catch (_) {}
       } catch (e) { /* ignore */ }
     };
@@ -1856,6 +1961,34 @@ export default function PriceChart({
       if (lastInRef && point.time < lastTime) {
         console.log('[Chart] tick dropped (late)', { rawTime: candle.openTime, normalizedTime: point.time, lastTime });
         return;
+      }
+
+      // ── Repair + outlier guard on the LIVE tick ──────────────────────
+      // Same protection as the historical pipeline: never let a corrupt tick
+      // (missing/0/NaN field, or a spike far from the last close) produce an
+      // inverted or giant candle that blows up the autoscale.
+      if (!Number.isFinite(point.open)) point.open = point.close;
+      {
+        const o = point.open, c2 = point.close;
+        const h = Number.isFinite(point.high) ? point.high : Math.max(o, c2);
+        const l = Number.isFinite(point.low) ? point.low : Math.min(o, c2);
+        point.high = Math.max(h, o, c2, l);
+        point.low = Math.min(l, o, c2, h);
+        const prevClose = lastInRef && Number.isFinite(lastInRef.close) ? lastInRef.close : null;
+        if (prevClose && prevClose > 0) {
+          const dev = Math.max(
+            Math.abs(point.high - prevClose), Math.abs(point.low - prevClose),
+            Math.abs(point.open - prevClose), Math.abs(point.close - prevClose),
+          ) / prevClose;
+          if (!Number.isFinite(dev) || dev > MAX_BAR_MOVE) {
+            const hiB = prevClose * (1 + MAX_BAR_MOVE), loB = prevClose * (1 - MAX_BAR_MOVE);
+            const cl = (v) => Math.min(hiB, Math.max(loB, v));
+            point.open = cl(point.open); point.close = cl(point.close);
+            point.high = Math.max(cl(point.high), point.open, point.close);
+            point.low = Math.min(cl(point.low), point.open, point.close);
+            console.warn('[Chart] live tick outlier-clamped', { prevClose, raw: candle.close });
+          }
+        }
       }
 
       // Decide: update current bucket, append next bucket, or gap-fill +
@@ -2313,14 +2446,11 @@ export default function PriceChart({
     }
 
     if (livePrice && Number(livePrice) > 0) {
-      desired.set('live:last', {
-        price: Number(livePrice),
-        color: '#14b8a6',
-        lineWidth: 1,
-        lineStyle: 1,
-        axisLabelVisible: true,
-        title: '',
-      });
+      // NOTE: no custom "live:last" line here. The candlestick/line series
+      // already draws its OWN native current-price line + axis label at the
+      // last close (priceLineVisible), and lightweight-charts keeps that line
+      // and its label perfectly aligned. A second custom line at livePrice sat
+      // a hair off the native one → "line here, pill there". One marker only.
 
       // ── Bid / Ask spread lines around the live (mid) price ──────────
       // Mirrors the broker spread: ask = mid + spread/2 (Buy fills here),
@@ -3269,6 +3399,32 @@ export default function PriceChart({
         {/* Countdown to bar close (Exness-style), toggled in chart settings */}
         {chartPrefs.countdown && <BarCountdown timeframe={timeframe} />}
 
+        {/* Candle-quality diagnostics overlay (chart settings → Canvas) */}
+        {candleDiag && (
+          <div className="absolute top-12 right-2 z-20 px-3 py-2 rounded-lg bg-bg-card/95 border border-border-dark text-[11px] font-mono shadow-card backdrop-blur-sm leading-relaxed pointer-events-none">
+            <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted mb-1">Candle Diagnostics · {symbol}</div>
+            {[
+              ['Total candles', candleDiag.total, false],
+              ['Invalid OHLC', candleDiag.invalid, candleDiag.invalid > 0],
+              ['Duplicates', candleDiag.duplicates, candleDiag.duplicates > 0],
+              ['Out of order', candleDiag.outOfOrder, candleDiag.outOfOrder > 0],
+              ['Future candles', candleDiag.future, candleDiag.future > 0],
+              ['Missing (gaps)', candleDiag.gaps, candleDiag.gaps > 0],
+            ].map(([label, val, bad]) => (
+              <div key={label} className="flex items-center justify-between gap-6">
+                <span className="text-text-muted">{label}</span>
+                <span className={bad ? 'text-bear font-bold' : 'text-bull font-semibold'}>{val}</span>
+              </div>
+            ))}
+            <div className="flex items-center justify-between gap-6">
+              <span className="text-text-muted">Feed latency</span>
+              <span className={candleDiag.lastAgeSec == null ? 'text-text-muted' : candleDiag.lastAgeSec > 120 ? 'text-bear font-bold' : 'text-bull font-semibold'}>
+                {candleDiag.lastAgeSec == null ? '—' : candleDiag.lastAgeSec < 2 ? 'live' : `${candleDiag.lastAgeSec}s`}
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Settings (gear) — bottom-right corner, opens the chart Settings dialog */}
         <button
           type="button"
@@ -3282,7 +3438,7 @@ export default function PriceChart({
 
         {/* Chart settings dialog (Symbol / Status line / Scales / Canvas) */}
         {settingsOpen && (
-          <ChartSettings prefs={chartPrefs} onChange={setPref} onClose={() => setSettingsOpen(false)} theme={theme} />
+          <ChartSettings prefs={chartPrefs} onChange={setPref} onReset={() => setPref(DEFAULT_CHART_PREFS)} onClose={() => setSettingsOpen(false)} theme={theme} />
         )}
 
         {/* ── Position pills overlay ─────────────────────────────────
