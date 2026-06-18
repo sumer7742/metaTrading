@@ -27,7 +27,10 @@ export default function Trade() {
   const confirm = useConfirm();
   const [params, setParams] = useSearchParams();
   const symbol = params.get('symbol') || 'BTCUSD';
-  const [timeframe, setTimeframe] = useState('1m');
+  // Persist the selected timeframe so a refresh keeps it (instead of 1m).
+  const TIMEFRAME_KEY = 'tradepro:chart-timeframe';
+  const [timeframe, setTimeframe] = useState(() => { try { return localStorage.getItem(TIMEFRAME_KEY) || '1m'; } catch { return '1m'; } });
+  useEffect(() => { try { localStorage.setItem(TIMEFRAME_KEY, timeframe); } catch { /* */ } }, [timeframe]);
 
   // ── Multi-chart layout system ─────────────────────────────────────────
   // `layoutId` picks a template (1-8 panes); `panes` holds each pane's
@@ -41,8 +44,9 @@ export default function Trade() {
   const [sync, setSync] = useState(() => { try { return { ...DEFAULT_SYNC, ...JSON.parse(localStorage.getItem(SYNC_KEY) || '{}') }; } catch { return { ...DEFAULT_SYNC }; } });
   const [panes, setPanes] = useState(() => {
     const base = params.get('symbol') || 'BTCUSD';
+    let baseTf = '1m'; try { baseTf = localStorage.getItem(TIMEFRAME_KEY) || '1m'; } catch { /* */ }
     let saved = []; try { saved = JSON.parse(localStorage.getItem(PANES_KEY) || '[]'); } catch { /* */ }
-    return Array.from({ length: 8 }, (_, i) => (saved[i] && saved[i].symbol ? saved[i] : { symbol: base, timeframe: '1m' }));
+    return Array.from({ length: 8 }, (_, i) => (saved[i] && saved[i].symbol ? saved[i] : { symbol: base, timeframe: baseTf }));
   });
   const layout = getLayout(layoutId);
   useEffect(() => { try { localStorage.setItem(LAYOUT_KEY, layoutId); } catch { /* */ } }, [layoutId]);
@@ -275,7 +279,7 @@ export default function Trade() {
     try {
       const raw = localStorage.getItem(FLOAT_H_KEY);
       const n = raw ? Number(raw) : 460;
-      return Number.isFinite(n) ? Math.max(320, Math.min(820, n)) : 460;
+      return Number.isFinite(n) ? Math.max(180, Math.min(820, n)) : 460;
     } catch (_) { return 460; }
   });
   useEffect(() => {
@@ -287,7 +291,7 @@ export default function Trade() {
   const FLOAT_W_KEY = 'tradepro:float-order-width';
   const [floatWidth, setFloatWidth] = useState(() => {
     if (typeof window === 'undefined') return 300;
-    try { const raw = localStorage.getItem(FLOAT_W_KEY); const n = raw ? Number(raw) : 300; return Number.isFinite(n) ? Math.max(240, Math.min(560, n)) : 300; } catch (_) { return 300; }
+    try { const raw = localStorage.getItem(FLOAT_W_KEY); const n = raw ? Number(raw) : 300; return Number.isFinite(n) ? Math.max(160, Math.min(560, n)) : 300; } catch (_) { return 300; }
   });
   useEffect(() => { try { localStorage.setItem(FLOAT_W_KEY, String(floatWidth)); } catch (_) {} }, [floatWidth]);
   // Corner resize state — adjusts width + height together. Compensates the
@@ -1196,7 +1200,7 @@ export default function Trade() {
       const clientY = e.touches?.[0]?.clientY ?? e.clientY;
       if (clientY == null) return;
       const dy = clientY - st.startY;
-      const next = Math.max(320, Math.min(820, st.startH + dy));
+      const next = Math.max(180, Math.min(820, st.startH + dy));
       setFloatHeight(next);
     };
     const onUp = () => { floatResizeRef.current.resizing = false; document.body.style.userSelect = ''; document.body.style.cursor = ''; };
@@ -1233,8 +1237,8 @@ export default function Trade() {
       const dx = cx - st.startX, dy = cy - st.startY;
       const east = st.corner === 'ne' || st.corner === 'se';   // moving the right edge
       const south = st.corner === 'sw' || st.corner === 'se';   // moving the bottom edge
-      const newW = Math.max(240, Math.min(560, st.startW + (east ? dx : -dx)));
-      const newH = Math.max(320, Math.min(820, st.startH + (south ? dy : -dy)));
+      const newW = Math.max(160, Math.min(560, st.startW + (east ? dx : -dx)));
+      const newH = Math.max(180, Math.min(820, st.startH + (south ? dy : -dy)));
       const dW = newW - st.startW, dH = newH - st.startH;
       // East corner: right edge moves out by dW (left fixed). West corner: right
       // edge fixed (left tracks). South corner: top fixed (bottom +dH). North:

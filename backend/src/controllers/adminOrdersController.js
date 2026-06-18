@@ -136,9 +136,9 @@ async function resolveFilters(req, scopeIds) {
     const acc = await TradingAccount.findOne({ accountNumber: accNo }).select('_id').lean();
     accIdSet = acc ? [String(acc._id)] : [EMPTY];
   }
+  // Account-type filter — a specific tier, or the legacy __ALL_REAL__/__ALL_DEMO__.
   const acctType = (req.query.accountType || '').trim();
   if (acctType) {
-    // '__ALL_REAL__' → every non-demo account; '__ALL_DEMO__' → demo accounts.
     const typeQuery = acctType === '__ALL_REAL__'
       ? { accountType: { $nin: DEMO_TYPES } }
       : acctType === '__ALL_DEMO__'
@@ -149,6 +149,17 @@ async function resolveFilters(req, scopeIds) {
     accIdSet = accIdSet ? accIdSet.filter((id) => typeIds.includes(id)) : typeIds;
     if (!accIdSet.length) accIdSet = [EMPTY];
   }
+
+  // Separate Real / Demo mode filter — intersects with the above.
+  const acctMode = (req.query.accountMode || '').trim().toLowerCase();
+  if (acctMode === 'real' || acctMode === 'demo') {
+    const modeQuery = acctMode === 'demo' ? { accountType: { $in: DEMO_TYPES } } : { accountType: { $nin: DEMO_TYPES } };
+    const accs = await TradingAccount.find(modeQuery).select('_id').lean();
+    const modeIds = accs.map((a) => String(a._id));
+    accIdSet = accIdSet ? accIdSet.filter((id) => modeIds.includes(id)) : modeIds;
+    if (!accIdSet.length) accIdSet = [EMPTY];
+  }
+
   if (accIdSet) filter.accountId = { $in: accIdSet };
 
   // ── order / position id: full 24-hex → exact; else #XXXXXX ticket suffix ──

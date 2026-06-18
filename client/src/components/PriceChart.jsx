@@ -24,6 +24,8 @@ import { useChartDrawings } from '../hooks/useChartDrawings';
 import ChartDrawingToolbar from './ChartDrawingToolbar';
 import DrawingContextMenu from './DrawingContextMenu';
 import DrawingProperties from './DrawingProperties';
+import ChartSettings from './ChartSettings';
+import AssetIcon from './AssetIcon';
 import WatchlistButton from './WatchlistButton';
 
 // ─── Theme palette helpers ───────────────────────────────────────────
@@ -718,6 +720,41 @@ const INDICATOR_DEFAULTS = {
   cci: false,       // Commodity Channel Index
 };
 
+// ── Chart settings (TradingView/Exness-style "Settings" dialog) ──────────
+// Persisted globally; applied to the live chart via an effect. lightweight-
+// charts price-scale modes: Normal=0, Logarithmic=1, Percentage=2, IndexedTo100=3.
+const PRICE_SCALE_MODE = { normal: 0, log: 1, percent: 2, indexed: 3 };
+const CHART_PREFS_KEY = 'tradepro:chart-prefs:v1';
+export const DEFAULT_CHART_PREFS = {
+  scaleMode: 'normal',     // normal | log | percent | indexed
+  invert: false,           // invert price scale
+  autoScale: true,         // fit data to screen
+  alignLabels: true,       // no overlapping price labels
+  lastValueVisible: true,  // symbol last-value label on the axis
+  countdown: false,        // countdown to bar close (overlay)
+  dayOfWeek: false,        // show weekday on time labels
+  hours24: true,           // 24h vs 12h time labels
+  secondsVisible: false,   // seconds on time labels
+  gridLines: true,         // chart grid
+  // candle colours (applied when the series is a candlestick variant)
+  upColor: '#00C853', downColor: '#FF3B57',
+  // order-line / pill colours (TP / SL / entry) — client-customisable
+  tpColor: '#10b981', slColor: '#ef4444', entryColor: '#EAB308',
+};
+const readChartPrefs = () => {
+  try { return { ...DEFAULT_CHART_PREFS, ...JSON.parse(localStorage.getItem(CHART_PREFS_KEY) || '{}') }; }
+  catch { return { ...DEFAULT_CHART_PREFS }; }
+};
+
+// Persist the user's active indicators + chart type so a refresh keeps them.
+const INDICATORS_KEY = 'tradepro:chart-indicators:v1';
+const readIndicators = () => {
+  try { return { ...INDICATOR_DEFAULTS, ...JSON.parse(localStorage.getItem(INDICATORS_KEY) || '{}') }; }
+  catch { return { ...INDICATOR_DEFAULTS }; }
+};
+const CHART_TYPE_KEY = 'tradepro:chart-type';
+const readChartType = () => { try { return localStorage.getItem(CHART_TYPE_KEY) || 'candles'; } catch { return 'candles'; } };
+
 export default function PriceChart({
   symbol,
   timeframe,
@@ -813,6 +850,13 @@ export default function PriceChart({
   const candleSeriesRef = useRef(null);  // main series — type swaps but ref name stays
   const overlayRef = useRef({});
   const subPanelChartsRef = useRef({});
+  // Custom crosshair overlay — a single continuous crosshair spanning the main
+  // pane + all indicator sub-panes (lightweight-charts' native crosshair is
+  // per-chart, so it can't cross pane boundaries). Tracked via DOM refs and
+  // updated on mousemove without re-rendering (smooth during pan/zoom/ticks).
+  const chartWrapRef = useRef(null);
+  const vLineRef = useRef(null);
+  const hLineRef = useRef(null);
   const priceLinesRef = useRef(new Map());
   const candlesRef = useRef([]);
   // Live-price / instrument refs — synced via effects below so the drag
@@ -899,10 +943,39 @@ export default function PriceChart({
   const timeZoneRef = useRef(timeZone);
   useEffect(() => { timeZoneRef.current = timeZone; }, [timeZone]);
 
-  const [indicators, setIndicators] = useState(INDICATOR_DEFAULTS);
+  const [indicators, setIndicators] = useState(readIndicators);
   const [candles, setCandles] = useState([]);
-  const [chartType, setChartType] = useState('candles');
+  const [chartType, setChartType] = useState(readChartType);
   const [chartTypeOpen, setChartTypeOpen] = useState(false);
+  // Persist indicators + chart type across refreshes.
+  useEffect(() => { try { localStorage.setItem(INDICATORS_KEY, JSON.stringify(indicators)); } catch { /* */ } }, [indicators]);
+  useEffect(() => { try { localStorage.setItem(CHART_TYPE_KEY, chartType); } catch { /* */ } }, [chartType]);
+  // Chart settings (Exness-style) — persisted, applied via the effect below.
+  const [chartPrefs, setChartPrefs] = useState(readChartPrefs);
+  const chartPrefsRef = useRef(chartPrefs);
+  chartPrefsRef.current = chartPrefs;
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [chartReady, setChartReady] = useState(false);
+  // OHLC status-line value — the candle under the crosshair, or null (→ latest).
+  const [hoverBar, setHoverBar] = useState(null);
+  // Custom crosshair — update line positions via DOM (no React re-render) so it
+  // stays glued to the cursor and smooth during pan / zoom / live ticks.
+  const moveCrosshair = (e) => {
+    const wrap = chartWrapRef.current; if (!wrap) return;
+    const r = wrap.getBoundingClientRect();
+    const v = vLineRef.current, h = hLineRef.current;
+    if (v) { v.style.transform = `translateX(${e.clientX - r.left}px)`; v.style.opacity = '1'; }
+    if (h) { h.style.transform = `translateY(${e.clientY - r.top}px)`; h.style.opacity = '1'; }
+  };
+  const hideCrosshair = () => {
+    if (vLineRef.current) vLineRef.current.style.opacity = '0';
+    if (hLineRef.current) hLineRef.current.style.opacity = '0';
+  };
+  const setPref = useCallback((patch) => setChartPrefs((p) => {
+    const next = { ...p, ...patch };
+    try { localStorage.setItem(CHART_PREFS_KEY, JSON.stringify(next)); } catch { /* */ }
+    return next;
+  }), []);
   const [indicatorsOpen, setIndicatorsOpen] = useState(false);
   const [indicatorSearch, setIndicatorSearch] = useState('');
   const [timeframeOpen, setTimeframeOpen] = useState(false);
@@ -1107,10 +1180,15 @@ export default function PriceChart({
       },
       crosshair: {
         mode: 1, // Magnet — snaps to OHLC values
+        // Native crosshair LINES are hidden — a custom full-wrapper overlay
+        // (see chartWrapRef / vLineRef / hLineRef) draws a single continuous
+        // crosshair across the main pane + all indicator sub-panes. We keep the
+        // axis LABELS (price/time bubbles) which the native crosshair provides.
         vertLine: {
           width: 1,
           color: tvCanvas(theme).crosshair,
           style: 2,
+          visible: false,
           labelBackgroundColor: tvCanvas(theme).crosshairLabelBg,
           labelVisible: true,
         },
@@ -1118,6 +1196,7 @@ export default function PriceChart({
           width: 1,
           color: tvCanvas(theme).crosshair,
           style: 2,
+          visible: false,
           labelBackgroundColor: tvCanvas(theme).crosshairLabelBg,
           labelVisible: true,
         },
@@ -1135,6 +1214,7 @@ export default function PriceChart({
       },
     });
     chartRef.current = chart;
+    setChartReady(true);
     try { onReady?.(chart, () => candleSeriesRef.current); } catch (_) { /* */ }
 
     // ── Subscribe to visible-range changes so the Y axis re-fits on every
@@ -1227,12 +1307,61 @@ export default function PriceChart({
       subPanelChartsRef.current = {};
       try { chart.remove(); } catch (_) {}
       try { onReady?.(null); } catch (_) { /* */ }
+      setChartReady(false);
       chartRef.current = null;
       candleSeriesRef.current = null;
       overlayRef.current = {};
       priceLinesRef.current.clear();
     };
   }, []);
+
+  // ─── Apply chart settings (Exness-style) to the live chart ──────────────
+  // Runs whenever prefs change (or the chart/ series is (re)created). Each
+  // applyOptions is guarded so an unsupported option never breaks the chart.
+  useEffect(() => {
+    const chart = chartRef.current, series = candleSeriesRef.current;
+    if (!chart) return;
+    const p = chartPrefs;
+    // Time-label formatters honour 24h / weekday / timezone prefs.
+    const toSec = (t) => (typeof t === 'number' ? t : Math.floor(Date.UTC(t.year, t.month - 1, t.day) / 1000));
+    const tzOpt = () => { const tz = timeZoneRef.current; return (tz === 'utc' || tz === 'gmt') ? { timeZone: 'UTC' } : {}; };
+    const tickFmt = (t) => {
+      const d = new Date(toSec(t) * 1000); const tf = timeframeRef.current;
+      const intraday = tf === '1m' || tf === '5m' || tf === '15m' || tf === '1h' || tf === '4h';
+      if (intraday) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', ...(p.secondsVisible ? { second: '2-digit' } : {}), hour12: !p.hours24, ...tzOpt() });
+      return d.toLocaleDateString([], { ...(p.dayOfWeek ? { weekday: 'short' } : {}), day: '2-digit', month: 'short', ...tzOpt() });
+    };
+    const crosshairFmt = (t) => new Date(toSec(t) * 1000).toLocaleString([], { ...(p.dayOfWeek ? { weekday: 'short' } : {}), day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', ...(p.secondsVisible ? { second: '2-digit' } : {}), hour12: !p.hours24, ...tzOpt() });
+    try { chart.applyOptions({ localization: { timeFormatter: crosshairFmt }, timeScale: { tickMarkFormatter: tickFmt, secondsVisible: !!p.secondsVisible } }); } catch (_) { /* */ }
+    try {
+      chart.priceScale('right').applyOptions({
+        mode: PRICE_SCALE_MODE[p.scaleMode] ?? 0,
+        invertScale: !!p.invert,
+        autoScale: !!p.autoScale,
+        alignLabels: !!p.alignLabels,
+      });
+    } catch (_) { /* */ }
+    try { chart.applyOptions({ grid: { vertLines: { visible: !!p.gridLines }, horzLines: { visible: !!p.gridLines } } }); } catch (_) { /* */ }
+    if (series) {
+      try { series.applyOptions({ lastValueVisible: !!p.lastValueVisible }); } catch (_) { /* */ }
+      if (chartType === 'candles' || chartType === 'hollow' || chartType === 'heikin' || chartType === 'bars') {
+        try { series.applyOptions({ upColor: p.upColor, downColor: p.downColor, wickUpColor: p.upColor, wickDownColor: p.downColor, borderUpColor: p.upColor, borderDownColor: p.downColor }); } catch (_) { /* */ }
+      }
+    }
+  }, [chartPrefs, chartReady, chartType]);
+
+  // ─── OHLC status line — track the candle under the crosshair ─────────────
+  useEffect(() => {
+    const chart = chartRef.current; if (!chart) return undefined;
+    const handler = (param) => {
+      const s = candleSeriesRef.current;
+      if (!param.point || !s) { setHoverBar(null); return; }
+      const d = param.seriesData?.get(s);
+      setHoverBar(d && (d.open != null || d.value != null) ? d : null);
+    };
+    chart.subscribeCrosshairMove(handler);
+    return () => { try { chart.unsubscribeCrosshairMove(handler); } catch (_) { /* */ } };
+  }, [chartReady]);
 
   // ─── 1b. Axis-drag detection + right-click context menu ─────────────
   // Detect when the user starts dragging the right (price) axis or the
@@ -2046,6 +2175,15 @@ export default function PriceChart({
     oversold.setData(data.map((p) => ({ time: p.time, value: -100 })));
   }, [indicators.cci, candles, closes]);
 
+  // Hide native crosshair LINES on every sub-panel (labels stay) — the custom
+  // overlay draws one continuous crosshair across all panes. Runs after the
+  // sub-panel effects above so newly-created panes get the option.
+  useEffect(() => {
+    for (const sc of Object.values(subPanelChartsRef.current)) {
+      try { sc.chart?.applyOptions({ crosshair: { vertLine: { visible: false, labelVisible: true }, horzLine: { visible: false, labelVisible: true } } }); } catch (_) { /* */ }
+    }
+  }, [indicators]);
+
   // ─── 7. Symbol-scoped order/position filters ─────────────────────────
   const symbolOrders = useMemo(
     () => (openOrders || []).filter((o) => o.symbol === symbol),
@@ -2139,7 +2277,7 @@ export default function PriceChart({
       if (p.entryPrice && Number(p.entryPrice) > 0) {
         desired.set(`pos:${p._id}:entry`, {
           price: Number(p.entryPrice),
-          color: '#EAB308',
+          color: chartPrefs.entryColor,
           lineWidth: 1,
           lineStyle: 0, // solid
           axisLabelVisible: true,
@@ -2149,7 +2287,7 @@ export default function PriceChart({
       if (p.stopLoss) {
         desired.set(`pos:${p._id}:sl`, {
           price: Number(p.stopLoss),
-          color: '#ef4444',
+          color: chartPrefs.slColor,
           lineWidth: 1,
           lineStyle: 2,
           axisLabelVisible: true,
@@ -2159,7 +2297,7 @@ export default function PriceChart({
       if (p.takeProfit) {
         desired.set(`pos:${p._id}:tp`, {
           price: Number(p.takeProfit),
-          color: '#10b981',
+          color: chartPrefs.tpColor,
           lineWidth: 1,
           lineStyle: 2,
           axisLabelVisible: true,
@@ -2234,7 +2372,7 @@ export default function PriceChart({
       if (orderPreview.entry && Number(orderPreview.entry) > 0) {
         desired.set('preview:entry', {
           price: Number(orderPreview.entry),
-          color: isLimit ? '#F59E0B' : '#EAB308',
+          color: chartPrefs.entryColor,
           lineWidth: 1,
           lineStyle: 2, // dotted — clearly a draft
           axisLabelVisible: false,
@@ -2244,7 +2382,7 @@ export default function PriceChart({
       if (orderPreview.tp && Number(orderPreview.tp) > 0) {
         desired.set('preview:tp', {
           price: Number(orderPreview.tp),
-          color: '#4ADE80',
+          color: chartPrefs.tpColor,
           lineWidth: 1,
           lineStyle: 2, // dotted (draft) vs solid real lines
           axisLabelVisible: false,
@@ -2254,7 +2392,7 @@ export default function PriceChart({
       if (orderPreview.sl && Number(orderPreview.sl) > 0) {
         desired.set('preview:sl', {
           price: Number(orderPreview.sl),
-          color: '#F87171',
+          color: chartPrefs.slColor,
           lineWidth: 1,
           lineStyle: 2, // dotted
           axisLabelVisible: false,
@@ -2292,7 +2430,7 @@ export default function PriceChart({
     if (!manualPriceScaleRef.current) {
       try { series.priceScale().applyOptions({ autoScale: true }); } catch (_) {}
     }
-  }, [symbolOrders, symbolPositions, livePrice, pendingPreview, orderPreview, previewRealMatch, pricePrecision, chartType, instrument]);
+  }, [symbolOrders, symbolPositions, livePrice, pendingPreview, orderPreview, previewRealMatch, pricePrecision, chartType, instrument, chartPrefs]);
 
   useEffect(() => {
     return () => { priceLinesRef.current.clear(); };
@@ -3106,6 +3244,9 @@ export default function PriceChart({
       {/* Main chart canvas + top-right info-strip overlay.
           flex-1 + min-h-0 lets the chart container claim every remaining
           pixel under the toolbar instead of falling back to a 460 px tile. */}
+      {/* Crosshair wrapper — spans the main pane + all indicator sub-panes so
+          the custom crosshair overlay can draw one continuous line across them. */}
+      <div ref={chartWrapRef} className="relative flex-1 flex flex-col min-h-0" onMouseMove={moveCrosshair} onMouseLeave={hideCrosshair}>
       <div className="relative w-full flex-1 min-h-0" style={{ background: tvCanvas(theme).background }}>
         <div ref={containerRef} className="w-full h-full" />
         {brandLogo && (
@@ -3114,6 +3255,25 @@ export default function PriceChart({
             alt=""
             className="absolute bottom-8 left-2 h-5 max-w-[130px] object-contain z-10 pointer-events-none opacity-90 select-none"
           />
+        )}
+
+        {/* Countdown to bar close (Exness-style), toggled in chart settings */}
+        {chartPrefs.countdown && <BarCountdown timeframe={timeframe} />}
+
+        {/* Settings (gear) — bottom-right corner, opens the chart Settings dialog */}
+        <button
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          title="Chart settings"
+          aria-label="Chart settings"
+          className="absolute bottom-1.5 right-1.5 z-20 inline-flex items-center justify-center h-6 w-6 rounded text-text-muted hover:text-primary-600 transition-colors"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+        </button>
+
+        {/* Chart settings dialog (Symbol / Status line / Scales / Canvas) */}
+        {settingsOpen && (
+          <ChartSettings prefs={chartPrefs} onChange={setPref} onClose={() => setSettingsOpen(false)} theme={theme} />
         )}
 
         {/* ── Position pills overlay ─────────────────────────────────
@@ -3148,6 +3308,7 @@ export default function PriceChart({
                   isDragging={!!drag}
                   snapped={!!(drag && drag.snapped)}
                   overridePrice={overridePrice}
+                  colors={{ tp: chartPrefs.tpColor, sl: chartPrefs.slColor, entry: chartPrefs.entryColor }}
                   showQuickTp={showQuickTp}
                   showQuickSl={showQuickSl}
                   onClose={() => {
@@ -3184,6 +3345,7 @@ export default function PriceChart({
                 isDragging
                 snapped={!!dragState.snapped}
                 overridePrice={dragState.price}
+                colors={{ tp: chartPrefs.tpColor, sl: chartPrefs.slColor, entry: chartPrefs.entryColor }}
                 onClose={() => {}}
                 onDragStart={() => {}}
                 onQuickDragStart={() => {}}
@@ -3218,6 +3380,9 @@ export default function PriceChart({
             onResetAll={ctxResetAll}
             manualY={manualPriceScaleRef.current}
             manualX={manualTimeScaleRef.current}
+            prefs={chartPrefs}
+            onSetPref={setPref}
+            onMoreSettings={() => { setChartCtxMenu(null); setSettingsOpen(true); }}
           />
         )}
         {drawingControls.measureReadout && (
@@ -3234,25 +3399,42 @@ export default function PriceChart({
             </button>
           </div>
         )}
-        {infoStrip && (
-          <div className="pointer-events-none hidden md:flex absolute top-1 left-11 z-10 items-center gap-3 px-3 py-1.5 rounded-md bg-white/85 backdrop-blur-sm border border-border-dark text-[11px] font-medium tracking-wide shadow-card">
-            {infoStrip.margin != null && (
-              <span className="text-text-muted">
-                Margin <span className="text-bull font-semibold">{infoStrip.margin}</span>
-              </span>
-            )}
-            {infoStrip.leverage != null && (
-              <span className="text-text-muted">
-                Leverage <span className="text-indigo-400 font-semibold">{infoStrip.leverage}</span>
-              </span>
-            )}
-            {infoStrip.brokerage != null && (
-              <span className="text-text-muted">
-                Brokerage <span className="text-pink-400 font-semibold">{infoStrip.brokerage}</span>
-              </span>
-            )}
-          </div>
-        )}
+        {/* OHLC status line (TradingView / Exness-style) — follows the crosshair,
+            falls back to the latest candle. Replaces the old margin strip. */}
+        {(() => {
+          const bar = hoverBar || candlesRef.current[candlesRef.current.length - 1];
+          if (!bar) return null;
+          const o = bar.open, h = bar.high, l = bar.low, c = bar.close ?? bar.value;
+          const hasOHLC = o != null && h != null && l != null;
+          const chg = (o != null && c != null) ? c - o : null;
+          const pct = (chg != null && o) ? (chg / o) * 100 : null;
+          const up = chg == null ? true : chg >= 0;
+          const dirCol = up ? 'text-bull' : 'text-bear';
+          const fmt = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { minimumFractionDigits: pricePrecision, maximumFractionDigits: pricePrecision }));
+          const name = instrument?.name || instrument?.displayName || symbol;
+          return (
+            <div className="pointer-events-none absolute top-1 left-11 z-10 flex items-center gap-2 px-2.5 py-1 rounded-md bg-white/85 backdrop-blur-sm border border-border-dark text-[12px] font-semibold shadow-card max-w-[calc(100%-3.5rem)] overflow-hidden">
+              <span className="shrink-0"><AssetIcon row={instrument || { symbol }} size={16} round /></span>
+              <span className="text-text-primary truncate">{name}</span>
+              <span className="text-text-muted">· {timeframe} ·</span>
+              {hasOHLC ? (
+                <span className="hidden sm:flex items-center gap-2 font-mono">
+                  <span className="text-text-muted">O<span className={dirCol}>{fmt(o)}</span></span>
+                  <span className="text-text-muted">H<span className={dirCol}>{fmt(h)}</span></span>
+                  <span className="text-text-muted">L<span className={dirCol}>{fmt(l)}</span></span>
+                  <span className="text-text-muted">C<span className={dirCol}>{fmt(c)}</span></span>
+                </span>
+              ) : (
+                <span className={`font-mono ${dirCol}`}>{fmt(c)}</span>
+              )}
+              {chg != null && (
+                <span className={`font-mono font-bold ${dirCol}`}>
+                  {chg >= 0 ? '+' : ''}{fmt(chg)}{pct != null && ` (${chg >= 0 ? '+' : ''}${pct.toFixed(2)}%)`}
+                </span>
+              )}
+            </div>
+          );
+        })()}
       </div>
 
       {/* RSI sub-panel */}
@@ -3314,6 +3496,15 @@ export default function PriceChart({
           <div ref={cciContainerRef} className="w-full" />
         </div>
       )}
+
+        {/* ── Custom crosshair lines ───────────────────────────────────
+            One continuous crosshair spanning the main pane + every indicator
+            sub-pane. Positioned via DOM transform on mousemove (no re-render);
+            opacity-0 until hovered. z-[15] keeps it above chart content but
+            below the toolbar (z-20) and menus. */}
+        <div ref={vLineRef} className="absolute top-0 left-0 h-full z-[15] pointer-events-none opacity-0" style={{ width: 0, borderLeft: `1px dashed ${tvCanvas(theme).crosshair}`, willChange: 'transform' }} />
+        <div ref={hLineRef} className="absolute left-0 top-0 w-full z-[15] pointer-events-none opacity-0" style={{ height: 0, borderTop: `1px dashed ${tvCanvas(theme).crosshair}`, willChange: 'transform' }} />
+      </div>
     </div>
   );
 }
@@ -3456,12 +3647,15 @@ function HeikinAshiGlyph() {
 function ChartContextMenu({
   x, y, theme,
   onClose, onRefresh, onAutoFit, onResetY, onResetX, onResetAll,
-  manualY, manualX,
+  manualY, manualX, prefs, onSetPref, onMoreSettings,
 }) {
   const isDark = theme === 'dark';
   const card = isDark
     ? { bg: '#0F172A', bgHover: '#1E293B', border: '#334155', text: '#F1F5F9', muted: '#94A3B8', divider: '#1E293B' }
     : { bg: '#FFFFFF', bgHover: '#F1F5F9', border: '#E2E8F0', text: '#0F172A', muted: '#64748B', divider: '#E2E8F0' };
+  const p = prefs || {};
+  const setP = onSetPref || (() => {});
+  const tick = <span style={{ color: '#3B82F6' }}>✓</span>;
 
   return (
     <>
@@ -3486,22 +3680,31 @@ function ChartContextMenu({
         onClick={(e) => e.stopPropagation()}
         onContextMenu={(e) => e.preventDefault()}
       >
-        <CtxItem onClick={onRefresh} card={card} icon={<IconRefresh />}>
-          Refresh Scale
+        <CtxItem onClick={() => { setP({ autoScale: true }); onAutoFit?.(); }} card={card} icon={p.autoScale ? tick : <IconFit />}>
+          Auto (fits data to screen)
         </CtxItem>
-        <CtxItem onClick={onAutoFit} card={card} icon={<IconFit />}>
-          Auto Fit Chart
+        <CtxItem onClick={() => setP({ invert: !p.invert })} card={card} icon={p.invert ? tick : <span />}>
+          Invert scale
         </CtxItem>
         <CtxDivider card={card} />
+        {/* Price-scale mode — radio group */}
+        {[['normal', 'Regular'], ['percent', 'Percent'], ['indexed', 'Indexed to 100'], ['log', 'Logarithmic']].map(([k, label]) => (
+          <CtxItem key={k} onClick={() => setP({ scaleMode: k })} card={card} icon={p.scaleMode === k ? tick : <span />}>
+            {label}
+          </CtxItem>
+        ))}
+        <CtxDivider card={card} />
+        <CtxItem onClick={onRefresh} card={card} icon={<IconRefresh />}>Refresh scale</CtxItem>
         <CtxItem onClick={onResetY} card={card} icon={<IconYAxis />} trailing={manualY ? <LockedDot card={card} /> : null}>
           Reset Y-Axis Zoom
         </CtxItem>
         <CtxItem onClick={onResetX} card={card} icon={<IconXAxis />} trailing={manualX ? <LockedDot card={card} /> : null}>
           Reset X-Axis Zoom
         </CtxItem>
+        <CtxItem onClick={onResetAll} card={card} icon={<IconResetAll />} accent>Reset all view</CtxItem>
         <CtxDivider card={card} />
-        <CtxItem onClick={onResetAll} card={card} icon={<IconResetAll />} accent>
-          Reset All View
+        <CtxItem onClick={() => onMoreSettings?.()} card={card} icon={<IconGear />}>
+          More settings…
         </CtxItem>
       </div>
     </>
@@ -3573,6 +3776,31 @@ const IconResetAll = () => (
     <path d="M3 4v5h5" />
   </svg>
 );
+const IconGear = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="3" />
+    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+  </svg>
+);
+
+// Countdown-to-bar-close pill — time remaining until the current candle closes.
+function BarCountdown({ timeframe }) {
+  const [left, setLeft] = useState(0);
+  useEffect(() => {
+    const tf = tfToSeconds(timeframe) || 60;
+    const tick = () => { const now = Date.now() / 1000; setLeft(Math.max(0, Math.round(Math.ceil(now / tf) * tf - now))); };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [timeframe]);
+  const h = Math.floor(left / 3600), m = Math.floor((left % 3600) / 60), s = left % 60;
+  const txt = h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  return (
+    <div className="absolute right-2 bottom-8 z-20 px-2 py-1 rounded-md bg-bg-card/90 border border-border-dark text-[11px] font-mono font-bold text-text-secondary shadow-card pointer-events-none">
+      ⏱ {txt}
+    </div>
+  );
+}
 
 //
 // Visual treatment:
@@ -3589,6 +3817,7 @@ function PositionPill({
   overridePrice = null,
   showQuickTp = false,
   showQuickSl = false,
+  colors = null,   // { tp, sl, entry } — client-customisable line/pill colours
   onClose,
   onDragStart,
   onQuickDragStart,
@@ -3627,20 +3856,23 @@ function PositionPill({
   //   Entry      → yellow (#EAB308) / glow #FACC15  (Exness-style)
   //   TP         → neon green (#10b981) / glow #34d399
   //   SL         → neon red   (#ef4444) / glow #f87171
+  const C_TP = colors?.tp || '#10b981';
+  const C_SL = colors?.sl || '#ef4444';
+  const C_ENTRY = colors?.entry || '#EAB308';
   let color;
   let glowColor;
   let usd;
   if (kind === 'entry') {
-    color     = '#EAB308';
-    glowColor = '#FACC15';
+    color     = C_ENTRY;
+    glowColor = C_ENTRY;
     usd = Number(position.unrealizedPnl) || 0;
   } else if (kind === 'sl') {
-    color = '#ef4444';
-    glowColor = '#f87171';
+    color = C_SL;
+    glowColor = C_SL;
     usd = (isBuy ? targetPrice - entry : entry - targetPrice) * qty;
   } else {
-    color = '#10b981';
-    glowColor = '#34d399';
+    color = C_TP;
+    glowColor = C_TP;
     usd = (isBuy ? targetPrice - entry : entry - targetPrice) * qty;
   }
 

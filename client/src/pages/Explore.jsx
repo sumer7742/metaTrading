@@ -528,7 +528,7 @@ export default function Explore() {
   const openTrade = (sym) => navigate(`/trade?symbol=${encodeURIComponent(sym)}`);
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-8 overflow-x-clip">
       {/* Dynamic instrument strip now lives in the global Layout
           header — removed from here to avoid a duplicate rail. */}
 
@@ -664,15 +664,15 @@ export default function Explore() {
           </div>
         </div>
 
-        <div className="bg-white border border-border-dark rounded-2xl overflow-hidden">
+        <div className="bg-white border border-border-dark rounded-2xl overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-[11px] uppercase tracking-wider text-text-muted bg-bg-card">
-                <th className="text-left font-medium px-5 py-3">Asset</th>
-                <th className="text-left font-medium px-5 py-3 hidden md:table-cell">Trend</th>
-                <th className="text-right font-medium px-5 py-3">Price</th>
-                <th className="text-right font-medium px-5 py-3">24h %</th>
-                <th className="text-right font-medium px-5 py-3 hidden sm:table-cell">Volume</th>
+                <th className="text-left font-medium px-3 sm:px-5 py-3">Asset</th>
+                <th className="text-left font-medium px-3 sm:px-5 py-3 hidden md:table-cell">Trend</th>
+                <th className="text-right font-medium px-3 sm:px-5 py-3">Price</th>
+                <th className="text-right font-medium px-3 sm:px-5 py-3">24h %</th>
+                <th className="text-right font-medium px-3 sm:px-5 py-3 hidden sm:table-cell">Volume</th>
                 <th className="px-3 py-3 w-px"><span className="sr-only">Watchlist</span></th>
               </tr>
             </thead>
@@ -697,7 +697,7 @@ export default function Explore() {
                     onClick={() => openTrade(m.symbol)}
                     className={`group border-t border-border-subtle hover:bg-bg-hover transition-colors cursor-pointer ${idx === 0 ? 'border-t-0' : ''}`}
                   >
-                    <td className="px-5 py-3.5">
+                    <td className="px-3 sm:px-5 py-3.5">
                       <div className="flex items-center gap-3">
                         <AssetGlyph sym={m.symbol} row={m} size={34} />
                         <div className="min-w-0">
@@ -706,16 +706,16 @@ export default function Explore() {
                         </div>
                       </div>
                     </td>
-                    <td className="px-5 py-3.5 hidden md:table-cell">
+                    <td className="px-3 sm:px-5 py-3.5 hidden md:table-cell">
                       <Sparkline points={synthSpark(change, idx)} positive={Number.isFinite(change) ? change >= 0 : true} width={90} height={28} />
                     </td>
-                    <td className="px-5 py-3.5 text-right font-mono text-sm text-text-primary">
+                    <td className="px-3 sm:px-5 py-3.5 text-right font-mono text-sm text-text-primary">
                       {fmtPrice(m.lastPrice, m.pricePrecision)}
                     </td>
-                    <td className="px-5 py-3.5 text-right">
+                    <td className="px-3 sm:px-5 py-3.5 text-right">
                       <ChangePill value={change} />
                     </td>
-                    <td className="px-5 py-3.5 text-right font-mono text-xs text-text-secondary hidden sm:table-cell">
+                    <td className="px-3 sm:px-5 py-3.5 text-right font-mono text-xs text-text-secondary hidden sm:table-cell">
                       {fmtVolume(m.volume24h)}
                     </td>
                     <td className="px-3 py-3.5 text-right align-middle">
@@ -818,7 +818,7 @@ export default function Explore() {
       </div>{/* end left column */}
 
       {/* ── Right sidebar — Your investments + Products & Tools ───────── */}
-      <aside className="lg:col-span-4 space-y-4">
+      <aside className="lg:col-span-4 space-y-4 min-w-0">
         {/* Your activity — tabbed card with Positions + Pending Orders.
             Tabs swap content inline with a soft cross-fade; empty
             states stay visually centred so the card never looks lopsided. */}

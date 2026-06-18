@@ -27,7 +27,7 @@ const bookChip = (b) => (b === 'A_BOOK'
   : 'bg-amber-500/15 text-amber-400 border-amber-500/30');
 
 const EMPTY_FILTERS = {
-  user: '', orderId: '', accountNumber: '', accountType: '', symbol: '', side: '', orderType: '', book: '',
+  user: '', orderId: '', accountNumber: '', accountType: '', accountMode: '', symbol: '', side: '', orderType: '', book: '',
   pnl: '', from: '', to: '', minVolume: '', maxVolume: '',
 };
 
@@ -351,11 +351,16 @@ function FilterBar({ tab, draft, setDraft, onApply, onReset, onExport, acctTypeO
       <Field label="User (id/email/name)"><input className="input w-44" value={draft.user} onChange={set('user')} placeholder="search user" /></Field>
       <Field label="Order ID"><input className="input w-28" value={draft.orderId} onChange={set('orderId')} placeholder="#ABC123" /></Field>
       <Field label="Account #"><input className="input w-32" value={draft.accountNumber} onChange={set('accountNumber')} /></Field>
+      <Field label="Mode">
+        <select className="input w-24" value={draft.accountMode} onChange={set('accountMode')}>
+          <option value="">All</option>
+          <option value="real">Real</option>
+          <option value="demo">Demo</option>
+        </select>
+      </Field>
       <Field label="Acct Type">
         <select className="input w-28" value={draft.accountType} onChange={set('accountType')}>
           <option value="">All</option>
-          <option value="__ALL_REAL__">All Real</option>
-          <option value="__ALL_DEMO__">All Demo</option>
           {acctTypeOptions.map((t) => <option key={t} value={t}>{t}</option>)}
         </select>
       </Field>

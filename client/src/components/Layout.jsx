@@ -170,7 +170,7 @@ export default function Layout({ children }) {
   const isActive = (to) => location.pathname === to;
 
   return (
-    <div className="min-h-screen bg-white text-text-primary flex flex-col">
+    <div className="min-h-screen bg-white text-text-primary flex flex-col overflow-x-clip">
       {/* ── Primary header — logo, primary nav, search, bell, profile.
           Hidden entirely on /trade so the terminal owns the full viewport. */}
       <header className={`${location.pathname === '/trade' ? 'hidden' : 'sticky top-0 z-40 bg-white border-b border-border-dark'}`}>

@@ -43,6 +43,10 @@ const EMPTY = {
   // for THIS symbol.
   routingOverride: 'INHERIT',
   isActive: true,
+  // Live price feed. For crypto set provider=BINANCE + feed symbol (e.g. SOLUSDT)
+  // → the Binance WS feed streams real bid/ask/depth/candles for this instrument.
+  externalProvider: '',
+  externalFeedSymbol: '',
 };
 
 // ── UTC datetime helpers (admin schedules are entered/displayed in UTC) ──
@@ -127,6 +131,7 @@ const STATUS_TONE = {
 export default function Instruments() {
   const confirm = useConfirm();
   const [items, setItems] = useState([]);
+  const [search, setSearch] = useState('');
   const [liveVol, setLiveVol] = useState({}); // symbol -> { buy, sell, net }
   const [editing, setEditing] = useState(null);
   const [overridesFor, setOverridesFor] = useState(null);
@@ -182,6 +187,12 @@ export default function Instruments() {
     }
   };
 
+  // Search filter — symbol / name / category (case-insensitive).
+  const q = search.trim().toLowerCase();
+  const filtered = q
+    ? items.filter((it) => `${it.symbol || ''} ${it.name || ''} ${it.category || ''}`.toLowerCase().includes(q))
+    : items;
+
   return (
     <div className="space-y-4 max-w-[1600px]">
       <PageHero
@@ -209,14 +220,33 @@ export default function Instruments() {
         </div>
       )}
 
+      {/* Search */}
+      <div className="flex items-center gap-3">
+        <div className="relative flex-1 max-w-sm">
+          <svg className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.3-4.3" /></svg>
+          <input
+            className="input pl-9"
+            placeholder="Search symbol, name or category…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          {search && (
+            <button type="button" onClick={() => setSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted hover:text-white" aria-label="Clear search">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
+            </button>
+          )}
+        </div>
+        <span className="text-text-muted text-xs">{filtered.length} of {items.length}</span>
+      </div>
+
       <div className="card overflow-x-auto">
         <table className="w-full text-sm whitespace-nowrap">
           <thead className="text-xs text-gray-500 uppercase">
             <tr>
               <th className="p-3 w-8">
                 <input type="checkbox"
-                  checked={items.length > 0 && items.every((it) => selected.has(it.symbol))}
-                  onChange={(e) => setSelected(e.target.checked ? new Set(items.map((it) => it.symbol)) : new Set())} />
+                  checked={filtered.length > 0 && filtered.every((it) => selected.has(it.symbol))}
+                  onChange={(e) => setSelected(e.target.checked ? new Set(filtered.map((it) => it.symbol)) : new Set())} />
               </th>
               <th className="text-left p-3">Symbol</th>
               <th className="text-left p-3">Name</th>
@@ -237,7 +267,10 @@ export default function Instruments() {
             </tr>
           </thead>
           <tbody>
-            {items.map((it) => {
+            {filtered.length === 0 && (
+              <tr><td colSpan={17} className="p-8 text-center text-text-muted">No instruments match “{search}”.</td></tr>
+            )}
+            {filtered.map((it) => {
               const lv = liveVol[it.symbol] || { buy: 0, sell: 0, aBuy: 0, aSell: 0, bBuy: 0, bSell: 0 };
               const netVol = (Number(lv.buy) || 0) - (Number(lv.sell) || 0);
               const routing = it.routingOverride || 'INHERIT';
@@ -571,8 +604,22 @@ function InstrumentEditor({ data, onSave, onClose }) {
             </p>
           </div>
           <div>
+            <label className="label">Price Feed Provider</label>
+            <select className="input" value={form.externalProvider || ''} onChange={update('externalProvider')}>
+              <option value="">None (no live feed)</option>
+              <option value="BINANCE">BINANCE (crypto — live)</option>
+            </select>
+            <div className="text-[10px] text-gray-500 mt-1 leading-snug">
+              Set <b>BINANCE</b> + the feed symbol below to stream real prices
+              (crypto). Picked up by the live feed within ~60s — no restart.
+            </div>
+          </div>
+          <div>
             <label className="label">External Feed Symbol</label>
-            <input className="input" value={form.externalFeedSymbol || ''} onChange={update('externalFeedSymbol')} placeholder="e.g. BTCUSDT" />
+            <input className="input" value={form.externalFeedSymbol || ''} onChange={update('externalFeedSymbol')} placeholder="e.g. SOLUSDT" />
+            <div className="text-[10px] text-gray-500 mt-1 leading-snug">
+              The provider's symbol — e.g. <b>SOLUSDT</b> for SOL on Binance.
+            </div>
           </div>
           <div>
             <label className="label">Routing Override</label>
