@@ -258,7 +258,7 @@ export default function Trade() {
   }, [symbol]);
   // Order side (BUY/SELL) is owned by the chart-top quick-trade chip so
   // the chip and the order form stay in sync.
-  const [orderSide, setOrderSide] = useState('BUY');
+  const [orderSide, setOrderSide] = useState(null); // no side until the user picks Buy/Sell
   // In fullscreen the side OrderForm aside is hidden — instead the
   // BUY/SELL chip pops the order form as a glass overlay floating on
   // top of the chart, TradingView-style. This flag controls that

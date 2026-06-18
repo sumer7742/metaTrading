@@ -320,7 +320,7 @@ const makeAutoscaleProvider = (candlesRef, extraPricesRef, animStateRef, kickAni
   const extras = extraPricesRef?.current;
   if (Array.isArray(extras) && extras.length) {
     const span0 = Math.max(hi - lo, 1e-9);
-    const maxStretch = span0 * 0.40;
+    const maxStretch = span0 * 0.25;
     for (const p of extras) {
       if (!Number.isFinite(p) || p <= 0) continue;
       if (p < lo) lo = Math.max(p, lo - maxStretch);
@@ -339,7 +339,13 @@ const makeAutoscaleProvider = (candlesRef, extraPricesRef, animStateRef, kickAni
   // ~260 ms (ease-out cubic).
   let outLo = lo;
   let outHi = hi;
-  if (animStateRef && animStateRef.current) {
+  // Hysteresis/animation DISABLED — it held a stale "committed" range and
+  // compressed the visible candles into a thin band. The price scale now
+  // tracks the visible candle high/low directly (recomputed by lightweight-
+  // charts on every zoom / pan / resize / realtime update), exactly like
+  // TradingView's native autoscale. `outLo/outHi` stay equal to the live
+  // visible range below.
+  if (false && animStateRef && animStateRef.current) {
     const state = animStateRef.current;
     const now = (typeof performance !== 'undefined' ? performance.now() : Date.now());
     const hysteresis = Math.max(0, Number(hysteresisRef?.current ?? 0.04));
@@ -1089,7 +1095,7 @@ export default function PriceChart({
     return out;
   }, [candles, showSignals, showHmr, showCalendar, instrument, calendarFilters.high, calendarFilters.medium, calendarFilters.low, calendarFilters.lowest]);
 
-  const drawingControls = useChartDrawings({ chartRef, candleSeriesRef, containerRef, symbol, externalMarkers, candles });
+  const drawingControls = useChartDrawings({ chartRef, candleSeriesRef, containerRef, symbol, externalMarkers, candles, pricePrecision });
   // Mirror into a ref so the once-bound container handlers (contextmenu /
   // dblclick) always read the latest drawing controls without re-binding.
   const dcRef = useRef(drawingControls);
@@ -2511,17 +2517,20 @@ export default function PriceChart({
       }
     }
 
-    // ── Live order PREVIEW pill (pending/LIMIT) ────────────────────────
-    // A synthetic, un-placed "draft order" so the user gets the exact same
-    // interactive pill (draggable LIMIT entry, +TP / +SL quick-add, ×) as a
-    // real pending order — but its drag callbacks route to the order FORM,
-    // not the backend. Identified by the sentinel _id '__preview__'.
-    if (orderPreview && orderPreview.mode === 'LIMIT' && Number(orderPreview.entry) > 0 && !previewRealMatch) {
+    // ── Live order PREVIEW pill (Market AND Pending/LIMIT) ─────────────
+    // A synthetic, un-placed "draft order" so the user gets the same
+    // interactive pill (+TP / +SL quick-add, draggable TP/SL, ×) as a real
+    // order — drag callbacks route to the order FORM, not the backend.
+    // For LIMIT the entry sits at the limit price and is draggable; for
+    // MARKET the entry tracks the live price and is NOT draggable (you can't
+    // choose a market entry). Identified by the sentinel _id '__preview__'.
+    if (orderPreview && Number(orderPreview.entry) > 0 && !previewRealMatch) {
+      const peMode = orderPreview.mode === 'LIMIT' ? 'LIMIT' : 'MARKET';
       const peEntry = Number(orderPreview.entry);
       const peSl = Number(orderPreview.sl) > 0 ? String(orderPreview.sl) : null;
       const peTp = Number(orderPreview.tp) > 0 ? String(orderPreview.tp) : null;
-      const pseudoOrder = { _id: '__preview__', side: orderPreview.side, type: 'LIMIT', price: peEntry, stopLoss: peSl, takeProfit: peTp, status: 'PENDING', __preview: true };
-      const pseudoPos = { _id: '__preview__', side: orderPreview.side, quantity: 0, entryPrice: peEntry, stopLoss: peSl, takeProfit: peTp, unrealizedPnl: '0', __orderType: 'LIMIT', __preview: true };
+      const pseudoOrder = { _id: '__preview__', side: orderPreview.side, type: peMode, price: peEntry, stopLoss: peSl, takeProfit: peTp, status: 'PENDING', __preview: true };
+      const pseudoPos = { _id: '__preview__', side: orderPreview.side, quantity: 0, entryPrice: peEntry, stopLoss: peSl, takeProfit: peTp, unrealizedPnl: '0', __orderType: peMode, __preview: true };
       out.push({ key: 'preview:order:entry', kind: 'entry', price: peEntry, position: pseudoPos, order: pseudoOrder, target: 'order' });
       if (peSl) out.push({ key: 'preview:order:sl', kind: 'sl', price: Number(peSl), position: pseudoPos, order: pseudoOrder, target: 'order' });
       if (peTp) out.push({ key: 'preview:order:tp', kind: 'tp', price: Number(peTp), position: pseudoPos, order: pseudoOrder, target: 'order' });
@@ -3841,8 +3850,11 @@ function PositionPill({
   // Draft preview pill (un-placed order) — rendered slightly faded + a
   // "PREVIEW" label so it's never mistaken for a real pending order.
   const isPreview = !!position.__preview;
-  // Order entries are also draggable (re-price the LIMIT / STOP trigger).
-  const draggable = kind === 'sl' || kind === 'tp' || (kind === 'entry' && isOrder);
+  // Order entries are also draggable (re-price the LIMIT / STOP trigger) — but
+  // a MARKET preview entry isn't (you can't pick a market fill price; it tracks
+  // the live price). TP/SL stay draggable in every mode.
+  const draggable = kind === 'sl' || kind === 'tp'
+    || (kind === 'entry' && isOrder && !(isPreview && position.__orderType === 'MARKET'));
   const active = hover || isDragging;
 
   // Resolve target price: while dragging, use the live override.

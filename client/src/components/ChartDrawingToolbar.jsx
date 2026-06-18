@@ -116,6 +116,7 @@ export default function ChartDrawingToolbar({ controls }) {
       })()}
 
       <Divider />
+      <Btn label="Measure — Price Range (2 clicks)" active={activeTool === 'pricerange'} onClick={() => pickTool(activeTool === 'pricerange' ? 'crosshair' : 'pricerange')}><RulerI /></Btn>
       <Btn label="Magnet snap" active={activeTool === 'magnet'} onClick={() => pickTool(activeTool === 'magnet' ? 'crosshair' : 'magnet')}><MagnetI /></Btn>
       <Btn label="Eraser — click drawings to delete" active={activeTool === 'eraser'} onClick={() => pickTool(activeTool === 'eraser' ? 'crosshair' : 'eraser')}><EraserI /></Btn>
       <Btn label="Zoom in" onClick={zoomIn}><ZoomI /></Btn>
@@ -252,6 +253,7 @@ const DotI = () => <S><circle cx="12" cy="12" r="2.5" fill="currentColor" /></S>
 const ArrowCurI = () => <S><path d="M5 3l7 16 2-7 7-2z" /></S>;
 const EraserI = () => <S><path d="M16 3l5 5L10 19H5l-2-2z" /><path d="M9 11l4 4" /></S>;
 const MagnetI = () => <S><path d="M6 4h4v8a2 2 0 1 0 4 0V4h4v8a6 6 0 1 1-12 0z" /><line x1="6" y1="8" x2="10" y2="8" /><line x1="14" y1="8" x2="18" y2="8" /></S>;
+const RulerI = () => <S><path d="M3 8l5-5 13 13-5 5z" /><path d="M8 5l2 2M11 8l2 2M14 11l2 2" /></S>;
 const ZoomI = () => <S><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="11" y1="8" x2="11" y2="14" /><line x1="8" y1="11" x2="14" y2="11" /></S>;
 const ZoomOutI = () => <S><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /><line x1="8" y1="11" x2="14" y2="11" /></S>;
 const ZoomResetI = () => <S><polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" /></S>;

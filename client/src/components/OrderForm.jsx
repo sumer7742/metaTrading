@@ -136,7 +136,7 @@ export default function OrderForm({
   // below will snap it back into range if admin lowered the cap.
   const initialLev = Math.min(MAX_LEVERAGE_UI, Math.max(1, Number(account?.leverage) || 1));
 
-  const [internalSide, setInternalSide] = useState('BUY');
+  const [internalSide, setInternalSide] = useState(null); // no side until clicked
   const sideControlled = controlledSide === 'BUY' || controlledSide === 'SELL';
   const side = sideControlled ? controlledSide : internalSide;
   const setSide = (next) => {
@@ -307,6 +307,7 @@ export default function OrderForm({
   // limit price. Purely visual — no order is placed here.
   useEffect(() => {
     if (!onPreviewChange) return undefined;
+    if (!side) { onPreviewChange(null); return undefined; } // no preview until a side is picked
     const mkt = Number(instrument?.lastPrice);
     const entry = orderMode === 'LIMIT'
       ? (Number(price) > 0 ? Number(price) : null)
@@ -331,6 +332,7 @@ export default function OrderForm({
   const submit = async (e, sideOverride) => {
     if (e && typeof e.preventDefault === 'function') e.preventDefault();
     const effectiveSide = sideOverride || side;
+    if (!effectiveSide) return toast.error('Select Buy or Sell first');
     if (!account) return toast.error('No trading account selected');
     if (!quantity || Number(quantity) <= 0) return toast.error('Enter a valid quantity');
     if (orderMode === 'LIMIT') {
@@ -797,7 +799,7 @@ export default function OrderForm({
           label="Sell"
           price={hasQuotes ? bid : null}
           prec={prec}
-          active={!sideIsBuy}
+          active={side === 'SELL'}
           tone="sell"
           C={C}
           onClick={() => {
@@ -809,7 +811,7 @@ export default function OrderForm({
           label="Buy"
           price={hasQuotes ? ask : null}
           prec={prec}
-          active={sideIsBuy}
+          active={side === 'BUY'}
           tone="buy"
           C={C}
           onClick={() => {
@@ -1039,13 +1041,15 @@ export default function OrderForm({
         {!isOneClick && (
           <button
             type="submit"
-            disabled={loading || overBudget || !!limitInvalidReason}
+            disabled={loading || overBudget || !!limitInvalidReason || !side}
             className="w-full py-2.5 rounded font-medium text-[14px] text-white transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{ background: sideIsBuy ? C.buy : C.sell }}
+            style={{ background: !side ? '#94A3B8' : sideIsBuy ? C.buy : C.sell }}
           >
             {loading
               ? 'Placing…'
-              : `Confirm ${sideIsBuy ? 'Buy' : 'Sell'}${quantity ? ` ${quantity} lots` : ''}`}
+              : !side
+                ? 'Select Buy or Sell'
+                : `Confirm ${sideIsBuy ? 'Buy' : 'Sell'}${quantity ? ` ${quantity} lots` : ''}`}
           </button>
         )}
 

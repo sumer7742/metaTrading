@@ -76,7 +76,78 @@ const bbox = (pts) => {
 };
 const inExpandedBox = (x, y, b, tol) => b && x >= b.x1 - tol && x <= b.x2 + tol && y >= b.y1 - tol && y <= b.y2 + tol;
 
-export function useChartDrawings({ chartRef, candleSeriesRef, containerRef, symbol, externalMarkers = [], candles = [] }) {
+// ── Measurement-tool stats (computed from real OHLCV) ─────────────────────
+const _fmtDur = (s) => {
+  if (s == null) return '—';
+  if (s < 60) return `${Math.round(s)}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60), mm = m % 60;
+  if (h < 24) return `${h}h ${mm}m`;
+  const dys = Math.floor(h / 24), hh = h % 24;
+  return `${dys}d ${hh}h`;
+};
+const measureStats = (d, candles, prec) => {
+  const p0 = d.pts?.[0] || {}, p1 = d.pts?.[1] || {};
+  const startPrice = Number(p0.price) || 0, endPrice = Number(p1.price) || 0;
+  const priceDiff = endPrice - startPrice;
+  const pct = startPrice ? (priceDiff / startPrice) * 100 : 0;
+  const tick = Math.pow(10, -(Number(prec) || 2));
+  const ticks = tick ? priceDiff / tick : 0;
+  const t0 = p0.time, t1 = p1.time;
+  const durSec = (t0 != null && t1 != null) ? Math.abs(Number(t1) - Number(t0)) : null;
+  let lo = Infinity, hi = -Infinity, vol = 0, bars = 0;
+  const cs = Array.isArray(candles) ? candles : [];
+  if (t0 != null && t1 != null) {
+    const tmin = Math.min(t0, t1), tmax = Math.max(t0, t1);
+    for (const c of cs) {
+      if (c.time >= tmin && c.time <= tmax) {
+        bars++;
+        const h = Number(c.high), l = Number(c.low);
+        if (Number.isFinite(h) && h > hi) hi = h;
+        if (Number.isFinite(l) && l < lo) lo = l;
+        vol += Number(c.volume) || 0;
+      }
+    }
+  }
+  if (!bars) bars = Math.abs(Math.round((Number(p1.logical) || 0) - (Number(p0.logical) || 0)));
+  const high = hi === -Infinity ? null : hi;
+  const low = lo === Infinity ? null : lo;
+  const range = (high != null && low != null) ? high - low : null;
+  return { priceDiff, pct, ticks, durSec, bars, high, low, range, vol, prec: Number(prec) || 2 };
+};
+const drawMeasurePanel = (ctx, st, ax, ay, color, paneW, paneH) => {
+  const fmt = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { minimumFractionDigits: st.prec, maximumFractionDigits: st.prec }));
+  const sign = (v) => (v >= 0 ? '+' : '');
+  const head = `${sign(st.priceDiff)}${fmt(st.priceDiff)} (${sign(st.pct)}${st.pct.toFixed(2)}%)`;
+  const lines = [
+    `${sign(st.ticks)}${Math.round(st.ticks)} ticks`,
+    `${st.bars} bars · ${_fmtDur(st.durSec)}`,
+    `H ${fmt(st.high)}   L ${fmt(st.low)}`,
+    `Range ${fmt(st.range)}`,
+  ];
+  if (st.vol > 0) lines.push(`Vol ${st.vol.toLocaleString(undefined, { maximumFractionDigits: 0 })}`);
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold 12px ui-sans-serif, system-ui';
+  let w = ctx.measureText(head).width;
+  ctx.font = '11px ui-sans-serif, system-ui';
+  for (const l of lines) w = Math.max(w, ctx.measureText(l).width);
+  w = Math.ceil(w) + 16;
+  const headH = 22, lineH = 16, bodyH = lines.length * lineH + 8, h = headH + bodyH;
+  let px = ax + 10, py = ay + 10;
+  if (px + w > paneW) px = Math.max(2, ax - w - 10);
+  if (py + h > paneH) py = Math.max(2, ay - h - 10);
+  px = Math.max(2, px); py = Math.max(2, py);
+  ctx.setLineDash([]);
+  ctx.fillStyle = color; ctx.fillRect(px, py, w, headH);                       // colored header
+  ctx.fillStyle = 'rgba(15,23,42,0.94)'; ctx.fillRect(px, py + headH, w, bodyH); // dark body
+  ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.strokeRect(px + 0.5, py + 0.5, w - 1, h - 1);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 12px ui-sans-serif, system-ui'; ctx.fillText(head, px + 8, py + headH / 2);
+  ctx.font = '11px ui-sans-serif, system-ui'; ctx.fillStyle = '#E2E8F0';
+  lines.forEach((l, i) => ctx.fillText(l, px + 8, py + headH + 8 + i * lineH));
+};
+
+export function useChartDrawings({ chartRef, candleSeriesRef, containerRef, symbol, externalMarkers = [], candles = [], pricePrecision = 2 }) {
   const [activeTool, setActiveTool] = useState('crosshair');
   const [hist, setHist] = useState(() => ({ past: [], present: readPersisted(symbol), future: [] }));
   const drawings = hist.present;
@@ -105,6 +176,8 @@ export function useChartDrawings({ chartRef, candleSeriesRef, containerRef, symb
   const toolRef = useRef(activeTool);
   const emojiRef = useRef(selectedEmoji);
   const candlesRef = useRef(candles);
+  const precRef = useRef(pricePrecision);
+  precRef.current = pricePrecision;
   const lastDownRef = useRef({ t: 0, x: 0, y: 0 });
   drawingsRef.current = drawings;
   pendingRef.current = pending;
@@ -393,17 +466,24 @@ export function useChartDrawings({ chartRef, candleSeriesRef, containerRef, symb
       for (let i = 0; i < BINS; i++) { if (!maxV) break; const py = yOf(lo + ((i + 0.5) / BINS) * (hi - lo)); if (py == null) continue; const bw = (buckets[i] / maxV) * boxW * 0.6; ctx.fillRect(x0, py - 3, bw, 6); }
       set(col, 1, [4, 3]); ctx.strokeRect(x0, Math.min(a.y, b.y), boxW, Math.abs(b.y - a.y)); ctx.setLineDash([]);
     } else if (fam === 'measure') {
+      // ── TradingView-style Price Range / measurement tool ──────────────
       const a = px[0], b = px[1]; if (!a || !b) return;
-      const dP = d.pts[1].price - d.pts[0].price, dPct = d.pts[0].price ? (dP / d.pts[0].price) * 100 : 0;
-      const up = dP >= 0; const fillc = up ? 'rgba(16,185,129,0.12)' : 'rgba(239,68,68,0.12)'; const linec = up ? '#10b981' : '#ef4444';
-      ctx.fillStyle = fillc; ctx.fillRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y));
-      set(linec, 1, [4, 3]); ctx.strokeRect(Math.min(a.x, b.x), Math.min(a.y, b.y), Math.abs(b.x - a.x), Math.abs(b.y - a.y)); ctx.setLineDash([]);
-      const parts = [];
-      if (d.variant !== 'date') parts.push(`${dP >= 0 ? '+' : ''}${dP.toFixed(2)} (${dPct.toFixed(2)}%)`);
-      if (d.variant !== 'price') { const bars = Math.abs((d.pts[1].logical ?? 0) - (d.pts[0].logical ?? 0)); parts.push(`${Math.round(bars)} bars`); }
-      const txt = parts.join('  ·  '); ctx.font = 'bold 11px ui-sans-serif, system-ui'; const tw = ctx.measureText(txt).width + 10;
-      const mx = (a.x + b.x) / 2 - tw / 2, my = Math.min(a.y, b.y) - 18;
-      ctx.fillStyle = linec; ctx.fillRect(mx, my, tw, 16); ctx.fillStyle = '#fff'; ctx.textBaseline = 'middle'; ctx.fillText(txt, mx + 5, my + 8);
+      const st = measureStats(d, candlesRef.current, precRef.current);
+      const up = st.priceDiff >= 0;
+      const linec = up ? '#089981' : '#F23645';                 // TV green / red
+      const fillc = up ? 'rgba(8,153,129,0.15)' : 'rgba(242,54,69,0.15)';
+      const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x), y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
+      // Filled selection area + vertical time band edges.
+      ctx.fillStyle = fillc; ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+      set(linec, 1.5, []); ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
+      // Horizontal reference line through the START price.
+      set(linec, 1, [4, 3]); ctx.beginPath(); ctx.moveTo(x0, a.y); ctx.lineTo(x1, a.y); ctx.stroke(); ctx.setLineDash([]);
+      // Centre direction arrow (start price → end price).
+      const cx = (x0 + x1) / 2;
+      set(linec, 1.5); ctx.beginPath(); ctx.moveTo(cx, a.y); ctx.lineTo(cx, b.y); ctx.stroke();
+      if (Math.abs(b.y - a.y) > 12) arrowHead(ctx, cx, a.y, cx, b.y, 8);
+      // Floating stats panel — colored header + dark body, readable on both themes.
+      drawMeasurePanel(ctx, st, x1, y1, linec, paneW, paneH);
     } else if (fam === 'position') {
       const a = px[0], b = px[1]; if (!a || !b) return;
       const long = d.variant !== 'short';
