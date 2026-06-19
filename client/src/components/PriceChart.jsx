@@ -847,6 +847,31 @@ const readIndicators = () => {
 const CHART_TYPE_KEY = 'tradepro:chart-type';
 const readChartType = () => { try { return localStorage.getItem(CHART_TYPE_KEY) || 'candles'; } catch { return 'candles'; } };
 
+// Flat, alphabetically-sorted list of every indicator. Shared by the in-chart
+// Indicators dropdown (below) AND the multi-chart shared toolbar so the two
+// never drift apart.
+const buildIndicatorList = () => [
+  ...MA_DEFS.flatMap((d) => d.periods.map((p) => ({ key: `${d.code}${p}`, label: `${d.name} ${p}`, color: d.color }))),
+  { key: 'bb',        label: 'Bollinger Bands',   color: '#0EA5E9' },
+  { key: 'donchian',  label: 'Donchian Channels', color: '#10B981' },
+  { key: 'keltner',   label: 'Keltner Channels',  color: '#F97316' },
+  { key: 'envelopes', label: 'Envelopes',         color: '#64748B' },
+  { key: 'vwap',      label: 'VWAP',              color: '#7C3AED' },
+  { key: 'linreg',    label: 'Linear Regression', color: '#0D9488' },
+  { key: 'psar',      label: 'Parabolic SAR',     color: '#DC2626' },
+  { key: 'supertrend',label: 'SuperTrend',        color: '#0891B2' },
+  { key: 'volume',    label: 'Volume',            color: TV_COLORS.volumeUp },
+  { key: 'rsi',       label: 'RSI',           color: '#8B5CF6' },
+  { key: 'macd',      label: 'MACD',          color: '#2DD4BF' },
+  { key: 'stoch',     label: 'Stochastic',    color: '#3B82F6' },
+  { key: 'atr',       label: 'ATR',           color: '#0EA5E9' },
+  { key: 'wr',        label: 'Williams %R',   color: '#DB2777' },
+  { key: 'cci',       label: 'CCI',           color: '#7C3AED' },
+].sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' }));
+
+// Re-exported so the multi-chart shared toolbar can build identical controls.
+export { CHART_TYPES, TF_OPTIONS, INDICATOR_DEFAULTS, readChartType, readIndicators, buildIndicatorList };
+
 export default function PriceChart({
   symbol,
   timeframe,
@@ -930,11 +955,21 @@ export default function PriceChart({
   // Optional node rendered in the toolbar's right cluster (e.g. the layout
   // picker) so it sits beside the expand / fullscreen controls.
   toolbarExtra = null,
-  // When true, render ONLY the chart canvas — no top header (chart-type /
-  // indicators / timeframe / actions) and no left drawing toolbar. Used by the
-  // multi-chart layout for the non-active panes so each cell shows just the
-  // chart; the user clicks a cell to make it active and get the full chrome.
+  // When true, hide the top header (chart-type / indicators / timeframe /
+  // actions). Used by the multi-chart layout so a single SHARED toolbar at the
+  // top drives the active pane instead of each cell carrying its own header.
   hideHeader = false,
+  // When true, hide the left drawing toolbar. Separate from hideHeader so the
+  // ACTIVE multi-chart pane can keep its drawing tools while its top header is
+  // hidden (replaced by the shared toolbar). Non-active panes hide both.
+  hideDrawingToolbar = false,
+  // Controlled chart-type / indicators (optional). When provided, the parent
+  // owns the state (multi-chart shared toolbar). When omitted, PriceChart keeps
+  // its own internal state + localStorage persistence (single-chart default).
+  chartType: chartTypeProp,
+  onChartTypeChange,
+  indicators: indicatorsProp,
+  onIndicatorsChange,
 }) {
   const containerRef = useRef(null);
   const rsiContainerRef = useRef(null);
@@ -1040,13 +1075,33 @@ export default function PriceChart({
   const timeZoneRef = useRef(timeZone);
   useEffect(() => { timeZoneRef.current = timeZone; }, [timeZone]);
 
-  const [indicators, setIndicators] = useState(readIndicators);
+  // Internal fallback state — used only when the parent doesn't control these.
+  const [indicatorsState, setIndicatorsState] = useState(readIndicators);
   const [candles, setCandles] = useState([]);
-  const [chartType, setChartType] = useState(readChartType);
+  const [chartTypeState, setChartTypeState] = useState(readChartType);
   const [chartTypeOpen, setChartTypeOpen] = useState(false);
-  // Persist indicators + chart type across refreshes.
-  useEffect(() => { try { localStorage.setItem(INDICATORS_KEY, JSON.stringify(indicators)); } catch { /* */ } }, [indicators]);
-  useEffect(() => { try { localStorage.setItem(CHART_TYPE_KEY, chartType); } catch { /* */ } }, [chartType]);
+
+  // Effective value: controlled prop wins, else internal state. Lets the
+  // multi-chart shared toolbar drive chart-type / indicators for the active
+  // pane while single-chart mode keeps its own persisted state.
+  const controlledIndicators = indicatorsProp != null;
+  const controlledChartType = chartTypeProp != null;
+  const indicators = controlledIndicators ? indicatorsProp : indicatorsState;
+  const chartType = controlledChartType ? chartTypeProp : chartTypeState;
+  const setIndicators = (updater) => {
+    const next = typeof updater === 'function' ? updater(indicators) : updater;
+    if (controlledIndicators) { if (onIndicatorsChange) onIndicatorsChange(next); }
+    else setIndicatorsState(next);
+  };
+  const setChartType = (val) => {
+    if (controlledChartType) { if (onChartTypeChange) onChartTypeChange(val); }
+    else setChartTypeState(val);
+  };
+
+  // Persist across refreshes — ONLY when uncontrolled (controlled = parent owns
+  // persistence, so multiple panes don't thrash the single localStorage key).
+  useEffect(() => { if (!controlledIndicators) { try { localStorage.setItem(INDICATORS_KEY, JSON.stringify(indicators)); } catch { /* */ } } }, [indicators, controlledIndicators]);
+  useEffect(() => { if (!controlledChartType) { try { localStorage.setItem(CHART_TYPE_KEY, chartType); } catch { /* */ } } }, [chartType, controlledChartType]);
   // Chart settings (Exness-style) — persisted, applied via the effect below.
   const [chartPrefs, setChartPrefs] = useState(readChartPrefs);
   const chartPrefsRef = useRef(chartPrefs);
@@ -3108,25 +3163,9 @@ export default function PriceChart({
 
           {/* Indicators dropdown */}
           {(() => {
-            // One flat, alphabetically-sorted list of every indicator.
-            const indicatorList = [
-              ...MA_DEFS.flatMap((d) => d.periods.map((p) => ({ key: `${d.code}${p}`, label: `${d.name} ${p}`, color: d.color }))),
-              { key: 'bb',        label: 'Bollinger Bands',   color: '#0EA5E9' },
-              { key: 'donchian',  label: 'Donchian Channels', color: '#10B981' },
-              { key: 'keltner',   label: 'Keltner Channels',  color: '#F97316' },
-              { key: 'envelopes', label: 'Envelopes',         color: '#64748B' },
-              { key: 'vwap',      label: 'VWAP',              color: '#7C3AED' },
-              { key: 'linreg',    label: 'Linear Regression', color: '#0D9488' },
-              { key: 'psar',      label: 'Parabolic SAR',     color: '#DC2626' },
-              { key: 'supertrend',label: 'SuperTrend',        color: '#0891B2' },
-              { key: 'volume',    label: 'Volume',            color: TV_COLORS.volumeUp },
-              { key: 'rsi',       label: 'RSI',           color: '#8B5CF6' },
-              { key: 'macd',      label: 'MACD',          color: '#2DD4BF' },
-              { key: 'stoch',     label: 'Stochastic',    color: '#3B82F6' },
-              { key: 'atr',       label: 'ATR',           color: '#0EA5E9' },
-              { key: 'wr',        label: 'Williams %R',   color: '#DB2777' },
-              { key: 'cci',       label: 'CCI',           color: '#7C3AED' },
-            ].sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' }));
+            // One flat, alphabetically-sorted list of every indicator (shared
+            // with the multi-chart toolbar via buildIndicatorList).
+            const indicatorList = buildIndicatorList();
             const activeCount = indicatorList.filter((i) => indicators[i.key]).length;
             const totalCount = indicatorList.length;
             // Apply search — simple substring match on the label.
@@ -3507,7 +3546,7 @@ export default function PriceChart({
           </div>
         )}
 
-        {!hideHeader && <ChartDrawingToolbar controls={drawingControls} />}
+        {!hideDrawingToolbar && <ChartDrawingToolbar controls={drawingControls} />}
 
         {/* Drawing-object right-click menu + double-click property panel.
             Both render inside this relative chart container (container-relative

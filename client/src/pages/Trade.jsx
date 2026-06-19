@@ -3,8 +3,9 @@ import { useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { wsClient } from '../services/ws';
-import PriceChart from '../components/PriceChart';
+import PriceChart, { readChartType, readIndicators } from '../components/PriceChart';
 import ChartLayoutPicker from '../components/ChartLayoutPicker';
+import MultiChartToolbar from '../components/MultiChartToolbar';
 import { getLayout, DEFAULT_SYNC } from '../components/chartLayouts';
 import OrderForm from '../components/OrderForm';
 import NotificationCenter from '../components/NotificationCenter';
@@ -49,6 +50,16 @@ export default function Trade() {
     return Array.from({ length: 8 }, (_, i) => (saved[i] && saved[i].symbol ? saved[i] : { symbol: base, timeframe: baseTf }));
   });
   const layout = getLayout(layoutId);
+  // Active pane's chart-type + indicators (mirrors the symbol/timeframe pattern:
+  // active pane uses these; non-active panes stash their own on `panes[i]`). The
+  // shared MultiChartToolbar drives the ACTIVE pane via these. Persisted to the
+  // same keys PriceChart used, so single-chart behaviour is unchanged.
+  const ACTIVE_CT_KEY = 'tradepro:chart-type';
+  const ACTIVE_IND_KEY = 'tradepro:chart-indicators:v1';
+  const [activeChartType, setActiveChartTypeState] = useState(() => readChartType());
+  const [activeIndicators, setActiveIndicatorsState] = useState(() => readIndicators());
+  useEffect(() => { try { localStorage.setItem(ACTIVE_CT_KEY, activeChartType); } catch { /* */ } }, [activeChartType]);
+  useEffect(() => { try { localStorage.setItem(ACTIVE_IND_KEY, JSON.stringify(activeIndicators)); } catch { /* */ } }, [activeIndicators]);
   useEffect(() => { try { localStorage.setItem(LAYOUT_KEY, layoutId); } catch { /* */ } }, [layoutId]);
   useEffect(() => { try { localStorage.setItem(SYNC_KEY, JSON.stringify(sync)); } catch { /* */ } }, [sync]);
   useEffect(() => { try { localStorage.setItem(PANES_KEY, JSON.stringify(panes)); } catch { /* */ } }, [panes]);
@@ -60,18 +71,36 @@ export default function Trade() {
     else chartRegRef.current.delete(idx);
     setChartRegVersion((v) => v + 1);
   }, []);
-  // Per-pane symbol / timeframe (active pane mirrors the page state).
+  // Per-pane symbol / timeframe / chart-type / indicators (active pane mirrors
+  // the page state; non-active panes stash theirs on `panes[i]`).
+  const emptyIndRef = useRef({});
   const paneSymbol = (i) => (i === activePane ? symbol : (panes[i]?.symbol || symbol));
   const paneTimeframe = (i) => (i === activePane ? timeframe : (panes[i]?.timeframe || timeframe));
-  // Click a pane → it becomes active and drives the page symbol/timeframe.
+  const paneChartType = (i) => (i === activePane ? activeChartType : (panes[i]?.chartType || 'candles'));
+  const paneIndicators = (i) => (i === activePane ? activeIndicators : (panes[i]?.indicators || emptyIndRef.current));
+  const setPaneChartType = useCallback((i, v) => {
+    if (i === activePane) setActiveChartTypeState(v);
+    else setPanes((prev) => { const n = [...prev]; n[i] = { ...n[i], chartType: v }; return n; });
+  }, [activePane]);
+  const setPaneIndicators = useCallback((i, next) => {
+    if (i === activePane) setActiveIndicatorsState(next);
+    else setPanes((prev) => { const n = [...prev]; n[i] = { ...n[i], indicators: next }; return n; });
+  }, [activePane]);
+  const togglePaneIndicator = useCallback((i, key) => {
+    const cur = i === activePane ? activeIndicators : (panes[i]?.indicators || {});
+    setPaneIndicators(i, { ...cur, [key]: !cur[key] });
+  }, [activePane, activeIndicators, panes, setPaneIndicators]);
+  // Click a pane → it becomes active and drives the page symbol/timeframe + chart.
   const activatePane = useCallback((i) => {
     if (i === activePane) return;
-    setPanes((prev) => { const next = [...prev]; next[activePane] = { symbol, timeframe }; return next; });
+    setPanes((prev) => { const next = [...prev]; next[activePane] = { symbol, timeframe, chartType: activeChartType, indicators: activeIndicators }; return next; });
     const target = panes[i] || { symbol, timeframe };
     setActivePane(i);
     if (target.symbol !== symbol) setParams({ symbol: target.symbol });
     setTimeframe(target.timeframe);
-  }, [activePane, symbol, timeframe, panes, setParams]);
+    setActiveChartTypeState(target.chartType || 'candles');
+    setActiveIndicatorsState(target.indicators || {});
+  }, [activePane, symbol, timeframe, panes, setParams, activeChartType, activeIndicators]);
   const setPaneTimeframe = useCallback((i, tf) => {
     if (sync.interval) { setTimeframe(tf); setPanes((prev) => prev.map((p) => ({ ...p, timeframe: tf }))); return; }
     if (i === activePane) setTimeframe(tf);
@@ -2476,6 +2505,15 @@ export default function Trade() {
                 <PriceChart
                   onReady={(c, gs) => registerChart(activePane, c, gs)}
                   toolbarExtra={<ChartLayoutPicker value={layoutId} onChange={setLayoutId} sync={sync} onSyncChange={setSyncField} theme={theme} />}
+                  /* Chart-type + indicators controlled at the page level so the
+                     shared multi-chart toolbar can drive the active pane. In a
+                     multi-pane layout the active pane hides its own header (the
+                     shared toolbar replaces it) but keeps its drawing toolbar. */
+                  chartType={paneChartType(activePane)}
+                  onChartTypeChange={(v) => setPaneChartType(activePane, v)}
+                  indicators={paneIndicators(activePane)}
+                  onIndicatorsChange={(next) => setPaneIndicators(activePane, next)}
+                  hideHeader={layout.n > 1 && !isFullscreen}
                   symbol={symbol}
                   timeframe={timeframe}
                   onTimeframeChange={setTimeframe}
@@ -2636,10 +2674,30 @@ export default function Trade() {
                 if (layout.n === 1 || isFullscreen) return primary;
                 // Multi-pane → CSS grid; active cell = primary, others = plain.
                 return (
-                  <div
-                    className="absolute inset-0 grid gap-0.5 p-0.5"
-                    style={{ gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${layout.rows}, minmax(0, 1fr))` }}
-                  >
+                  <div className="absolute inset-0 flex flex-col">
+                    {/* ONE shared toolbar (TradingView-style) drives the active
+                        pane; every cell below is just the chart. */}
+                    <MultiChartToolbar
+                      activeSymbol={paneSymbol(activePane)}
+                      chartType={paneChartType(activePane)}
+                      onChartType={(v) => setPaneChartType(activePane, v)}
+                      indicators={paneIndicators(activePane)}
+                      onToggleIndicator={(key) => togglePaneIndicator(activePane, key)}
+                      timeframe={paneTimeframe(activePane)}
+                      onTimeframe={(tf) => setPaneTimeframe(activePane, tf)}
+                      layoutPicker={<ChartLayoutPicker value={layoutId} onChange={setLayoutId} sync={sync} onSyncChange={setSyncField} theme={theme} />}
+                      expanded={panelsCollapsed}
+                      onToggleExpand={() => {
+                        if (showInstruments || showOrderPanel) { setShowInstruments(false); setShowOrderPanel(false); }
+                        else { setShowInstruments(true); setShowOrderPanel(true); }
+                      }}
+                      fullscreen={isFullscreen}
+                      onToggleFullscreen={() => setChartView((v) => (v === 'fullscreen' ? 'normal' : 'fullscreen'))}
+                    />
+                    <div
+                      className="flex-1 min-h-0 grid gap-0.5 p-0.5"
+                      style={{ gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${layout.rows}, minmax(0, 1fr))` }}
+                    >
                     {layout.cells.slice(0, layout.n).map((cell, i) => (
                       <div
                         key={i}
@@ -2653,14 +2711,19 @@ export default function Trade() {
                             symbol={paneSymbol(i)}
                             timeframe={paneTimeframe(i)}
                             onTimeframeChange={(tf) => setPaneTimeframe(i, tf)}
+                            chartType={paneChartType(i)}
+                            onChartTypeChange={(v) => setPaneChartType(i, v)}
+                            indicators={paneIndicators(i)}
+                            onIndicatorsChange={(next) => setPaneIndicators(i, next)}
                             instrument={instrumentsBySymbol[paneSymbol(i)] || null}
                             pricePrecision={instrumentsBySymbol[paneSymbol(i)]?.pricePrecision ?? 2}
                             timeZone={tradeSettings.trading.timeZone}
                             showAlerts={false}
                             /* Non-active panes show ONLY the chart — no header,
                                no drawing toolbar. Click a pane to activate it
-                               and get the full chrome on the active cell. */
+                               and get the full chrome + shared toolbar control. */
                             hideHeader
+                            hideDrawingToolbar
                             onReady={(c, gs) => registerChart(i, c, gs)}
                           />
                         )}
@@ -2670,6 +2733,7 @@ export default function Trade() {
                         </div>
                       </div>
                     ))}
+                    </div>
                   </div>
                 );
               })()}
