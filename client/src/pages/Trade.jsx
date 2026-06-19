@@ -179,7 +179,11 @@ export default function Trade() {
   const showOnChart      = useTradeSettings((s) => s.showOnChart);
   const calendarFilters  = useTradeSettings((s) => s.calendarFilters);
   const tradingPrefs     = useTradeSettings((s) => s.trading);
+  const autoOneClick     = useTradeSettings((s) => s.autoTrading.oneClick);
   const setTradeSetting  = useTradeSettings((s) => s.set);
+  // One-click trading is active when the "One-click form" mode is selected OR
+  // the autoTrading one-click toggle is on (mirrors OrderForm's isOneClick).
+  const oneClickMode = tradingPrefs.openOrderMode === 'oneClick' || autoOneClick;
   // Legacy alias — kept so existing references downstream still compile.
   // (Re-built every render from the slices above, so reactivity is preserved.)
   const tradeSettings = { showOnChart, calendarFilters, trading: tradingPrefs };
@@ -1314,14 +1318,41 @@ export default function Trade() {
   //  • Normal     → expand the side OrderForm aside if collapsed
   // Without this, clicking BUY/SELL on a collapsed-panel layout would
   // silently change `orderSide` with no visible UI.
+  // One-click market order straight from the chart-nav Buy/Sell chip — no form,
+  // no confirmation (one-click is opt-in via Settings). Uses the same defaults
+  // the order form would: quantity = instrument min order size, leverage =
+  // account leverage.
+  const placeOneClickOrder = useCallback(async (side) => {
+    if (!account?._id || !instrument) { toast.error('No account / instrument selected'); return; }
+    const quantity = String(Number(instrument.minOrderSize) || 0.01);
+    const leverage = Math.max(1, Number(account.leverage) || 1);
+    try {
+      const { data } = await api.post('/trading/orders', {
+        accountId: account._id,
+        symbol: instrument.symbol,
+        side,
+        orderMode: 'MARKET',
+        quantity,
+        leverage,
+        idempotencyKey: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      });
+      toast.success(`${side} ${quantity} ${instrument.symbol} — ${data.data.status}`);
+      refresh();
+    } catch (e) {
+      toast.error(errorMessage(e));
+    }
+  }, [account, instrument]);
+
   const handleOrderSideChange = useCallback((side) => {
+    // One-click mode → fire the order directly from the nav chip.
+    if (oneClickMode) { placeOneClickOrder(side); return; }
     setOrderSide(side);
     if (isFullscreen) {
       setShowFloatingOrder(true);
     } else if (!showOrderPanel) {
       setShowOrderPanel(true);
     }
-  }, [isFullscreen, showOrderPanel]);
+  }, [isFullscreen, showOrderPanel, oneClickMode, placeOneClickOrder]);
   // "Expanded" = either side panel collapsed. The chart toolbar button
   // flips both at once; per-panel × buttons flip each side independently.
   const panelsCollapsed = !showInstruments && !showOrderPanel;
