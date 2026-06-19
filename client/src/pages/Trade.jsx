@@ -1466,17 +1466,11 @@ export default function Trade() {
               </div>
             );
           })}
-          {/* Add-tab "+" — opens the instruments panel if collapsed and
-              focuses its search input so the user can pick a symbol to add. */}
+          {/* Add-tab "+" — opens the instrument picker (same modal as clicking
+              a chart's symbol legend) so the user can search & pick a symbol. */}
           <button
             type="button"
-            onClick={() => {
-              if (!showInstruments) setShowInstruments(true);
-              setTimeout(() => {
-                const el = document.querySelector('aside input[placeholder="Search…"]');
-                if (el) { el.focus(); el.select?.(); }
-              }, 60);
-            }}
+            onClick={() => setSearchOpen(true)}
             title="Add symbol tab"
             className="hidden sm:inline-flex shrink-0 items-center justify-center w-7 h-7 rounded-lg border border-border-dark text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
           >
