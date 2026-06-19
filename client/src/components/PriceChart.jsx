@@ -1011,6 +1011,8 @@ export default function PriceChart({
     window.addEventListener('drawtoolbar:collapse', onCollapse);
     return () => window.removeEventListener('drawtoolbar:collapse', onCollapse);
   }, []);
+  // Eye toggle — swap our chart for the embedded TradingView demo chart.
+  const [showTvDemo, setShowTvDemo] = useState(false);
   const vLineRef = useRef(null);
   const hLineRef = useRef(null);
   const priceLinesRef = useRef(new Map());
@@ -1161,6 +1163,22 @@ export default function PriceChart({
   const [indicatorSearch, setIndicatorSearch] = useState('');
   const [timeframeOpen, setTimeframeOpen] = useState(false);
   const theme = useThemeStore((s) => s.theme);
+
+  // Embedded TradingView demo-chart URL (best-effort symbol/interval mapping).
+  const tvDemoUrl = useMemo(() => {
+    const cat = (instrument?.category || '').toUpperCase();
+    let tvSym = symbol;
+    if (cat === 'FOREX') tvSym = `FX:${symbol}`;
+    else if (cat === 'CRYPTO') tvSym = `BINANCE:${(instrument?.externalFeedSymbol || symbol).toUpperCase()}`;
+    else if (cat === 'COMMODITY') tvSym = `TVC:${symbol}`;
+    const tvInt = { '1m': '1', '5m': '5', '15m': '15', '30m': '30', '1h': '60', '4h': '240', '1d': 'D', '1w': 'W' }[timeframe] || 'D';
+    const params = new URLSearchParams({
+      symbol: tvSym, interval: tvInt, theme: theme === 'dark' ? 'dark' : 'light',
+      style: '1', locale: 'en', timezone: 'Etc/UTC', hide_side_toolbar: '0',
+      withdateranges: '1', allow_symbol_change: '1', save_image: '0',
+    });
+    return `https://s.tradingview.com/widgetembed/?${params.toString()}`;
+  }, [symbol, timeframe, theme, instrument?.category, instrument?.externalFeedSymbol]);
 
   // Drawing tools — vertical toolbar + chart-click handlers + persistence.
   // The hook attaches itself to the existing chart/series refs and does not
@@ -3402,6 +3420,21 @@ export default function PriceChart({
             <WatchlistButton symbol={symbol} row={instrument} variant="toolbar" size={15} persistent />
           )}
 
+          {/* Eye toggle — swap our chart for the embedded TradingView demo chart. */}
+          <button
+            type="button"
+            onClick={() => setShowTvDemo((v) => !v)}
+            title={showTvDemo ? 'Back to platform chart' : 'View TradingView demo chart'}
+            aria-pressed={showTvDemo}
+            className={`inline-flex items-center justify-center h-8 w-8 rounded border transition-colors ${showTvDemo ? 'border-primary-500 bg-primary-500/10 text-primary-600' : 'border-border-dark bg-white text-text-secondary hover:text-text-primary hover:bg-bg-hover hover:border-border-accent'}`}
+          >
+            {showTvDemo ? (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 10 8 10 8a13.16 13.16 0 0 1-1.67 2.68" /><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 8 10 8a9.74 9.74 0 0 0 5.39-1.61" /><line x1="2" y1="2" x2="22" y2="22" /><path d="M9.17 14.83a4 4 0 0 0 5.66-5.66" /></svg>
+            ) : (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3-8 10-8 10 8 10 8-3 8-10 8-10-8-10-8z" /><circle cx="12" cy="12" r="3" /></svg>
+            )}
+          </button>
+
           {/* Expand / Fullscreen controls — moved into the toolbar from
               the floating overlay so they don't overlap the Sell/Buy chip. */}
           {onToggleExpand && (
@@ -3456,6 +3489,16 @@ export default function PriceChart({
       <div ref={chartWrapRef} className="relative flex-1 flex flex-col min-h-0" onMouseMove={moveCrosshair} onMouseLeave={hideCrosshair}>
       <div className="relative w-full flex-1 min-h-0" style={{ background: tvCanvas(theme).background }}>
         <div ref={containerRef} className="w-full h-full" />
+        {/* TradingView demo chart — overlays our chart when the eye is toggled. */}
+        {showTvDemo && (
+          <iframe
+            key={tvDemoUrl}
+            title="TradingView demo chart"
+            src={tvDemoUrl}
+            className="absolute inset-0 w-full h-full z-30 border-0 bg-white"
+            allow="fullscreen"
+          />
+        )}
         {brandLogo && (
           <img
             src={brandLogo}
