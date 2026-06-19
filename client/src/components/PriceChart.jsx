@@ -3650,7 +3650,7 @@ export default function PriceChart({
           const fmt = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { minimumFractionDigits: pricePrecision, maximumFractionDigits: pricePrecision }));
           const name = instrument?.name || instrument?.displayName || symbol;
           return (
-            <div className="pointer-events-none absolute top-1 left-2 z-10 flex items-center gap-2 px-2.5 py-1 rounded-md bg-white/85 backdrop-blur-sm border border-border-dark text-[12px] font-semibold shadow-card max-w-[calc(100%-1rem)] overflow-hidden">
+            <div className="pointer-events-none absolute top-1 left-2 z-10 flex items-center gap-1.5 text-[11px] font-semibold max-w-[calc(100%-1rem)] overflow-hidden">
               <span className="shrink-0"><AssetIcon row={instrument || { symbol }} size={16} round /></span>
               <span className="text-text-primary truncate">{name}</span>
               <span className="text-text-muted">· {timeframe} ·</span>
