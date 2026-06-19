@@ -3657,7 +3657,7 @@ export default function PriceChart({
           const changeText = chg == null ? null
             : `${chg >= 0 ? '+' : ''}${fmt(chg)}${pct != null ? ` (${chg >= 0 ? '+' : ''}${pct.toFixed(2)}%)` : ''}`;
           return (
-            <div className={`pointer-events-none absolute top-1 z-10 flex flex-col items-start gap-0.5 text-[11px] font-semibold max-w-[calc(100%-4rem)] ${drawCollapsed ? 'left-7' : 'left-2'}`}>
+            <div className={`pointer-events-none absolute top-1 z-10 flex flex-col items-start gap-0.5 text-[11px] font-semibold max-w-[calc(100%-5.5rem)] ${drawCollapsed ? 'left-7' : 'left-2'}`}>
               <div className="flex items-center gap-1.5 max-w-full overflow-hidden">
                 {onPickSymbol ? (
                   <button
