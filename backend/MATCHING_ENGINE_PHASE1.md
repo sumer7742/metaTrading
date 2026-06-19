@@ -2,8 +2,17 @@
 
 Target: **3,000–5,000 orders/sec per symbol** (from ~110/sec today).
 
-> Status: foundation modules built (`Journal.js`, `WriteBehind.js`), **not yet wired
-> into the live money path**. Roll out increment-by-increment behind a flag.
+> Status: foundation modules built (`LedgerCache.js`, `Journal.js`, `WriteBehind.js`).
+> **Gate 1 (ledger correctness) is GREEN** — `scripts/verify-ledger.js` proves the
+> in-memory ledger settles balances/margin/positions byte-for-byte vs the live
+> engine (30 checks, 0 divergences) AND vs an independent reference model.
+> `scripts/bench-ledger.js` confirms in-memory matching ≈ 255k fills/sec locally
+> (3.92 µs/op) — i.e. matching is NOT the ceiling; persistence is. Still **not
+> wired into the live money path**. Roll out increment-by-increment behind a flag.
+>
+> Next gate: run `MONGO_URI=… node scripts/bench-ledger.js` on a capable instance
+> (NVMe) to measure the Journal group-commit ACK rate — that's the number that
+> must clear 40–50k/sec.
 
 ---
 

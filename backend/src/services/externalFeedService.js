@@ -1,6 +1,7 @@
 const WebSocket = require('ws');
 const Instrument = require('../models/Instrument');
 const { updateCandlesForTrade } = require('./candleService');
+const { backfillInstrument } = require('./binanceBackfill');
 
 /**
  * Binance WebSocket Feed Adapter
@@ -25,6 +26,9 @@ let reconnectTimer = null;
 let symbolMap = new Map(); // upper externalFeedSymbol -> instrument._id
 let symbolReverseMap = new Map(); // upper externalFeedSymbol -> instrument.symbol (platform symbol)
 let enabled = false;
+// Platform symbols whose historical candles have already been seeded from
+// Binance REST this process — so we backfill each symbol exactly once.
+const backfilled = new Set();
 // In-memory orderbook cache — keyed by platform symbol (e.g. 'BTCUSD'),
 // holds the latest L2 depth snapshot from Binance so REST `/orderbook`
 // can return real data even before any WS subscriber comes online.
@@ -270,6 +274,19 @@ const _refreshSymbolMap = async () => {
   symbolReverseMap = newReverse;
 };
 
+// Seed historical candles (once per symbol per process) for every mapped
+// Binance instrument so a freshly-added symbol's chart is populated with real
+// history immediately, instead of waiting for live ticks to build it. Runs in
+// the background — never blocks the feed connection.
+const _backfillNew = () => {
+  for (const [extSym, platformSymbol] of symbolReverseMap) {
+    if (backfilled.has(platformSymbol)) continue;
+    backfilled.add(platformSymbol);
+    backfillInstrument(platformSymbol, extSym).catch((e) =>
+      console.error(`[ExternalFeed] Backfill ${platformSymbol} failed: ${e.message}`));
+  }
+};
+
 /**
  * Latest cached orderbook for a platform symbol (e.g. 'BTCUSD').
  * Returns `null` if no Binance depth has been received yet for the
@@ -292,23 +309,36 @@ const getExternalTicker = (platformSymbol) => {
 const start = async () => {
   await _refreshSymbolMap();
   if (symbolMap.size === 0) {
-    console.log('[ExternalFeed] No instruments configured for BINANCE provider - feed disabled.');
-    console.log('[ExternalFeed] To enable: PUT /api/instruments/<symbol> with externalProvider="BINANCE" and externalFeedSymbol="BTCUSDT"');
-    return;
+    console.log('[ExternalFeed] No instruments configured for BINANCE provider yet.');
+    console.log('[ExternalFeed] Will keep scanning every 60s — add an instrument with');
+    console.log('[ExternalFeed]   externalProvider="BINANCE", externalFeedSymbol="BTCUSDT", isActive=true');
+    console.log('[ExternalFeed]   and the feed starts automatically (no restart needed).');
+  } else {
+    enabled = true;
+    _connect();
+    _backfillNew(); // seed history for symbols present at boot
   }
-  enabled = true;
-  _connect();
 
-  // Re-check symbol mapping every 60s in case admin adds new external instruments.
+  // Re-check symbol mapping every 60s in case admin adds/removes external
+  // instruments at runtime. This runs even when NO Binance instruments existed
+  // at boot, so adding the FIRST one starts the feed without a restart.
   // URL-based subs can't be modified on a live connection, so we tear down +
-  // reconnect when the list changes — picks up the new symbols + drops removed ones.
+  // reconnect when the list changes — picks up new symbols + drops removed ones.
   setInterval(async () => {
     const before = symbolMap.size;
     await _refreshSymbolMap();
-    if (symbolMap.size !== before && ws) {
-      console.log(`[ExternalFeed] Symbol map changed (${before} -> ${symbolMap.size}), reconnecting...`);
+    if (symbolMap.size === before) return;
+    console.log(`[ExternalFeed] Symbol map changed (${before} -> ${symbolMap.size})`);
+    if (!enabled && symbolMap.size > 0) {
+      // First Binance instrument added at runtime — start the feed now.
+      enabled = true;
+      _connect();
+    } else if (ws) {
+      // Already running — reconnect to apply the new stream list.
+      console.log('[ExternalFeed] Reconnecting to apply new stream list...');
       try { ws.close(); } catch (_) { /* will auto-reconnect via on('close') */ }
     }
+    _backfillNew(); // seed history for any newly-added symbols
   }, 60000);
 };
 

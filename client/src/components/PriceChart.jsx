@@ -2445,40 +2445,14 @@ export default function PriceChart({
       }
     }
 
-    if (livePrice && Number(livePrice) > 0) {
-      // NOTE: no custom "live:last" line here. The candlestick/line series
-      // already draws its OWN native current-price line + axis label at the
-      // last close (priceLineVisible), and lightweight-charts keeps that line
-      // and its label perfectly aligned. A second custom line at livePrice sat
-      // a hair off the native one → "line here, pill there". One marker only.
-
-      // ── Bid / Ask spread lines around the live (mid) price ──────────
-      // Mirrors the broker spread: ask = mid + spread/2 (Buy fills here),
-      // bid = mid − spread/2 (Sell fills here). Faint dashed lines so the
-      // spread is visible as a band hugging the live line.
-      const sv = Number(instrument?.spreadValue) || 0;
-      if (sv > 0) {
-        const mid = Number(livePrice);
-        const half = instrument?.spreadType === 'PERCENTAGE' ? mid * (sv / 2) : sv / 2;
-        // Plain neutral dashed lines — no name, no coloured axis label.
-        desired.set('live:ask', {
-          price: mid + half,
-          color: '#94a3b8',   // neutral
-          lineWidth: 1,
-          lineStyle: 2,       // dashed
-          axisLabelVisible: false,
-          title: '',
-        });
-        desired.set('live:bid', {
-          price: mid - half,
-          color: '#94a3b8',
-          lineWidth: 1,
-          lineStyle: 2,
-          axisLabelVisible: false,
-          title: '',
-        });
-      }
-    }
+    // Current price = ONE marker only: the candlestick/line series' OWN native
+    // price line + its axis label at the last close (priceLineVisible). They
+    // are always at the exact same price (lightweight-charts keeps the line and
+    // its pill aligned). We intentionally draw NOTHING else near the live price
+    // — no custom "live:last" line, and no bid/ask spread lines. The bid/ask
+    // lines sat at mid ± spread/2, i.e. a different price than the pill, which
+    // read as "line here, pill there". Removed so the line + pill are unified
+    // at the real candle price.
 
     if (pendingPreview && pendingPreview.price && Number(pendingPreview.price) > 0) {
       desired.set('preview:form', {
