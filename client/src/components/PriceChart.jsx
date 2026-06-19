@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { createChart } from 'lightweight-charts';
 import { api } from '../services/api';
 import { wsClient } from '../services/ws';
@@ -963,6 +964,12 @@ export default function PriceChart({
   // ACTIVE multi-chart pane can keep its drawing tools while its top header is
   // hidden (replaced by the shared toolbar). Non-active panes hide both.
   hideDrawingToolbar = false,
+  // Portal target (DOM node) for the drawing toolbar. When set (even to null),
+  // PriceChart renders its toolbar INTO that node instead of inline — used by
+  // the multi-chart layout to host ONE shared left rail (driven by the active
+  // pane). `undefined` = inline (single-chart default); `null` = portal mode but
+  // target not mounted yet (render nothing).
+  drawingRail,
   // Controlled chart-type / indicators (optional). When provided, the parent
   // owns the state (multi-chart shared toolbar). When omitted, PriceChart keeps
   // its own internal state + localStorage persistence (single-chart default).
@@ -3551,7 +3558,13 @@ export default function PriceChart({
           </div>
         )}
 
-        {!hideDrawingToolbar && <ChartDrawingToolbar controls={drawingControls} />}
+        {!hideDrawingToolbar && (() => {
+          const tb = <ChartDrawingToolbar controls={drawingControls} />;
+          // Portal mode (drawingRail !== undefined): host the toolbar in the
+          // shared left rail; render nothing until the target node is mounted.
+          if (drawingRail !== undefined) return drawingRail ? createPortal(tb, drawingRail) : null;
+          return tb; // inline (single-chart)
+        })()}
 
         {/* Drawing-object right-click menu + double-click property panel.
             Both render inside this relative chart container (container-relative

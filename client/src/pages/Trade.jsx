@@ -42,6 +42,10 @@ export default function Trade() {
   const PANES_KEY = 'tradepro:chart-panes';
   const [layoutId, setLayoutId] = useState(() => { try { return localStorage.getItem(LAYOUT_KEY) || '1'; } catch { return '1'; } });
   const [activePane, setActivePane] = useState(0);
+  // DOM node of the shared drawing-tool rail (left of the multi-chart grid).
+  // The active pane portals its drawing toolbar into here, so multi-pane shows
+  // ONE shared left rail (driven by the active pane) — like the top toolbar.
+  const [drawRailEl, setDrawRailEl] = useState(null);
   const [sync, setSync] = useState(() => { try { return { ...DEFAULT_SYNC, ...JSON.parse(localStorage.getItem(SYNC_KEY) || '{}') }; } catch { return { ...DEFAULT_SYNC }; } });
   const [panes, setPanes] = useState(() => {
     const base = params.get('symbol') || 'BTCUSD';
@@ -2551,6 +2555,9 @@ export default function Trade() {
                   indicators={paneIndicators(activePane)}
                   onIndicatorsChange={(next) => setPaneIndicators(activePane, next)}
                   hideHeader={layout.n > 1}
+                  /* Multi-pane → portal the drawing toolbar into the shared left
+                     rail; single-chart → inline (undefined). */
+                  drawingRail={layout.n > 1 ? drawRailEl : undefined}
                   symbol={symbol}
                   timeframe={timeframe}
                   onTimeframeChange={setTimeframe}
@@ -2737,10 +2744,15 @@ export default function Trade() {
                       fullscreen={isFullscreen}
                       onToggleFullscreen={() => setChartView((v) => (v === 'fullscreen' ? 'normal' : 'fullscreen'))}
                     />
-                    <div
-                      className="flex-1 min-h-0 grid gap-0.5 p-0.5"
-                      style={{ gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${layout.rows}, minmax(0, 1fr))` }}
-                    >
+                    <div className="flex-1 min-h-0 flex">
+                      {/* Shared drawing-tool rail — the active pane portals its
+                          toolbar in here, so the whole layout has ONE left rail
+                          (driven by the active pane), like the top toolbar. */}
+                      <div ref={setDrawRailEl} className="relative w-12 shrink-0 border-r border-border-dark bg-white" />
+                      <div
+                        className="flex-1 min-h-0 grid gap-0.5 p-0.5"
+                        style={{ gridTemplateColumns: `repeat(${layout.cols}, minmax(0, 1fr))`, gridTemplateRows: `repeat(${layout.rows}, minmax(0, 1fr))` }}
+                      >
                     {layout.cells.slice(0, layout.n).map((cell, i) => (
                       <div
                         key={i}
@@ -2776,6 +2788,7 @@ export default function Trade() {
                         </div>
                       </div>
                     ))}
+                      </div>
                     </div>
                   </div>
                 );
