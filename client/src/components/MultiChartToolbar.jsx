@@ -24,6 +24,9 @@ export default function MultiChartToolbar({
   orderSide = null,
   onOrderSideChange,
   pricePrecision = 2,
+  // Hide the Sell/Buy chip when the order panel / floating order modal is open
+  // (it already shows its own Sell/Buy), to avoid a duplicate control.
+  hideQuickTrade = false,
   layoutPicker = null,
   expanded,
   onToggleExpand,
@@ -155,7 +158,7 @@ export default function MultiChartToolbar({
 
       {/* Right cluster — Sell/Buy quick-trade chip + layout picker + actions */}
       <div className="ml-auto flex items-center gap-2">
-        {instrument && onOrderSideChange && (() => {
+        {!hideQuickTrade && instrument && onOrderSideChange && (() => {
           const last = Number(instrument.lastPrice) || 0;
           const half = Number(instrument.spreadValue || 0) / 2;
           const bid = instrument.spreadType === 'PERCENTAGE' ? last * (1 - half) : last - half;

@@ -2720,6 +2720,7 @@ export default function Trade() {
                       orderSide={orderSide}
                       onOrderSideChange={handleOrderSideChange}
                       pricePrecision={instrument?.pricePrecision ?? 2}
+                      hideQuickTrade={(showOrderPanel && !isFullscreen) || (isFullscreen && showFloatingOrder)}
                       layoutPicker={<ChartLayoutPicker value={layoutId} onChange={setLayoutId} sync={sync} onSyncChange={setSyncField} theme={theme} />}
                       expanded={panelsCollapsed}
                       onToggleExpand={() => {
