@@ -1176,33 +1176,53 @@ export default function PriceChart({
     return { sym, interval };
   }, [symbol, timeframe, instrument?.category, instrument?.externalFeedSymbol]);
 
-  // Mount TradingView's official Advanced-Chart embed widget into tvHostRef when
-  // the eye toggle is on. (The legacy s.tradingview.com iframe was timing out;
-  // the embed-widget script is the supported, reliable path.)
+  // Mount the TradingView chart via the tv.js library + TradingView.widget()
+  // constructor when the eye toggle is on. We use the constructor (not the
+  // embed-widget <script>) because the embed script reads its config from
+  // document.currentScript, which is null when injected dynamically (React) →
+  // blank widget. The constructor takes the config directly, so it's reliable.
   const tvHostRef = useRef(null);
   useEffect(() => {
     const host = tvHostRef.current;
     if (!showTvDemo || !host) return undefined;
-    host.innerHTML = '<div class="tradingview-widget-container__widget" style="height:100%;width:100%"></div>';
-    const script = document.createElement('script');
-    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
-    script.type = 'text/javascript';
-    script.async = true;
-    script.innerHTML = JSON.stringify({
-      autosize: true,
-      symbol: tvConfig.sym,
-      interval: tvConfig.interval,
-      timezone: 'Etc/UTC',
-      theme: theme === 'dark' ? 'dark' : 'light',
-      style: '1',
-      locale: 'en',
-      allow_symbol_change: true,
-      hide_side_toolbar: false,
-      withdateranges: true,
-      support_host: 'https://www.tradingview.com',
-    });
-    host.appendChild(script);
-    return () => { try { host.innerHTML = ''; } catch (_) { /* */ } };
+    if (!host.id) host.id = `tv-host-${Math.random().toString(36).slice(2)}`;
+    let cancelled = false;
+
+    const mount = () => {
+      if (cancelled || !tvHostRef.current || !window.TradingView?.widget) return;
+      tvHostRef.current.innerHTML = '';
+      try {
+        // eslint-disable-next-line no-new
+        new window.TradingView.widget({
+          autosize: true,
+          symbol: tvConfig.sym,
+          interval: tvConfig.interval,
+          timezone: 'Etc/UTC',
+          theme: theme === 'dark' ? 'dark' : 'light',
+          style: '1',
+          locale: 'en',
+          allow_symbol_change: true,
+          hide_side_toolbar: false,
+          withdateranges: true,
+          container_id: tvHostRef.current.id,
+        });
+      } catch (_) { /* network/blocked — leave host empty */ }
+    };
+
+    if (window.TradingView?.widget) {
+      mount();
+    } else {
+      let s = document.getElementById('tv-js-lib');
+      if (!s) {
+        s = document.createElement('script');
+        s.id = 'tv-js-lib';
+        s.src = 'https://s3.tradingview.com/tv.js';
+        s.async = true;
+        document.head.appendChild(s);
+      }
+      s.addEventListener('load', mount);
+    }
+    return () => { cancelled = true; try { host.innerHTML = ''; } catch (_) { /* */ } };
   }, [showTvDemo, tvConfig.sym, tvConfig.interval, theme]);
 
   // Drawing tools — vertical toolbar + chart-click handlers + persistence.
