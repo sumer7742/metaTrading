@@ -69,9 +69,9 @@ export default function SearchModal({ open, onClose }) {
     });
   }, [rows, category, query]);
 
-  // "Trending" is shown when the query is empty — first slice of the
-  // filtered set so the list always reflects the active category.
-  const trending = useMemo(() => visible.slice(0, 10), [visible]);
+  // When the query is empty we show the FULL filtered set (not a slice), so the
+  // list matches the category count badge (e.g. "All 16" really shows 16).
+  const trending = useMemo(() => visible, [visible]);
 
   // Per-category counts (for the pill badges, only when > 0).
   const counts = useMemo(() => {
@@ -164,7 +164,7 @@ export default function SearchModal({ open, onClose }) {
         {/* Results / trending list */}
         <div className="max-h-[60vh] overflow-y-auto">
           <div className="px-5 pt-4 pb-2 text-sm font-semibold text-text-secondary">
-            {showTrending ? 'Trending Searches' : `Results (${visible.length})`}
+            {showTrending ? `All markets (${visible.length})` : `Results (${visible.length})`}
           </div>
 
           {loading && (
