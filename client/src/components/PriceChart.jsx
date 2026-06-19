@@ -20,9 +20,12 @@ const MA_DEFS = [
   { code: 'alma', name: 'ALMA', color: '#A855F7', fn: alma, src: 'closes',  periods: [9, 14, 21, 34, 50, 100, 200] },
 ];
 const MA_KEYS = MA_DEFS.flatMap((d) => d.periods.map((p) => `${d.code}${p}`));
+// Read a param off an indicator's value (true | {length,color,...}); else default.
+const pget = (v, field, def) => (v && typeof v === 'object' && v[field] != null ? v[field] : def);
 import { useThemeStore } from '../store/theme';
 import { useChartDrawings } from '../hooks/useChartDrawings';
 import ChartDrawingToolbar from './ChartDrawingToolbar';
+import IndicatorsPanel from './IndicatorsPanel';
 import DrawingContextMenu from './DrawingContextMenu';
 import DrawingProperties from './DrawingProperties';
 import ChartSettings from './ChartSettings';
@@ -2230,6 +2233,8 @@ export default function PriceChart({
   // and returns aligned numeric values.
   useEffect(() => {
     if (!chartRef.current || !candles.length) return;
+    // Live length override from an indicator's params object (else default).
+    const ilen = (k, d) => { const v = indicators[k]; return (v && typeof v === 'object' && v.length) ? Number(v.length) : d; };
 
     const overlayConfigs = [
       // ── All moving-average variants (EMA/SMA/WMA/HMA/DEMA/TEMA/SMMA/VWMA/ALMA)
@@ -2238,48 +2243,50 @@ export default function PriceChart({
         compute: () => d.fn(d.src === 'candles' ? candles : closes, p),
       }))),
       // ── Bollinger Bands — 3 lines share the toggle key
-      { key: 'bb',  subKey: 'bbU', color: '#0EA5E9', lineWidth: 1, title: 'BB Upper',  compute: () => bollinger(closes, 20, 2).upper },
-      { key: 'bb',  subKey: 'bbM', color: '#0EA5E9', lineWidth: 1, lineStyle: 'dashed', title: 'BB Middle', compute: () => bollinger(closes, 20, 2).middle },
-      { key: 'bb',  subKey: 'bbL', color: '#0EA5E9', lineWidth: 1, title: 'BB Lower',  compute: () => bollinger(closes, 20, 2).lower },
+      { key: 'bb',  subKey: 'bbU', color: '#0EA5E9', lineWidth: 1, title: 'BB Upper',  compute: () => bollinger(closes, ilen('bb', 20), 2).upper },
+      { key: 'bb',  subKey: 'bbM', color: '#0EA5E9', lineWidth: 1, lineStyle: 'dashed', title: 'BB Middle', compute: () => bollinger(closes, ilen('bb', 20), 2).middle },
+      { key: 'bb',  subKey: 'bbL', color: '#0EA5E9', lineWidth: 1, title: 'BB Lower',  compute: () => bollinger(closes, ilen('bb', 20), 2).lower },
       // ── Donchian Channels — 3 lines (highest high / lowest low / midline)
-      { key: 'donchian', subKey: 'dcU', color: '#10B981', lineWidth: 1, title: 'DC Upper',  compute: () => donchian(candles, 20).upper },
-      { key: 'donchian', subKey: 'dcM', color: '#10B981', lineWidth: 1, lineStyle: 'dashed', title: 'DC Middle', compute: () => donchian(candles, 20).middle },
-      { key: 'donchian', subKey: 'dcL', color: '#10B981', lineWidth: 1, title: 'DC Lower',  compute: () => donchian(candles, 20).lower },
+      { key: 'donchian', subKey: 'dcU', color: '#10B981', lineWidth: 1, title: 'DC Upper',  compute: () => donchian(candles, ilen('donchian', 20)).upper },
+      { key: 'donchian', subKey: 'dcM', color: '#10B981', lineWidth: 1, lineStyle: 'dashed', title: 'DC Middle', compute: () => donchian(candles, ilen('donchian', 20)).middle },
+      { key: 'donchian', subKey: 'dcL', color: '#10B981', lineWidth: 1, title: 'DC Lower',  compute: () => donchian(candles, ilen('donchian', 20)).lower },
       // ── Keltner Channels — EMA ± 2 × ATR
-      { key: 'keltner', subKey: 'ktU', color: '#F97316', lineWidth: 1, title: 'KC Upper',  compute: () => keltner(candles, 20, 2, 10).upper },
-      { key: 'keltner', subKey: 'ktM', color: '#F97316', lineWidth: 1, lineStyle: 'dashed', title: 'KC Middle', compute: () => keltner(candles, 20, 2, 10).middle },
-      { key: 'keltner', subKey: 'ktL', color: '#F97316', lineWidth: 1, title: 'KC Lower',  compute: () => keltner(candles, 20, 2, 10).lower },
+      { key: 'keltner', subKey: 'ktU', color: '#F97316', lineWidth: 1, title: 'KC Upper',  compute: () => keltner(candles, ilen('keltner', 20), 2, 10).upper },
+      { key: 'keltner', subKey: 'ktM', color: '#F97316', lineWidth: 1, lineStyle: 'dashed', title: 'KC Middle', compute: () => keltner(candles, ilen('keltner', 20), 2, 10).middle },
+      { key: 'keltner', subKey: 'ktL', color: '#F97316', lineWidth: 1, title: 'KC Lower',  compute: () => keltner(candles, ilen('keltner', 20), 2, 10).lower },
       // ── VWAP
       { key: 'vwap', color: '#7C3AED', lineWidth: 2, title: 'VWAP', compute: () => vwap(candles) },
       // ── MA Envelopes — SMA ± 2%
-      { key: 'envelopes', subKey: 'envU', color: '#64748B', lineWidth: 1, title: 'Env Upper', compute: () => envelopes(closes, 20, 2).upper },
-      { key: 'envelopes', subKey: 'envM', color: '#64748B', lineWidth: 1, lineStyle: 'dashed', title: 'Env Mid', compute: () => envelopes(closes, 20, 2).middle },
-      { key: 'envelopes', subKey: 'envL', color: '#64748B', lineWidth: 1, title: 'Env Lower', compute: () => envelopes(closes, 20, 2).lower },
+      { key: 'envelopes', subKey: 'envU', color: '#64748B', lineWidth: 1, title: 'Env Upper', compute: () => envelopes(closes, ilen('envelopes', 20), 2).upper },
+      { key: 'envelopes', subKey: 'envM', color: '#64748B', lineWidth: 1, lineStyle: 'dashed', title: 'Env Mid', compute: () => envelopes(closes, ilen('envelopes', 20), 2).middle },
+      { key: 'envelopes', subKey: 'envL', color: '#64748B', lineWidth: 1, title: 'Env Lower', compute: () => envelopes(closes, ilen('envelopes', 20), 2).lower },
       // ── Linear Regression
-      { key: 'linreg', color: '#0D9488', lineWidth: 2, title: 'Linear Regression', compute: () => linreg(closes, 14) },
+      { key: 'linreg', color: '#0D9488', lineWidth: 2, title: 'Linear Regression', compute: () => linreg(closes, ilen('linreg', 14)) },
       // ── Parabolic SAR — rendered as dots (point markers, no joining line)
       { key: 'psar', color: '#DC2626', lineWidth: 1, pointMarkers: true, title: 'Parabolic SAR', compute: () => psar(candles) },
       // ── SuperTrend
-      { key: 'supertrend', color: '#0891B2', lineWidth: 2, title: 'SuperTrend', compute: () => supertrend(candles, 10, 3) },
+      { key: 'supertrend', color: '#0891B2', lineWidth: 2, title: 'SuperTrend', compute: () => supertrend(candles, ilen('supertrend', 10), 3) },
     ];
 
     for (const cfg of overlayConfigs) {
       const enabled = indicators[cfg.key];
       const refKey = cfg.subKey || cfg.key;
       const exists = overlayRef.current[refKey];
+      // Merge the user's params (colour / width / style) over the defaults.
+      const u = (enabled && typeof enabled === 'object') ? enabled : {};
+      const color = u.color || cfg.color;
+      const lineWidth = u.lineWidth || cfg.lineWidth || 2;
+      const lineStyle = u.lineStyle != null ? u.lineStyle : (cfg.lineStyle === 'dashed' ? 1 : 0);
       if (enabled && !exists) {
         const seriesOpts = {
-          color: cfg.color,
-          lineWidth: cfg.lineWidth || 2,
+          color,
+          lineWidth,
+          lineStyle,
           priceLineVisible: false,
           lastValueVisible: true,
           crosshairMarkerVisible: true,
           title: cfg.title,
         };
-        if (cfg.lineStyle === 'dashed') {
-          // lightweight-charts LineStyle.Dashed = 1
-          seriesOpts.lineStyle = 1;
-        }
         if (cfg.pointMarkers) {
           // Render as dots (e.g. Parabolic SAR): show point markers, hide the line.
           seriesOpts.pointMarkersVisible = true;
@@ -2292,6 +2299,8 @@ export default function PriceChart({
         delete overlayRef.current[refKey];
       }
       if (enabled && overlayRef.current[refKey]) {
+        // Apply live colour / width / style changes without recreating the series.
+        try { overlayRef.current[refKey].applyOptions({ color, lineWidth, lineStyle }); } catch (_) {}
         const values = cfg.compute();
         const data = candles
           .map((c, i) => (values[i] != null && Number.isFinite(values[i]) ? { time: c.time, value: values[i] } : null))
@@ -2333,7 +2342,9 @@ export default function PriceChart({
     }
 
     const { series, overbought, oversold } = subPanelChartsRef.current.rsi;
-    const values = rsi(closes, 14);
+    const rsiLen = pget(indicators.rsi, 'length', 14);
+    try { series.applyOptions({ color: pget(indicators.rsi, 'color', '#8b5cf6'), lineWidth: pget(indicators.rsi, 'lineWidth', 1.5), title: `RSI ${rsiLen}` }); } catch (_) {}
+    const values = rsi(closes, rsiLen);
     const rsiData = candles.map((c, i) => (values[i] != null ? { time: c.time, value: values[i] } : null)).filter(Boolean);
     series.setData(rsiData);
     overbought.setData(rsiData.map((d) => ({ time: d.time, value: 70 })));
@@ -2366,7 +2377,9 @@ export default function PriceChart({
       subPanelChartsRef.current.stoch = { chart, k, d, overbought, oversold, container };
     }
     const { k: kS, d: dS, overbought, oversold } = subPanelChartsRef.current.stoch;
-    const { k, d } = stochastic(candles, 14, 3);
+    const stochLen = pget(indicators.stoch, 'length', 14);
+    try { kS.applyOptions({ color: pget(indicators.stoch, 'color', '#3B82F6'), lineWidth: pget(indicators.stoch, 'lineWidth', 1.5) }); } catch (_) {}
+    const { k, d } = stochastic(candles, stochLen, 3);
     const kData = candles.map((c, i) => (k[i] != null ? { time: c.time, value: k[i] } : null)).filter(Boolean);
     const dData = candles.map((c, i) => (d[i] != null ? { time: c.time, value: d[i] } : null)).filter(Boolean);
     kS.setData(kData);
@@ -2398,7 +2411,9 @@ export default function PriceChart({
       subPanelChartsRef.current.atr = { chart, series, container };
     }
     const { series } = subPanelChartsRef.current.atr;
-    const values = atr(candles, 14);
+    const atrLen = pget(indicators.atr, 'length', 14);
+    try { series.applyOptions({ color: pget(indicators.atr, 'color', '#0EA5E9'), lineWidth: pget(indicators.atr, 'lineWidth', 1.5), title: `ATR ${atrLen}` }); } catch (_) {}
+    const values = atr(candles, atrLen);
     series.setData(candles.map((c, i) => (values[i] != null ? { time: c.time, value: values[i] } : null)).filter(Boolean));
   }, [indicators.atr, candles, closes]);
 
@@ -2427,7 +2442,9 @@ export default function PriceChart({
       subPanelChartsRef.current.wr = { chart, series, overbought, oversold, container };
     }
     const { series, overbought, oversold } = subPanelChartsRef.current.wr;
-    const values = williamsR(candles, 14);
+    const wrLen = pget(indicators.wr, 'length', 14);
+    try { series.applyOptions({ color: pget(indicators.wr, 'color', '#DB2777'), lineWidth: pget(indicators.wr, 'lineWidth', 1.5), title: `W%R ${wrLen}` }); } catch (_) {}
+    const values = williamsR(candles, wrLen);
     const data = candles.map((c, i) => (values[i] != null ? { time: c.time, value: values[i] } : null)).filter(Boolean);
     series.setData(data);
     overbought.setData(data.map((p) => ({ time: p.time, value: -20 })));
@@ -2459,7 +2476,9 @@ export default function PriceChart({
       subPanelChartsRef.current.cci = { chart, series, overbought, oversold, container };
     }
     const { series, overbought, oversold } = subPanelChartsRef.current.cci;
-    const values = cci(candles, 20);
+    const cciLen = pget(indicators.cci, 'length', 20);
+    try { series.applyOptions({ color: pget(indicators.cci, 'color', '#7C3AED'), lineWidth: pget(indicators.cci, 'lineWidth', 1.5), title: `CCI ${cciLen}` }); } catch (_) {}
+    const values = cci(candles, cciLen);
     const data = candles.map((c, i) => (values[i] != null ? { time: c.time, value: values[i] } : null)).filter(Boolean);
     series.setData(data);
     overbought.setData(data.map((p) => ({ time: p.time, value: 100 })));
@@ -3248,16 +3267,9 @@ export default function PriceChart({
             )}
           </div>
 
-          {/* Indicators dropdown */}
+          {/* Indicators — TradingView/Groww-style categorized panel */}
           {(() => {
-            // One flat, alphabetically-sorted list of every indicator (shared
-            // with the multi-chart toolbar via buildIndicatorList).
-            const indicatorList = buildIndicatorList();
-            const activeCount = indicatorList.filter((i) => indicators[i.key]).length;
-            const totalCount = indicatorList.length;
-            // Apply search — simple substring match on the label.
-            const q = indicatorSearch.trim().toLowerCase();
-            const visibleList = q ? indicatorList.filter((i) => i.label.toLowerCase().includes(q)) : indicatorList;
+            const activeCount = Object.keys(indicators).filter((k) => indicators[k]).length;
             return (
               <div className="relative">
                 <button
@@ -3273,64 +3285,12 @@ export default function PriceChart({
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
                 </button>
                 {indicatorsOpen && (
-                  <>
-                    <div className="fixed inset-0 z-30" onClick={() => setIndicatorsOpen(false)} />
-                    <div className="absolute left-0 top-full mt-1 z-40 w-60 bg-white border border-border-dark rounded-lg shadow-elevated overflow-hidden max-h-[420px] overflow-y-auto">
-                      {/* Sticky search */}
-                      <div className="sticky top-0 z-10 bg-white border-b border-border-subtle p-2">
-                        <div className="relative">
-                          <svg className="absolute left-2 top-1/2 -translate-y-1/2 text-text-muted" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.3-4.3" /></svg>
-                          <input
-                            type="text"
-                            autoFocus
-                            value={indicatorSearch}
-                            onChange={(e) => setIndicatorSearch(e.target.value)}
-                            placeholder={`Search ${totalCount} indicators…`}
-                            className="w-full h-7 pl-7 pr-7 text-[11px] rounded border border-border-dark bg-bg-hover/40 text-text-primary placeholder:text-text-muted focus:outline-none focus:border-primary-500"
-                          />
-                          {indicatorSearch && (
-                            <button type="button" onClick={() => setIndicatorSearch('')} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary">
-                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                      {visibleList.length === 0 && (
-                        <div className="px-3 py-6 text-center text-[11px] text-text-muted">No indicators match “{indicatorSearch}”.</div>
-                      )}
-                      {visibleList.map((ind, idx) => {
-                        if (ind.group) {
-                          return (
-                            <div key={`g-${idx}`} className="px-3 pt-2.5 pb-1 text-[9px] uppercase tracking-wider font-bold text-text-muted bg-bg-hover/40 border-b border-border-subtle">
-                              {ind.group}
-                            </div>
-                          );
-                        }
-                        return (
-                          <button
-                            key={ind.key}
-                            type="button"
-                            onClick={() => toggle(ind.key)}
-                            className="w-full flex items-center justify-between gap-2 px-3 py-2 text-[12px] hover:bg-bg-hover transition-colors text-left"
-                          >
-                            <span className="flex items-center gap-2 min-w-0">
-                              <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: ind.color }} />
-                              <span className="text-text-primary font-medium">{ind.label}</span>
-                            </span>
-                            <span
-                              className={`shrink-0 w-4 h-4 rounded border flex items-center justify-center ${
-                                indicators[ind.key] ? 'bg-primary-500 border-primary-500' : 'bg-white border-border-dark'
-                              }`}
-                            >
-                              {indicators[ind.key] && (
-                                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 13l4 4L19 7" /></svg>
-                              )}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </>
+                  <IndicatorsPanel
+                    indicators={indicators}
+                    onChange={setIndicators}
+                    theme={theme}
+                    onClose={() => setIndicatorsOpen(false)}
+                  />
                 )}
               </div>
             );
