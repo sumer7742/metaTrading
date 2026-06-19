@@ -3534,10 +3534,25 @@ export default function PriceChart({
       <div ref={chartWrapRef} className="relative flex-1 flex flex-col min-h-0" onMouseMove={moveCrosshair} onMouseLeave={hideCrosshair}>
       <div className="relative w-full flex-1 min-h-0" style={{ background: tvCanvas(theme).background }}>
         <div ref={containerRef} className="w-full h-full" />
-        {/* TradingView demo chart — official embed widget, overlays our chart
-            when the eye is toggled (mounted via the effect above). */}
+        {/* TradingView demo chart — official tv.js widget, overlays our chart
+            when the eye is toggled. A top bar offers an "open in new tab"
+            fallback in case TradingView is blocked/slow on the user's network
+            (the embed would otherwise just be blank). */}
         {showTvDemo && (
-          <div className="tradingview-widget-container absolute inset-0 z-30 bg-white" style={{ height: '100%', width: '100%' }} ref={tvHostRef} />
+          <div className="absolute inset-0 z-30 bg-white flex flex-col">
+            <div className="shrink-0 flex items-center justify-between gap-2 px-3 py-1.5 border-b border-border-dark text-[11px]">
+              <span className="text-text-muted truncate">TradingView · {tvConfig.sym}</span>
+              <a
+                href={`https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvConfig.sym)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="shrink-0 font-semibold text-primary-600 hover:underline"
+              >
+                Blank / not loading? Open in new tab ↗
+              </a>
+            </div>
+            <div ref={tvHostRef} className="tradingview-widget-container flex-1 min-h-0 w-full" />
+          </div>
         )}
         {brandLogo && (
           <img
