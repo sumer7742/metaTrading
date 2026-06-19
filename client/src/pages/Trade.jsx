@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import toast, { Toaster } from 'react-hot-toast';
+import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { wsClient } from '../services/ws';
 import PriceChart, { readChartType, readIndicators } from '../components/PriceChart';
@@ -1151,13 +1151,19 @@ export default function Trade() {
     if (!root) return;
     const currentFsEl = document.fullscreenElement || document.webkitFullscreenElement || null;
     if (isFullscreen && !currentFsEl) {
-      const req = root.requestFullscreen || root.webkitRequestFullscreen;
+      // Request fullscreen on the whole document (not just the trade root) so
+      // body-portaled overlays — the confirm dialog (ConfirmProvider/Modal) and
+      // toasts (react-hot-toast) — render INSIDE the fullscreen element and stay
+      // visible. The trade root still fills the screen via `fixed inset-0 z-50`;
+      // those overlays sit above it (Modal z-1000, toast z-9999).
+      const fsEl = document.documentElement;
+      const req = fsEl.requestFullscreen || fsEl.webkitRequestFullscreen;
       if (req) {
         // If the API rejects (no user gesture, permissions, denied) we
         // must NOT leave chartView stuck in 'fullscreen' — the UI would
         // think it's in fullscreen forever. Revert state on failure.
         try {
-          Promise.resolve(req.call(root)).catch(() => {
+          Promise.resolve(req.call(fsEl)).catch(() => {
             setChartView((v) => (v === 'fullscreen' ? 'normal' : v));
           });
         } catch (_) {
@@ -1373,21 +1379,6 @@ export default function Trade() {
           : 'h-screen pt-1 px-1 pb-0'
       }`}
     >
-      {/* In true browser-fullscreen, only this element + its descendants render,
-          so the app-root <Toaster> (portaled to document.body) is invisible.
-          Mount a second Toaster INSIDE the fullscreen element while fullscreen
-          so order/confirmation toasts (e.g. "Order FILLED") still show. Only
-          while fullscreen → no duplicate toasts in normal mode. */}
-      {isFullscreen && (
-        <Toaster
-          position="top-right"
-          toastOptions={{
-            style: { background: '#FFFFFF', color: '#1F2937', border: '1px solid #E5E7EB', boxShadow: '0 6px 24px rgba(17,24,39,0.08)' },
-            success: { iconTheme: { primary: '#1D4ED8', secondary: '#fff' } },
-            error: { iconTheme: { primary: '#FF3B57', secondary: '#fff' } },
-          }}
-        />
-      )}
       {/* ── Slim top bar — brand mark + instrument quick-pick + account.
           Since the global Layout header is hidden on /trade, this bar
           is the only way back to the rest of the app. */}
