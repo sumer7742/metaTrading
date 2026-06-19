@@ -994,6 +994,10 @@ export default function PriceChart({
   // per-chart, so it can't cross pane boundaries). Tracked via DOM refs and
   // updated on mousemove without re-rendering (smooth during pan/zoom/ticks).
   const chartWrapRef = useRef(null);
+  // Internal drawing-rail column node (single-chart mode). The toolbar portals
+  // into here so it's a side COLUMN beside the chart (full height) rather than
+  // an overlay on top of the candles. Multi-chart uses Trade's shared rail.
+  const [innerRailEl, setInnerRailEl] = useState(null);
   const vLineRef = useRef(null);
   const hLineRef = useRef(null);
   const priceLinesRef = useRef(new Map());
@@ -3422,6 +3426,15 @@ export default function PriceChart({
       {/* Main chart canvas + top-right info-strip overlay.
           flex-1 + min-h-0 lets the chart container claim every remaining
           pixel under the toolbar instead of falling back to a 460 px tile. */}
+      {/* Chart area = drawing rail (side COLUMN) + chart. The rail is a real
+          flex column so the toolbar sits BESIDE the chart (full height) instead
+          of overlaying the candles. Single-chart renders its own internal rail
+          here; multi-chart portals the active pane's toolbar to Trade's shared
+          rail (drawingRail set) and skips this one. */}
+      <div className="relative flex-1 flex min-h-0">
+        {drawingRail === undefined && !hideDrawingToolbar && (
+          <div ref={setInnerRailEl} className="relative w-12 shrink-0 border-r border-border-dark bg-white" />
+        )}
       {/* Crosshair wrapper — spans the main pane + all indicator sub-panes so
           the custom crosshair overlay can draw one continuous line across them. */}
       <div ref={chartWrapRef} className="relative flex-1 flex flex-col min-h-0" onMouseMove={moveCrosshair} onMouseLeave={hideCrosshair}>
@@ -3560,10 +3573,11 @@ export default function PriceChart({
 
         {!hideDrawingToolbar && (() => {
           const tb = <ChartDrawingToolbar controls={drawingControls} />;
-          // Portal mode (drawingRail !== undefined): host the toolbar in the
-          // shared left rail; render nothing until the target node is mounted.
-          if (drawingRail !== undefined) return drawingRail ? createPortal(tb, drawingRail) : null;
-          return tb; // inline (single-chart)
+          // Always host the toolbar in a rail COLUMN (beside the chart, not over
+          // it): the shared rail in multi-chart (drawingRail set), else this
+          // pane's own internal rail. Render nothing until the target mounts.
+          const target = drawingRail !== undefined ? drawingRail : innerRailEl;
+          return target ? createPortal(tb, target) : null;
         })()}
 
         {/* Drawing-object right-click menu + double-click property panel.
@@ -3623,7 +3637,7 @@ export default function PriceChart({
           const fmt = (v) => (v == null ? '—' : Number(v).toLocaleString(undefined, { minimumFractionDigits: pricePrecision, maximumFractionDigits: pricePrecision }));
           const name = instrument?.name || instrument?.displayName || symbol;
           return (
-            <div className="pointer-events-none absolute top-1 left-11 z-10 flex items-center gap-2 px-2.5 py-1 rounded-md bg-white/85 backdrop-blur-sm border border-border-dark text-[12px] font-semibold shadow-card max-w-[calc(100%-3.5rem)] overflow-hidden">
+            <div className="pointer-events-none absolute top-1 left-2 z-10 flex items-center gap-2 px-2.5 py-1 rounded-md bg-white/85 backdrop-blur-sm border border-border-dark text-[12px] font-semibold shadow-card max-w-[calc(100%-1rem)] overflow-hidden">
               <span className="shrink-0"><AssetIcon row={instrument || { symbol }} size={16} round /></span>
               <span className="text-text-primary truncate">{name}</span>
               <span className="text-text-muted">· {timeframe} ·</span>
@@ -3714,6 +3728,7 @@ export default function PriceChart({
             below the toolbar (z-20) and menus. */}
         <div ref={vLineRef} className="absolute top-0 left-0 h-full z-[15] pointer-events-none opacity-0" style={{ width: 0, borderLeft: `1px dashed ${tvCanvas(theme).crosshair}`, willChange: 'transform' }} />
         <div ref={hLineRef} className="absolute left-0 top-0 w-full z-[15] pointer-events-none opacity-0" style={{ height: 0, borderTop: `1px dashed ${tvCanvas(theme).crosshair}`, willChange: 'transform' }} />
+      </div>
       </div>
     </div>
   );
