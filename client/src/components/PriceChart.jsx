@@ -3284,9 +3284,14 @@ export default function PriceChart({
           </div>
         </div>
 
-        {/* Right side — Sell / Spread / Buy quick-trade chip only. */}
+        {/* Right side — Sell / Spread / Buy quick-trade chip. Shown whenever the
+            order panel is hidden (driven by hideQuickTrade) so the user can
+            trade straight from the chart nav: in normal view it opens the order
+            panel, in fullscreen it opens the floating order modal. NOT gated on
+            orderSide — neither side is pre-selected; the buttons let the user
+            CHOOSE a side, so they must render before any side exists. */}
         <div className="flex items-center gap-2 flex-wrap">
-          {instrument && orderSide && onOrderSideChange && (() => {
+          {instrument && onOrderSideChange && (() => {
             const last = Number(instrument.lastPrice) || 0;
             const half = Number(instrument.spreadValue || 0) / 2;
             const bid = instrument.spreadType === 'PERCENTAGE' ? last * (1 - half) : last - half;
