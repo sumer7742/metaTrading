@@ -1164,21 +1164,46 @@ export default function PriceChart({
   const [timeframeOpen, setTimeframeOpen] = useState(false);
   const theme = useThemeStore((s) => s.theme);
 
-  // Embedded TradingView demo-chart URL (best-effort symbol/interval mapping).
-  const tvDemoUrl = useMemo(() => {
+  // TradingView demo chart — best-effort symbol/interval mapping for the eye
+  // toggle (uses TradingView's official embed widget, mounted below).
+  const tvConfig = useMemo(() => {
     const cat = (instrument?.category || '').toUpperCase();
-    let tvSym = symbol;
-    if (cat === 'FOREX') tvSym = `FX:${symbol}`;
-    else if (cat === 'CRYPTO') tvSym = `BINANCE:${(instrument?.externalFeedSymbol || symbol).toUpperCase()}`;
-    else if (cat === 'COMMODITY') tvSym = `TVC:${symbol}`;
-    const tvInt = { '1m': '1', '5m': '5', '15m': '15', '30m': '30', '1h': '60', '4h': '240', '1d': 'D', '1w': 'W' }[timeframe] || 'D';
-    const params = new URLSearchParams({
-      symbol: tvSym, interval: tvInt, theme: theme === 'dark' ? 'dark' : 'light',
-      style: '1', locale: 'en', timezone: 'Etc/UTC', hide_side_toolbar: '0',
-      withdateranges: '1', allow_symbol_change: '1', save_image: '0',
+    let sym = symbol;
+    if (cat === 'FOREX') sym = `FX:${symbol}`;
+    else if (cat === 'CRYPTO') sym = `BINANCE:${(instrument?.externalFeedSymbol || symbol).toUpperCase()}`;
+    else if (cat === 'COMMODITY') sym = `TVC:${symbol}`;
+    const interval = { '1m': '1', '5m': '5', '15m': '15', '30m': '30', '1h': '60', '4h': '240', '1d': 'D', '1w': 'W' }[timeframe] || 'D';
+    return { sym, interval };
+  }, [symbol, timeframe, instrument?.category, instrument?.externalFeedSymbol]);
+
+  // Mount TradingView's official Advanced-Chart embed widget into tvHostRef when
+  // the eye toggle is on. (The legacy s.tradingview.com iframe was timing out;
+  // the embed-widget script is the supported, reliable path.)
+  const tvHostRef = useRef(null);
+  useEffect(() => {
+    const host = tvHostRef.current;
+    if (!showTvDemo || !host) return undefined;
+    host.innerHTML = '<div class="tradingview-widget-container__widget" style="height:100%;width:100%"></div>';
+    const script = document.createElement('script');
+    script.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
+    script.type = 'text/javascript';
+    script.async = true;
+    script.innerHTML = JSON.stringify({
+      autosize: true,
+      symbol: tvConfig.sym,
+      interval: tvConfig.interval,
+      timezone: 'Etc/UTC',
+      theme: theme === 'dark' ? 'dark' : 'light',
+      style: '1',
+      locale: 'en',
+      allow_symbol_change: true,
+      hide_side_toolbar: false,
+      withdateranges: true,
+      support_host: 'https://www.tradingview.com',
     });
-    return `https://s.tradingview.com/widgetembed/?${params.toString()}`;
-  }, [symbol, timeframe, theme, instrument?.category, instrument?.externalFeedSymbol]);
+    host.appendChild(script);
+    return () => { try { host.innerHTML = ''; } catch (_) { /* */ } };
+  }, [showTvDemo, tvConfig.sym, tvConfig.interval, theme]);
 
   // Drawing tools — vertical toolbar + chart-click handlers + persistence.
   // The hook attaches itself to the existing chart/series refs and does not
@@ -3489,15 +3514,10 @@ export default function PriceChart({
       <div ref={chartWrapRef} className="relative flex-1 flex flex-col min-h-0" onMouseMove={moveCrosshair} onMouseLeave={hideCrosshair}>
       <div className="relative w-full flex-1 min-h-0" style={{ background: tvCanvas(theme).background }}>
         <div ref={containerRef} className="w-full h-full" />
-        {/* TradingView demo chart — overlays our chart when the eye is toggled. */}
+        {/* TradingView demo chart — official embed widget, overlays our chart
+            when the eye is toggled (mounted via the effect above). */}
         {showTvDemo && (
-          <iframe
-            key={tvDemoUrl}
-            title="TradingView demo chart"
-            src={tvDemoUrl}
-            className="absolute inset-0 w-full h-full z-30 border-0 bg-white"
-            allow="fullscreen"
-          />
+          <div className="tradingview-widget-container absolute inset-0 z-30 bg-white" style={{ height: '100%', width: '100%' }} ref={tvHostRef} />
         )}
         {brandLogo && (
           <img
