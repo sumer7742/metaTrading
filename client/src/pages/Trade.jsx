@@ -2657,6 +2657,10 @@ export default function Trade() {
                             pricePrecision={instrumentsBySymbol[paneSymbol(i)]?.pricePrecision ?? 2}
                             timeZone={tradeSettings.trading.timeZone}
                             showAlerts={false}
+                            /* Non-active panes show ONLY the chart — no header,
+                               no drawing toolbar. Click a pane to activate it
+                               and get the full chrome on the active cell. */
+                            hideHeader
                             onReady={(c, gs) => registerChart(i, c, gs)}
                           />
                         )}

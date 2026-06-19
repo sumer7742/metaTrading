@@ -930,6 +930,11 @@ export default function PriceChart({
   // Optional node rendered in the toolbar's right cluster (e.g. the layout
   // picker) so it sits beside the expand / fullscreen controls.
   toolbarExtra = null,
+  // When true, render ONLY the chart canvas — no top header (chart-type /
+  // indicators / timeframe / actions) and no left drawing toolbar. Used by the
+  // multi-chart layout for the non-active panes so each cell shows just the
+  // chart; the user clicks a cell to make it active and get the full chrome.
+  hideHeader = false,
 }) {
   const containerRef = useRef(null);
   const rsiContainerRef = useRef(null);
@@ -3041,7 +3046,10 @@ export default function PriceChart({
 
   return (
     <div className="card overflow-visible h-full flex flex-col">
-      {/* Premium header — chart type dropdown + indicator pills + timeframe */}
+      {/* Premium header — chart type dropdown + indicator pills + timeframe.
+          Suppressed in compact panes (multi-chart non-active cells) so only
+          the chart shows. */}
+      {!hideHeader && (
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-border-dark flex-wrap gap-2 bg-gradient-to-r from-bg-card to-bg-card/50">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="w-1.5 h-1.5 rounded-full bg-bull animate-pulse" />
@@ -3358,6 +3366,7 @@ export default function PriceChart({
           )}
         </div>
       </div>
+      )}
 
       {/* Main chart canvas + top-right info-strip overlay.
           flex-1 + min-h-0 lets the chart container claim every remaining
@@ -3498,7 +3507,7 @@ export default function PriceChart({
           </div>
         )}
 
-        <ChartDrawingToolbar controls={drawingControls} />
+        {!hideHeader && <ChartDrawingToolbar controls={drawingControls} />}
 
         {/* Drawing-object right-click menu + double-click property panel.
             Both render inside this relative chart container (container-relative
