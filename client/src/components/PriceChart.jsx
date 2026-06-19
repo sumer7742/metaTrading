@@ -1276,7 +1276,12 @@ export default function PriceChart({
         ticksVisible: true,
       },
       crosshair: {
-        mode: 1, // Magnet — snaps to OHLC values
+        // Normal — the crosshair (and its price label) sits at the exact
+        // cursor position. MUST stay 0: the custom DOM crosshair line follows
+        // the raw cursor, so Magnet mode (1) would snap the native price label
+        // to candle OHLC values while the line stayed on the cursor →
+        // "black pill here, cursor line there". Normal keeps them aligned.
+        mode: 0,
         // Native crosshair LINES are hidden — a custom full-wrapper overlay
         // (see chartWrapRef / vLineRef / hLineRef) draws a single continuous
         // crosshair across the main pane + all indicator sub-panes. We keep the
