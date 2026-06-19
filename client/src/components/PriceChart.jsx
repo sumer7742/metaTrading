@@ -977,6 +977,9 @@ export default function PriceChart({
   onChartTypeChange,
   indicators: indicatorsProp,
   onIndicatorsChange,
+  // Called when the user clicks the symbol in the OHLC legend — opens the
+  // instrument picker so the chart's instrument can be changed from here.
+  onPickSymbol,
 }) {
   const containerRef = useRef(null);
   const rsiContainerRef = useRef(null);
@@ -3656,8 +3659,23 @@ export default function PriceChart({
           return (
             <div className={`pointer-events-none absolute top-1 z-10 flex flex-col items-start gap-0.5 text-[11px] font-semibold max-w-[calc(100%-4rem)] ${drawCollapsed ? 'left-7' : 'left-2'}`}>
               <div className="flex items-center gap-1.5 max-w-full overflow-hidden">
-                <span className="shrink-0"><AssetIcon row={instrument || { symbol }} size={16} round /></span>
-                <span className="text-text-primary truncate">{name}</span>
+                {onPickSymbol ? (
+                  <button
+                    type="button"
+                    onClick={onPickSymbol}
+                    title="Change instrument"
+                    className="pointer-events-auto flex items-center gap-1.5 min-w-0 rounded px-0.5 -mx-0.5 hover:bg-bg-hover hover:text-primary-600 transition-colors"
+                  >
+                    <span className="shrink-0"><AssetIcon row={instrument || { symbol }} size={16} round /></span>
+                    <span className="text-text-primary truncate">{name}</span>
+                    <svg className="shrink-0 text-text-muted" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
+                  </button>
+                ) : (
+                  <>
+                    <span className="shrink-0"><AssetIcon row={instrument || { symbol }} size={16} round /></span>
+                    <span className="text-text-primary truncate">{name}</span>
+                  </>
+                )}
                 <span className="text-text-muted shrink-0">· {timeframe} ·</span>
                 {hasOHLC ? (
                   <span className="hidden sm:flex items-center gap-2 font-mono shrink-0">

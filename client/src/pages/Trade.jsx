@@ -6,6 +6,7 @@ import { wsClient } from '../services/ws';
 import PriceChart, { readChartType, readIndicators } from '../components/PriceChart';
 import ChartLayoutPicker from '../components/ChartLayoutPicker';
 import MultiChartToolbar from '../components/MultiChartToolbar';
+import SearchModal from '../components/SearchModal';
 import { getLayout, DEFAULT_SYNC } from '../components/chartLayouts';
 import OrderForm from '../components/OrderForm';
 import NotificationCenter from '../components/NotificationCenter';
@@ -42,6 +43,9 @@ export default function Trade() {
   const PANES_KEY = 'tradepro:chart-panes';
   const [layoutId, setLayoutId] = useState(() => { try { return localStorage.getItem(LAYOUT_KEY) || '1'; } catch { return '1'; } });
   const [activePane, setActivePane] = useState(0);
+  // Instrument picker (opened from a chart's symbol legend → changes the active
+  // pane's instrument via SearchModal's navigate to /trade?symbol=…).
+  const [searchOpen, setSearchOpen] = useState(false);
   // DOM node of the shared drawing-tool rail (left of the multi-chart grid).
   // The active pane portals its drawing toolbar into here, so multi-pane shows
   // ONE shared left rail (driven by the active pane) — like the top toolbar.
@@ -2567,6 +2571,8 @@ export default function Trade() {
                   /* Multi-pane → portal the drawing toolbar into the shared left
                      rail; single-chart → inline (undefined). */
                   drawingRail={layout.n > 1 ? drawRailEl : undefined}
+                  /* Click the legend symbol → open the instrument picker. */
+                  onPickSymbol={() => setSearchOpen(true)}
                   symbol={symbol}
                   timeframe={timeframe}
                   onTimeframeChange={setTimeframe}
@@ -2789,6 +2795,9 @@ export default function Trade() {
                                and get the full chrome + shared toolbar control. */
                             hideHeader
                             hideDrawingToolbar
+                            /* Activating the pane (cell pointer-down) + opening
+                               the picker → changes THIS pane's instrument. */
+                            onPickSymbol={() => setSearchOpen(true)}
                             onReady={(c, gs) => registerChart(i, c, gs)}
                           />
                         )}
@@ -3214,6 +3223,10 @@ export default function Trade() {
           }}
         />
       )}
+
+      {/* Instrument picker — opened from a chart's symbol legend. Selecting a
+          result navigates to /trade?symbol=…, which re-points the active pane. */}
+      <SearchModal open={searchOpen} onClose={() => setSearchOpen(false)} />
 
     </div>
   );
