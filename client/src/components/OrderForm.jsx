@@ -368,7 +368,8 @@ export default function OrderForm({
       if (Number(takeProfit) > 0) payload.takeProfit = takeProfit;
 
       const { data } = await api.post('/trading/orders', payload);
-      toast.success(`Order ${data.data.status}`);
+      const sideWord = effectiveSide === 'BUY' ? 'Buy' : 'Sell';
+      toast.success(`✓ ${sideWord} ${quantity} ${instrument.symbol} — Order ${data.data.status}`, { duration: 4000 });
       onPlaced?.(data.data);
       // Reset form for the next entry — keep instrument/leverage/side
       // (sticky UX), reset quantity to the minimum-order default so the
