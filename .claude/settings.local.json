@@ -181,7 +181,19 @@
       "Bash(node --check src/controllers/instrumentController.js)",
       "Bash(node --check src/routes/instrument.js)",
       "Bash(node -c src/controllers/adminOrdersController.js)",
-      "Bash(node -c src/routes/adminOrders.js)"
+      "Bash(node -c src/routes/adminOrders.js)",
+      "Bash(node scripts/verify-ledger.js)",
+      "Bash(node scripts/bench-ledger.js)",
+      "Bash(node -e \"const {backfillInstrument}=require\\('./src/services/binanceBackfill'\\); console.log\\('module loads OK:', typeof backfillInstrument\\); const f=require\\('./src/services/externalFeedService'\\); console.log\\('externalFeedService loads OK:', typeof f.start\\);\")",
+      "Bash(node -e \"\\(async\\(\\)=>{try{const r=await fetch\\('https://api.binance.com/api/v3/ping'\\);console.log\\('ping',r.status\\);}catch\\(e\\){console.error\\('no-net:',e.message\\)}}\\)\\(\\)\")",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(npx --no-install esbuild src/components/PriceChart.jsx src/pages/Trade.jsx --jsx=automatic --bundle=false --outdir=/tmp/esbuild-check --log-level=warning)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(npx --no-install esbuild src/components/PriceChart.jsx src/pages/Trade.jsx src/components/MultiChartToolbar.jsx --jsx=automatic --bundle=false --outdir=/tmp/esb2 --log-level=warning)",
+      "Bash(grep -nE \"^  \\\\\\);|^\\\\}$|tradeRootRef|Equity\" src/pages/Trade.jsx)",
+      "Bash(awk -F: '$1>3100 && $1<3340')"
     ]
   }
 }
