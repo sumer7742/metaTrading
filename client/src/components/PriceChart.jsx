@@ -3687,13 +3687,10 @@ export default function PriceChart({
                 ) : (
                   <span className={`font-mono shrink-0 ${dirCol}`}>{fmt(c)}</span>
                 )}
-                {/* Single-chart: change stays inline. Multi-pane: drops to its
-                    own line below (see next) so it never overlaps the price scale. */}
-                {!hideHeader && changeText && (
-                  <span className={`font-mono font-bold shrink-0 ${dirCol}`}>{changeText}</span>
-                )}
               </div>
-              {hideHeader && changeText && (
+              {/* Change value ALWAYS on its own line (left-aligned) so it can
+                  never reach / overlap the right price-scale label. */}
+              {changeText && (
                 <span className={`font-mono font-bold ${dirCol}`}>{changeText}</span>
               )}
             </div>
