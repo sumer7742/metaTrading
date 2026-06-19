@@ -2792,10 +2792,9 @@ export default function Trade() {
                             onReady={(c, gs) => registerChart(i, c, gs)}
                           />
                         )}
-                        {/* Symbol badge — click a pane to make it active */}
-                        <div className={`absolute top-1 left-1 z-20 px-1.5 py-0.5 rounded text-[10px] font-bold pointer-events-none ${i === activePane ? 'bg-primary-500 text-white' : 'bg-bg-card/80 text-text-muted border border-border-dark'}`}>
-                          {paneSymbol(i)}
-                        </div>
+                        {/* No separate symbol badge — each pane's OHLC legend
+                            already shows the symbol; the active pane is marked by
+                            the primary-coloured border ring on the cell. */}
                       </div>
                     ))}
                       </div>
