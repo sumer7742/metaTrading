@@ -3651,25 +3651,32 @@ export default function PriceChart({
           // Multi-pane (hideHeader) → compact ticker so the legend fits a
           // narrow pane; single-chart → full instrument name (Exness-style).
           const name = hideHeader ? symbol : (instrument?.name || instrument?.displayName || symbol);
+          const changeText = chg == null ? null
+            : `${chg >= 0 ? '+' : ''}${fmt(chg)}${pct != null ? ` (${chg >= 0 ? '+' : ''}${pct.toFixed(2)}%)` : ''}`;
           return (
-            <div className={`pointer-events-none absolute top-1 z-10 flex items-center gap-1.5 text-[11px] font-semibold max-w-[calc(100%-4rem)] overflow-hidden ${drawCollapsed ? 'left-7' : 'left-2'}`}>
-              <span className="shrink-0"><AssetIcon row={instrument || { symbol }} size={16} round /></span>
-              <span className="text-text-primary truncate">{name}</span>
-              <span className="text-text-muted">· {timeframe} ·</span>
-              {hasOHLC ? (
-                <span className="hidden sm:flex items-center gap-2 font-mono">
-                  <span className="text-text-muted">O<span className={dirCol}>{fmt(o)}</span></span>
-                  <span className="text-text-muted">H<span className={dirCol}>{fmt(h)}</span></span>
-                  <span className="text-text-muted">L<span className={dirCol}>{fmt(l)}</span></span>
-                  <span className="text-text-muted">C<span className={dirCol}>{fmt(c)}</span></span>
-                </span>
-              ) : (
-                <span className={`font-mono ${dirCol}`}>{fmt(c)}</span>
-              )}
-              {chg != null && (
-                <span className={`font-mono font-bold ${dirCol}`}>
-                  {chg >= 0 ? '+' : ''}{fmt(chg)}{pct != null && ` (${chg >= 0 ? '+' : ''}${pct.toFixed(2)}%)`}
-                </span>
+            <div className={`pointer-events-none absolute top-1 z-10 flex flex-col items-start gap-0.5 text-[11px] font-semibold max-w-[calc(100%-4rem)] ${drawCollapsed ? 'left-7' : 'left-2'}`}>
+              <div className="flex items-center gap-1.5 max-w-full overflow-hidden">
+                <span className="shrink-0"><AssetIcon row={instrument || { symbol }} size={16} round /></span>
+                <span className="text-text-primary truncate">{name}</span>
+                <span className="text-text-muted shrink-0">· {timeframe} ·</span>
+                {hasOHLC ? (
+                  <span className="hidden sm:flex items-center gap-2 font-mono shrink-0">
+                    <span className="text-text-muted">O<span className={dirCol}>{fmt(o)}</span></span>
+                    <span className="text-text-muted">H<span className={dirCol}>{fmt(h)}</span></span>
+                    <span className="text-text-muted">L<span className={dirCol}>{fmt(l)}</span></span>
+                    <span className="text-text-muted">C<span className={dirCol}>{fmt(c)}</span></span>
+                  </span>
+                ) : (
+                  <span className={`font-mono shrink-0 ${dirCol}`}>{fmt(c)}</span>
+                )}
+                {/* Single-chart: change stays inline. Multi-pane: drops to its
+                    own line below (see next) so it never overlaps the price scale. */}
+                {!hideHeader && changeText && (
+                  <span className={`font-mono font-bold shrink-0 ${dirCol}`}>{changeText}</span>
+                )}
+              </div>
+              {hideHeader && changeText && (
+                <span className={`font-mono font-bold ${dirCol}`}>{changeText}</span>
               )}
             </div>
           );
