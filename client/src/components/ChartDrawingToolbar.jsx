@@ -84,8 +84,8 @@ export default function ChartDrawingToolbar({ controls }) {
   if (collapsed) {
     return (
       <button type="button" onClick={() => setCollapsed(false)} title="Show drawing tools" aria-label="Show drawing tools"
-        className="keep-white hidden md:flex absolute top-3 left-0 z-20 w-7 h-10 items-center justify-center rounded-r-lg border border-l-0 border-primary-600 bg-primary-600 hover:bg-primary-700 shadow-elevated transition-colors" style={{ color: '#FFFFFF' }}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
+        className="keep-white hidden md:flex absolute top-2 left-0 z-20 w-4 h-7 items-center justify-center rounded-r-md border border-l-0 border-primary-600 bg-primary-600 hover:bg-primary-700 shadow-elevated transition-colors" style={{ color: '#FFFFFF' }}>
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.8" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
       </button>
     );
   }
