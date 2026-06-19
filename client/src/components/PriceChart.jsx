@@ -998,6 +998,16 @@ export default function PriceChart({
   // into here so it's a side COLUMN beside the chart (full height) rather than
   // an overlay on top of the candles. Multi-chart uses Trade's shared rail.
   const [innerRailEl, setInnerRailEl] = useState(null);
+  // Mirror the toolbar's collapsed state so the rail column can shrink to zero
+  // when collapsed (chart reclaims the space; the ▸ button floats over the edge).
+  const [drawCollapsed, setDrawCollapsed] = useState(() => {
+    try { return localStorage.getItem('chartDrawingToolbar.collapsed') === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    const onCollapse = (e) => setDrawCollapsed(!!e.detail);
+    window.addEventListener('drawtoolbar:collapse', onCollapse);
+    return () => window.removeEventListener('drawtoolbar:collapse', onCollapse);
+  }, []);
   const vLineRef = useRef(null);
   const hLineRef = useRef(null);
   const priceLinesRef = useRef(new Map());
@@ -3433,7 +3443,10 @@ export default function PriceChart({
           rail (drawingRail set) and skips this one. */}
       <div className="relative flex-1 flex min-h-0">
         {drawingRail === undefined && !hideDrawingToolbar && (
-          <div ref={setInnerRailEl} className="relative w-12 shrink-0 border-r border-border-dark bg-white" />
+          <div
+            ref={setInnerRailEl}
+            className={`relative shrink-0 overflow-visible transition-[width] duration-150 ${drawCollapsed ? 'w-0' : 'w-12 border-r border-border-dark bg-white'}`}
+          />
         )}
       {/* Crosshair wrapper — spans the main pane + all indicator sub-panes so
           the custom crosshair overlay can draw one continuous line across them. */}

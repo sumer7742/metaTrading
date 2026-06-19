@@ -45,7 +45,12 @@ export default function ChartDrawingToolbar({ controls }) {
   });
   const [cursorLast, setCursorLast] = useState('crosshair');
   const [collapsed, setCollapsed] = useState(() => { try { return localStorage.getItem(COLLAPSE_KEY) === '1'; } catch { return false; } });
-  useEffect(() => { try { localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0'); } catch {} }, [collapsed]);
+  useEffect(() => {
+    try { localStorage.setItem(COLLAPSE_KEY, collapsed ? '1' : '0'); } catch {}
+    // Broadcast so the host rail column (PriceChart / Trade shared rail) can
+    // shrink to zero when collapsed → the chart reclaims the empty space.
+    try { window.dispatchEvent(new CustomEvent('drawtoolbar:collapse', { detail: collapsed })); } catch {}
+  }, [collapsed]);
 
   if (!controls) return null;
 
