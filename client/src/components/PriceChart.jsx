@@ -3714,46 +3714,53 @@ export default function PriceChart({
           const name = hideHeader ? symbol : (instrument?.name || instrument?.displayName || symbol);
           const changeText = chg == null ? null
             : `${chg >= 0 ? '+' : ''}${fmt(chg)}${pct != null ? ` (${chg >= 0 ? '+' : ''}${pct.toFixed(2)}%)` : ''}`;
+          const symbolNode = onPickSymbol ? (
+            <button
+              type="button"
+              onClick={onPickSymbol}
+              title="Change instrument"
+              className="pointer-events-auto flex items-center gap-1.5 min-w-0 rounded px-0.5 -mx-0.5 hover:bg-bg-hover hover:text-primary-600 transition-colors"
+            >
+              <span className="shrink-0"><AssetIcon row={instrument || { symbol }} size={16} round /></span>
+              <span className="text-text-primary truncate">{name}</span>
+              <svg className="shrink-0 text-text-muted" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
+            </button>
+          ) : (
+            <span className="flex items-center gap-1.5 min-w-0">
+              <span className="shrink-0"><AssetIcon row={instrument || { symbol }} size={16} round /></span>
+              <span className="text-text-primary truncate">{name}</span>
+            </span>
+          );
+          const tfNode = <span className="text-text-muted shrink-0">· {timeframe} ·</span>;
+          const ohlcNode = hasOHLC ? (
+            <span className="hidden sm:flex items-center gap-2 font-mono shrink-0">
+              <span className="text-text-muted">O<span className={dirCol}>{fmt(o)}</span></span>
+              <span className="text-text-muted">H<span className={dirCol}>{fmt(h)}</span></span>
+              <span className="text-text-muted">L<span className={dirCol}>{fmt(l)}</span></span>
+              <span className="text-text-muted">C<span className={dirCol}>{fmt(c)}</span></span>
+            </span>
+          ) : (
+            <span className={`font-mono shrink-0 ${dirCol}`}>{fmt(c)}</span>
+          );
+          const changeNode = changeText ? (
+            <span className={`font-mono font-bold shrink-0 ${dirCol}`}>{changeText}</span>
+          ) : null;
           return (
             <div className={`pointer-events-none absolute top-1 z-10 flex flex-col items-start gap-0.5 text-[11px] font-semibold max-w-[calc(100%-5.5rem)] ${drawCollapsed ? 'left-7' : 'left-2'}`}>
+              {/* Row 1 = instrument. Single-chart also shows tf + OHLC + change inline. */}
               <div className="flex items-center gap-1.5 max-w-full overflow-hidden">
-                {onPickSymbol ? (
-                  <button
-                    type="button"
-                    onClick={onPickSymbol}
-                    title="Change instrument"
-                    className="pointer-events-auto flex items-center gap-1.5 min-w-0 rounded px-0.5 -mx-0.5 hover:bg-bg-hover hover:text-primary-600 transition-colors"
-                  >
-                    <span className="shrink-0"><AssetIcon row={instrument || { symbol }} size={16} round /></span>
-                    <span className="text-text-primary truncate">{name}</span>
-                    <svg className="shrink-0 text-text-muted" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M6 9l6 6 6-6" /></svg>
-                  </button>
-                ) : (
-                  <>
-                    <span className="shrink-0"><AssetIcon row={instrument || { symbol }} size={16} round /></span>
-                    <span className="text-text-primary truncate">{name}</span>
-                  </>
-                )}
-                <span className="text-text-muted shrink-0">· {timeframe} ·</span>
-                {hasOHLC ? (
-                  <span className="hidden sm:flex items-center gap-2 font-mono shrink-0">
-                    <span className="text-text-muted">O<span className={dirCol}>{fmt(o)}</span></span>
-                    <span className="text-text-muted">H<span className={dirCol}>{fmt(h)}</span></span>
-                    <span className="text-text-muted">L<span className={dirCol}>{fmt(l)}</span></span>
-                    <span className="text-text-muted">C<span className={dirCol}>{fmt(c)}</span></span>
-                  </span>
-                ) : (
-                  <span className={`font-mono shrink-0 ${dirCol}`}>{fmt(c)}</span>
-                )}
-                {/* Single-chart (wide): change stays inline → one line. */}
-                {!hideHeader && changeText && (
-                  <span className={`font-mono font-bold shrink-0 ${dirCol}`}>{changeText}</span>
-                )}
+                {symbolNode}
+                {!hideHeader && tfNode}
+                {!hideHeader && ohlcNode}
+                {!hideHeader && changeNode}
               </div>
-              {/* Multi-pane (narrow): change drops to its own line below so it
-                  never overlaps the right price-scale label. */}
-              {hideHeader && changeText && (
-                <span className={`font-mono font-bold ${dirCol}`}>{changeText}</span>
+              {/* Row 2 (multi-pane) = the range: timeframe + OHLC + change, BELOW the instrument. */}
+              {hideHeader && (
+                <div className="flex items-center gap-1.5 max-w-full overflow-hidden">
+                  {tfNode}
+                  {ohlcNode}
+                  {changeNode}
+                </div>
               )}
             </div>
           );
