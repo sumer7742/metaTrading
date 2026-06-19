@@ -148,19 +148,31 @@ export default function Trade() {
       });
     }
     if (wantCh) {
+      // Re-entrancy guard: setting/clearing a target pane's crosshair fires that
+      // pane's OWN crosshair-move event, which would propagate back to the
+      // source → an on/off flicker loop across panes. Ignore events fired while
+      // we're already propagating one.
+      let chGuard = false;
       charts.forEach((src) => {
         const handler = (param) => {
-          const t = param.time;
-          charts.forEach((tg) => {
-            if (tg === src) return;
-            try {
-              if (t == null) { tg.chart.clearCrosshairPosition?.(); return; }
-              const tgS = tg.getSeries?.(), srcS = src.getSeries?.();
-              const d = srcS ? param.seriesData?.get(srcS) : null;
-              const price = d ? (d.close ?? d.value) : undefined;
-              if (tgS && price != null) tg.chart.setCrosshairPosition(price, t, tgS);
-            } catch { /* */ }
-          });
+          if (chGuard) return;
+          chGuard = true;
+          try {
+            const t = param.time;
+            const srcS = src.getSeries?.();
+            const d = (srcS && t != null) ? param.seriesData?.get(srcS) : null;
+            const price = d ? (d.close ?? d.value) : undefined;
+            charts.forEach((tg) => {
+              if (tg === src) return;
+              try {
+                if (t == null) { tg.chart.clearCrosshairPosition?.(); return; }
+                const tgS = tg.getSeries?.();
+                if (tgS && price != null) tg.chart.setCrosshairPosition(price, t, tgS);
+              } catch { /* */ }
+            });
+          } finally {
+            chGuard = false;
+          }
         };
         try { src.chart.subscribeCrosshairMove(handler); } catch { /* */ }
         unsubs.push(() => { try { src.chart.unsubscribeCrosshairMove(handler); } catch { /* */ } });

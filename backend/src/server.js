@@ -139,6 +139,11 @@ app.use(
       // Allow same-origin / curl (no Origin header).
       if (!origin) return cb(null, true);
       if (_corsOrigins.includes(origin)) return cb(null, true);
+      // Dev convenience: accept ANY localhost/127.0.0.1 port so a Vite dev
+      // server on a non-default port (5175, etc.) isn't blocked. Never enabled
+      // in production (which must set CORS_ORIGINS explicitly).
+      if (process.env.NODE_ENV !== 'production'
+        && /^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin)) return cb(null, true);
       logger.warn('CORS blocked', { origin, allowed: _corsOrigins });
       return cb(new Error('Not allowed by CORS'));
     },
