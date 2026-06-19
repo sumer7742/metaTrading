@@ -18,6 +18,12 @@ export default function MultiChartToolbar({
   onToggleIndicator,
   timeframe,
   onTimeframe,
+  // Active-pane instrument + order-side wiring so the shared toolbar carries the
+  // same Sell/Buy quick-trade chip the single-chart header has.
+  instrument = null,
+  orderSide = null,
+  onOrderSideChange,
+  pricePrecision = 2,
   layoutPicker = null,
   expanded,
   onToggleExpand,
@@ -147,8 +153,41 @@ export default function MultiChartToolbar({
         )}
       </div>
 
-      {/* Right cluster — layout picker + expand / fullscreen */}
+      {/* Right cluster — Sell/Buy quick-trade chip + layout picker + actions */}
       <div className="ml-auto flex items-center gap-2">
+        {instrument && onOrderSideChange && (() => {
+          const last = Number(instrument.lastPrice) || 0;
+          const half = Number(instrument.spreadValue || 0) / 2;
+          const bid = instrument.spreadType === 'PERCENTAGE' ? last * (1 - half) : last - half;
+          const ask = instrument.spreadType === 'PERCENTAGE' ? last * (1 + half) : last + half;
+          const spread = ask - bid;
+          const prec = Math.min(instrument.pricePrecision || pricePrecision || 2, 5);
+          return (
+            <div className="flex items-stretch h-8 rounded overflow-hidden border border-border-dark">
+              <button
+                type="button"
+                onClick={() => onOrderSideChange('SELL')}
+                title="Sell at bid"
+                className={`px-2.5 flex flex-col items-center justify-center gap-px font-bold leading-none transition-all ${orderSide === 'SELL' ? 'bg-bear' : 'bg-bear/10 text-bear hover:bg-bear/20'}`}
+                style={orderSide === 'SELL' ? { color: '#FFFFFF' } : undefined}
+              >
+                <span className="text-[8px] uppercase tracking-wider opacity-90">Sell</span>
+                <span className="font-mono text-[10px] tabular-nums">{bid.toFixed(prec)}</span>
+              </button>
+              <span className="px-2 flex items-center justify-center text-[10px] font-mono font-semibold text-text-secondary bg-bg-card border-x border-border-dark">{spread.toFixed(prec)}</span>
+              <button
+                type="button"
+                onClick={() => onOrderSideChange('BUY')}
+                title="Buy at ask"
+                className={`px-2.5 flex flex-col items-center justify-center gap-px font-bold leading-none transition-all ${orderSide === 'BUY' ? 'bg-primary-500' : 'bg-primary-500/10 text-primary-600 hover:bg-primary-500/20'}`}
+                style={orderSide === 'BUY' ? { color: '#FFFFFF' } : undefined}
+              >
+                <span className="text-[8px] uppercase tracking-wider opacity-90">Buy</span>
+                <span className="font-mono text-[10px] tabular-nums">{ask.toFixed(prec)}</span>
+              </button>
+            </div>
+          );
+        })()}
         {layoutPicker}
         {onToggleExpand && (
           <button type="button" onClick={onToggleExpand} title={expanded ? 'Show panels (E)' : 'Expand — hide panels (E)'} className={iconBtn}>

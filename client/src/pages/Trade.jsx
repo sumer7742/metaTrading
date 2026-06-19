@@ -2716,6 +2716,10 @@ export default function Trade() {
                       onToggleIndicator={(key) => togglePaneIndicator(activePane, key)}
                       timeframe={paneTimeframe(activePane)}
                       onTimeframe={(tf) => setPaneTimeframe(activePane, tf)}
+                      instrument={instrument}
+                      orderSide={orderSide}
+                      onOrderSideChange={handleOrderSideChange}
+                      pricePrecision={instrument?.pricePrecision ?? 2}
                       layoutPicker={<ChartLayoutPicker value={layoutId} onChange={setLayoutId} sync={sync} onSyncChange={setSyncField} theme={theme} />}
                       expanded={panelsCollapsed}
                       onToggleExpand={() => {
