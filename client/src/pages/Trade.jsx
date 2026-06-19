@@ -2544,7 +2544,7 @@ export default function Trade() {
                   onChartTypeChange={(v) => setPaneChartType(activePane, v)}
                   indicators={paneIndicators(activePane)}
                   onIndicatorsChange={(next) => setPaneIndicators(activePane, next)}
-                  hideHeader={layout.n > 1 && !isFullscreen}
+                  hideHeader={layout.n > 1}
                   symbol={symbol}
                   timeframe={timeframe}
                   onTimeframeChange={setTimeframe}
@@ -2701,8 +2701,9 @@ export default function Trade() {
                   onToggleFullscreen={() => setChartView((v) => (v === 'fullscreen' ? 'normal' : 'fullscreen'))}
                 />
                 );
-                // Single layout (or fullscreen) → just the active chart.
-                if (layout.n === 1 || isFullscreen) return primary;
+                // Single layout → just the active chart. Multi-pane works in
+                // fullscreen too (the grid + shared toolbar fill the screen).
+                if (layout.n === 1) return primary;
                 // Multi-pane → CSS grid; active cell = primary, others = plain.
                 return (
                   <div className="absolute inset-0 flex flex-col">
