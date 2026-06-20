@@ -41,6 +41,7 @@ const Helpdesk = lazy(() => import('./pages/Helpdesk'));
 const HelpdeskChat = lazy(() => import('./pages/HelpdeskChat'));
 const Explore = lazy(() => import('./pages/Explore'));
 const MarketList = lazy(() => import('./pages/MarketList'));
+const OptionChain = lazy(() => import('./pages/OptionChain'));
 const Watchlist = lazy(() => import('./pages/Watchlist'));
 const OrderModalPreview = lazy(() => import('./pages/OrderModalPreview'));
 
@@ -108,6 +109,7 @@ export default function App() {
         <Route path="/dashboard" element={<Page><Dashboard /></Page>} />
         <Route path="/explore" element={<Page><Explore /></Page>} />
         <Route path="/markets" element={<Page><MarketList /></Page>} />
+        <Route path="/options" element={<Page><OptionChain /></Page>} />
         <Route path="/watchlist" element={<Page><Watchlist /></Page>} />
         <Route path="/wishlist" element={<Navigate to="/watchlist" replace />} />
         <Route path="/favorites" element={<Navigate to="/watchlist" replace />} />
