@@ -51,6 +51,14 @@ const providerState = {
     consecutiveErrors: 0,
     activeSince: null,
   },
+  ANGEL: {
+    name: 'Angel One SmartAPI',
+    priority: 4,
+    status: 'INIT',           // Indian NSE/BSE cash feed (session-gated)
+    lastTickAt: null,
+    consecutiveErrors: 0,
+    activeSince: null,
+  },
   SIMULATOR: {
     name: 'Price Simulator',
     priority: 99,

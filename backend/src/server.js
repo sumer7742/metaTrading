@@ -22,6 +22,7 @@ const externalFeed = require('./services/externalFeedService');
 const twelveDataFeed = require('./services/twelveDataFeed');
 const oandaFeed = require('./services/oandaFeed');
 const finnhubFeed = require('./services/finnhubFeed');
+const angelFeed = require('./services/angelFeed');
 const priceSimulator = require('./services/priceSimulator');
 const feedOrchestrator = require('./services/feedOrchestrator');
 const emailService = require('./services/emailService');
@@ -430,6 +431,8 @@ const start = async () => {
   oandaFeed.start();
   finnhubFeed.setBroadcaster(wsBroadcaster);
   finnhubFeed.start();
+  angelFeed.setBroadcaster(wsBroadcaster);
+  angelFeed.start();
   priceSimulator.setBroadcaster(wsBroadcaster);
   priceSimulator.start().catch((e) => console.error('[PriceSim] failed:', e.message));
   feedOrchestrator.start();
