@@ -27,6 +27,7 @@ const PING_INTERVAL_MS = 30 * 1000;
 let ws = null;
 let broadcaster = null;
 let reconnectTimer = null;
+let _lastErrLog = 0; // throttle repetitive WS error logs (e.g. 429 rate-limit floods)
 let pingTimer = null;
 let symbolMap = new Map();
 let active = false;
@@ -134,7 +135,13 @@ const _connect = async () => {
   ws.on('message', _handleMessage);
 
   ws.on('error', (err) => {
-    console.error('[Finnhub] WS error:', err.message);
+    // Throttle — Finnhub 429 (rate-limit) can fire repeatedly and flood the log.
+    const now = Date.now();
+    if (now - _lastErrLog > 60000) {
+      _lastErrLog = now;
+      const hint = /429/.test(err.message || '') ? ' (provider rate-limit; further errors muted 60s)' : '';
+      console.error('[Finnhub] WS error:', err.message, hint);
+    }
     try { require('./feedOrchestrator').recordError('FINNHUB', err); } catch (_) {}
   });
 

@@ -634,6 +634,7 @@ class MatchingEngine {
       // settle stay SYNCHRONOUS here (money-safe) — they move in later stages.
       const seq = await this.journal.append({ symbol: order.symbol, type: 'BBOOK_TRADE', payload: { trade: tradeDoc } });
       this.writeBehind.enqueue(Trade, { insertOne: { document: tradeDoc } }, seq);
+      console.log(`[ME wb] ${order.symbol} ${order.side}${order.closeOnly ? ' close' : ''} — trade WAL seq=${seq} + queued (wb buf=${this.writeBehind.size})`);
       await settle();
     } else {
       // Trade record + position settle are independent writes → run in parallel.
