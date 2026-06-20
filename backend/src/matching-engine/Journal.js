@@ -83,11 +83,14 @@ class Journal {
     const batch = this.pending;
     this.pending = [];
     try {
-      // Write through the NATIVE driver collection, not Mongoose insertMany.
-      // Mongoose insertMany validates + casts every document, which on the WAL's
-      // hot path cost ~80x vs the raw driver (bench: 2.4k/s mongoose vs ~190k/s
-      // raw bulkWrite). The WAL docs are already fully-formed, so skip all that.
-      await JournalEntry.collection.insertMany(batch.map((b) => b.doc), { ordered: false });
+      // Commit via the native driver's bulkWrite (insertOne ops), exactly like
+      // WriteBehind — which benched ~190-230k/s vs insertMany's ~2k/s on the
+      // SAME Mongo. insertMany (mongoose OR native) was the hot-path bottleneck;
+      // bulkWrite isn't. WAL docs are pre-formed, so no Mongoose validation.
+      await JournalEntry.collection.bulkWrite(
+        batch.map((b) => ({ insertOne: { document: b.doc } })),
+        { ordered: false },
+      );
       for (const b of batch) b.resolve(b.doc.seq);
     } catch (e) {
       for (const b of batch) b.reject(e);
