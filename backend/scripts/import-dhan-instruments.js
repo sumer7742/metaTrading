@@ -92,6 +92,7 @@ function parseCsvLine(line) {
   const MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
   const ops = [];
   const nseInstCounts = {}; // diagnostic: distinct INSTRUMENT values for NSE
+  const eqSamples = [];     // diagnostic: sample EQUITY rows [SYMBOL_NAME, DISPLAY_NAME, UNDERLYING_SYMBOL, SERIES]
   for (let li = 1; li < lines.length; li++) {
     const r = parseCsvLine(lines[li]);
     if (get(r, C.exch).toUpperCase() !== 'NSE') continue; // scope: NSE only
@@ -107,8 +108,9 @@ function parseCsvLine(line) {
       category = inst === 'FUTIDX' ? 'INDEX' : 'STOCK'; segment = 'FUT';
     } else {
       if (inst !== 'EQUITY') continue;
+      if (eqSamples.length < 6) eqSamples.push([get(r, C.sym), get(r, C.custom), get(r, C.under), C.series >= 0 ? get(r, C.series) : '']);
       const ser = C.series >= 0 ? get(r, C.series).toUpperCase() : '';
-      if (ser && ser !== 'EQ') continue; // skip BE/BZ series duplicates
+      if (ser && ser !== 'EQ' && ser !== 'BE') continue; // keep EQ + BE series
       category = 'STOCK'; segment = 'EQ';
     }
 
@@ -173,6 +175,8 @@ function parseCsvLine(line) {
   if (!ops.length) {
     console.error('[dhan] nothing matched. NSE INSTRUMENT values seen (name: count):');
     console.error(JSON.stringify(nseInstCounts, null, 0));
+    console.error('[dhan] sample EQUITY rows [SYMBOL_NAME, DISPLAY_NAME, UNDERLYING_SYMBOL, SERIES]:');
+    eqSamples.forEach((s) => console.error('   ' + JSON.stringify(s)));
     process.exit(1);
   }
   const w = await Instrument.bulkWrite(ops, { ordered: false });
