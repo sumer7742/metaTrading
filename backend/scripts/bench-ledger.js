@@ -51,8 +51,10 @@ async function benchLedger() {
 }
 
 async function benchDurability() {
-  if (!process.env.MONGO_URI) {
-    hr('B/C) JOURNAL + WRITE-BEHIND — SKIPPED (set MONGO_URI to measure)');
+  // Accept the app's MONGODB_URI too, so it "just works" inside the container.
+  const MONGO = process.env.MONGO_URI || process.env.MONGODB_URI;
+  if (!MONGO) {
+    hr('B/C) JOURNAL + WRITE-BEHIND — SKIPPED (set MONGO_URI / MONGODB_URI to measure)');
     console.log('  These layers are the real 40–50k gate. Run against a capable');
     console.log('  instance (NVMe, MongoDB local/replica) to get the durability number.');
     return;
@@ -60,7 +62,7 @@ async function benchDurability() {
   const mongoose = require('mongoose');
   const { Journal } = require('../src/matching-engine/Journal');
   const WriteBehind = require('../src/matching-engine/WriteBehind');
-  await mongoose.connect(process.env.MONGO_URI);
+  await mongoose.connect(MONGO);
 
   // B) Journal group-commit
   hr('B) JOURNAL — WAL append + group-commit (durable ACK rate)');
