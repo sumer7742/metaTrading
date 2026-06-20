@@ -13,6 +13,7 @@
  *   docker compose exec -e IMPORT_SYMBOLS=RELIANCE,TCS,INFY backend node scripts/import-angel-instruments.js
  *   docker compose exec -e IMPORT_ALL=true backend node scripts/import-angel-instruments.js   # ALL NSE -EQ (~2000)
  */
+require('dotenv').config(); // load backend/.env when run locally (container uses env_file)
 const mongoose = require('mongoose');
 
 const MASTER_URL = process.env.ANGEL_SCRIP_MASTER_URL
