@@ -8,6 +8,7 @@ const TradingAccount = require('../models/TradingAccount');
 const { ORDER_STATUS, ORDER_SIDE, POSITION_STATUS, ROUTING } = require('../config/constants');
 const { add, sub, mul, div, eq, gt, lte, D } = require('../utils/decimal');
 const { computeInstrumentCommission } = require('../utils/commission');
+const LedgerCache = require('./LedgerCache');
 
 // Which book an order's resulting position belongs to: A_BOOK = forwarded to
 // LP; everything else (B_BOOK, internal matching) = broker is the counterparty.
@@ -38,6 +39,20 @@ class MatchingEngine {
     // caches balance/locked; those are always read/written fresh by the wallet
     // service. Used to drop the per-settle account read.
     this._acctCache = new Map(); // accountId -> { doc, exp }
+
+    // ── Phase 1 write-behind SHADOW mode (flag, default OFF) ──────────────
+    // When MATCHING_WRITE_BEHIND=shadow, every B-book fill is ALSO settled in a
+    // transient in-memory LedgerCache and reconciled against the real DB result
+    // — purely to validate the in-memory engine on live traffic before the real
+    // cutover. It NEVER affects the live result (wrapped in try/catch, the real
+    // synchronous path is untouched). Divergences are logged + counted.
+    //   unset / 'false' → no shadow (byte-for-byte today's behavior)
+    //   'shadow'        → validate-only (this increment)
+    //   'on'            → reserved for the actual cutover (next increment)
+    this._wbMode = String(process.env.MATCHING_WRITE_BEHIND || '').toLowerCase();
+    this._shadowOn = this._wbMode === 'shadow';
+    this._shadowStats = { checked: 0, diverged: 0 };
+    if (this._shadowOn) console.log('[ME] write-behind SHADOW mode ON — validating in-memory ledger vs DB (no effect on live results)');
   }
 
   setBroadcaster(broadcaster) {
@@ -535,6 +550,12 @@ class MatchingEngine {
       }).catch((e) => console.error('[ME] B-book candle update failed:', e.message)); // fire-and-forget
     }
 
+    // Phase 1 SHADOW validation (flag-gated). Snapshot pre-state + settle the
+    // fill in a transient in-memory ledger BEFORE the real settle, so we can
+    // reconcile after. Never throws into the live path.
+    let _shadow = null;
+    if (this._shadowOn) { try { _shadow = await this._shadowBBookPre(order, finalPrice); } catch (_) { _shadow = null; } }
+
     // Trade record + position settle are independent writes → run in parallel.
     await Promise.all([
       Trade.create({
@@ -574,6 +595,10 @@ class MatchingEngine {
     order.avgFillPrice = finalPrice;
     order.filledAt = new Date();
     await order.save();
+
+    // Phase 1 SHADOW reconcile — compare the in-memory ledger result vs the
+    // real DB position (fire-and-forget; logs divergences, never blocks).
+    if (_shadow) this._shadowBBookPost(order, _shadow).catch(() => {});
 
     // Distribute affiliate commissions (B-book also pays referrers based on
     // spread captured). Non-critical → runs after the fill (off the hot path).
@@ -618,6 +643,72 @@ class MatchingEngine {
     }
 
     return order;
+  }
+
+  // ── Phase 1 write-behind SHADOW helpers ────────────────────────────────
+  // Mirror _updatePosition's target-side selection so the shadow looks at the
+  // same position bucket the real settle mutates.
+  _targetPositionSide(order) {
+    if (order.positionSide) return order.positionSide;
+    if (order.closeOnly) return order.side === 'SELL' ? 'LONG' : 'SHORT';
+    return order.side === 'BUY' ? 'LONG' : 'SHORT';
+  }
+
+  // Snapshot the pre-fill position, settle the fill in a transient LedgerCache,
+  // and return the ledger's expected post-position for later reconciliation.
+  // computeFee=0 because we validate POSITION math (qty/entry/margin) here — that
+  // is fee-independent; balance reconciliation is a separate periodic job.
+  async _shadowBBookPre(order, finalPrice) {
+    const ps = this._targetPositionSide(order);
+    const pre = await Position.findOne({
+      accountId: order.accountId, symbol: order.symbol, positionSide: ps,
+      status: { $in: [POSITION_STATUS.OPEN, POSITION_STATUS.CLOSING] },
+    }).lean();
+    const ledger = new LedgerCache();
+    ledger.loadBalance(order.accountId, { balance: '0' });
+    if (pre) {
+      ledger.loadPosition({
+        accountId: pre.accountId, symbol: pre.symbol,
+        positionSide: pre.positionSide || ps, side: pre.side,
+        quantity: pre.quantity, entryPrice: pre.entryPrice, margin: pre.margin || '0',
+      });
+    }
+    const res = await ledger.applyFill({
+      accountId: String(order.accountId), symbol: order.symbol, side: order.side,
+      quantity: String(order.quantity), price: String(finalPrice), leverage: order.leverage,
+      closeOnly: !!order.closeOnly, positionSide: ps, computeFee: async () => '0',
+    });
+    return { ps, expected: res.position, action: res.action };
+  }
+
+  // Reconcile the ledger's expected position vs the real DB position after the
+  // live settle. Logs + counts divergences; never affects anything.
+  async _shadowBBookPost(order, snap) {
+    this._shadowStats.checked += 1;
+    const real = await Position.findOne({
+      accountId: order.accountId, symbol: order.symbol, positionSide: snap.ps,
+      status: { $in: [POSITION_STATUS.OPEN, POSITION_STATUS.CLOSING] },
+    }).lean();
+    const exp = snap.expected; // null = ledger says fully closed
+    let diverged = false;
+    if (!exp) {
+      if (real && !eq(real.quantity, '0')) diverged = true;          // ledger closed, DB still open
+    } else if (!real) {
+      diverged = true;                                               // ledger open, DB closed/missing
+    } else if (!eq(real.quantity, exp.quantity) || !eq(real.entryPrice, exp.entryPrice)) {
+      diverged = true;                                               // qty / entry mismatch
+    }
+    if (diverged) {
+      this._shadowStats.diverged += 1;
+      console.warn('[ME shadow] DIVERGENCE', {
+        symbol: order.symbol, account: String(order.accountId), positionSide: snap.ps, action: snap.action,
+        ledgerQty: exp ? exp.quantity : null, dbQty: real ? real.quantity : null,
+        ledgerEntry: exp ? exp.entryPrice : null, dbEntry: real ? real.entryPrice : null,
+      });
+    }
+    if (this._shadowStats.checked % 50 === 0) {
+      console.log(`[ME shadow] ${this._shadowStats.checked} fills checked · ${this._shadowStats.diverged} divergences`);
+    }
   }
 
   /**
