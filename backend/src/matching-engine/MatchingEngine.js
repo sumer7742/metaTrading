@@ -706,9 +706,9 @@ class MatchingEngine {
         ledgerEntry: exp ? exp.entryPrice : null, dbEntry: real ? real.entryPrice : null,
       });
     }
-    if (this._shadowStats.checked % 50 === 0) {
-      console.log(`[ME shadow] ${this._shadowStats.checked} fills checked · ${this._shadowStats.diverged} divergences`);
-    }
+    // Log EVERY B-book fill so the result is visible immediately (not just a
+    // summary every 50). Shadow is a temporary validation mode — verbose is fine.
+    console.log(`[ME shadow] ${diverged ? '✗ DIVERGED' : '✓ match'} ${order.symbol} ${snap.action} · total ${this._shadowStats.checked} checked, ${this._shadowStats.diverged} diverged`);
   }
 
   /**
