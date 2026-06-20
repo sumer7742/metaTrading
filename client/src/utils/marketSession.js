@@ -96,7 +96,7 @@ const indexSession = () => {
  */
 export function getMarketSession(arg) {
   const exchange = (arg && typeof arg === 'object') ? String(arg.exchange || '').toUpperCase() : '';
-  if (exchange === 'NSE' || exchange === 'BSE') return nseSession();
+  if (['NSE', 'BSE', 'NFO', 'BFO'].includes(exchange)) return nseSession(); // F&O follows equity hours
   const cat = String((arg && typeof arg === 'object') ? arg.category : arg || '').toUpperCase();
   switch (cat) {
     case 'CRYPTO':    return cryptoSession();

@@ -18,6 +18,8 @@
 const SESSIONS = {
   NSE: { preOpen: 9 * 60, open: 9 * 60 + 15, close: 15 * 60 + 30 },
   BSE: { preOpen: 9 * 60, open: 9 * 60 + 15, close: 15 * 60 + 30 },
+  NFO: { preOpen: 9 * 60, open: 9 * 60 + 15, close: 15 * 60 + 30 }, // NSE F&O — same hours
+  BFO: { preOpen: 9 * 60, open: 9 * 60 + 15, close: 15 * 60 + 30 }, // BSE F&O
   MCX: { preOpen: 8 * 60 + 45, open: 9 * 60, close: 23 * 60 + 30 },
 };
 

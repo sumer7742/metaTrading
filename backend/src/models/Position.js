@@ -74,7 +74,7 @@ const positionSchema = new mongoose.Schema(
     // user-initiated closes this stays null and renders as "N/A".
     closeReason: {
       type: String,
-      enum: ['TAKE_PROFIT', 'STOP_LOSS', 'TRAILING_STOP', 'MARGIN_STOPOUT', 'NEGATIVE_BALANCE', 'MANUAL'],
+      enum: ['TAKE_PROFIT', 'STOP_LOSS', 'TRAILING_STOP', 'MARGIN_STOPOUT', 'NEGATIVE_BALANCE', 'MANUAL', 'EXPIRY'],
       default: null,
     },
 

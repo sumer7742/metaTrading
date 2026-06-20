@@ -852,6 +852,53 @@ const checkPriceAlerts = async () => {
   }
 };
 
+/**
+ * Futures/options EXPIRY square-off. Any OPEN position whose instrument has
+ * passed its expiryDate is force-closed (cash-settled at the last price for
+ * B-book). Uses the same atomic OPEN→CLOSING claim + closeOnly route as SL/TP,
+ * so the normal engine + wallet settlement runs. The closeOnly order goes via
+ * orderRouter (not the HTTP controller), so the market-closed gate doesn't
+ * block settlement at expiry time.
+ */
+const checkExpiry = async () => {
+  const expired = await Instrument.find({
+    segment: { $in: ['FUT', 'OPT'] },
+    expiryDate: { $ne: null, $lte: new Date() },
+  }).select('symbol').lean();
+  if (!expired.length) return;
+
+  const symbols = expired.map((i) => i.symbol);
+  const positions = await Position.find({
+    symbol: { $in: symbols }, status: POSITION_STATUS.OPEN, settled: { $ne: true },
+  });
+  for (const pos of positions) {
+    const claimed = await Position.findOneAndUpdate(
+      { _id: pos._id, status: POSITION_STATUS.OPEN, settled: { $ne: true } },
+      { $set: { status: POSITION_STATUS.CLOSING, closeReason: 'EXPIRY' } },
+      { new: true }
+    );
+    if (!claimed) continue;
+    const oppositeSide = pos.side === 'BUY' ? 'SELL' : 'BUY';
+    const sourcePositionSide = pos.positionSide || (pos.side === 'BUY' ? 'LONG' : 'SHORT');
+    const closingOrder = await Order.create({
+      userId: pos.userId, accountId: pos.accountId, instrumentId: pos.instrumentId,
+      symbol: pos.symbol, side: oppositeSide, positionSide: sourcePositionSide,
+      type: ORDER_TYPE.MARKET, quantity: pos.quantity, leverage: pos.leverage,
+      status: ORDER_STATUS.PENDING, closeOnly: true, reduceOnly: true,
+    });
+    try {
+      await _submit(closingOrder);
+      notifyUser(String(pos.userId), 'positions', { event: 'EXPIRY', positionId: String(pos._id), symbol: pos.symbol });
+    } catch (e) {
+      await Position.updateOne(
+        { _id: pos._id, status: POSITION_STATUS.CLOSING, settled: { $ne: true } },
+        { $set: { status: POSITION_STATUS.OPEN } }
+      );
+      console.error('[Worker] expiry square-off failed:', e.message);
+    }
+  }
+};
+
 const tick = async () => {
   if (running) return;
   running = true;
@@ -865,6 +912,7 @@ const tick = async () => {
     await checkNegativeBalanceProtection();
     await checkPriceAlerts();
     await checkAutoModeSwitch();
+    await checkExpiry();
   } catch (e) {
     console.error('[Worker] tick error:', e.message);
   } finally {

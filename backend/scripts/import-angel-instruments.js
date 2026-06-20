@@ -12,6 +12,10 @@
  *   docker compose exec backend node scripts/import-angel-instruments.js                 # curated NIFTY set
  *   docker compose exec -e IMPORT_SYMBOLS=RELIANCE,TCS,INFY backend node scripts/import-angel-instruments.js
  *   docker compose exec -e IMPORT_ALL=true backend node scripts/import-angel-instruments.js   # ALL NSE -EQ (~2000)
+ *
+ *   # Futures (NFO) — tokens are expiry-specific, re-run each new series:
+ *   docker compose exec -e IMPORT_FUTURES=true backend node scripts/import-angel-instruments.js                        # NIFTY/BANKNIFTY/FINNIFTY
+ *   docker compose exec -e IMPORT_FUTURES=true -e IMPORT_SYMBOLS=NIFTY,RELIANCE backend node scripts/import-angel-instruments.js
  */
 require('dotenv').config(); // load backend/.env when run locally (container uses env_file)
 const mongoose = require('mongoose');
@@ -30,6 +34,20 @@ const DEFAULT_SET = [
   'BAJAJFINSV', 'TECHM', 'GRASIM', 'JSWSTEEL', 'HINDALCO', 'CIPLA', 'DRREDDY',
   'EICHERMOT', 'BRITANNIA', 'DIVISLAB', 'HEROMOTOCO',
 ];
+
+// Default underlyings when importing futures with no explicit list.
+const FUT_DEFAULT = ['NIFTY', 'BANKNIFTY', 'FINNIFTY'];
+
+// Parse Angel's expiry ('26JUN2025' / '26Jun2025') → Date at 15:30 IST (10:00 UTC).
+function parseAngelExpiry(s) {
+  if (!s) return null;
+  const m = String(s).match(/^(\d{1,2})([A-Za-z]{3})(\d{4})$/);
+  if (!m) { const d = new Date(s); return isNaN(d.getTime()) ? null : d; }
+  const M = { JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5, JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11 };
+  const mon = M[m[2].toUpperCase()];
+  if (mon == null) return null;
+  return new Date(Date.UTC(Number(m[3]), mon, Number(m[1]), 10, 0, 0)); // 15:30 IST
+}
 
 (async () => {
   const URI = process.env.MONGO_URI || process.env.MONGODB_URI;
@@ -63,48 +81,87 @@ const DEFAULT_SET = [
   }
   console.log(`[import] master rows: ${all.length.toLocaleString()}`);
 
-  // NSE cash equity only: exch_seg NSE + symbol '*-EQ'.
-  const rows = all.filter((r) => r.exch_seg === 'NSE' && typeof r.symbol === 'string' && r.symbol.endsWith('-EQ'));
-  const picked = rows.filter((r) => {
-    if (useSet === null) return true;                 // IMPORT_ALL
-    return useSet.has(r.symbol.replace(/-EQ$/, ''));   // curated / explicit list
-  });
-  console.log(`[import] NSE -EQ rows: ${rows.length} · selected: ${picked.length}`);
-  if (!picked.length) { console.error('[import] nothing selected — check IMPORT_SYMBOLS / set.'); process.exit(1); }
-
   await mongoose.connect(URI);
   const Instrument = require('../src/models/Instrument');
 
-  const ops = picked.map((r) => {
-    const symbol = r.symbol.replace(/-EQ$/, '').toUpperCase();
-    // tick_size is in paise (e.g. "5.000000" = ₹0.05).
-    const tick = (Number(r.tick_size || '5') / 100) || 0.05;
-    return {
-      updateOne: {
-        filter: { symbol },
-        update: {
-          $set: {
-            symbol,
-            name: r.name || symbol,
-            category: 'STOCK',
-            exchange: 'NSE',
-            segment: 'EQ',
-            externalProvider: 'ANGEL',
-            externalFeedSymbol: r.symbol,        // 'RELIANCE-EQ'
-            instrumentToken: String(r.token),
-            tickSize: String(tick),
-            lotSize: String(r.lotsize || '1'),
-            pricePrecision: 2,
-            quantityPrecision: 0,
-            minOrderSize: '1',
-            isActive: true,
+  const importFutures = String(process.env.IMPORT_FUTURES || '').toLowerCase() === 'true';
+  let picked, ops;
+
+  if (importFutures) {
+    // NFO futures: FUTIDX (index) + FUTSTK (stock). Tokens are expiry-specific.
+    const futSet = wanted.length ? new Set(wanted) : (importAll ? null : new Set(FUT_DEFAULT));
+    const rows = all.filter((r) => r.exch_seg === 'NFO' && (r.instrumenttype === 'FUTIDX' || r.instrumenttype === 'FUTSTK'));
+    picked = rows.filter((r) => futSet === null || futSet.has(String(r.name || '').toUpperCase()));
+    console.log(`[import] NFO futures rows: ${rows.length} · selected: ${picked.length}`);
+    if (!picked.length) { console.error('[import] no futures selected — set IMPORT_SYMBOLS=NIFTY,BANKNIFTY or IMPORT_ALL.'); process.exit(1); }
+    ops = picked.map((r) => {
+      const symbol = String(r.symbol).toUpperCase();
+      const tick = (Number(r.tick_size || '5') / 100) || 0.05;
+      const lot = String(r.lotsize || '1');
+      return {
+        updateOne: {
+          filter: { symbol },
+          update: {
+            $set: {
+              symbol,
+              name: r.name || symbol,
+              category: r.instrumenttype === 'FUTIDX' ? 'INDEX' : 'STOCK',
+              exchange: 'NFO',
+              segment: 'FUT',
+              underlying: String(r.name || '').toUpperCase(),
+              expiryDate: parseAngelExpiry(r.expiry),
+              externalProvider: 'ANGEL',
+              externalFeedSymbol: r.symbol,
+              instrumentToken: String(r.token),
+              tickSize: String(tick),
+              lotSize: lot,
+              pricePrecision: 2,
+              quantityPrecision: 0,
+              minOrderSize: lot,        // trade in whole lots
+              isActive: true,
+            },
+            $setOnInsert: { baseCurrency: String(r.name || symbol).toUpperCase(), quoteCurrency: 'INR' },
           },
-          $setOnInsert: { baseCurrency: symbol, quoteCurrency: 'INR' },
+          upsert: true,
         },
-        upsert: true,
-      },
-    };
-  });
+      };
+    });
+  } else {
+    // NSE cash equity: exch_seg NSE + symbol '*-EQ'.
+    const rows = all.filter((r) => r.exch_seg === 'NSE' && typeof r.symbol === 'string' && r.symbol.endsWith('-EQ'));
+    picked = rows.filter((r) => useSet === null || useSet.has(r.symbol.replace(/-EQ$/, '')));
+    console.log(`[import] NSE -EQ rows: ${rows.length} · selected: ${picked.length}`);
+    if (!picked.length) { console.error('[import] nothing selected — check IMPORT_SYMBOLS / set.'); process.exit(1); }
+    ops = picked.map((r) => {
+      const symbol = r.symbol.replace(/-EQ$/, '').toUpperCase();
+      const tick = (Number(r.tick_size || '5') / 100) || 0.05; // tick in paise
+      return {
+        updateOne: {
+          filter: { symbol },
+          update: {
+            $set: {
+              symbol,
+              name: r.name || symbol,
+              category: 'STOCK',
+              exchange: 'NSE',
+              segment: 'EQ',
+              externalProvider: 'ANGEL',
+              externalFeedSymbol: r.symbol,
+              instrumentToken: String(r.token),
+              tickSize: String(tick),
+              lotSize: String(r.lotsize || '1'),
+              pricePrecision: 2,
+              quantityPrecision: 0,
+              minOrderSize: '1',
+              isActive: true,
+            },
+            $setOnInsert: { baseCurrency: symbol, quoteCurrency: 'INR' },
+          },
+          upsert: true,
+        },
+      };
+    });
+  }
 
   const r = await Instrument.bulkWrite(ops, { ordered: false });
   console.log(`[import] ✓ upserted=${(r.upsertedCount || 0)} modified=${(r.modifiedCount || 0)} matched=${(r.matchedCount || 0)}`);

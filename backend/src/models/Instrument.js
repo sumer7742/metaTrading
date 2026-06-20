@@ -12,11 +12,17 @@ const instrumentSchema = new mongoose.Schema(
     // ── Exchange-bound market fields (Phase 1: Indian NSE/BSE cash) ──
     // `exchange` drives session gating (services/marketHours.js) + charges.
     // Null/absent = 24/7 instrument (crypto/forex) — existing behaviour intact.
-    exchange: { type: String, enum: ['NSE', 'BSE', 'MCX', 'NCDEX'], default: null, index: true },
+    // NFO/BFO = NSE/BSE F&O segments (futures + options).
+    exchange: { type: String, enum: ['NSE', 'BSE', 'NFO', 'BFO', 'MCX', 'NCDEX'], default: null, index: true },
     segment: { type: String, enum: ['EQ', 'FUT', 'OPT', 'CURRENCY', 'COMM'], default: null }, // EQ = cash equity
     tickSize: { type: String, default: '0.05' },        // NSE equity default tick (₹0.05)
     instrumentToken: { type: String, default: null, index: true }, // feed/broker token (Kite/Angel/Dhan)
     isin: { type: String, default: null },              // ISIN for cash equity
+
+    // ── Derivatives (Phase 2: Futures) ──
+    // expiryDate triggers auto square-off; underlying links FUT/OPT to its spot.
+    expiryDate: { type: Date, default: null, index: true },
+    underlying: { type: String, default: null },        // spot symbol, e.g. 'NIFTY' for NIFTY futures
 
     // Trading config
     isActive: { type: Boolean, default: true },
