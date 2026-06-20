@@ -19,10 +19,13 @@ const instrumentSchema = new mongoose.Schema(
     instrumentToken: { type: String, default: null, index: true }, // feed/broker token (Kite/Angel/Dhan)
     isin: { type: String, default: null },              // ISIN for cash equity
 
-    // ── Derivatives (Phase 2: Futures) ──
+    // ── Derivatives (Phase 2: Futures, Phase 3: Options) ──
     // expiryDate triggers auto square-off; underlying links FUT/OPT to its spot.
     expiryDate: { type: Date, default: null, index: true },
     underlying: { type: String, default: null },        // spot symbol, e.g. 'NIFTY' for NIFTY futures
+    // Options only:
+    strike: { type: String, default: null },            // strike price (string decimal)
+    optionType: { type: String, enum: ['CE', 'PE'], default: null }, // CE = call, PE = put
 
     // Trading config
     isActive: { type: Boolean, default: true },

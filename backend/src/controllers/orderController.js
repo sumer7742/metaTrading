@@ -408,6 +408,22 @@ const placeOrder = asyncHandler(async (req, res) => {
   }
   if (!Number.isFinite(orderLeverage) || orderLeverage < 1) orderLeverage = 1;
 
+  // ─── Options guards (Phase 3 — long-only MVP) ───────────────────────
+  // Writing/selling an option to open needs SPAN margin (not modelled yet), so
+  // only BUY (long CE/PE) opens are allowed; SELL is permitted only to close a
+  // long. Premium is paid in full → leverage 1 (margin = premium × qty).
+  if (instrument.segment === 'OPT') {
+    const isClose = req.body.closeOnly === true || req.body.reduceOnly === true;
+    if (side === 'SELL' && !isClose) {
+      throw new AppError(
+        'Option writing (sell-to-open) is not supported yet — needs SPAN margin. Buy calls/puts, or sell only to close a long.',
+        400,
+        'OPTION_WRITE_NOT_SUPPORTED'
+      );
+    }
+    orderLeverage = 1;
+  }
+
   // Margin lock: compute how much new exposure this order opens (closing-leg
   // is netted out against existing position), and lock that from free balance.
   // STOP orders also lock at placement so the user can't double-spend the

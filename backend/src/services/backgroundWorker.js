@@ -864,8 +864,21 @@ const checkExpiry = async () => {
   const expired = await Instrument.find({
     segment: { $in: ['FUT', 'OPT'] },
     expiryDate: { $ne: null, $lte: new Date() },
-  }).select('symbol').lean();
+  }).select('symbol segment optionType strike underlying').lean();
   if (!expired.length) return;
+
+  // Options settle at INTRINSIC value, not the last traded premium. Stamp the
+  // intrinsic price (from the underlying spot) as lastPrice so the B-book
+  // square-off below fills there. CE = max(spot−K,0), PE = max(K−spot,0).
+  for (const inst of expired) {
+    if (inst.segment !== 'OPT' || !inst.optionType || inst.strike == null || !inst.underlying) continue;
+    const spotDoc = await Instrument.findOne({ symbol: inst.underlying }).select('lastPrice').lean();
+    const spot = spotDoc ? Number(spotDoc.lastPrice) : NaN;
+    if (!Number.isFinite(spot)) continue; // no spot → fall back to last premium
+    const K = Number(inst.strike);
+    const intrinsic = inst.optionType === 'CE' ? Math.max(spot - K, 0) : Math.max(K - spot, 0);
+    await Instrument.updateOne({ symbol: inst.symbol }, { $set: { lastPrice: String(intrinsic) } });
+  }
 
   const symbols = expired.map((i) => i.symbol);
   const positions = await Position.find({
