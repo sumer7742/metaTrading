@@ -81,6 +81,10 @@ async function benchDurability() {
   console.log(`  durable ACKs: ${N.toLocaleString()}`);
   console.log(`  rate        : ${rate(N, ms)}`);
   console.log(`  → THIS is the number that must clear 40–50k/sec.`);
+  // Diagnostics: where did the time go? commits / docs-per-commit / DB ms.
+  const st = journal.stats;
+  console.log(`  commits     : ${st.commits}  ·  avg docs/commit: ${st.commits ? Math.round(st.docs / st.commits) : 0}`);
+  console.log(`  in DB write : ${st.dbMs.toFixed(0)} ms of ${ms.toFixed(0)} ms total  (${ms ? Math.round((st.dbMs / ms) * 100) : 0}% in Mongo, rest = orchestration)`);
   await journal.drain();
   journal.stop();
 

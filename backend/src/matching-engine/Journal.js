@@ -40,6 +40,9 @@ class Journal {
     this.maxBatch = maxBatch;
     this.timer = null;
     this.committing = false;
+    // Diagnostics: how many group-commits ran, total docs, and ms spent inside
+    // the DB write — lets the bench show whether time is in Mongo or elsewhere.
+    this.stats = { commits: 0, docs: 0, dbMs: 0 };
     // Monotonic seq seed. Multiplying the epoch keeps seqs increasing across
     // restarts without a counter collection (good enough for ordering + replay).
     this._seq = Date.now() * 1000;
@@ -87,10 +90,12 @@ class Journal {
       // WriteBehind — which benched ~190-230k/s vs insertMany's ~2k/s on the
       // SAME Mongo. insertMany (mongoose OR native) was the hot-path bottleneck;
       // bulkWrite isn't. WAL docs are pre-formed, so no Mongoose validation.
+      const _t0 = Date.now();
       await JournalEntry.collection.bulkWrite(
         batch.map((b) => ({ insertOne: { document: b.doc } })),
         { ordered: false },
       );
+      this.stats.commits += 1; this.stats.docs += batch.length; this.stats.dbMs += Date.now() - _t0;
       for (const b of batch) b.resolve(b.doc.seq);
     } catch (e) {
       for (const b of batch) b.reject(e);
