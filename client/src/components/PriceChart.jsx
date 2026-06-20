@@ -26,6 +26,7 @@ import { useThemeStore } from '../store/theme';
 import { useChartDrawings } from '../hooks/useChartDrawings';
 import ChartDrawingToolbar from './ChartDrawingToolbar';
 import IndicatorsPanel from './IndicatorsPanel';
+import ChartIndicatorLegend from './ChartIndicatorLegend';
 import DrawingContextMenu from './DrawingContextMenu';
 import DrawingProperties from './DrawingProperties';
 import ChartSettings from './ChartSettings';
@@ -3768,6 +3769,11 @@ export default function PriceChart({
             </div>
           );
         })()}
+        {/* On-chart indicator legend — active indicators stacked below the
+            symbol/OHLC line, each with inline settings + delete (TradingView). */}
+        <div className={`absolute z-10 ${drawCollapsed ? 'left-7' : 'left-2'} ${hideHeader ? 'top-12' : 'top-7'}`}>
+          <ChartIndicatorLegend indicators={indicators} onChange={setIndicators} theme={theme} />
+        </div>
       </div>
 
       {/* RSI sub-panel */}
