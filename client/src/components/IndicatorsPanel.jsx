@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   CATEGORIES, MA_TYPES, INDICATORS,
   parseMaKey, labelForActive, categoryForKey,
@@ -17,13 +18,34 @@ import IndicatorSettingsModal from './IndicatorSettingsModal';
  * Model (backward compatible): indicators[key] = true | { color, lineWidth,
  * lineStyle, length }. MA period lives in the key (`ema21`).
  *
- * props: { indicators, onChange(next), theme, onClose }
+ * props: { indicators, onChange(next), theme, onClose, anchorEl }
  */
-export default function IndicatorsPanel({ indicators, onChange, theme, onClose }) {
+export default function IndicatorsPanel({ indicators, onChange, theme, onClose, anchorEl }) {
   const dark = theme === 'dark';
   const [q, setQ] = useState('');
   const [collapsed, setCollapsed] = useState({});
   const [modal, setModal] = useState(null); // { target, cfg, isActive, key }
+
+  // Anchor the popover to the trigger button via FIXED positioning + a body
+  // portal, so it escapes the chart area's overflow-hidden (which was clipping
+  // the bottom of the list). Height is capped to the space below the button.
+  const PANEL_W = 340;
+  const [pos, setPos] = useState({ top: 64, left: 16, maxH: '70vh' });
+  useEffect(() => {
+    if (!anchorEl) return undefined;
+    const update = () => {
+      const r = anchorEl.getBoundingClientRect();
+      const gap = 12;
+      const top = r.bottom + 4;
+      const left = Math.max(gap, Math.min(r.left, window.innerWidth - PANEL_W - gap));
+      const maxH = Math.max(220, window.innerHeight - top - gap);
+      setPos({ top, left, maxH });
+    };
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('scroll', update, true);
+    return () => { window.removeEventListener('resize', update); window.removeEventListener('scroll', update, true); };
+  }, [anchorEl]);
 
   const c = dark
     ? { bg: '#0F172A', border: '#334155', text: '#F1F5F9', muted: '#94A3B8', input: '#1E293B', hover: '#1E293B', sub: '#0B1220' }
@@ -91,12 +113,12 @@ export default function IndicatorsPanel({ indicators, onChange, theme, onClose }
     onChange(next);
   };
 
-  return (
+  return createPortal(
     <>
-      <div className="fixed inset-0 z-30" onClick={onClose} />
+      <div className="fixed inset-0 z-[55]" onClick={onClose} />
       <div
-        className="absolute left-0 top-full mt-1 z-40 w-[340px] max-w-[92vw] rounded-xl shadow-elevated overflow-hidden flex flex-col"
-        style={{ background: c.bg, border: `1px solid ${c.border}`, color: c.text, maxHeight: '74vh' }}
+        className="fixed z-[56] max-w-[94vw] rounded-xl shadow-elevated overflow-hidden flex flex-col"
+        style={{ top: pos.top, left: pos.left, width: PANEL_W, maxHeight: pos.maxH, background: c.bg, border: `1px solid ${c.border}`, color: c.text }}
       >
         {/* Search */}
         <div className="p-2.5" style={{ borderBottom: `1px solid ${c.border}` }}>
@@ -111,7 +133,7 @@ export default function IndicatorsPanel({ indicators, onChange, theme, onClose }
           </div>
         </div>
 
-        <div className="overflow-y-auto">
+        <div className="flex-1 min-h-0 overflow-y-auto">
           {/* Active indicators */}
           {activeKeys.length > 0 && (
             <div style={{ borderBottom: `1px solid ${c.border}` }}>
@@ -194,7 +216,8 @@ export default function IndicatorsPanel({ indicators, onChange, theme, onClose }
           onClose={() => setModal(null)}
         />
       )}
-    </>
+    </>,
+    document.body,
   );
 }
 

@@ -1163,6 +1163,7 @@ export default function PriceChart({
     return next;
   }), []);
   const [indicatorsOpen, setIndicatorsOpen] = useState(false);
+  const indicatorsBtnRef = useRef(null);
   const [indicatorSearch, setIndicatorSearch] = useState('');
   const [timeframeOpen, setTimeframeOpen] = useState(false);
   const theme = useThemeStore((s) => s.theme);
@@ -3273,6 +3274,7 @@ export default function PriceChart({
             return (
               <div className="relative">
                 <button
+                  ref={indicatorsBtnRef}
                   type="button"
                   onClick={() => { setIndicatorsOpen((o) => !o); setTimeframeOpen(false); setChartTypeOpen(false); }}
                   className="inline-flex items-center gap-1.5 text-[11px] font-semibold h-8 px-3 rounded border border-border-dark bg-white text-text-primary hover:bg-bg-hover hover:border-border-accent transition-colors"
@@ -3289,6 +3291,7 @@ export default function PriceChart({
                     indicators={indicators}
                     onChange={setIndicators}
                     theme={theme}
+                    anchorEl={indicatorsBtnRef.current}
                     onClose={() => setIndicatorsOpen(false)}
                   />
                 )}
