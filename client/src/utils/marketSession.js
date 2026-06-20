@@ -56,6 +56,28 @@ const commoditySession = () => {
     : fx;
 };
 
+// ── NSE / BSE (Indian equity) — Mon-Fri 09:15-15:30 IST.
+//   IST derived via Intl so it's correct regardless of the browser timezone.
+//   (Holidays are enforced server-side; this is UI-only.)
+const _istParts = () => {
+  const fmt = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata', hour12: false, weekday: 'short', hour: '2-digit', minute: '2-digit',
+  });
+  const p = {};
+  for (const x of fmt.formatToParts(new Date())) p[x.type] = x.value;
+  const WD = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  let h = Number(p.hour); if (h === 24) h = 0;
+  return { day: WD[p.weekday], mins: h * 60 + Number(p.minute) };
+};
+const nseSession = () => {
+  const { day, mins } = _istParts();
+  if (day === 0 || day === 6) return { isOpen: false, label: 'Market Closed', detail: 'NSE closed on weekends', tz: 'IST' };
+  const open = 9 * 60 + 15, close = 15 * 60 + 30;
+  if (mins < open) return { isOpen: false, label: 'Pre-open', detail: 'NSE opens 09:15 IST', tz: 'IST' };
+  if (mins >= close) return { isOpen: false, label: 'Market Closed', detail: 'NSE closes 15:30 IST', tz: 'IST' };
+  return { isOpen: true, label: 'NSE open', tz: 'IST' };
+};
+
 // ── INDICES — index CFDs typically Mon-Fri with short overnight break
 const indexSession = () => {
   const { day, hour } = getUtc();
@@ -67,10 +89,15 @@ const indexSession = () => {
 };
 
 /**
- * Dispatch by instrument category. Returns { isOpen, label, detail?, tz }.
+ * Dispatch by instrument. Accepts either a category string (legacy callers) or
+ * an instrument object { exchange, category }. Exchange-bound instruments
+ * (NSE/BSE) use Indian session hours; everything else dispatches by category.
+ * Returns { isOpen, label, detail?, tz }.
  */
-export function getMarketSession(category) {
-  const cat = String(category || '').toUpperCase();
+export function getMarketSession(arg) {
+  const exchange = (arg && typeof arg === 'object') ? String(arg.exchange || '').toUpperCase() : '';
+  if (exchange === 'NSE' || exchange === 'BSE') return nseSession();
+  const cat = String((arg && typeof arg === 'object') ? arg.category : arg || '').toUpperCase();
   switch (cat) {
     case 'CRYPTO':    return cryptoSession();
     case 'FOREX':     return forexSession();

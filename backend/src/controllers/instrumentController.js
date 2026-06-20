@@ -162,6 +162,9 @@ const watchlist = asyncHandler(async (req, res) => {
       symbol: inst.symbol,
       name: inst.name,
       category: inst.category,
+      // exchange drives NSE/BSE session gating + ₹ display on the client.
+      exchange: inst.exchange || null,
+      segment: inst.segment || null,
       // Quote currency lets the client decide whether to show INR primary +
       // USD secondary (USD-quoted) vs INR-only (INR-quoted) on the watchlist.
       quoteCurrency: inst.quoteCurrency,

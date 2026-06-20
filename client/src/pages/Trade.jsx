@@ -2260,7 +2260,7 @@ export default function Trade() {
 
           {/* ── Market Depth pane — real order-book data ───────────── */}
           {leftPanelTab === 'depth' && instrument && (() => {
-            const session = getMarketSession(instrument.category);
+            const session = getMarketSession(instrument);
             // Market closed (forex weekend, stocks after-hours, etc.) →
             // show a clear status card instead of streaming stale data.
             if (!session.isOpen) {
@@ -3675,7 +3675,7 @@ function SidebarPerformance({ instrument, livePrice }) {
     return () => { cancelled = true; };
   }, [instrument?.symbol]);
 
-  const session = getMarketSession(instrument.category);
+  const session = getMarketSession(instrument);
   const prec = Math.min(instrument.pricePrecision || 2, 5);
 
   // ── Live last price (prefer WS tick) ────────────────────────────

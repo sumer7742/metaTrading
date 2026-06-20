@@ -179,13 +179,13 @@ export const fmtPriceDual = (price, quoteCurrency = 'USD', fxRate = 83, decimals
     };
   }
   if (quoteCurrency === 'INR') {
-    const rate = Number(fxRate || 0);
-    const usd = rate > 0 ? n / rate : n;
+    // Native INR-quoted instruments (NSE/BSE cash) — show ₹ directly. These are
+    // already in rupees; converting to USD would be wrong (₹1500 ≠ $18).
     return {
-      primary: `$${fmtNum(usd, decimals)}`,
+      primary: `₹${fmtNum(n, decimals)}`,
       secondary: '',
-      primaryRaw: usd,
-      secondaryRaw: usd,
+      primaryRaw: n,
+      secondaryRaw: n,
     };
   }
   // Other quote currencies (JPY/EUR/GBP/CHF/etc.). The numeric value IS
