@@ -66,16 +66,28 @@ function parseAngelExpiry(s) {
     console.log(`[import] reading scrip master from file: ${file}`);
     all = JSON.parse(fs.readFileSync(file, 'utf8'));
   } else {
-    console.log(`[import] fetching Angel scrip master … (${MASTER_URL})`);
-    try {
-      const res = await fetch(MASTER_URL);
-      if (!res.ok) { console.error(`[import] master fetch failed: HTTP ${res.status}`); process.exit(1); }
-      all = await res.json();
-    } catch (e) {
-      console.error(`[import] fetch failed: ${e.message}`);
-      console.error('[import] DNS/network blocked? Download the file in a browser:');
-      console.error(`           ${MASTER_URL}`);
-      console.error('         then re-run with:  ANGEL_SCRIP_MASTER_FILE=path/to/OpenAPIScripMaster.json');
+    // Try known scrip-master hosts in order (Angel rebranded angelbroking→angelone,
+    // so the host moved). First one that responds wins.
+    const candidates = [...new Set([
+      process.env.ANGEL_SCRIP_MASTER_URL,
+      'https://margincalc.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json',
+      'https://margincalc.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json',
+    ].filter(Boolean))];
+    let lastErr;
+    for (const url of candidates) {
+      try {
+        console.log(`[import] fetching scrip master … (${url})`);
+        const res = await fetch(url);
+        if (!res.ok) { lastErr = new Error(`HTTP ${res.status}`); continue; }
+        all = await res.json();
+        break;
+      } catch (e) { lastErr = e; }
+    }
+    if (!all) {
+      console.error(`[import] all scrip-master URLs failed: ${lastErr && lastErr.message}`);
+      console.error('[import] Download it in a browser (try each), then re-run with the file:');
+      candidates.forEach((u) => console.error('           ' + u));
+      console.error('         ANGEL_SCRIP_MASTER_FILE=OpenAPIScripMaster.json node scripts/import-angel-instruments.js');
       process.exit(1);
     }
   }
