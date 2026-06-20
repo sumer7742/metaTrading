@@ -91,10 +91,12 @@ function parseCsvLine(line) {
 
   const MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
   const ops = [];
+  const nseInstCounts = {}; // diagnostic: distinct INSTRUMENT values for NSE
   for (let li = 1; li < lines.length; li++) {
     const r = parseCsvLine(lines[li]);
     if (get(r, C.exch).toUpperCase() !== 'NSE') continue; // scope: NSE only
     const inst = get(r, C.inst).toUpperCase();
+    nseInstCounts[inst] = (nseInstCounts[inst] || 0) + 1;
 
     let category, segment;
     if (importOptions) {
@@ -168,7 +170,11 @@ function parseCsvLine(line) {
   }
 
   console.log(`[dhan] NSE ${importOptions ? 'options' : importFutures ? 'futures' : 'equity'} matched: ${ops.length}`);
-  if (!ops.length) { console.error('[dhan] nothing matched — check filters/header mapping above.'); process.exit(1); }
+  if (!ops.length) {
+    console.error('[dhan] nothing matched. NSE INSTRUMENT values seen (name: count):');
+    console.error(JSON.stringify(nseInstCounts, null, 0));
+    process.exit(1);
+  }
   const w = await Instrument.bulkWrite(ops, { ordered: false });
   console.log(`[dhan] ✓ upserted=${w.upsertedCount || 0} modified=${w.modifiedCount || 0}`);
   console.log('[dhan] sample:', ops.slice(0, 6).map((o) => o.updateOne.update.$set.symbol).join(', '));
