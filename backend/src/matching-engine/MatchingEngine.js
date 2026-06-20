@@ -750,7 +750,28 @@ class MatchingEngine {
       closeOnly: !!order.closeOnly, positionSide: ps, computeFee,
     });
     const bal = ledger.getBalance(order.accountId);
-    return { ps, expected: res.position, action: res.action, hadWallet: !!wallet, expBalance: bal.balance, expLocked: bal.locked };
+    // FULL-SETTLE shadow — expected values of the DB Position's accumulated
+    // audit fields after this fill, so the eventual 1b cutover is proven
+    // field-for-field (not just qty/entry). Only meaningful on REDUCE/CLOSE.
+    let settle = null;
+    if (pre && (res.action === 'CLOSE' || res.action === 'REDUCE')) {
+      const reqQty = String(order.quantity);
+      const overflow = gt(reqQty, pre.quantity); // non-closeOnly fill bigger than position (legacy)
+      const closeQty = overflow ? pre.quantity : reqQty;
+      settle = {
+        posId: String(pre._id),
+        expStatus: res.action === 'CLOSE' ? POSITION_STATUS.CLOSED : POSITION_STATUS.OPEN,
+        expRealizedPnl: add(pre.realizedPnl || '0', res.realizedPnl),
+        // overflow close path doesn't bump closedQuantity in the engine — skip it there
+        expClosedQty: overflow ? null : add(pre.closedQuantity || '0', closeQty),
+        expCommission: add(pre.commission || '0', res.fee),
+        // settlementAmount = released margin + pnl − fee, stamped only on full close
+        expSettlement: res.action === 'CLOSE'
+          ? D(res.marginReleased).plus(D(res.realizedPnl)).minus(D(res.fee || '0')).toString()
+          : null,
+      };
+    }
+    return { ps, expected: res.position, action: res.action, hadWallet: !!wallet, expBalance: bal.balance, expLocked: bal.locked, settle };
   }
 
   // Reconcile the ledger's expected position vs the real DB position after the
@@ -785,6 +806,21 @@ class MatchingEngine {
       if (!approx(w.balance, snap.expBalance)) { diverged = true; reasons.push('balance'); }
       if (!approx(w.locked, snap.expLocked)) { diverged = true; reasons.push('locked'); }
     }
+    // FULL-SETTLE field check — fetch by _id so a CLOSED doc is still visible
+    // (the OPEN/CLOSING query above excludes it). Proves the accumulated audit
+    // fields the engine stamps on settle, so the 1b cutover is field-for-field.
+    let settleDoc = null;
+    if (snap.settle) {
+      settleDoc = await Position.findById(snap.settle.posId).lean();
+      if (!settleDoc) { diverged = true; reasons.push('settle-pos-missing'); }
+      else {
+        if (settleDoc.status !== snap.settle.expStatus) { diverged = true; reasons.push('settle-status'); }
+        if (!approx(settleDoc.realizedPnl || '0', snap.settle.expRealizedPnl)) { diverged = true; reasons.push('settle-realizedPnl'); }
+        if (snap.settle.expClosedQty != null && !eq(settleDoc.closedQuantity || '0', snap.settle.expClosedQty)) { diverged = true; reasons.push('settle-closedQty'); }
+        if (!approx(settleDoc.commission || '0', snap.settle.expCommission)) { diverged = true; reasons.push('settle-commission'); }
+        if (snap.settle.expSettlement != null && !approx(settleDoc.settlementAmount || '0', snap.settle.expSettlement)) { diverged = true; reasons.push('settle-settlementAmount'); }
+      }
+    }
     if (diverged) {
       this._shadowStats.diverged += 1;
       console.warn('[ME shadow] DIVERGENCE', {
@@ -793,11 +829,19 @@ class MatchingEngine {
         ledgerEntry: exp ? exp.entryPrice : null, dbEntry: real ? real.entryPrice : null,
         ledgerBal: snap.expBalance, dbBal: w ? w.balance : null,
         ledgerLocked: snap.expLocked, dbLocked: w ? w.locked : null,
+        ...(snap.settle ? {
+          expStatus: snap.settle.expStatus, dbStatus: settleDoc ? settleDoc.status : null,
+          expRealizedPnl: snap.settle.expRealizedPnl, dbRealizedPnl: settleDoc ? settleDoc.realizedPnl : null,
+          expClosedQty: snap.settle.expClosedQty, dbClosedQty: settleDoc ? settleDoc.closedQuantity : null,
+          expCommission: snap.settle.expCommission, dbCommission: settleDoc ? settleDoc.commission : null,
+          expSettlement: snap.settle.expSettlement, dbSettlement: settleDoc ? settleDoc.settlementAmount : null,
+        } : {}),
       });
     }
     // Log EVERY B-book fill so the result is visible immediately. "+bal" marks
-    // fills where balance was also reconciled (closes/reduces).
-    console.log(`[ME shadow] ${diverged ? '✗ DIVERGED' : '✓ match'} ${order.symbol} ${snap.action}${w ? ' +bal' : ''} · total ${this._shadowStats.checked} checked, ${this._shadowStats.diverged} diverged`);
+    // fills where balance was reconciled; "+settle" where the full audit fields
+    // (pnl/closedQty/commission/settlement/status) were reconciled.
+    console.log(`[ME shadow] ${diverged ? '✗ DIVERGED' : '✓ match'} ${order.symbol} ${snap.action}${w ? ' +bal' : ''}${snap.settle ? ' +settle' : ''} · total ${this._shadowStats.checked} checked, ${this._shadowStats.diverged} diverged`);
   }
 
   /**
