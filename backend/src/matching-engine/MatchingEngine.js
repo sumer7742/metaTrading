@@ -554,7 +554,7 @@ class MatchingEngine {
     // fill in a transient in-memory ledger BEFORE the real settle, so we can
     // reconcile after. Never throws into the live path.
     let _shadow = null;
-    if (this._shadowOn) { try { _shadow = await this._shadowBBookPre(order, finalPrice); } catch (_) { _shadow = null; } }
+    if (this._shadowOn) { try { _shadow = await this._shadowBBookPre(order, instrument, finalPrice); } catch (_) { _shadow = null; } }
 
     // Trade record + position settle are independent writes → run in parallel.
     await Promise.all([
@@ -654,18 +654,27 @@ class MatchingEngine {
     return order.side === 'BUY' ? 'LONG' : 'SHORT';
   }
 
-  // Snapshot the pre-fill position, settle the fill in a transient LedgerCache,
-  // and return the ledger's expected post-position for later reconciliation.
-  // computeFee=0 because we validate POSITION math (qty/entry/margin) here — that
-  // is fee-independent; balance reconciliation is a separate periodic job.
-  async _shadowBBookPre(order, finalPrice) {
+  // Snapshot the pre-fill position + wallet, settle the fill in a transient
+  // LedgerCache (with the engine's EXACT close-fee logic), and return the
+  // ledger's expected post-position AND expected balance/locked for later
+  // reconciliation.
+  async _shadowBBookPre(order, instrument, finalPrice) {
     const ps = this._targetPositionSide(order);
-    const pre = await Position.findOne({
-      accountId: order.accountId, symbol: order.symbol, positionSide: ps,
-      status: { $in: [POSITION_STATUS.OPEN, POSITION_STATUS.CLOSING] },
-    }).lean();
+    const { Wallet } = require('../models/Wallet');
+    const [pre, wallet, account] = await Promise.all([
+      Position.findOne({
+        accountId: order.accountId, symbol: order.symbol, positionSide: ps,
+        status: { $in: [POSITION_STATUS.OPEN, POSITION_STATUS.CLOSING] },
+      }).lean(),
+      Wallet.findOne({ accountId: order.accountId }).lean(),
+      this._getAccountMeta(order.accountId),
+    ]);
     const ledger = new LedgerCache();
-    ledger.loadBalance(order.accountId, { balance: '0' });
+    ledger.loadBalance(order.accountId, {
+      balance: wallet ? wallet.balance : '0',
+      locked: wallet ? wallet.locked : '0',
+      currency: wallet ? wallet.currency : 'USD',
+    });
     if (pre) {
       ledger.loadPosition({
         accountId: pre.accountId, symbol: pre.symbol,
@@ -673,42 +682,71 @@ class MatchingEngine {
         quantity: pre.quantity, entryPrice: pre.entryPrice, margin: pre.margin || '0',
       });
     }
+    // Replicate _updatePosition's exact close-fee so the ledger's balance math
+    // matches the engine (no false divergence from a fee mismatch).
+    const accountFeeService = require('../services/accountFeeService');
+    const subscriptionService = require('../services/subscriptionService');
+    const computeFee = async ({ closeQty, closePrice, closePnl }) => {
+      let fee = await accountFeeService.computeCloseFee({ account, instrument, closeQty, closePrice, closePnl });
+      try { fee = await subscriptionService.applyFeeDiscount(order.userId, fee); } catch (_) { /* keep raw */ }
+      const psr = instrument?.profitSharePercent || '0';
+      if (gt(psr, '0') && gt(closePnl, '0')) fee = add(fee, mul(closePnl, div(psr, '100')));
+      return fee;
+    };
     const res = await ledger.applyFill({
       accountId: String(order.accountId), symbol: order.symbol, side: order.side,
       quantity: String(order.quantity), price: String(finalPrice), leverage: order.leverage,
-      closeOnly: !!order.closeOnly, positionSide: ps, computeFee: async () => '0',
+      closeOnly: !!order.closeOnly, positionSide: ps, computeFee,
     });
-    return { ps, expected: res.position, action: res.action };
+    const bal = ledger.getBalance(order.accountId);
+    return { ps, expected: res.position, action: res.action, hadWallet: !!wallet, expBalance: bal.balance, expLocked: bal.locked };
   }
 
   // Reconcile the ledger's expected position vs the real DB position after the
   // live settle. Logs + counts divergences; never affects anything.
   async _shadowBBookPost(order, snap) {
     this._shadowStats.checked += 1;
-    const real = await Position.findOne({
-      accountId: order.accountId, symbol: order.symbol, positionSide: snap.ps,
-      status: { $in: [POSITION_STATUS.OPEN, POSITION_STATUS.CLOSING] },
-    }).lean();
+    const { Wallet } = require('../models/Wallet');
+    // Balance is validated only on closes/reduces (where the settle changes the
+    // wallet). Opens lock margin at PLACEMENT — before this fill — so the wallet
+    // wouldn't change here; comparing it would falsely diverge.
+    const checkBal = snap.hadWallet && (snap.action === 'CLOSE' || snap.action === 'REDUCE');
+    const [real, w] = await Promise.all([
+      Position.findOne({
+        accountId: order.accountId, symbol: order.symbol, positionSide: snap.ps,
+        status: { $in: [POSITION_STATUS.OPEN, POSITION_STATUS.CLOSING] },
+      }).lean(),
+      checkBal ? Wallet.findOne({ accountId: order.accountId }).lean() : Promise.resolve(null),
+    ]);
     const exp = snap.expected; // null = ledger says fully closed
     let diverged = false;
+    const reasons = [];
     if (!exp) {
-      if (real && !eq(real.quantity, '0')) diverged = true;          // ledger closed, DB still open
+      if (real && !eq(real.quantity, '0')) { diverged = true; reasons.push('pos-still-open'); }
     } else if (!real) {
-      diverged = true;                                               // ledger open, DB closed/missing
+      diverged = true; reasons.push('pos-missing');
     } else if (!eq(real.quantity, exp.quantity) || !eq(real.entryPrice, exp.entryPrice)) {
-      diverged = true;                                               // qty / entry mismatch
+      diverged = true; reasons.push('pos-qty/entry');
+    }
+    // Tiny tolerance for decimal rounding on the money comparison.
+    const approx = (a, b) => { try { return lte(D(a).minus(D(b)).abs(), D('0.00000001')); } catch (_) { return false; } };
+    if (w) {
+      if (!approx(w.balance, snap.expBalance)) { diverged = true; reasons.push('balance'); }
+      if (!approx(w.locked, snap.expLocked)) { diverged = true; reasons.push('locked'); }
     }
     if (diverged) {
       this._shadowStats.diverged += 1;
       console.warn('[ME shadow] DIVERGENCE', {
-        symbol: order.symbol, account: String(order.accountId), positionSide: snap.ps, action: snap.action,
+        symbol: order.symbol, account: String(order.accountId), positionSide: snap.ps, action: snap.action, reasons,
         ledgerQty: exp ? exp.quantity : null, dbQty: real ? real.quantity : null,
         ledgerEntry: exp ? exp.entryPrice : null, dbEntry: real ? real.entryPrice : null,
+        ledgerBal: snap.expBalance, dbBal: w ? w.balance : null,
+        ledgerLocked: snap.expLocked, dbLocked: w ? w.locked : null,
       });
     }
-    // Log EVERY B-book fill so the result is visible immediately (not just a
-    // summary every 50). Shadow is a temporary validation mode — verbose is fine.
-    console.log(`[ME shadow] ${diverged ? '✗ DIVERGED' : '✓ match'} ${order.symbol} ${snap.action} · total ${this._shadowStats.checked} checked, ${this._shadowStats.diverged} diverged`);
+    // Log EVERY B-book fill so the result is visible immediately. "+bal" marks
+    // fills where balance was also reconciled (closes/reduces).
+    console.log(`[ME shadow] ${diverged ? '✗ DIVERGED' : '✓ match'} ${order.symbol} ${snap.action}${w ? ' +bal' : ''} · total ${this._shadowStats.checked} checked, ${this._shadowStats.diverged} diverged`);
   }
 
   /**
