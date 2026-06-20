@@ -148,3 +148,91 @@ MATCHING_INSTRUMENT_CACHE_MS=50       # (Phase 0) price staleness bound
    needs account→shard pinning or a Redis balance authority. Pick before scale-out.
 3. **Mongo write concern** for derived writes: `w:1` (fast) vs `majority` (safe).
    With the journal as the anchor, `w:1` is acceptable.
+
+---
+
+# 11. Status (2026-06) — what is DONE vs PENDING
+
+| Item | State |
+|---|---|
+| Ledger correctness (golden + reference) | ✅ `verify-ledger.js` GREEN |
+| Live **shadow** — positions, balances, AND full settle (realizedPnl / closedQty / commission / settlementAmount / status) | ✅ GREEN on prod traffic |
+| **Stage 1a** — B-book Trade → Journal(WAL) + WriteBehind + crash-recovery; positions+wallet stay synchronous | ✅ DEPLOYED in prod, working |
+| End-to-end load-test harness (`scripts/loadtest-engine.js`) | ✅ built |
+| **Stage 1b** — positions → write-behind | ⬜ PENDING (see §12) |
+| **Stage 1c** — wallet settle → write-behind | ⬜ PENDING |
+| Load-test at 40–50k on capable hardware | ⬜ PENDING (t3.micro can't) |
+
+**Measured ceiling:** on the t3.micro (2 vCPU / **1 GB RAM**, swapping) the durable
+path is ~1–5k/sec and **97% Mongo-write-bound** — i.e. hardware, not code.
+In-memory matching = 55–76k/sec; batched write-behind = 190–250k/sec. **40–50k
+needs NVMe + 16–32 GB RAM** (e.g. `m6i.2xlarge`), not more code.
+
+# 12. The 1b blocker — direct-DB position claims
+
+Stage 1b moves positions to write-behind, so the **DB lags the in-memory ledger**
+by the flush window. But several paths claim/settle positions via a *direct DB*
+`Position.findOneAndUpdate({status:OPEN, settled:{$ne:true}}, …)` — that atomic
+guard is the **primary double-close defence**, and it breaks once the DB is no
+longer authoritative:
+
+- `services/backgroundWorker.js` — SL / TP / trailing / margin-stopout claims
+- `services/copyTradingService.js` — mirror closes
+- `controllers/adminOrdersController.js` / `adminController.js` — force-close
+- `services/riskEngine.service.js` — liquidation
+
+**Reroute design (do this in 1b):** make the engine the single position
+authority and have every claimer go through it:
+
+1. Engine exposes `getPosition(accountId, symbol, positionSide)` and
+   `claimForClose(...)` that run **inside the per-(account,symbol) serial queue**
+   (so the claim is atomic in-memory without the DB guard).
+2. Worker/liquidation/copy/admin call `engine.claimForClose()` instead of
+   `Position.findOneAndUpdate`, then submit the closeOnly order as today.
+3. The settle path (`_updatePosition`) reads the ledger and **enqueues** the
+   Position write (insert on open / update on reduce/close) to write-behind,
+   instead of the synchronous `create`/`findOneAndUpdate`. Reuse the existing
+   field math — only the I/O target changes.
+4. Crash recovery: rebuild positions into `LedgerCache` from Mongo on boot
+   (already partly done for balances), then `replayUnapplied()`.
+
+The **only** risk the shadow can't catch is concurrency (simultaneous SL+manual
+close). That is retired by §13 step 4 (load-test under contention), not by review.
+
+# 13. Upgrade-day runbook (steps 3–5)
+
+> Do these IN ORDER, on the new box. Each step gates the next.
+
+**0. Baseline (can do now, on the t3.micro):**
+```bash
+docker compose exec -e LT_N=3000 -e LT_CONC=100 backend node scripts/loadtest-engine.js
+```
+Record `orders/sec` at `mode=off`. This is the honest current capacity. If it
+already exceeds real load, 1b/1c may be unnecessary — stop here.
+
+**1. Provision hardware:** `m6i.2xlarge` (8 vCPU / 32 GB) + EBS **gp3** (≥3000
+IOPS). Migrate the stack (`git pull && docker compose up -d --build`).
+
+**2. Re-baseline on the new box:** rerun the step-0 command (bigger `LT_N`, e.g.
+`LT_N=50000 LT_CONC=400`). Confirm the RAM bump alone lifts `mode=off` well
+above the t3.micro number (expect ~10–20k from killing swap).
+
+**3. Build 1b + 1c** (the reroute in §12 + positions/wallet write-behind),
+gated behind `MATCHING_WRITE_BEHIND=on`. Re-run the **shadow** first
+(`=shadow`) to confirm 0 divergences on the new box.
+
+**4. Load-test the cutover under contention:**
+```bash
+# baseline vs cutover on the SAME box:
+docker compose exec -e LT_N=50000 -e LT_CONC=400 backend node scripts/loadtest-engine.js                          # off
+docker compose exec -e MATCHING_WRITE_BEHIND=on -e LT_N=50000 -e LT_CONC=400 backend node scripts/loadtest-engine.js  # cutover
+```
+Target: `mode=on` clears **40–50k orders/sec**. Add a concurrent SL/TP storm
+(many positions with tight SL while the load test runs) to flush double-close
+races; verify wallet ledger has **no duplicate** `dedupeKey` and balances
+reconcile.
+
+**5. Flip in prod:** set `MATCHING_WRITE_BEHIND=on` in `backend/.env`, deploy,
+watch `[ME wb]` logs + a reconciliation pass (ledger snapshot vs Mongo). Roll
+back instantly by unsetting the flag (state flushes via `drainWriteBehind()` on
+shutdown).
