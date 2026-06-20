@@ -52,6 +52,13 @@
     max-width: 100%;
     width: 100%;
   }
+  /* The React mount can become the horizontal scroll container if a wide child
+     (e.g. an overflow-x-auto nav whose own width isn't constrained) escapes the
+     body clip. Clip here too so the page never scrolls sideways. */
+  #root {
+    overflow-x: clip;
+    max-width: 100%;
+  }
   /* Dark theme: the <html> backdrop must be dark too, so any edge sliver never
      flashes white behind the app. */
   html[data-theme='dark'], html[data-theme='dark'] body {
