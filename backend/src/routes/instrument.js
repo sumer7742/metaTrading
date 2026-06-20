@@ -6,6 +6,7 @@ const router = express.Router();
 
 router.get('/', c.list);
 router.get('/watchlist', c.watchlist);
+router.get('/option-chain', c.optionChain); // before /:symbol so it isn't matched as a symbol
 router.get('/:symbol', c.getOne);
 router.get('/:symbol/volume-usage', c.volumeUsage);
 router.get('/:symbol/candles', c.candles);

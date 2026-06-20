@@ -352,4 +352,36 @@ const bulkRouting = asyncHandler(async (req, res) => {
   sendSuccess(res, { matched: r.matchedCount ?? r.n ?? 0, modified: r.modifiedCount ?? r.nModified ?? 0, routingOverride });
 });
 
-module.exports = { list, watchlist, getOne, volumeUsage, candles, orderbook, create, update, remove, bulkRouting };
+// Option chain for an underlying: strikes × CE/PE for one expiry (nearest by
+// default), plus the list of available expiries and the underlying spot.
+const optionChain = asyncHandler(async (req, res) => {
+  const underlying = String(req.query.underlying || '').toUpperCase();
+  if (!underlying) throw new AppError('underlying required', 400);
+
+  const all = await Instrument.find({ segment: 'OPT', underlying, isActive: true })
+    .select('symbol strike optionType expiryDate lastPrice lotSize').lean();
+
+  const expiries = [...new Set(all.map((o) => (o.expiryDate ? new Date(o.expiryDate).toISOString() : null)).filter(Boolean))].sort();
+
+  let expiry = req.query.expiry ? new Date(req.query.expiry).toISOString() : null;
+  if (!expiry) {
+    const now = Date.now();
+    expiry = expiries.find((e) => new Date(e).getTime() >= now) || expiries[0] || null;
+  }
+
+  const forExpiry = all.filter((o) => o.expiryDate && new Date(o.expiryDate).toISOString() === expiry);
+  const byStrike = new Map();
+  for (const o of forExpiry) {
+    const k = String(o.strike);
+    if (!byStrike.has(k)) byStrike.set(k, { strike: o.strike, ce: null, pe: null });
+    const leg = { symbol: o.symbol, lastPrice: o.lastPrice, lotSize: o.lotSize };
+    if (o.optionType === 'CE') byStrike.get(k).ce = leg;
+    else if (o.optionType === 'PE') byStrike.get(k).pe = leg;
+  }
+  const rows = [...byStrike.values()].sort((a, b) => Number(a.strike) - Number(b.strike));
+
+  const spotDoc = await Instrument.findOne({ symbol: underlying }).select('lastPrice').lean();
+  sendSuccess(res, { underlying, expiry, expiries, spot: spotDoc ? spotDoc.lastPrice : null, rows });
+});
+
+module.exports = { list, watchlist, getOne, volumeUsage, candles, orderbook, create, update, remove, bulkRouting, optionChain };
