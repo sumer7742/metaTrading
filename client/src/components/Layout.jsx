@@ -459,7 +459,7 @@ export default function Layout({ children }) {
           <div className="flex-1 flex flex-col min-h-0">{children}</div>
         ) : (
           <>
-            <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-6">{children}</div>
+            <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-6 min-w-0 overflow-x-hidden">{children}</div>
             {/* CMS-driven footer — links managed entirely from the admin panel. */}
             <CmsFooter />
           </>
