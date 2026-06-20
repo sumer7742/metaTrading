@@ -7,6 +7,7 @@ import { useThemeStore } from '../store/theme';
 import AssetIcon from './AssetIcon';
 import WatchlistButton from './WatchlistButton';
 import { useConfirm } from './ConfirmProvider';
+import { getMarketSession } from '../utils/marketSession';
 
 // Format an instrument-override expiry as "10 Jun 2026 22:00 UTC".
 const fmtOverrideTime = (d) => {
@@ -669,23 +670,42 @@ export default function OrderForm({
   const commFlat = Number(instrument?.commissionPerTrade || 0);
   const commPct  = Number(instrument?.commissionPercent  || 0);
   const spreadCost = hasQuotes && qtyNum > 0 ? spreadAbs * qtyNum : 0;
-  const feeEstimate = qtyNum > 0 && notional > 0
-    ? commFlat + (notional * commPct / 100) + spreadCost
-    : 0;
   const quoteCcy = instrument?.quoteCurrency || 'USD';
   const fmtQuote = (v) => `${Number(v).toFixed(2)} ${quoteCcy}`;
-
-  // Itemised fee breakdown for the "Fees ⓘ" tooltip — shows exactly which
-  // components add up to the total (flat commission + % commission + spread).
   const commPctAmt = notional > 0 ? (notional * commPct / 100) : 0;
-  // Grouped fee breakdown (display only — amounts/calculations unchanged):
-  //   Commission → Percentage   ·   Charges → Fixed   ·   Spread
+
+  // Indian cash equity: statutory pass-through estimate (STT/exchange/SEBI/GST).
+  // Preview only — intraday sell-leg rates; backend computes the exact figure at
+  // settle (services/indianCharges.js).
+  const isIndianEq = instrument?.exchange === 'NSE' || instrument?.exchange === 'BSE';
+  let statutory = 0;
+  let statutoryLines = [];
+  if (isIndianEq && notional > 0) {
+    const stt  = notional * 0.00025;     // intraday sell STT 0.025%
+    const exch = notional * 0.0000297;   // NSE transaction charge
+    const sebi = notional * 0.000001;    // SEBI turnover fee
+    const gst  = (commFlat + commPctAmt + exch + sebi) * 0.18;
+    statutory = stt + exch + sebi + gst;
+    statutoryLines = [
+      'Statutory charges (NSE est.)',
+      `• STT (0.025%): ${fmtQuote(stt)}`,
+      `• Exchange + SEBI: ${fmtQuote(exch + sebi)}`,
+      `• GST (18%): ${fmtQuote(gst)}`,
+    ];
+  }
+
+  const feeEstimate = qtyNum > 0 && notional > 0
+    ? commFlat + commPctAmt + spreadCost + statutory
+    : 0;
+
+  // Itemised fee breakdown for the "Fees ⓘ" tooltip.
   const feeHelp = [
-    'Total fee = commission + charges + spread cost',
+    `Total fee = commission + charges + spread${isIndianEq ? ' + statutory' : ' cost'}`,
     ...(commPct > 0 ? ['Commission', `• Percentage (${commPct}% × ${fmtQuote(notional)} notional): ${fmtQuote(commPctAmt)}`] : []),
     ...(commFlat > 0 ? ['Charges', `• Fixed: ${fmtQuote(commFlat)}`] : []),
     'Spread',
     `• Spread cost (${spreadAbs.toFixed(prec)} ${quoteCcy} × ${qtyNum || 0} qty): ${fmtQuote(spreadCost)}`,
+    ...statutoryLines,
     '──────────',
     `Total ≈ ${fmtQuote(feeEstimate)}`,
   ].filter(Boolean).join('\n');
@@ -766,6 +786,21 @@ export default function OrderForm({
           </button>
         )}
       </div>
+
+      {/* ── Market-closed banner (exchange-bound instruments) ──────── */}
+      {(() => {
+        const s = getMarketSession(instrument);
+        if (s.isOpen) return null;
+        return (
+          <div
+            className="mb-2.5 rounded px-3 py-2 text-[12px] font-medium flex items-center gap-2"
+            style={{ background: 'rgba(234,88,12,0.10)', border: '1px solid #EA580C', color: '#EA580C' }}
+          >
+            <span>⏱</span>
+            <span>{s.label}{s.detail ? ` — ${s.detail}` : ''}</span>
+          </div>
+        );
+      })()}
 
       {/* ── Order entry mode dropdown ────────────────────────────── */}
       <div className="relative mb-2.5">
