@@ -412,8 +412,12 @@ export default function Layout({ children }) {
             with one click. Hidden on /trade so the terminal can claim
             the full vertical viewport below the primary header. */}
         {location.pathname !== '/trade' && (
-          <div className="border-t border-border-subtle bg-bg-card">
-            <div className="max-w-[1400px] mx-auto">
+          // Hidden on phones — the instrument rail's pills overflow horizontally
+          // and pushed the whole page into a sideways scroll on mobile (mobile
+          // already has its own nav strip + search). Shown from sm up, where it's
+          // contained (overflow-hidden) so it scrolls within its own rail only.
+          <div className="hidden sm:block border-t border-border-subtle bg-bg-card">
+            <div className="max-w-[1400px] mx-auto min-w-0 overflow-hidden">
               <InstrumentStrip />
             </div>
           </div>
