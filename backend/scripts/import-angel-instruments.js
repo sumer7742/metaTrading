@@ -15,6 +15,7 @@
  */
 require('dotenv').config(); // load backend/.env when run locally (container uses env_file)
 const mongoose = require('mongoose');
+const fs = require('fs');
 
 const MASTER_URL = process.env.ANGEL_SCRIP_MASTER_URL
   || 'https://margincalc.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json';
@@ -38,10 +39,28 @@ const DEFAULT_SET = [
   const wanted = (process.env.IMPORT_SYMBOLS || '').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
   const useSet = wanted.length ? new Set(wanted) : (importAll ? null : new Set(DEFAULT_SET));
 
-  console.log(`[import] fetching Angel scrip master …`);
-  const res = await fetch(MASTER_URL);
-  if (!res.ok) { console.error(`[import] master fetch failed: HTTP ${res.status}`); process.exit(1); }
-  const all = await res.json();
+  // Source: a local file (ANGEL_SCRIP_MASTER_FILE) if DNS/network blocks the
+  // fetch, else the live URL. The file lets you download once via a browser/curl
+  // and import offline.
+  let all;
+  const file = process.env.ANGEL_SCRIP_MASTER_FILE;
+  if (file) {
+    console.log(`[import] reading scrip master from file: ${file}`);
+    all = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } else {
+    console.log(`[import] fetching Angel scrip master … (${MASTER_URL})`);
+    try {
+      const res = await fetch(MASTER_URL);
+      if (!res.ok) { console.error(`[import] master fetch failed: HTTP ${res.status}`); process.exit(1); }
+      all = await res.json();
+    } catch (e) {
+      console.error(`[import] fetch failed: ${e.message}`);
+      console.error('[import] DNS/network blocked? Download the file in a browser:');
+      console.error(`           ${MASTER_URL}`);
+      console.error('         then re-run with:  ANGEL_SCRIP_MASTER_FILE=path/to/OpenAPIScripMaster.json');
+      process.exit(1);
+    }
+  }
   console.log(`[import] master rows: ${all.length.toLocaleString()}`);
 
   // NSE cash equity only: exch_seg NSE + symbol '*-EQ'.
