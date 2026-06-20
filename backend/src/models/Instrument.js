@@ -9,6 +9,15 @@ const instrumentSchema = new mongoose.Schema(
     quoteCurrency: { type: String, required: true },
     category: { type: String, enum: ['CRYPTO', 'FOREX', 'STOCK', 'INDEX', 'COMMODITY'], required: true },
 
+    // ── Exchange-bound market fields (Phase 1: Indian NSE/BSE cash) ──
+    // `exchange` drives session gating (services/marketHours.js) + charges.
+    // Null/absent = 24/7 instrument (crypto/forex) — existing behaviour intact.
+    exchange: { type: String, enum: ['NSE', 'BSE', 'MCX', 'NCDEX'], default: null, index: true },
+    segment: { type: String, enum: ['EQ', 'FUT', 'OPT', 'CURRENCY', 'COMM'], default: null }, // EQ = cash equity
+    tickSize: { type: String, default: '0.05' },        // NSE equity default tick (₹0.05)
+    instrumentToken: { type: String, default: null, index: true }, // feed/broker token (Kite/Angel/Dhan)
+    isin: { type: String, default: null },              // ISIN for cash equity
+
     // Trading config
     isActive: { type: Boolean, default: true },
     // Per-instrument routing override — same semantics + options as the
