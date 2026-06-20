@@ -49,21 +49,23 @@ function parseCsvLine(line) {
   const header = parseCsvLine(lines[0]).map((h) => h.trim().toUpperCase());
   console.log('[dhan] header:', header.join(' | '));
   const col = (...names) => {
-    for (const n of names) { const i = header.findIndex((h) => h === n || h.includes(n)); if (i >= 0) return i; }
+    for (const n of names) { const i = header.indexOf(n); if (i >= 0) return i; }       // exact first
+    for (const n of names) { const i = header.findIndex((h) => h.includes(n)); if (i >= 0) return i; }
     return -1;
   };
   const C = {
-    exch: col('SEM_EXM_EXCH_ID', 'EXCH_ID', 'EXCHANGE'),
-    sid: col('SEM_SMST_SECURITY_ID', 'SECURITY_ID'),
-    inst: col('SEM_INSTRUMENT_NAME', 'INSTRUMENT_NAME', 'INSTRUMENT'),
-    sym: col('SEM_TRADING_SYMBOL', 'TRADING_SYMBOL'),
-    lot: col('SEM_LOT_UNITS', 'LOT_UNITS', 'LOT'),
-    exp: col('SEM_EXPIRY_DATE', 'EXPIRY_DATE', 'EXPIRY'),
-    strike: col('SEM_STRIKE_PRICE', 'STRIKE_PRICE', 'STRIKE'),
-    opt: col('SEM_OPTION_TYPE', 'OPTION_TYPE'),
-    tick: col('SEM_TICK_SIZE', 'TICK_SIZE', 'TICK'),
-    custom: col('SEM_CUSTOM_SYMBOL', 'CUSTOM_SYMBOL'),
-    under: col('SM_SYMBOL_NAME', 'UNDERLYING_SYMBOL', 'SYMBOL_NAME'),
+    exch: col('EXCH_ID', 'SEM_EXM_EXCH_ID', 'EXCHANGE'),
+    sid: col('SECURITY_ID', 'SEM_SMST_SECURITY_ID'),
+    inst: col('INSTRUMENT', 'SEM_INSTRUMENT_NAME'),
+    sym: col('SYMBOL_NAME', 'SEM_TRADING_SYMBOL', 'TRADING_SYMBOL'),
+    series: col('SERIES'),
+    lot: col('LOT_SIZE', 'SEM_LOT_UNITS', 'LOT_UNITS'),
+    exp: col('SM_EXPIRY_DATE', 'SEM_EXPIRY_DATE', 'EXPIRY_DATE'),
+    strike: col('STRIKE_PRICE', 'SEM_STRIKE_PRICE', 'STRIKE'),
+    opt: col('OPTION_TYPE', 'SEM_OPTION_TYPE'),
+    tick: col('TICK_SIZE', 'SEM_TICK_SIZE'),
+    custom: col('DISPLAY_NAME', 'SEM_CUSTOM_SYMBOL'),
+    under: col('UNDERLYING_SYMBOL', 'SM_SYMBOL_NAME'),
   };
   console.log('[dhan] column map:', C);
   if (C.exch < 0 || C.sid < 0 || C.inst < 0 || C.sym < 0) {
@@ -87,62 +89,77 @@ function parseCsvLine(line) {
   await mongoose.connect(URI);
   const Instrument = require('../src/models/Instrument');
 
+  const MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
   const ops = [];
-  let scanned = 0;
   for (let li = 1; li < lines.length; li++) {
     const r = parseCsvLine(lines[li]);
-    const exch = get(r, C.exch).toUpperCase();
+    if (get(r, C.exch).toUpperCase() !== 'NSE') continue; // scope: NSE only
     const inst = get(r, C.inst).toUpperCase();
-    if (exch !== 'NSE') continue; // Phase 1-3 scope: NSE only
-    scanned++;
 
-    let category, segment, want = false;
+    let category, segment;
     if (importOptions) {
       if (inst !== 'OPTIDX' && inst !== 'OPTSTK') continue;
-      const under = (get(r, C.under) || '').toUpperCase();
-      const set = wanted.length ? new Set(wanted) : new Set(FO_DEFAULT);
-      if (!set.has(under)) continue;
-      category = inst === 'OPTIDX' ? 'INDEX' : 'STOCK'; segment = 'OPT'; want = true;
+      category = inst === 'OPTIDX' ? 'INDEX' : 'STOCK'; segment = 'OPT';
     } else if (importFutures) {
       if (inst !== 'FUTIDX' && inst !== 'FUTSTK') continue;
-      const under = (get(r, C.under) || '').toUpperCase();
-      const set = wanted.length ? new Set(wanted) : new Set(FO_DEFAULT);
-      if (!set.has(under)) continue;
-      category = inst === 'FUTIDX' ? 'INDEX' : 'STOCK'; segment = 'FUT'; want = true;
+      category = inst === 'FUTIDX' ? 'INDEX' : 'STOCK'; segment = 'FUT';
     } else {
       if (inst !== 'EQUITY') continue;
-      const tsym = get(r, C.sym).toUpperCase().replace(/-EQ$/, '');
+      const ser = C.series >= 0 ? get(r, C.series).toUpperCase() : '';
+      if (ser && ser !== 'EQ') continue; // skip BE/BZ series duplicates
+      category = 'STOCK'; segment = 'EQ';
+    }
+
+    const under = (get(r, C.under) || '').toUpperCase();
+
+    // Selection filter.
+    if (segment === 'EQ') {
+      const tsym = get(r, C.sym).toUpperCase().replace(/-EQ$/, '').replace(/\s+/g, '');
       const set = wanted.length ? new Set(wanted) : (importAll ? null : new Set(EQ_DEFAULT));
       if (set !== null && !set.has(tsym)) continue;
-      category = 'STOCK'; segment = 'EQ'; want = true;
+    } else {
+      const set = wanted.length ? new Set(wanted) : new Set(FO_DEFAULT);
+      if (!under || !set.has(under)) continue;
     }
-    if (!want) continue;
 
-    const tradeSym = get(r, C.sym).toUpperCase().replace(/-EQ$/, '');
-    const symbol = (segment === 'EQ' ? tradeSym : get(r, C.sym).toUpperCase()).replace(/\s+/g, '');
+    // Expiry + tag (F&O).
+    let expDate = null, expTag = '';
+    if (segment !== 'EQ') {
+      const d = get(r, C.exp) ? new Date(get(r, C.exp)) : null;
+      if (d && !isNaN(d.getTime())) { expDate = d; expTag = `${MON[d.getUTCMonth()]}${String(d.getUTCFullYear()).slice(2)}`; }
+    }
+    // Option type + strike.
+    let optType = null, strikeVal = null;
+    if (segment === 'OPT') {
+      const ot = get(r, C.opt).toUpperCase();
+      optType = (ot === 'CE' || ot === 'CALL') ? 'CE' : ((ot === 'PE' || ot === 'PUT') ? 'PE' : null);
+      if (!optType) continue;
+      strikeVal = Number(get(r, C.strike)) || get(r, C.strike);
+    }
+
+    // Unique platform symbol (F&O built from components — Dhan's SYMBOL_NAME is
+    // the underlying, not unique per contract).
+    let symbol;
+    if (segment === 'EQ') symbol = get(r, C.sym).toUpperCase().replace(/-EQ$/, '').replace(/\s+/g, '');
+    else if (segment === 'FUT') symbol = `${under}${expTag}FUT`;
+    else symbol = `${under}${expTag}${strikeVal}${optType}`;
+    symbol = (symbol || '').replace(/\s+/g, '');
     if (!symbol) continue;
+
     const tick = Number(get(r, C.tick)) || 0.05;
     const lot = get(r, C.lot) || '1';
     const set$ = {
       symbol, name: get(r, C.custom) || symbol,
-      category, exchange: ourExch(exch, inst), segment,
+      category, exchange: ourExch(get(r, C.exch).toUpperCase(), inst), segment,
       externalProvider: 'DHAN', externalFeedSymbol: get(r, C.sym),
       instrumentToken: get(r, C.sid),
       tickSize: String(tick), lotSize: String(lot),
       pricePrecision: 2, quantityPrecision: 0, minOrderSize: segment === 'EQ' ? '1' : String(lot),
       isActive: true,
     };
-    if (segment !== 'EQ') {
-      const exp = get(r, C.exp); const d = exp ? new Date(exp) : null;
-      if (d && !isNaN(d.getTime())) set$.expiryDate = d;
-      set$.underlying = (get(r, C.under) || '').toUpperCase() || null;
-    }
-    if (segment === 'OPT') {
-      set$.strike = String(Number(get(r, C.strike)) || get(r, C.strike));
-      const ot = get(r, C.opt).toUpperCase();
-      set$.optionType = ot === 'CE' || ot === 'CALL' ? 'CE' : (ot === 'PE' || ot === 'PUT' ? 'PE' : null);
-      if (!set$.optionType) continue;
-    }
+    if (segment !== 'EQ') { if (expDate) set$.expiryDate = expDate; set$.underlying = under || null; }
+    if (segment === 'OPT') { set$.strike = String(strikeVal); set$.optionType = optType; }
+
     ops.push({ updateOne: {
       filter: { symbol },
       update: { $set: set$, $setOnInsert: { baseCurrency: set$.underlying || symbol, quoteCurrency: 'INR' } },
