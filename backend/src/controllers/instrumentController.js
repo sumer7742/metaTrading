@@ -165,6 +165,10 @@ const watchlist = asyncHandler(async (req, res) => {
       // exchange drives NSE/BSE session gating + ₹ display on the client.
       exchange: inst.exchange || null,
       segment: inst.segment || null,
+      // Futures/options: lot + expiry for lot-based qty UI + expiry countdown.
+      lotSize: inst.lotSize || null,
+      expiryDate: inst.expiryDate || null,
+      underlying: inst.underlying || null,
       // Quote currency lets the client decide whether to show INR primary +
       // USD secondary (USD-quoted) vs INR-only (INR-quoted) on the watchlist.
       quoteCurrency: inst.quoteCurrency,

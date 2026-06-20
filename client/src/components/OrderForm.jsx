@@ -802,6 +802,24 @@ export default function OrderForm({
         );
       })()}
 
+      {/* ── Futures/options expiry line ──────────────────────────── */}
+      {instrument?.expiryDate && (instrument?.segment === 'FUT' || instrument?.segment === 'OPT') && (() => {
+        const exp = new Date(instrument.expiryDate);
+        const days = Math.ceil((exp.getTime() - Date.now()) / 86400000);
+        const dstr = exp.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+        return (
+          <div
+            className="mb-2.5 rounded px-3 py-1.5 text-[11px] flex items-center justify-between"
+            style={{ background: C.cardBg, border: `1px solid ${C.border}`, color: C.dim }}
+          >
+            <span>⏳ Expiry</span>
+            <span style={{ color: days <= 2 && days >= 0 ? '#EA580C' : C.text }}>
+              {dstr}{days >= 0 ? ` · ${days}d left` : ' · expired'}
+            </span>
+          </div>
+        );
+      })()}
+
       {/* ── Order entry mode dropdown ────────────────────────────── */}
       <div className="relative mb-2.5">
         <select
@@ -996,20 +1014,32 @@ export default function OrderForm({
           </div>
         )}
 
-        {/* ── Volume (Lots) — unified segmented bar ──────────────── */}
-        <FieldCard label="Volume" C={C}>
-          <NumericRow
-            C={C}
-            value={quantity}
-            onChange={setQuantity}
-            onMinus={() => nudgeQty(-1)}
-            onPlus={() => nudgeQty(1)}
-            placeholder={instrument?.minOrderSize ? String(instrument.minOrderSize) : '0.01'}
-            suffix="Lots"
-            unified
-            required
-          />
-        </FieldCard>
+        {/* ── Volume — unified segmented bar. For F&O the qty is in units
+            (lots × lotSize); show the lot size + the lot equivalent. ──── */}
+        {(() => {
+          const isDeriv = instrument?.segment === 'FUT' || instrument?.segment === 'OPT';
+          const lotSz = Number(instrument?.lotSize) || 1;
+          const lots = isDeriv && qtyNum > 0 ? qtyNum / lotSz : 0;
+          return (
+            <FieldCard
+              label={isDeriv ? `Volume (1 lot = ${lotSz})` : 'Volume'}
+              subtext={isDeriv && lots > 0 ? `= ${lots.toLocaleString('en-IN', { maximumFractionDigits: 2 })} lot${lots === 1 ? '' : 's'}` : undefined}
+              C={C}
+            >
+              <NumericRow
+                C={C}
+                value={quantity}
+                onChange={setQuantity}
+                onMinus={() => nudgeQty(-1)}
+                onPlus={() => nudgeQty(1)}
+                placeholder={instrument?.minOrderSize ? String(instrument.minOrderSize) : '0.01'}
+                suffix={isDeriv ? 'Units' : 'Lots'}
+                unified
+                required
+              />
+            </FieldCard>
+          );
+        })()}
 
         {/* ── Take Profit ─────────────────────────────────────────── */}
         {!isOneClick && (
