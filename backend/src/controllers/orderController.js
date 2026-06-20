@@ -193,6 +193,22 @@ const placeOrder = asyncHandler(async (req, res) => {
   const instrument = await Instrument.findOne({ symbol: symbol.toUpperCase(), isActive: true });
   if (!instrument) throw new AppError('Instrument not active', 404);
 
+  // ─── Market-session gate ────────────────────────────────────────────
+  // Exchange-bound instruments (NSE/BSE/MCX) only trade in-session; crypto/
+  // forex (no `exchange`) stay 24/7. Keeps Indian orders from being placed
+  // when the exchange is closed/holiday/weekend.
+  {
+    const { isInstrumentTradeable } = require('../services/marketHours');
+    const { tradeable, session } = isInstrumentTradeable(instrument);
+    if (!tradeable) {
+      throw new AppError(
+        `${instrument.exchange || 'Market'} is closed (${session.reason}). Trading hours ${session.opensAt}–${session.closesAt} IST.`,
+        400,
+        'MARKET_CLOSED'
+      );
+    }
+  }
+
   // ─── Account-tier guards ────────────────────────────────────────────
   // 1. Leverage cap — STANDARD = 1:100, all others unlimited. When the
   //    tier returns null, no cap applies.

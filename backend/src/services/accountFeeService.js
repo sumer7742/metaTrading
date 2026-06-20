@@ -50,7 +50,31 @@ async function _resolvePlan(account) {
  *
  * @returns {Promise<string>} fee amount in account base currency
  */
-async function computeCloseFee({ account, instrument, closeQty, closePrice, closePnl }) {
+/**
+ * Total close-leg fee = platform brokerage + (NSE/BSE) statutory charges.
+ * For Indian cash equity, STT/stamp/exchange/SEBI/GST pass through on top of
+ * brokerage (services/indianCharges.js). Leveraged/margin trades use INTRADAY
+ * rates. NOTE: buy-leg statutory charges (stamp duty; delivery STT) are a
+ * follow-up — only the close (sell) leg is charged here today.
+ */
+async function computeCloseFee(args) {
+  const brokerage = await _computeBrokerage(args);
+  const { instrument, closeQty, closePrice } = args;
+  if (instrument && (instrument.exchange === 'NSE' || instrument.exchange === 'BSE')) {
+    const { computeEquityCharges } = require('./indianCharges');
+    const { total } = computeEquityCharges({
+      side: 'SELL',
+      turnover: mul(closeQty, closePrice),
+      exchange: instrument.exchange,
+      product: 'INTRADAY',
+      brokerage,
+    });
+    return total;
+  }
+  return brokerage;
+}
+
+async function _computeBrokerage({ account, instrument, closeQty, closePrice, closePnl }) {
   // 1. Per-account-type OVERRIDE wins — if this instrument has a commission
   //    override for the account's type, it replaces the account-type default
   //    for that type only. (Applies to this account type, not others.)
