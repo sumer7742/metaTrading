@@ -59,6 +59,14 @@ const providerState = {
     consecutiveErrors: 0,
     activeSince: null,
   },
+  DHAN: {
+    name: 'Dhan (DhanHQ)',
+    priority: 4,
+    status: 'INIT',           // Indian NSE cash + NFO F&O feed (session-gated)
+    lastTickAt: null,
+    consecutiveErrors: 0,
+    activeSince: null,
+  },
   SIMULATOR: {
     name: 'Price Simulator',
     priority: 99,
