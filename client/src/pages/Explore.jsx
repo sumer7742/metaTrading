@@ -673,7 +673,7 @@ export default function Explore() {
                 <th className="text-right font-medium px-3 sm:px-5 py-3">Price</th>
                 <th className="text-right font-medium px-3 sm:px-5 py-3">24h %</th>
                 <th className="text-right font-medium px-3 sm:px-5 py-3 hidden sm:table-cell">Volume</th>
-                <th className="px-3 py-3 w-px"><span className="sr-only">Watchlist</span></th>
+                <th className="px-3 py-3 w-px hidden sm:table-cell"><span className="sr-only">Watchlist</span></th>
               </tr>
             </thead>
             <tbody>
@@ -700,8 +700,8 @@ export default function Explore() {
                     <td className="px-3 sm:px-5 py-3.5">
                       <div className="flex items-center gap-3">
                         <AssetGlyph sym={m.symbol} row={m} size={34} />
-                        <div className="min-w-0">
-                          <div className="text-sm font-semibold text-text-primary leading-none">{m.symbol}</div>
+                        <div className="min-w-0 max-w-[42vw] sm:max-w-none">
+                          <div className="text-sm font-semibold text-text-primary leading-none truncate">{m.symbol}</div>
                           <div className="text-[11px] text-text-muted mt-1 leading-none truncate">{m.name || ''}</div>
                         </div>
                       </div>
@@ -718,7 +718,7 @@ export default function Explore() {
                     <td className="px-3 sm:px-5 py-3.5 text-right font-mono text-xs text-text-secondary hidden sm:table-cell">
                       {fmtVolume(m.volume24h)}
                     </td>
-                    <td className="px-3 py-3.5 text-right align-middle">
+                    <td className="px-3 py-3.5 text-right align-middle hidden sm:table-cell">
                       <WatchlistButton symbol={m.symbol} row={m} variant="ghost" />
                     </td>
                   </tr>
