@@ -118,7 +118,7 @@ function parseCsvLine(line) {
 
     // Selection filter.
     if (segment === 'EQ') {
-      const tsym = get(r, C.sym).toUpperCase().replace(/-EQ$/, '').replace(/\s+/g, '');
+      const tsym = under.replace(/\s+/g, ''); // UNDERLYING_SYMBOL is the clean ticker (SYMBOL_NAME is the long name)
       const set = wanted.length ? new Set(wanted) : (importAll ? null : new Set(EQ_DEFAULT));
       if (set !== null && !set.has(tsym)) continue;
     } else {
@@ -144,7 +144,7 @@ function parseCsvLine(line) {
     // Unique platform symbol (F&O built from components — Dhan's SYMBOL_NAME is
     // the underlying, not unique per contract).
     let symbol;
-    if (segment === 'EQ') symbol = get(r, C.sym).toUpperCase().replace(/-EQ$/, '').replace(/\s+/g, '');
+    if (segment === 'EQ') symbol = under.replace(/\s+/g, ''); // ticker from UNDERLYING_SYMBOL
     else if (segment === 'FUT') symbol = `${under}${expTag}FUT`;
     else symbol = `${under}${expTag}${strikeVal}${optType}`;
     symbol = (symbol || '').replace(/\s+/g, '');
