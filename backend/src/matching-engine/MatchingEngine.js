@@ -53,6 +53,57 @@ class MatchingEngine {
     this._shadowOn = this._wbMode === 'shadow';
     this._shadowStats = { checked: 0, diverged: 0 };
     if (this._shadowOn) console.log('[ME] write-behind SHADOW mode ON — validating in-memory ledger vs DB (no effect on live results)');
+
+    // ── Phase 1 CUTOVER (MATCHING_WRITE_BEHIND=on) — staged ───────────────
+    // Stage 1a (this): the durable Journal (WAL) + WriteBehind pipeline + crash
+    // recovery, with the B-book TRADE record moved off the hot path. Positions
+    // and the WALLET settle stay SYNCHRONOUS (zero money risk) — they move in
+    // later stages after staging load-tests. The Trade is an idempotent audit
+    // doc (unique _id), so async-flush + replay can never double-insert it.
+    this._wbOn = this._wbMode === 'on';
+    this.journal = null;
+    this.writeBehind = null;
+    if (this._wbOn) console.log('[ME] write-behind CUTOVER mode ON (stage 1a: Trade → WAL + write-behind; positions/wallet still synchronous)');
+  }
+
+  // Start the WAL + write-behind workers and replay any un-applied journal
+  // entries (crash recovery). Call once at boot AFTER the DB is connected.
+  async startWriteBehind() {
+    if (!this._wbOn || this.journal) return;
+    const { Journal } = require('./Journal');
+    const WriteBehind = require('./WriteBehind');
+    this.journal = new Journal({
+      commitMs: Number(process.env.MATCHING_JOURNAL_COMMIT_MS) || 5,
+      maxBatch: Number(process.env.MATCHING_JOURNAL_MAX_BATCH) || 1000,
+    });
+    this.writeBehind = new WriteBehind({
+      flushMs: Number(process.env.MATCHING_WRITEBEHIND_FLUSH_MS) || 25,
+      maxBatch: Number(process.env.MATCHING_WRITEBEHIND_MAX_BATCH) || 1000,
+      onFlushed: (seqs) => { this.journal.markApplied(seqs).catch(() => {}); },
+    });
+    this.journal.start();
+    this.writeBehind.start();
+    try {
+      const n = await this.journal.replayUnapplied((e) => this._replayJournalEntry(e));
+      if (n) console.log(`[ME] journal replay: re-enqueued ${n} un-applied entr${n === 1 ? 'y' : 'ies'}`);
+    } catch (e) {
+      console.error('[ME] journal replay failed:', e.message);
+    }
+  }
+
+  // Flush WAL + derived writes on graceful shutdown so nothing is lost.
+  async drainWriteBehind() {
+    try { if (this.journal) await this.journal.drain(); } catch (_) { /* */ }
+    try { if (this.writeBehind) await this.writeBehind.drain(); } catch (_) { /* */ }
+  }
+
+  // Re-apply an un-applied journal entry on boot (idempotent). Stage 1a only
+  // journals the Trade insert; the unique _id makes the re-insert a no-op if it
+  // had already flushed before the crash.
+  _replayJournalEntry(entry) {
+    if (entry.type === 'BBOOK_TRADE' && entry.payload && entry.payload.trade) {
+      this.writeBehind.enqueue(Trade, { insertOne: { document: entry.payload.trade } }, entry.seq);
+    }
   }
 
   setBroadcaster(broadcaster) {
@@ -556,39 +607,38 @@ class MatchingEngine {
     let _shadow = null;
     if (this._shadowOn) { try { _shadow = await this._shadowBBookPre(order, instrument, finalPrice); } catch (_) { _shadow = null; } }
 
-    // Trade record + position settle are independent writes → run in parallel.
-    await Promise.all([
-      Trade.create({
-        _id: tradeId,
-        instrumentId: order.instrumentId,
-        symbol: order.symbol,
-        buyOrderId: order._id,
-        sellOrderId: order._id,
-        buyUserId: order.userId,
-        sellUserId: order.userId,
-        buyAccountId: order.accountId,
-        sellAccountId: order.accountId,
-        price: finalPrice,
-        quantity: order.quantity,
-        routing: 'B_BOOK',
-      }),
-      this._updatePosition(
-        order.accountId,
-        order.userId,
-        order.instrumentId,
-        order.symbol,
-        order.side,
-        order.quantity,
-        finalPrice,
-        order.leverage,
-        tradeId,
-        order.closeOnly,
-        order.stopLoss,
-        order.takeProfit,
-        order.positionSide,
-        bookOf(order)
-      ),
-    ]);
+    const tradeDoc = {
+      _id: tradeId,
+      instrumentId: order.instrumentId,
+      symbol: order.symbol,
+      buyOrderId: order._id,
+      sellOrderId: order._id,
+      buyUserId: order.userId,
+      sellUserId: order.userId,
+      buyAccountId: order.accountId,
+      sellAccountId: order.accountId,
+      price: finalPrice,
+      quantity: order.quantity,
+      routing: 'B_BOOK',
+    };
+    const settle = () => this._updatePosition(
+      order.accountId, order.userId, order.instrumentId, order.symbol, order.side,
+      order.quantity, finalPrice, order.leverage, tradeId, order.closeOnly,
+      order.stopLoss, order.takeProfit, order.positionSide, bookOf(order),
+    );
+
+    if (this._wbOn) {
+      // CUTOVER stage 1a: the Trade goes through the WAL (durable) + write-behind
+      // (async flush), so it's OFF the hot path. The ACK waits only for the
+      // group-committed journal append, not the Trade insert. Position + wallet
+      // settle stay SYNCHRONOUS here (money-safe) — they move in later stages.
+      const seq = await this.journal.append({ symbol: order.symbol, type: 'BBOOK_TRADE', payload: { trade: tradeDoc } });
+      this.writeBehind.enqueue(Trade, { insertOne: { document: tradeDoc } }, seq);
+      await settle();
+    } else {
+      // Trade record + position settle are independent writes → run in parallel.
+      await Promise.all([Trade.create(tradeDoc), settle()]);
+    }
 
     order.status = ORDER_STATUS.FILLED;
     order.filledQuantity = order.quantity;

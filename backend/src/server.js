@@ -416,6 +416,9 @@ const start = async () => {
   wsBroadcaster.attach(server);
   matchingEngine.setBroadcaster(wsBroadcaster);
   await matchingEngine.hydrateFromDB();
+  // Start the WAL + write-behind workers and replay any un-applied journal
+  // entries (crash recovery). No-op unless MATCHING_WRITE_BEHIND=on.
+  await matchingEngine.startWriteBehind();
 
   backgroundWorker.setBroadcaster(wsBroadcaster);
   backgroundWorker.start(5000);
@@ -450,6 +453,9 @@ const start = async () => {
       if (err) { logger.error('HTTP close error', { err }); exitCode = 1; }
     });
     try { backgroundWorker.stop && backgroundWorker.stop(); } catch (e) { logger.warn('Worker stop failed', { err: e }); }
+    // Flush the WAL + write-behind buffers BEFORE closing the DB so no
+    // acknowledged-but-unflushed write is lost (no-op unless cutover is on).
+    try { await matchingEngine.drainWriteBehind(); } catch (e) { logger.warn('Write-behind drain failed', { err: e }); }
     try { wsBroadcaster.close && wsBroadcaster.close(); } catch (e) { logger.warn('WS close failed', { err: e }); }
     try { await require('mongoose').disconnect(); } catch (e) { logger.warn('DB disconnect failed', { err: e }); }
     setTimeout(() => process.exit(exitCode), 500).unref();
