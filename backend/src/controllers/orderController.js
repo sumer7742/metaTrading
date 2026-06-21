@@ -194,15 +194,17 @@ const placeOrder = asyncHandler(async (req, res) => {
   if (!instrument) throw new AppError('Instrument not active', 404);
 
   // ─── Market-session gate ────────────────────────────────────────────
-  // Exchange-bound instruments (NSE/BSE/MCX) only trade in-session; crypto/
-  // forex (no `exchange`) stay 24/7. Keeps Indian orders from being placed
-  // when the exchange is closed/holiday/weekend.
+  // Exchange-bound instruments (NSE/BSE/NFO/...) trade only in-session; forex/
+  // commodity/index CFDs close on weekends (Fri 22:00 → Sun 22:00 UTC); crypto
+  // stays 24/7. Keeps orders off stale prices when the market is shut.
   {
     const { isInstrumentTradeable } = require('../services/marketHours');
     const { tradeable, session } = isInstrumentTradeable(instrument);
     if (!tradeable) {
+      const label = instrument.exchange || instrument.category || 'Market';
+      const hours = session.opensAt ? ` Hours: ${session.opensAt}–${session.closesAt} ${session.tz || ''}`.trimEnd() + '.' : '';
       throw new AppError(
-        `${instrument.exchange || 'Market'} is closed (${session.reason}). Trading hours ${session.opensAt}–${session.closesAt} IST.`,
+        `${label} is closed (${session.reason}).${hours}`,
         400,
         'MARKET_CLOSED'
       );

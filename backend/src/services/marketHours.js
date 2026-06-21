@@ -85,7 +85,7 @@ function getSession(exchange, at = new Date()) {
   if (!s) return { exchange: exchange || null, state: 'ALWAYS_OPEN', isOpen: true, opensAt: null, closesAt: null, reason: '24/7' };
 
   const { dateStr, minutes, weekday, year } = _istParts(at);
-  const base = { exchange, opensAt: _hhmm(s.open), closesAt: _hhmm(s.close) };
+  const base = { exchange, opensAt: _hhmm(s.open), closesAt: _hhmm(s.close), tz: 'IST' };
 
   if (weekday === 0 || weekday === 6) return { ...base, state: 'WEEKEND', isOpen: false, reason: 'weekend' };
   if (isHoliday(dateStr, year))        return { ...base, state: 'HOLIDAY', isOpen: false, reason: 'exchange holiday' };
@@ -101,13 +101,43 @@ function isExchangeOpen(exchange, at = new Date()) {
 }
 
 /**
- * Instrument-level gate. Crypto/forex (no exchange) → always tradeable.
- * Exchange-bound (NSE/BSE/MCX) → only during continuous session.
+ * Category-based session for non-exchange instruments (UTC). Mirrors the
+ * client (utils/marketSession.js):
+ *   CRYPTO → 24/7
+ *   FOREX / COMMODITY / INDEX (CFD) → Sun 22:00 UTC → Fri 22:00 UTC
+ *   anything else → open (no schedule known)
+ */
+function getCategorySession(category, at = new Date()) {
+  const cat = String(category || '').toUpperCase();
+  if (cat === 'CRYPTO') return { state: 'ALWAYS_OPEN', isOpen: true, opensAt: null, closesAt: null, reason: '24/7', tz: 'UTC' };
+  if (cat === 'FOREX' || cat === 'COMMODITY' || cat === 'INDEX') {
+    const day = at.getUTCDay();                       // 0=Sun .. 6=Sat
+    const mins = at.getUTCHours() * 60 + at.getUTCMinutes();
+    const open = 22 * 60;                             // 22:00 UTC
+    const win = { opensAt: 'Sun 22:00', closesAt: 'Fri 22:00', tz: 'UTC' };
+    let reason = null;
+    if (day === 6) reason = 'weekend';
+    else if (day === 0 && mins < open) reason = 'opens Sun 22:00 UTC';
+    else if (day === 5 && mins >= open) reason = 're-opens Sun 22:00 UTC';
+    return reason
+      ? { ...win, state: 'CLOSED', isOpen: false, reason }
+      : { ...win, state: 'OPEN', isOpen: true, reason: 'fx session' };
+  }
+  return { state: 'ALWAYS_OPEN', isOpen: true, opensAt: null, closesAt: null, reason: '24/7', tz: 'UTC' };
+}
+
+/**
+ * Instrument-level gate.
+ *   Exchange-bound (NSE/BSE/NFO/BFO/MCX) → exchange session (IST).
+ *   Else dispatch by category → forex/commodity/index weekend-close, crypto 24/7.
  */
 function isInstrumentTradeable(instrument, at = new Date()) {
   const exch = instrument && instrument.exchange;
-  if (!exch || !SESSIONS[exch]) return { tradeable: true, session: getSession(null, at) };
-  const session = getSession(exch, at);
+  if (exch && SESSIONS[exch]) {
+    const session = getSession(exch, at);
+    return { tradeable: session.isOpen, session };
+  }
+  const session = getCategorySession(instrument && instrument.category, at);
   return { tradeable: session.isOpen, session };
 }
 
@@ -115,6 +145,7 @@ module.exports = {
   SESSIONS,
   HOLIDAYS,
   getSession,
+  getCategorySession,
   isExchangeOpen,
   isInstrumentTradeable,
   isHoliday,
