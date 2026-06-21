@@ -281,7 +281,7 @@ export default function Wallet() {
           `self-start` is the magic that makes `sticky` actually work
           inside a grid column — without it the cell stretches and
           sticky becomes a no-op. */}
-      <aside className="col-span-12 lg:col-span-2 xl:col-span-2 flex flex-col gap-4 min-w-0 lg:sticky lg:top-32 lg:self-start">
+      <aside className="col-span-12 lg:col-span-2 xl:col-span-2 flex flex-col gap-4 min-w-0 lg:sticky lg:top-28 lg:self-start">
         <nav className="bg-white border border-border-dark rounded-2xl p-2 flex flex-col gap-0.5">
           {NAV_ITEMS.map((n) => {
             const isActive = view === n.id;
