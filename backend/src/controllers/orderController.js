@@ -424,6 +424,21 @@ const placeOrder = asyncHandler(async (req, res) => {
     orderLeverage = 1;
   }
 
+  // ─── F&O lot-size validation ────────────────────────────────────────
+  // Futures/options trade only in whole lots — quantity must be a multiple of
+  // the contract lot size (e.g. NIFTY 75/150, not 50).
+  if (instrument.segment === 'FUT' || instrument.segment === 'OPT') {
+    const lot = Number(instrument.lotSize) || 1;
+    const qn = Number(quantity);
+    if (lot > 1 && (!Number.isFinite(qn) || qn <= 0 || qn % lot !== 0)) {
+      throw new AppError(
+        `Quantity must be a multiple of the lot size (${lot}) for ${instrument.symbol}.`,
+        400,
+        'INVALID_LOT_SIZE'
+      );
+    }
+  }
+
   // Margin lock: compute how much new exposure this order opens (closing-leg
   // is netted out against existing position), and lock that from free balance.
   // STOP orders also lock at placement so the user can't double-spend the
