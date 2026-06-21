@@ -1069,6 +1069,30 @@ const recalcPartnerTiersIfNewMonth = async () => {
   }
 };
 
+// Daily pre-market refresh of Dhan instruments (F&O tokens roll each series +
+// new expiries appear). Runs once/day in the 07:00–09:59 IST window. No-op
+// unless Dhan is configured. Idempotent via the IST day guard.
+let _lastDhanSyncDay = null;
+const syncDhanDaily = async () => {
+  if (!(process.env.DHAN_CLIENT_ID && process.env.DHAN_ACCESS_TOKEN)) return;
+  const f = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit',
+  });
+  const p = {}; for (const x of f.formatToParts(new Date())) p[x.type] = x.value;
+  const day = `${p.year}-${p.month}-${p.day}`;
+  const hour = Number(p.hour) === 24 ? 0 : Number(p.hour);
+  if (hour < 7 || hour >= 10) return;          // pre-market window only
+  if (_lastDhanSyncDay === day) return;        // already synced today
+  _lastDhanSyncDay = day;
+  try {
+    const r = await require('./dhanInstrumentSync').syncAll();
+    console.log(`[Worker] Dhan instrument sync: ${r.ops} contracts (upserted ${r.upserted}, modified ${r.modified})`);
+  } catch (e) {
+    console.error('[Worker] Dhan instrument sync failed:', e.message);
+    _lastDhanSyncDay = null;                    // retry next slow-tick
+  }
+};
+
 let _tickHandle = null;
 let _slowTickHandle = null;
 const start = (intervalMs = 5000) => {
@@ -1083,6 +1107,7 @@ const start = (intervalMs = 5000) => {
     try {
       await sweepExpiredSubscriptions();
       await recalcPartnerTiersIfNewMonth();
+      await syncDhanDaily();
     } catch (e) {
       console.error('[Worker] slow-tick error:', e.message);
     }
