@@ -218,4 +218,10 @@ router.post(
   })
 );
 
+// ── Corporate actions (split / bonus / dividend) ──
+const corpActions = require('../controllers/corporateActionController');
+router.get('/corporate-actions', corpActions.list);
+router.post('/corporate-actions', corpActions.create);
+router.delete('/corporate-actions/:id', corpActions.remove);
+
 module.exports = router;

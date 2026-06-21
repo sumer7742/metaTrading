@@ -50,7 +50,7 @@ const _submit = async (order) => {
     throw err;
   }
 };
-const { add, sub, mul, gt, lt, gte, lte, eq, D } = require('../utils/decimal');
+const { add, sub, mul, div, gt, lt, gte, lte, eq, D } = require('../utils/decimal');
 const { ORDER_STATUS, ORDER_TYPE, POSITION_STATUS } = require('../config/constants');
 
 let broadcaster = null;
@@ -912,6 +912,86 @@ const checkExpiry = async () => {
   }
 };
 
+/**
+ * Apply due corporate actions (cash equity) once, on/after exDate.
+ *   SPLIT/BONUS — adjust open positions (qty ×mult, entry ÷mult, SL/TP ÷mult,
+ *     closedQty ×mult) + resting orders; notional/margin unchanged. Idempotent
+ *     per position via `corpActionsApplied`.
+ *   DIVIDEND — credit longs / debit shorts (amount × qty), idempotent via
+ *     a DIVIDEND:<caId>:<posId> wallet dedupeKey.
+ */
+const applyCorporateActions = async () => {
+  const CorporateAction = require('../models/CorporateAction');
+  const pending = await CorporateAction.find({ applied: false, exDate: { $lte: new Date() } }).limit(50);
+  if (!pending.length) return;
+  const walletService = require('./walletService');
+
+  for (const ca of pending) {
+    const claimed = await CorporateAction.findOneAndUpdate(
+      { _id: ca._id, applied: false },
+      { $set: { applied: true, appliedAt: new Date() } },
+      { new: true }
+    );
+    if (!claimed) continue;
+    try {
+      let affected = 0;
+      const positions = await Position.find({ symbol: ca.symbol, status: POSITION_STATUS.OPEN, settled: { $ne: true } });
+
+      if (ca.type === 'SPLIT' || ca.type === 'BONUS') {
+        const mult = (Number(ca.ratioTo) || 1) / (Number(ca.ratioFrom) || 1);
+        if (mult > 0 && mult !== 1) {
+          const m = String(mult);
+          for (const pos of positions) {
+            const set = {
+              quantity: mul(pos.quantity, m),
+              entryPrice: div(pos.entryPrice, m),
+              closedQuantity: mul(pos.closedQuantity || '0', m),
+            };
+            if (pos.stopLoss) set.stopLoss = div(pos.stopLoss, m);
+            if (pos.takeProfit) set.takeProfit = div(pos.takeProfit, m);
+            const res = await Position.updateOne(
+              { _id: pos._id, corpActionsApplied: { $ne: ca._id } }, // idempotent
+              { $set: set, $push: { corpActionsApplied: ca._id } }
+            );
+            affected += res.modifiedCount || 0;
+          }
+          // Resting LIMIT/STOP orders on the symbol: price ÷mult, qty ×mult.
+          const orders = await Order.find({ symbol: ca.symbol, status: { $in: [ORDER_STATUS.PENDING, ORDER_STATUS.PARTIALLY_FILLED] } });
+          for (const o of orders) {
+            const set = { quantity: mul(o.quantity, m) };
+            if (o.price) set.price = div(o.price, m);
+            if (o.stopPrice) set.stopPrice = div(o.stopPrice, m);
+            await Order.updateOne({ _id: o._id }, { $set: set });
+          }
+        }
+      } else if (ca.type === 'DIVIDEND') {
+        const per = ca.amount || '0';
+        for (const pos of positions) {
+          const total = mul(pos.quantity, per);
+          if (!gt(total, '0')) continue;
+          const acct = await TradingAccount.findById(pos.accountId).select('baseCurrency').lean();
+          const currency = (acct && acct.baseCurrency) || 'INR';
+          const args = {
+            userId: pos.userId, accountId: pos.accountId, currency, amount: total,
+            type: 'DIVIDEND', referenceType: 'CORP_ACTION', referenceId: ca._id,
+            note: `Dividend ${ca.symbol} @ ${per}/sh`, dedupeKey: `DIVIDEND:${ca._id}:${pos._id}`,
+          };
+          if (pos.side === 'BUY') await walletService.credit(args);  // long → credit
+          else await walletService.debit(args);                     // short → debit
+          notifyUser(String(pos.userId), 'wallet', { event: 'DIVIDEND', symbol: ca.symbol });
+          affected++;
+        }
+      }
+
+      await CorporateAction.updateOne({ _id: ca._id }, { $set: { appliedCount: affected } });
+      console.log(`[Worker] corporate action: ${ca.type} ${ca.symbol} → ${affected} position(s)`);
+    } catch (e) {
+      console.error(`[Worker] corporate action ${ca._id} failed:`, e.message);
+      await CorporateAction.updateOne({ _id: ca._id }, { $set: { applied: false, appliedAt: null } }); // retry next slow-tick
+    }
+  }
+};
+
 const tick = async () => {
   if (running) return;
   running = true;
@@ -1108,6 +1188,7 @@ const start = (intervalMs = 5000) => {
       await sweepExpiredSubscriptions();
       await recalcPartnerTiersIfNewMonth();
       await syncDhanDaily();
+      await applyCorporateActions();
     } catch (e) {
       console.error('[Worker] slow-tick error:', e.message);
     }

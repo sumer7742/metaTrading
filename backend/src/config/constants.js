@@ -143,6 +143,7 @@ module.exports = {
     TRADE_CLOSE: 'TRADE_CLOSE',
     FEE: 'FEE',
     ADJUSTMENT: 'ADJUSTMENT',
+    DIVIDEND: 'DIVIDEND',                          // corporate-action cash (long credit / short debit)
     TRANSFER: 'TRANSFER',                          // intra-user (account-to-account)
     INTERNAL_TRANSFER_OUT: 'INTERNAL_TRANSFER_OUT',// peer-to-peer: sender side
     INTERNAL_TRANSFER_IN:  'INTERNAL_TRANSFER_IN', // peer-to-peer: receiver side

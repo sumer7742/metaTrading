@@ -68,6 +68,10 @@ const positionSchema = new mongoose.Schema(
     // so the history schema is forward-compatible when one is added.
     swap: { type: String, default: '0' },
 
+    // Corporate actions (split/bonus) already applied to this position — makes
+    // the worker's adjustment idempotent (can't double-apply on retry).
+    corpActionsApplied: { type: [mongoose.Schema.Types.ObjectId], default: [] },
+
     // Why this position closed. Set by the background worker just before
     // submitting the closing order, so the history view can show "PROFIT
     // TAKEN" / "STOP LOSS HIT" etc instead of a generic "N/A". For manual
