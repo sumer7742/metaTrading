@@ -3996,7 +3996,7 @@ function PositionsTable({ positions, onClose, onModify, fxRate, instrumentsBySym
           <th className="text-right p-2">Commission</th>
           <th className="text-right p-2">Charges</th>
           <th className="text-left p-2">Open time</th>
-          <th className="text-right p-2 sticky right-[120px] z-10 bg-white border-l border-border-subtle">P/L, USD</th>
+          <th className="text-right p-2 sticky right-[120px] z-10 bg-white border-l border-border-subtle">P/L</th>
           <th className="text-right p-2 sticky right-0 z-10 bg-white w-[120px]"></th>
         </tr>
       </thead>
@@ -4010,18 +4010,17 @@ function PositionsTable({ positions, onClose, onModify, fxRate, instrumentsBySym
           const mark = fmtPriceDual(p.markPrice || p.entryPrice, quote, fxRate, prec);
           const tpPx = p.takeProfit ? fmtPriceDual(p.takeProfit, quote, fxRate, prec) : null;
           const slPx = p.stopLoss ? fmtPriceDual(p.stopLoss, quote, fxRate, prec) : null;
-          // PnL on the wire is already in the position's quote currency.
-          // We display USD throughout, so for INR-quoted positions convert
-          // to USD; otherwise show the native number as-is.
-          const pnlUsd = quote === 'INR' ? pnl / Math.max(Number(fxRate || 0), 1) : pnl;
-          const feeUsd = quote === 'INR' ? Number(p.commission || 0) / Math.max(Number(fxRate || 0), 1) : Number(p.commission || 0);
-          const swapUsd = quote === 'INR' ? Number(p.swap || 0) / Math.max(Number(fxRate || 0), 1) : Number(p.swap || 0);
+          // PnL / fees on the wire are already in the position's quote currency
+          // (₹ for NSE/BSE, $ for USD-quoted). Show them natively so an INR stock
+          // reads ₹ P/L instead of a USD conversion.
+          const fee = Number(p.commission || 0);
+          const swap = Number(p.swap || 0);
           // A trade's single fee belongs to exactly ONE group (by its type):
           // commission-type → Commission column; charge-type → Charges column.
           // Swap (overnight financing) is always a charge.
           const isCharge = p.feeCategory === 'CHARGES';
-          const commUsd = isCharge ? 0 : feeUsd;
-          const chargesUsd = (isCharge ? feeUsd : 0) + swapUsd;
+          const comm = isCharge ? 0 : fee;
+          const charges = (isCharge ? fee : 0) + swap;
           return (
             <tr key={p._id} className="table-row group">
               <td className="p-2 font-mono text-xs text-text-secondary" title={p._id}>{ticketShort(p._id)}</td>
@@ -4045,11 +4044,11 @@ function PositionsTable({ positions, onClose, onModify, fxRate, instrumentsBySym
               </td>
               <td className="p-2 text-right font-mono">{tpPx?.primary || '—'}</td>
               <td className="p-2 text-right font-mono">{slPx?.primary || '—'}</td>
-              <td className="p-2 text-right font-mono text-text-secondary">{commUsd ? fmtPnlSimple(-Math.abs(commUsd), 'USD') : '—'}</td>
-              <td className="p-2 text-right font-mono text-text-secondary">{chargesUsd ? fmtPnlSimple(-Math.abs(chargesUsd), 'USD') : '—'}</td>
+              <td className="p-2 text-right font-mono text-text-secondary">{comm ? fmtPnlSimple(-Math.abs(comm), quote) : '—'}</td>
+              <td className="p-2 text-right font-mono text-text-secondary">{charges ? fmtPnlSimple(-Math.abs(charges), quote) : '—'}</td>
               <td className="p-2 text-left text-xs text-text-secondary">{fmtDate(p.openedAt || p.createdAt)}</td>
               <td className={`p-2 text-right font-mono sticky right-[120px] z-10 bg-white group-hover:bg-bg-hover border-l border-border-subtle ${pnl >= 0 ? 'text-bull' : 'text-bear'}`}>
-                <div>{fmtPnlSimple(pnlUsd, 'USD')}</div>
+                <div>{fmtPnlSimple(pnl, quote)}</div>
               </td>
               <td className="p-2 sticky right-0 z-10 bg-white group-hover:bg-bg-hover">
                 <div className="w-[104px] flex justify-end gap-1">
@@ -4109,7 +4108,7 @@ function OrdersTable({ orders, onCancel, fxRate, instrumentsBySymbol, livePrices
           <th className="text-right p-2">Commission (est)</th>
           <th className="text-right p-2">Charges (est)</th>
           <th className="text-left p-2">Open time</th>
-          <th className="text-right p-2 sticky right-[96px] z-10 bg-white border-l border-border-subtle">P/L, USD</th>
+          <th className="text-right p-2 sticky right-[96px] z-10 bg-white border-l border-border-subtle">P/L</th>
           <th className="text-right p-2 sticky right-0 z-10 bg-white w-[96px]"></th>
         </tr>
       </thead>
@@ -4129,10 +4128,10 @@ function OrdersTable({ orders, onCancel, fxRate, instrumentsBySymbol, livePrices
           const slPx = o.stopLoss ? fmtPriceDual(o.stopLoss, quote, fxRate, prec) : null;
           // Estimated fee this order will incur when it fills — routed to one
           // column by its type (no swap until the position is held).
-          const feeUsd = quote === 'INR' ? Number(o.commission || 0) / Math.max(Number(fxRate || 0), 1) : Number(o.commission || 0);
+          const fee = Number(o.commission || 0);
           const isCharge = o.feeCategory === 'CHARGES';
-          const commUsd = isCharge ? 0 : feeUsd;
-          const chargesUsd = isCharge ? feeUsd : 0;
+          const comm = isCharge ? 0 : fee;
+          const charges = isCharge ? fee : 0;
           return (
             <tr key={o._id} className="table-row group">
               <td className="p-2 font-mono text-xs text-text-secondary" title={o._id}>{ticketShort(o._id)}</td>
@@ -4157,8 +4156,8 @@ function OrdersTable({ orders, onCancel, fxRate, instrumentsBySymbol, livePrices
               </td>
               <td className="p-2 text-right font-mono">{tpPx?.primary || '—'}</td>
               <td className="p-2 text-right font-mono">{slPx?.primary || '—'}</td>
-              <td className="p-2 text-right font-mono text-text-secondary" title="Estimated — charged when the order fills & the position closes">{commUsd ? fmtPnlSimple(-Math.abs(commUsd), 'USD') : '—'}</td>
-              <td className="p-2 text-right font-mono text-text-secondary" title="Estimated — charged when the order fills & the position closes">{chargesUsd ? fmtPnlSimple(-Math.abs(chargesUsd), 'USD') : '—'}</td>
+              <td className="p-2 text-right font-mono text-text-secondary" title="Estimated — charged when the order fills & the position closes">{comm ? fmtPnlSimple(-Math.abs(comm), quote) : '—'}</td>
+              <td className="p-2 text-right font-mono text-text-secondary" title="Estimated — charged when the order fills & the position closes">{charges ? fmtPnlSimple(-Math.abs(charges), quote) : '—'}</td>
               <td className="p-2 text-left text-xs text-text-secondary">{fmtDate(o.createdAt)}</td>
               {/* P&L doesn't apply to a pending order — it has no open
                   exposure yet, so it stays empty until the order fills. */}
@@ -4214,7 +4213,7 @@ function ClosedTable({ trades, fxRate, instrumentsBySymbol }) {
           <th className="text-left p-2">Open time</th>
           <th className="text-left p-2">Closed time</th>
           <th className="text-left p-2">Reason</th>
-          <th className="text-right p-2 sticky right-0 z-10 bg-white border-l border-border-subtle">P/L, USD</th>
+          <th className="text-right p-2 sticky right-0 z-10 bg-white border-l border-border-subtle">P/L</th>
         </tr>
       </thead>
       <tbody>
@@ -4226,14 +4225,12 @@ function ClosedTable({ trades, fxRate, instrumentsBySymbol }) {
           const close = t.closePrice ? fmtPriceDual(t.closePrice, quote, fxRate, prec) : null;
           const tpPx = t.takeProfit ? fmtPriceDual(t.takeProfit, quote, fxRate, prec) : null;
           const slPx = t.stopLoss ? fmtPriceDual(t.stopLoss, quote, fxRate, prec) : null;
-          const toUsd = (v) => (quote === 'INR' ? Number(v || 0) / Math.max(Number(fxRate || 0), 1) : Number(v || 0));
           const pnl = Number(t.realizedPnl || 0);
-          const pnlUsd = toUsd(pnl);
-          const feeUsd = toUsd(t.commission);
+          const fee = Number(t.commission || 0);
           // Single fee → one group by its type; swap is always a charge.
           const isCharge = t.feeCategory === 'CHARGES';
-          const commUsd = isCharge ? 0 : feeUsd;
-          const chargesUsd = (isCharge ? feeUsd : 0) + toUsd(t.swap);
+          const comm = isCharge ? 0 : fee;
+          const charges = (isCharge ? fee : 0) + Number(t.swap || 0);
           return (
             <tr key={t._id} className="table-row group">
               <td className="p-2 font-mono text-xs text-text-secondary" title={t._id}>{ticketShort(t._id)}</td>
@@ -4255,12 +4252,12 @@ function ClosedTable({ trades, fxRate, instrumentsBySymbol }) {
               </td>
               <td className="p-2 text-right font-mono">{tpPx?.primary || '—'}</td>
               <td className="p-2 text-right font-mono">{slPx?.primary || '—'}</td>
-              <td className="p-2 text-right font-mono text-text-secondary">{commUsd ? fmtPnlSimple(-Math.abs(commUsd), 'USD') : '—'}</td>
-              <td className="p-2 text-right font-mono text-text-secondary">{chargesUsd ? fmtPnlSimple(-Math.abs(chargesUsd), 'USD') : '—'}</td>
+              <td className="p-2 text-right font-mono text-text-secondary">{comm ? fmtPnlSimple(-Math.abs(comm), quote) : '—'}</td>
+              <td className="p-2 text-right font-mono text-text-secondary">{charges ? fmtPnlSimple(-Math.abs(charges), quote) : '—'}</td>
               <td className="p-2 text-left text-xs text-text-secondary">{fmtDate(t.openedAt || t.createdAt)}</td>
               <td className="p-2 text-left text-xs text-text-secondary">{fmtDate(t.closedAt)}</td>
               <td className="p-2 text-left text-xs">{closeReasonLabel(t.closeReason)}</td>
-              <td className={`p-2 text-right font-mono font-semibold sticky right-0 z-10 bg-white group-hover:bg-bg-hover border-l border-border-subtle ${pnl >= 0 ? 'text-bull' : 'text-bear'}`}>{fmtPnlSimple(pnlUsd, 'USD')}</td>
+              <td className={`p-2 text-right font-mono font-semibold sticky right-0 z-10 bg-white group-hover:bg-bg-hover border-l border-border-subtle ${pnl >= 0 ? 'text-bull' : 'text-bear'}`}>{fmtPnlSimple(pnl, quote)}</td>
             </tr>
           );
         })}
