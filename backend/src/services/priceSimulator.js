@@ -86,6 +86,9 @@ const reconcile = async () => {
   const enabledInsts = await Instrument.find({
     'priceSimulator.enabled': true,
     isActive: true,
+    // Indian instruments are owned by the real feed (Yahoo/Dhan) — never let the
+    // synthetic simulator overwrite their lastPrice, even if enabled was left on.
+    exchange: { $nin: ['NSE', 'BSE', 'NFO', 'BFO', 'MCX'] },
   }).select('_id symbol priceSimulator').lean();
 
   const enabledIds = new Set(enabledInsts.map((i) => String(i._id)));
