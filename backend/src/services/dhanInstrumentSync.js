@@ -14,14 +14,15 @@
  *   DHAN_SYNC_EQUITY=all|curated             default 'all'
  */
 const Instrument = require('../models/Instrument');
+const { LIQUID_NSE_SET } = require('../config/indianLiquidStocks');
 
 const CSV_URL = process.env.DHAN_SCRIP_URL || 'https://images.dhan.co/api-data/api-scrip-master-detailed.csv';
 const FO_UNDERLYINGS = (process.env.DHAN_SYNC_FNO || 'NIFTY,BANKNIFTY,FINNIFTY')
   .split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
-const EQUITY_MODE = (process.env.DHAN_SYNC_EQUITY || 'all').toLowerCase();
-const EQ_CURATED = new Set(['RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK', 'SBIN', 'ITC',
-  'HINDUNILVR', 'BHARTIARTL', 'KOTAKBANK', 'LT', 'AXISBANK', 'BAJFINANCE', 'ASIANPAINT', 'MARUTI',
-  'WIPRO', 'SUNPHARMA', 'TITAN', 'TATAMOTORS', 'TATASTEEL', 'HCLTECH', 'NTPC', 'ONGC']);
+// Default 'curated': only keep the liquid universe (real-price-able on the free
+// Yahoo feed). Set DHAN_SYNC_EQUITY=all to import every listed scrip again.
+const EQUITY_MODE = (process.env.DHAN_SYNC_EQUITY || 'curated').toLowerCase();
+const EQ_CURATED = LIQUID_NSE_SET;
 const MON = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
 
 function parseCsvLine(line) {
@@ -114,13 +115,30 @@ async function syncAll() {
     } });
   }
 
-  if (!ops.length) return { ops: 0, upserted: 0, modified: 0 };
+  if (!ops.length) return { ops: 0, upserted: 0, modified: 0, deactivated: 0 };
   let upserted = 0, modified = 0;
   for (let k = 0; k < ops.length; k += 2000) { // batch to keep each bulkWrite modest
     const w = await Instrument.bulkWrite(ops.slice(k, k + 2000), { ordered: false });
     upserted += w.upsertedCount || 0; modified += w.modifiedCount || 0;
   }
-  return { ops: ops.length, upserted, modified };
+
+  // Curated mode is the source of truth for the cash-equity universe: deactivate
+  // any NSE EQ that's not in the liquid list (self-healing — keeps the daily sync
+  // from re-surfacing penny stocks), and (re)activate the ones that are.
+  let deactivated = 0;
+  if (EQUITY_MODE !== 'all') {
+    const keep = [...EQ_CURATED];
+    const d = await Instrument.updateMany(
+      { exchange: 'NSE', segment: 'EQ', symbol: { $nin: keep }, isActive: true },
+      { $set: { isActive: false } },
+    );
+    deactivated = d.modifiedCount || 0;
+    await Instrument.updateMany(
+      { exchange: 'NSE', segment: 'EQ', symbol: { $in: keep }, isActive: false },
+      { $set: { isActive: true } },
+    );
+  }
+  return { ops: ops.length, upserted, modified, deactivated };
 }
 
 module.exports = { syncAll };

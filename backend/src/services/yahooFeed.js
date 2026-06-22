@@ -29,7 +29,7 @@ const { updateCandlesForTrade } = require('./candleService');
 const POLL_MS = Number(process.env.YAHOO_POLL_MS) || 5000;
 const TIMEOUT_MS = Number(process.env.YAHOO_TIMEOUT_MS) || 7000;
 const MAX = Number(process.env.YAHOO_MAX_SYMBOLS) || 300;
-const CONC = Number(process.env.YAHOO_CONCURRENCY) || 5;
+const CONC = Number(process.env.YAHOO_CONCURRENCY) || 8;
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
 
 // Underlying → Yahoo index ticker. Unknown underlyings fall back to `<U>.NS`.
