@@ -40,10 +40,10 @@ const MARKETS = [
 ];
 
 const STATS = [
-  { v: '$4.2B+', l: 'Monthly volume' },
-  { v: '250K+', l: 'Active traders' },
-  { v: '500+', l: 'Instruments' },
+  { v: '₹0', l: 'Free to start' },
+  { v: '24/7', l: 'Platform access' },
   { v: '99.98%', l: 'Uptime' },
+  { v: '256-bit', l: 'Encryption' },
 ];
 
 const STEPS = [
@@ -60,6 +60,7 @@ export default function Landing() {
       <main className="flex-1">
         <Hero />
         <Ticker />
+        <Pillars />
         <Stats />
         <Features />
         <Markets />
@@ -83,21 +84,21 @@ function Hero() {
       </div>
       <div className="relative max-w-[1200px] mx-auto px-4 sm:px-6 pt-16 pb-12 lg:pt-24 lg:pb-20 grid lg:grid-cols-2 gap-12 items-center">
         <div>
-          <span className="badge-primary mb-5">● Live markets · 500+ instruments</span>
+          <span className="badge-primary mb-5">● Free to start · 24/7 access · Trusted platform</span>
           <h1 className="text-[40px] leading-[1.08] sm:text-[56px] font-extrabold tracking-tight">
-            Trade the world's<br />markets, <span style={{ background: 'linear-gradient(90deg,#1D4ED8,#3B82F6)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>like a pro.</span>
+            Trade free, anytime —<br />on a platform <span style={{ background: 'linear-gradient(90deg,#1D4ED8,#3B82F6)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>you can trust.</span>
           </h1>
           <p className="mt-5 text-lg text-text-secondary max-w-xl">
-            Forex, crypto, stocks, commodities and more — on a lightning-fast platform with pro charts, copy trading and tight spreads.
+            No platform fees, no hidden charges. Markets open round the clock, with bank-grade security and 99.98% uptime — built to stay reliable for the long run.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-3">
             <Link to="/register" className="btn-primary text-base px-7 py-3.5 shadow-elevated">Start trading free →</Link>
             <Link to="/login" className="btn-ghost text-base px-7 py-3.5">Sign in</Link>
           </div>
           <div className="mt-7 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-text-muted">
-            <span className="inline-flex items-center gap-1.5"><Check /> No paperwork</span>
-            <span className="inline-flex items-center gap-1.5"><Check /> Free demo balance</span>
-            <span className="inline-flex items-center gap-1.5"><Check /> 2-min sign up</span>
+            <span className="inline-flex items-center gap-1.5"><Check /> 100% free to start</span>
+            <span className="inline-flex items-center gap-1.5"><Check /> 24/7 access</span>
+            <span className="inline-flex items-center gap-1.5"><Check /> Bank-grade security</span>
           </div>
         </div>
         <HeroVisual />
@@ -199,6 +200,30 @@ function Ticker() {
         ))}
       </div>
     </div>
+  );
+}
+
+/* ───────────────────────────── Pillars ───────────────────────────── */
+function Pillars() {
+  const items = [
+    { icon: 'gift', title: 'Free to start', body: 'No signup fees, no platform charges, and a free demo balance to practice risk-free. Keep more of what you make.' },
+    { icon: 'clock', title: '24/7 access', body: 'Markets, charts and live support available round the clock — trade crypto any hour and manage your positions whenever you want.' },
+    { icon: 'shield', title: 'Forever trustable', body: 'Bank-grade encryption, 2FA, segregated funds and 99.98% uptime. A platform built to stay reliable for the long run.' },
+  ];
+  return (
+    <section className="max-w-[1200px] mx-auto px-4 sm:px-6 pt-14 -mb-2">
+      <div className="grid md:grid-cols-3 gap-4">
+        {items.map((it) => (
+          <div key={it.title} className="card p-7 text-center hover:border-primary-500/40 hover:shadow-elevated transition-all">
+            <div className="w-14 h-14 rounded-2xl bg-primary-500/10 text-primary-600 flex items-center justify-center mx-auto mb-4">
+              <FeatureIcon name={it.icon} />
+            </div>
+            <h3 className="text-lg font-bold">{it.title}</h3>
+            <p className="mt-2 text-sm text-text-secondary leading-relaxed">{it.body}</p>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -335,8 +360,8 @@ function FinalCTA() {
     <section className="max-w-[1200px] mx-auto px-4 sm:px-6 py-16">
       <div className="relative rounded-2xl overflow-hidden px-6 sm:px-12 py-14 text-center" style={{ background: 'linear-gradient(135deg,#1E3A8A 0%,#1D4ED8 55%,#3B82F6 100%)' }}>
         <div className="pointer-events-none absolute inset-0 opacity-20" style={{ background: 'radial-gradient(circle at 20% 20%,#fff,transparent 40%)' }} />
-        <h2 className="relative text-3xl sm:text-4xl font-extrabold text-white">Start trading today</h2>
-        <p className="relative mt-3 text-white/85 max-w-xl mx-auto">Join thousands of traders. Create your account in under two minutes — demo balance included.</p>
+        <h2 className="relative text-3xl sm:text-4xl font-extrabold text-white">Start trading — free</h2>
+        <p className="relative mt-3 text-white/85 max-w-xl mx-auto">Join thousands of traders on a platform built to be trusted. Free to start, open 24/7, demo balance included — set up in under two minutes.</p>
         <div className="relative mt-8 flex flex-wrap justify-center gap-3">
           <Link to="/register" className="keep-white bg-white text-primary-600 font-bold rounded-lg px-8 py-3.5 text-base hover:shadow-elevated transition-shadow">Create free account</Link>
           <Link to="/login" className="border border-white/60 text-white font-bold rounded-lg px-8 py-3.5 text-base hover:bg-white/10 transition-colors">Sign in</Link>
@@ -370,6 +395,8 @@ function FeatureIcon({ name }) {
     case 'shield': return <svg {...p}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="M9 12l2 2 4-4" /></svg>;
     case 'coins': return <svg {...p}><ellipse cx="12" cy="6" rx="8" ry="3" /><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6" /><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6" /></svg>;
     case 'support': return <svg {...p}><circle cx="12" cy="12" r="9" /><path d="M5 19l2-3M19 19l-2-3" /><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.5-2.5 2-2.5 3.5" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>;
+    case 'clock': return <svg {...p}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3.5 2" /></svg>;
+    case 'gift': return <svg {...p}><path d="M20 12v9H4v-9" /><rect x="2" y="7" width="20" height="5" rx="1" /><path d="M12 22V7" /><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z" /><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z" /></svg>;
     default: return <svg {...p}><circle cx="12" cy="12" r="9" /></svg>;
   }
 }
