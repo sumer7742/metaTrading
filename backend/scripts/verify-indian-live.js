@@ -19,6 +19,7 @@ const mongoose = require('mongoose');
 const Instrument = require('../src/models/Instrument');
 const { getSession } = require('../src/services/marketHours');
 const yahooFeed = require('../src/services/yahooFeed');
+const upstoxFeed = require('../src/services/upstoxFeed');
 
 const ok = (s) => `\x1b[32m${s}\x1b[0m`;
 const bad = (s) => `\x1b[31m${s}\x1b[0m`;
@@ -60,6 +61,21 @@ async function yahooLtp(sym) {
   return { status: 200, px: m ? (m.regularMarketPrice != null ? m.regularMarketPrice : m.previousClose) : null };
 }
 
+async function upstoxLtp(keys) {
+  const out = new Map();
+  if (!keys.length) return out;
+  const res = await fetch(`https://api.upstox.com/v2/market-quote/ltp?instrument_key=${encodeURIComponent(keys.join(','))}`,
+    { headers: { Authorization: `Bearer ${process.env.UPSTOX_ACCESS_TOKEN}`, Accept: 'application/json' } });
+  if (res.status === 401) throw new Error('401 — UPSTOX_ACCESS_TOKEN expired/invalid (daily token)');
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const j = await res.json();
+  for (const v of Object.values((j && j.data) || {})) {
+    const k = v && v.instrument_token; const px = v && (v.last_price != null ? v.last_price : v.ltp);
+    if (k && px != null) out.set(k, Number(px));
+  }
+  return out;
+}
+
 (async () => {
   let hardFail = false;
 
@@ -70,6 +86,12 @@ async function yahooLtp(sym) {
     console.log(`  DHAN_CLIENT_ID    : ${hasId ? ok('set') : bad('MISSING')}`);
     console.log(`  DHAN_ACCESS_TOKEN : ${hasTok ? ok(`set (${process.env.DHAN_ACCESS_TOKEN.length} chars)`) : bad('MISSING')}`);
     if (!hasId || !hasTok) { console.log(bad('  → Dhan feed disabled without both. Set in backend/.env + restart.')); hardFail = true; }
+  } else if (FEED === 'upstox') {
+    const hasTok = !!process.env.UPSTOX_ACCESS_TOKEN;
+    console.log(`  UPSTOX_ACCESS_TOKEN : ${hasTok ? ok(`set (${process.env.UPSTOX_ACCESS_TOKEN.length} chars)`) : bad('MISSING')}`);
+    console.log(dim('  FREE real-time (Upstox market-quote). Token is DAILY — regenerate ~03:30 IST.'));
+    console.log(dim('  Equity needs ISIN (re-import after adding ISIN). Futures = spot proxy, options = intrinsic.'));
+    if (!hasTok) { console.log(bad('  → Set UPSTOX_ACCESS_TOKEN in backend/.env + restart.')); hardFail = true; }
   } else {
     console.log(`  ${ok('FREE — no API key needed')} ${dim('(Yahoo Finance public chart endpoint)')}`);
     console.log(dim('  Equities + indices = real LTP. Futures = underlying-spot proxy. Options = intrinsic (no time value).'));
@@ -108,7 +130,7 @@ async function yahooLtp(sym) {
   // 4) Live probe ----------------------------------------------------------
   console.log(`\n── 4. Live ${FEED.toUpperCase()} probe (validates feed end-to-end) ──`);
   const samples = await Instrument.find({ exchange: { $in: ['NSE', 'BSE', 'NFO', 'BFO'] }, isActive: true })
-    .select('symbol exchange segment underlying strike optionType instrumentToken lastPrice lastPriceUpdatedAt')
+    .select('symbol exchange segment underlying strike optionType instrumentToken isin lastPrice lastPriceUpdatedAt')
     .sort({ segment: 1 }).limit(60).lean();
   const eq = samples.filter((i) => i.segment === 'EQ').slice(0, 5);
   const der = samples.filter((i) => i.segment === 'FUT' || i.segment === 'OPT').slice(0, 3);
@@ -116,6 +138,22 @@ async function yahooLtp(sym) {
 
   if (!probe.length) {
     console.log(dim('  (no instruments to probe)'));
+  } else if (FEED === 'upstox') {
+    const isinBySym = new Map();
+    for (const i of samples) if (i.segment === 'EQ' && i.isin) isinBySym.set(i.symbol, i.isin);
+    const keyFor = new Map(); const uniq = new Set();
+    for (const i of probe) { const k = upstoxFeed.spotKeyFor(i, isinBySym); keyFor.set(String(i._id), k); if (k) uniq.add(k); }
+    let priceByKey = new Map();
+    try { priceByKey = await upstoxLtp([...uniq]); }
+    catch (e) { console.log(bad(`  Upstox LTP failed: ${e.message}`)); hardFail = true; }
+    for (const i of probe) {
+      const k = keyFor.get(String(i._id));
+      if (!k) { console.log(`  ${i.symbol.padEnd(22)} ${dim('no Upstox key (missing ISIN?)')}`); continue; }
+      const px = priceByKey.has(k) ? upstoxFeed.priceFor(i, priceByKey.get(k)) : null;
+      const live = px != null ? ok(`₹${px}`) : bad('no quote');
+      const note = i.segment === 'FUT' ? dim('[spot proxy]') : i.segment === 'OPT' ? dim('[intrinsic]') : '';
+      console.log(`  ${i.symbol.padEnd(22)} ${dim(k.padEnd(22))} live=${live} ${note}  ${dim(`db=₹${i.lastPrice ?? '—'} ${ageStr(i.lastPriceUpdatedAt)}`)}`);
+    }
   } else if (FEED === 'yahoo') {
     for (const i of probe) {
       const sym = yahooFeed.spotSymbol(i);

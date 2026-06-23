@@ -51,7 +51,7 @@ const setBroadcaster = (b) => { broadcaster = b; };
 function _enabled() {
   const f = (process.env.INDIAN_FEED || '').toLowerCase();
   if (f === 'yahoo') return true;
-  if (f === 'dhan') return false;
+  if (f === 'dhan' || f === 'upstox') return false;
   return !(process.env.DHAN_CLIENT_ID && process.env.DHAN_ACCESS_TOKEN); // auto
 }
 

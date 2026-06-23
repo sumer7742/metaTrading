@@ -25,6 +25,7 @@ const finnhubFeed = require('./services/finnhubFeed');
 const angelFeed = require('./services/angelFeed');
 const dhanFeed = require('./services/dhanFeed');
 const yahooFeed = require('./services/yahooFeed');
+const upstoxFeed = require('./services/upstoxFeed');
 const priceSimulator = require('./services/priceSimulator');
 const feedOrchestrator = require('./services/feedOrchestrator');
 const emailService = require('./services/emailService');
@@ -439,6 +440,8 @@ const start = async () => {
   dhanFeed.start();
   yahooFeed.setBroadcaster(wsBroadcaster);
   yahooFeed.start();
+  upstoxFeed.setBroadcaster(wsBroadcaster);
+  upstoxFeed.start();
   priceSimulator.setBroadcaster(wsBroadcaster);
   priceSimulator.start().catch((e) => console.error('[PriceSim] failed:', e.message));
   feedOrchestrator.start();

@@ -49,7 +49,7 @@ async function syncAll() {
     return -1;
   };
   const C = {
-    exch: col('EXCH_ID'), sid: col('SECURITY_ID'), inst: col('INSTRUMENT'),
+    exch: col('EXCH_ID'), sid: col('SECURITY_ID'), isin: col('ISIN'), inst: col('INSTRUMENT'),
     series: col('SERIES'), lot: col('LOT_SIZE'), exp: col('SM_EXPIRY_DATE'),
     strike: col('STRIKE_PRICE'), opt: col('OPTION_TYPE'), tick: col('TICK_SIZE'),
     custom: col('DISPLAY_NAME'), under: col('UNDERLYING_SYMBOL'),
@@ -101,7 +101,7 @@ async function syncAll() {
     const set$ = {
       symbol, name: get(r, C.custom) || symbol, category,
       exchange: segment === 'EQ' ? 'NSE' : 'NFO', segment,
-      externalProvider: 'DHAN', instrumentToken: get(r, C.sid),
+      externalProvider: 'DHAN', instrumentToken: get(r, C.sid), isin: get(r, C.isin) || null,
       tickSize: String(Number(get(r, C.tick)) || 0.05), lotSize: String(lot),
       pricePrecision: 2, quantityPrecision: 0, minOrderSize: segment === 'EQ' ? '1' : String(lot),
       isActive: true,

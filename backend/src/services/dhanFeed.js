@@ -104,6 +104,11 @@ async function _loop() {
 }
 
 const start = () => {
+  const f = (process.env.INDIAN_FEED || '').toLowerCase();
+  if (f && f !== 'dhan') {
+    console.log(`[Dhan] INDIAN_FEED=${f} — Dhan feed off (another provider owns Indian prices).`);
+    return;
+  }
   if (!_credsPresent()) {
     console.log('[Dhan] No DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN — Indian live feed disabled (instruments still show, prices static).');
     return;

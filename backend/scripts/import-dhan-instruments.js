@@ -56,6 +56,7 @@ function parseCsvLine(line) {
   const C = {
     exch: col('EXCH_ID', 'SEM_EXM_EXCH_ID', 'EXCHANGE'),
     sid: col('SECURITY_ID', 'SEM_SMST_SECURITY_ID'),
+    isin: col('ISIN', 'SEM_ISIN', 'ISIN_CODE'),
     inst: col('INSTRUMENT', 'SEM_INSTRUMENT_NAME'),
     sym: col('SYMBOL_NAME', 'SEM_TRADING_SYMBOL', 'TRADING_SYMBOL'),
     series: col('SERIES'),
@@ -156,7 +157,7 @@ function parseCsvLine(line) {
       symbol, name: get(r, C.custom) || symbol,
       category, exchange: ourExch(get(r, C.exch).toUpperCase(), inst), segment,
       externalProvider: 'DHAN', externalFeedSymbol: get(r, C.sym),
-      instrumentToken: get(r, C.sid),
+      instrumentToken: get(r, C.sid), isin: get(r, C.isin) || null,
       tickSize: String(tick), lotSize: String(lot),
       pricePrecision: 2, quantityPrecision: 0, minOrderSize: segment === 'EQ' ? '1' : String(lot),
       isActive: true,
