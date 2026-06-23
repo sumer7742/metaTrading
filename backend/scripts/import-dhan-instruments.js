@@ -67,6 +67,7 @@ function parseCsvLine(line) {
     tick: col('TICK_SIZE', 'SEM_TICK_SIZE'),
     custom: col('DISPLAY_NAME', 'SEM_CUSTOM_SYMBOL'),
     under: col('UNDERLYING_SYMBOL', 'SM_SYMBOL_NAME'),
+    upperLimit: col('SM_UPPER_LIMIT'), lowerLimit: col('SM_LOWER_LIMIT'), freezeQty: col('SM_FREEZE_QTY'),
   };
   console.log('[dhan] column map:', C);
   if (C.exch < 0 || C.sid < 0 || C.inst < 0 || C.sym < 0) {
@@ -158,6 +159,9 @@ function parseCsvLine(line) {
       category, exchange: ourExch(get(r, C.exch).toUpperCase(), inst), segment,
       externalProvider: 'DHAN', externalFeedSymbol: get(r, C.sym),
       instrumentToken: get(r, C.sid), isin: get(r, C.isin) || null,
+      upperCircuit: (Number(get(r, C.upperLimit)) > 0 ? String(Number(get(r, C.upperLimit))) : null),
+      lowerCircuit: (Number(get(r, C.lowerLimit)) > 0 ? String(Number(get(r, C.lowerLimit))) : null),
+      freezeQty: (Number(get(r, C.freezeQty)) > 0 ? String(Number(get(r, C.freezeQty))) : null),
       tickSize: String(tick), lotSize: String(lot),
       pricePrecision: 2, quantityPrecision: 0, minOrderSize: segment === 'EQ' ? '1' : String(lot),
       isActive: true,

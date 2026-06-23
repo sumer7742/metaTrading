@@ -71,7 +71,9 @@ async function syncAll() {
     series: col('SERIES'), lot: col('LOT_SIZE'), exp: col('SM_EXPIRY_DATE'),
     strike: col('STRIKE_PRICE'), opt: col('OPTION_TYPE'), tick: col('TICK_SIZE'),
     custom: col('DISPLAY_NAME'), under: col('UNDERLYING_SYMBOL'),
+    upperLimit: col('SM_UPPER_LIMIT'), lowerLimit: col('SM_LOWER_LIMIT'), freezeQty: col('SM_FREEZE_QTY'),
   };
+  const _band = (v) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? String(n) : null; };
   if (C.exch < 0 || C.sid < 0 || C.inst < 0 || C.under < 0) throw new Error('unexpected scrip-master columns');
   const get = (a, i) => (i >= 0 && i < a.length ? String(a[i] || '').trim() : '');
 
@@ -112,6 +114,7 @@ async function syncAll() {
         under, category, expDate, expTag, optType, strikeVal,
         sid: get(r, C.sid), isin: get(r, C.isin) || null,
         tick: Number(get(r, C.tick)) || 0.05, lot: get(r, C.lot) || '1', custom: get(r, C.custom),
+        upperCircuit: _band(get(r, C.upperLimit)), lowerCircuit: _band(get(r, C.lowerLimit)), freezeQty: _band(get(r, C.freezeQty)),
       });
       continue;
     }
@@ -128,6 +131,7 @@ async function syncAll() {
       exchange: segment === 'EQ' ? 'NSE' : 'NFO', segment,
       externalProvider: 'DHAN', instrumentToken: get(r, C.sid), isin: get(r, C.isin) || null,
       tickSize: String(Number(get(r, C.tick)) || 0.05), lotSize: String(lot),
+      upperCircuit: _band(get(r, C.upperLimit)), lowerCircuit: _band(get(r, C.lowerLimit)), freezeQty: _band(get(r, C.freezeQty)),
       pricePrecision: 2, quantityPrecision: 0, minOrderSize: segment === 'EQ' ? '1' : String(lot),
       isActive: true,
     };
@@ -167,6 +171,7 @@ async function syncAll() {
               exchange: 'NFO', segment: 'OPT',
               externalProvider: 'DHAN', instrumentToken: o.sid, isin: o.isin,
               tickSize: String(o.tick), lotSize: String(o.lot),
+              upperCircuit: o.upperCircuit, lowerCircuit: o.lowerCircuit, freezeQty: o.freezeQty,
               pricePrecision: 2, quantityPrecision: 0, minOrderSize: String(o.lot),
               isActive: true, expiryDate: o.expDate, underlying: under,
               strike: String(o.strikeVal), optionType: o.optType,

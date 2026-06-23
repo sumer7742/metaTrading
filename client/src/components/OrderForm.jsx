@@ -345,6 +345,20 @@ export default function OrderForm({
       if (!price || Number(price) <= 0) return toast.error('Enter a valid limit price');
       if (limitInvalidReason) return toast.error(limitInvalidReason);
     }
+    // Indian order-safety (mirrors backend): tick size, circuit band, freeze qty.
+    if (['NSE', 'BSE', 'NFO', 'BFO', 'MCX'].includes(instrument?.exchange)) {
+      const tick = Number(instrument.tickSize) || 0;
+      const uc = Number(instrument.upperCircuit) || 0;
+      const lc = Number(instrument.lowerCircuit) || 0;
+      const fz = Number(instrument.freezeQty) || 0;
+      const px = orderMode === 'LIMIT' ? Number(price) : 0;
+      if (px > 0) {
+        if (tick > 0 && Math.abs(px / tick - Math.round(px / tick)) > 1e-6) return toast.error(`Price must be in multiples of ${tick}`);
+        if (uc > 0 && px > uc) return toast.error(`Price above today's upper circuit (${uc})`);
+        if (lc > 0 && px < lc) return toast.error(`Price below today's lower circuit (${lc})`);
+      }
+      if (fz > 0 && Number(quantity) > fz) return toast.error(`Max ${fz} per order (freeze limit) for ${instrument.symbol}`);
+    }
     // Confirmation step — gated by "Confirm before order" setting AND
     // not in one-click mode (which by definition skips confirmation).
     if (confirmBeforeOrder && !isOneClick) {
@@ -1044,6 +1058,15 @@ export default function OrderForm({
                 </button>
               );
             })}
+          </div>
+        )}
+
+        {/* Indian order-safety hint: today's circuit band + per-order freeze cap. */}
+        {['NSE', 'BSE', 'NFO', 'BFO', 'MCX'].includes(instrument?.exchange)
+          && (instrument?.upperCircuit || instrument?.freezeQty) && (
+          <div className="text-[10px] text-text-muted px-1">
+            {instrument?.lowerCircuit && instrument?.upperCircuit ? `Circuit ${instrument.lowerCircuit}–${instrument.upperCircuit}` : ''}
+            {instrument?.freezeQty ? `${instrument?.upperCircuit ? '  ·  ' : ''}Max ${instrument.freezeQty}/order` : ''}
           </div>
         )}
 

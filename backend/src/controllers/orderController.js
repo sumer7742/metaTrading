@@ -458,6 +458,33 @@ const placeOrder = asyncHandler(async (req, res) => {
     }
   }
 
+  // ─── Indian order-safety: tick size, circuit band, freeze qty ────────
+  // Enforced only for exchange-bound Indian instruments and only where the
+  // data exists (null/0 = not enforced). Tick + circuit apply to user-set
+  // LIMIT/STOP prices (market orders fill at the live, in-band price).
+  if (['NSE', 'BSE', 'NFO', 'BFO', 'MCX'].includes(instrument.exchange)) {
+    const tick = Number(instrument.tickSize) || 0;
+    const uc = Number(instrument.upperCircuit) || 0;
+    const lc = Number(instrument.lowerCircuit) || 0;
+    const fz = Number(instrument.freezeQty) || 0;
+    const checkPx = (px, label) => {
+      if (!(px > 0)) return;
+      if (tick > 0) {
+        const n = px / tick;
+        if (Math.abs(n - Math.round(n)) > 1e-6) {
+          throw new AppError(`${label} price must be in multiples of the tick size (${tick}) for ${instrument.symbol}.`, 400, 'INVALID_TICK_SIZE');
+        }
+      }
+      if (uc > 0 && px > uc) throw new AppError(`${label} price ${px} is above today's upper circuit (${uc}) for ${instrument.symbol}.`, 400, 'PRICE_OUT_OF_BAND');
+      if (lc > 0 && px < lc) throw new AppError(`${label} price ${px} is below today's lower circuit (${lc}) for ${instrument.symbol}.`, 400, 'PRICE_OUT_OF_BAND');
+    };
+    if (type === 'LIMIT' && price) checkPx(Number(price), 'Limit');
+    if (stopPrice) checkPx(Number(stopPrice), 'Stop');
+    if (fz > 0 && Number(quantity) > fz) {
+      throw new AppError(`Quantity ${quantity} exceeds the max per-order freeze quantity (${fz}) for ${instrument.symbol}.`, 400, 'QTY_EXCEEDS_FREEZE');
+    }
+  }
+
   // Margin lock: compute how much new exposure this order opens (closing-leg
   // is netted out against existing position), and lock that from free balance.
   // STOP orders also lock at placement so the user can't double-spend the

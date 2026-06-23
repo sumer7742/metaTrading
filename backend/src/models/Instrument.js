@@ -18,6 +18,10 @@ const instrumentSchema = new mongoose.Schema(
     tickSize: { type: String, default: '0.05' },        // NSE equity default tick (₹0.05)
     instrumentToken: { type: String, default: null, index: true }, // feed/broker token (Kite/Angel/Dhan)
     isin: { type: String, default: null },              // ISIN for cash equity
+    // ── Order-safety bands (from Dhan scrip master; null = not enforced) ──
+    upperCircuit: { type: String, default: null },      // daily upper price band (SM_UPPER_LIMIT)
+    lowerCircuit: { type: String, default: null },      // daily lower price band (SM_LOWER_LIMIT)
+    freezeQty: { type: String, default: null },         // max qty per F&O order (SM_FREEZE_QTY)
 
     // ── Derivatives (Phase 2: Futures, Phase 3: Options) ──
     // expiryDate triggers auto square-off; underlying links FUT/OPT to its spot.
