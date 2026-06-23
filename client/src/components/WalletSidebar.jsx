@@ -36,7 +36,7 @@ const NAV_ITEMS = [
 export default function WalletSidebar({ activeId = null, onSelect = null }) {
   return (
     <aside className="col-span-12 lg:col-span-2 xl:col-span-2 flex flex-col gap-4 min-w-0 lg:sticky lg:top-28 lg:self-start">
-      <nav className="bg-white border border-border-dark rounded-2xl p-2 flex flex-col gap-0.5">
+      <nav className="bg-white border border-border-dark rounded-2xl p-2 flex flex-row lg:flex-col gap-1 lg:gap-0.5 overflow-x-auto lg:overflow-visible no-scrollbar">
         {NAV_ITEMS.map((n) => {
           const isActive = activeId === n.id;
           const content = (
@@ -54,7 +54,7 @@ export default function WalletSidebar({ activeId = null, onSelect = null }) {
               )}
             </>
           );
-          const className = `flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-left transition-colors ${
+          const className = `flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-left transition-colors shrink-0 ${
             isActive
               ? 'bg-primary-500/10 text-primary-600'
               : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
@@ -84,8 +84,8 @@ export default function WalletSidebar({ activeId = null, onSelect = null }) {
         })}
       </nav>
 
-      {/* Support card */}
-      <div className="bg-white border border-border-dark rounded-2xl p-4">
+      {/* Support card — hidden on mobile */}
+      <div className="hidden lg:block bg-white border border-border-dark rounded-2xl p-4">
         <div className="text-sm font-bold text-text-primary">Need Help?</div>
         <div className="text-[11px] text-text-muted mt-0.5">Our support team is available 24/7</div>
         <Link
@@ -101,8 +101,8 @@ export default function WalletSidebar({ activeId = null, onSelect = null }) {
         </Link>
       </div>
 
-      {/* Secure footer card */}
-      <div className="rounded-2xl p-4 border" style={{ background: '#3B82F608', borderColor: '#3B82F633' }}>
+      {/* Secure footer card — hidden on mobile */}
+      <div className="hidden lg:block rounded-2xl p-4 border" style={{ background: '#3B82F608', borderColor: '#3B82F633' }}>
         <div className="flex items-start gap-2.5">
           <span className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0" style={{ background: '#3B82F618', color: '#3B82F6' }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
