@@ -51,8 +51,10 @@ async function mapFnoKeys() {
   const buf = Buffer.from(await res.arrayBuffer());
   const json = JSON.parse(zlib.gunzipSync(buf).toString('utf8'));
 
-  // Index Upstox F&O contracts by canonical key.
+  // Index Upstox F&O contracts by canonical key, plus a reverse index
+  // (underlying|strike|type → expiry days) for diagnosing date mismatches.
   const lut = new Map();
+  const ustCT = new Map();
   for (const it of json) {
     const seg = it.segment || it.exchange_segment || '';
     if (seg !== 'NSE_FO' && seg !== 'BSE_FO') continue;
@@ -60,7 +62,11 @@ async function mapFnoKeys() {
     const type = String(it.instrument_type || '').toUpperCase(); // CE / PE / FUT
     const under = canon(it.underlying_symbol || it.asset_symbol || it.name);
     if (!under) continue;
-    lut.set(key(under, istDay(it.expiry), it.strike_price, type), it.instrument_key);
+    const day = istDay(it.expiry);
+    lut.set(key(under, day, it.strike_price, type), it.instrument_key);
+    const ct = `${under}|${type === 'FUT' ? '' : String(Number(it.strike_price))}|${type === 'FUT' ? 'FUT' : type}`;
+    if (!ustCT.has(ct)) ustCT.set(ct, new Set());
+    ustCT.get(ct).add(day);
   }
 
   // Stamp the key onto our active F&O instruments.
@@ -83,7 +89,11 @@ async function mapFnoKeys() {
     }
     if (!found) {
       missing += 1; bucket.missing += 1;
-      if (missSamples.length < 8) missSamples.push(`${i.symbol} → ${key(u, base, i.strike, type)}`);
+      if (missSamples.length < 8) {
+        const ct = `${u}|${type === 'FUT' ? '' : String(Number(i.strike))}|${type}`;
+        const have = ustCT.get(ct);
+        missSamples.push(`${i.symbol}  ours=${base}  upstoxHas=[${have ? [...have].sort().join(',') : 'NONE'}]`);
+      }
       continue;
     }
     matched += 1; bucket.matched += 1;
