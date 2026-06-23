@@ -18,7 +18,7 @@
  */
 require('dotenv').config();
 const mongoose = require('mongoose');
-const { nearestExpiries } = require('../src/services/optionUniverse');
+const { nearestExpiries, strikeInWindow, OPT_STRIKE_PCT } = require('../src/services/optionUniverse');
 
 const CSV_URL = process.env.DHAN_SCRIP_URL || 'https://images.dhan.co/api-data/api-scrip-master-detailed.csv';
 const UNDERLYINGS = (process.env.SEED_UNDERLYINGS || 'NIFTY,BANKNIFTY')
@@ -103,12 +103,21 @@ function parseCsvLine(line) {
   for (const under of UNDERLYINGS) {
     const rows = rowsByUnder.get(under) || [];
     const keepExp = nearestExpiries(rows.map((o) => o.expDate.getTime()), now); // current + next
+    // Reference (≈ATM) from the nearest future, to window strikes to the
+    // tradeable band (±DHAN_OPT_STRIKE_PCT%). Upstox doesn't list far-OTM
+    // strikes anyway, so windowing both tightens the chain and lifts the
+    // real-price match rate. No reference → keep all strikes.
+    const futDoc = await Instrument.findOne({ underlying: under, segment: 'FUT' })
+      .sort({ expiryDate: 1 }).select('lastPrice').lean();
+    const ref = futDoc && Number(futDoc.lastPrice) > 0 ? Number(futDoc.lastPrice) : null;
     const seen = new Set(); // dedup by symbol
     const kept = [];
     let expiriesKept = new Set();
+    let windowed = 0;
     for (const o of rows) {
       const ts = o.expDate.getTime();
       if (!keepExp.has(ts)) continue;
+      if (!strikeInWindow(o.strikeVal, ref)) { windowed += 1; continue; } // far-OTM — skip
       const tag = `${MON[o.expDate.getUTCMonth()]}${String(o.expDate.getUTCFullYear()).slice(2)}`;
       const symbol = `${under}${tag}${o.strikeVal}${o.optType}`.replace(/\s+/g, '');
       // Validation: every contract must carry these.
@@ -137,7 +146,8 @@ function parseCsvLine(line) {
       } });
     }
     keptSymbolsByUnder.set(under, kept);
-    console.log(`[seed-opt]   ${under.padEnd(10)} kept ${String(kept.length).padStart(4)} contracts across ${expiriesKept.size} expiry(${[...expiriesKept].join(',') || '-'})`);
+    const win = ref ? `±${OPT_STRIKE_PCT}% of ₹${ref}` : 'all strikes (no future ref yet)';
+    console.log(`[seed-opt]   ${under.padEnd(10)} kept ${String(kept.length).padStart(4)} (skipped ${windowed} far-OTM) across ${expiriesKept.size} expiry(${[...expiriesKept].join(',') || '-'})  [${win}]`);
   }
 
   if (missingField) console.warn(`[seed-opt] ⚠ skipped ${missingField} rows missing token/expiry/strike/type`);
