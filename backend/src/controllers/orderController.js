@@ -426,6 +426,23 @@ const placeOrder = asyncHandler(async (req, res) => {
     orderLeverage = 1;
   }
 
+  // ─── Indian cash-equity product type (Delivery vs Intraday) ─────────
+  // DELIVERY = full cash (leverage 1, STT 0.1% both legs). INTRADAY =
+  // leveraged (default 5x, capped by the resolved cap) + STT 0.025% sell-only
+  // + auto square-off at 15:15 IST (backgroundWorker). Only NSE/BSE cash
+  // equity; every other segment/asset class is unaffected (NORMAL).
+  let productType = 'NORMAL';
+  if (instrument.segment === 'EQ' && (instrument.exchange === 'NSE' || instrument.exchange === 'BSE')) {
+    productType = String(req.body.productType || 'DELIVERY').toUpperCase() === 'INTRADAY' ? 'INTRADAY' : 'DELIVERY';
+    if (productType === 'INTRADAY') {
+      const intradayCap = Number(process.env.INTRADAY_EQUITY_LEVERAGE) || 5;
+      orderLeverage = Math.min(orderLeverage, intradayCap);
+    } else {
+      orderLeverage = 1; // delivery is full cash
+    }
+    if (!Number.isFinite(orderLeverage) || orderLeverage < 1) orderLeverage = 1;
+  }
+
   // ─── F&O lot-size validation ────────────────────────────────────────
   // Futures/options trade only in whole lots — quantity must be a multiple of
   // the contract lot size (e.g. NIFTY 75/150, not 50).
@@ -483,6 +500,7 @@ const placeOrder = asyncHandler(async (req, res) => {
     stopLoss: stopLoss ? String(stopLoss) : undefined,
     takeProfit: takeProfit ? String(takeProfit) : undefined,
     leverage: orderLeverage,
+    productType,
     status: ORDER_STATUS.PENDING,
     idempotencyKey,
     // Persisted on order so cancel/reject can release the exact amount

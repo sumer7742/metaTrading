@@ -200,6 +200,11 @@ export default function OrderForm({
   const [tpInput, setTpInput] = useState('');
   const [slInput, setSlInput] = useState('');
   const [leverage, setLeverage] = useState(initialLev);
+  // Indian cash-equity product type — Delivery (full cash) vs Intraday (leveraged
+  // + auto square-off). Only shown/sent for NSE/BSE EQ.
+  const [productType, setProductType] = useState('DELIVERY');
+  const isIndianEquity = instrument?.segment === 'EQ'
+    && (instrument?.exchange === 'NSE' || instrument?.exchange === 'BSE');
   const [loading, setLoading] = useState(false);
   const [accountFree, setAccountFree] = useState(null);
 
@@ -363,6 +368,7 @@ export default function OrderForm({
         idempotencyKey: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
       };
       if (orderMode === 'LIMIT') payload.price = price;
+      if (isIndianEquity) payload.productType = productType; // DELIVERY / INTRADAY
       // Skip 0 / negative / non-numeric — the truthy-string check used to
       // accept "0" and send a never-triggering threshold to the backend.
       if (Number(stopLoss) > 0)   payload.stopLoss = stopLoss;
@@ -681,14 +687,16 @@ export default function OrderForm({
   let statutory = 0;
   let statutoryLines = [];
   if (isIndianEq && notional > 0) {
-    const stt  = notional * 0.00025;     // intraday sell STT 0.025%
+    const delivery = productType === 'DELIVERY';
+    const sttRate = delivery ? 0.001 : 0.00025; // delivery 0.1% (both legs) vs intraday 0.025% sell
+    const stt  = notional * sttRate;
     const exch = notional * 0.0000297;   // NSE transaction charge
     const sebi = notional * 0.000001;    // SEBI turnover fee
     const gst  = (commFlat + commPctAmt + exch + sebi) * 0.18;
     statutory = stt + exch + sebi + gst;
     statutoryLines = [
       'Statutory charges (NSE est.)',
-      `• STT (0.025%): ${fmtQuote(stt)}`,
+      `• STT (${delivery ? '0.1% both legs' : '0.025% sell'}): ${fmtQuote(stt)}`,
       `• Exchange + SEBI: ${fmtQuote(exch + sebi)}`,
       `• GST (18%): ${fmtQuote(gst)}`,
     ];
@@ -1011,6 +1019,31 @@ export default function OrderForm({
               <span style={{ color: C.dim }}>Normal: 1:{leverageOverride.normalLeverage}</span>
               {leverageOverride.endAt && <span style={{ color: C.dim }}>Expires: {fmtOverrideTime(leverageOverride.endAt)}</span>}
             </div>
+          </div>
+        )}
+
+        {/* ── Product type (Indian cash equity only): Delivery vs Intraday ── */}
+        {isIndianEquity && (
+          <div className="flex gap-2">
+            {[
+              { id: 'DELIVERY', label: 'Delivery', hint: '1x · full cash' },
+              { id: 'INTRADAY', label: 'Intraday', hint: '5x · auto sq-off 3:15' },
+            ].map((p) => {
+              const active = productType === p.id;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  onClick={() => setProductType(p.id)}
+                  className={`flex-1 rounded-xl border px-3 py-2 text-left transition-colors ${
+                    active ? 'border-primary-500 bg-primary-500/10' : 'border-border-dark hover:bg-bg-hover'
+                  }`}
+                >
+                  <div className={`text-[13px] font-bold ${active ? 'text-primary-600' : 'text-text-primary'}`}>{p.label}</div>
+                  <div className="text-[10px] text-text-muted">{p.hint}</div>
+                </button>
+              );
+            })}
           </div>
         )}
 

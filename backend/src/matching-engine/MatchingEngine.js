@@ -324,7 +324,7 @@ class MatchingEngine {
         // sides so each derives its own dedupeKey of "TRADE_SETTLE:<tradeId>".
         // (Idempotency is per (wallet, dedupeKey) so taker and maker each
         // get one settle on their own wallet.)
-        await this._updatePosition(order.accountId, order.userId, order.instrumentId, order.symbol, order.side, f.qty, f.price, order.leverage, newTrade._id, order.closeOnly, order.stopLoss, order.takeProfit, order.positionSide, bookOf(order));
+        await this._updatePosition(order.accountId, order.userId, order.instrumentId, order.symbol, order.side, f.qty, f.price, order.leverage, newTrade._id, order.closeOnly, order.stopLoss, order.takeProfit, order.positionSide, bookOf(order), order.productType);
 
         // Maker side: skip the position update if we couldn't load the maker
         // doc (deleted out from under us, etc.). Defaulting leverage to 1
@@ -345,7 +345,8 @@ class MatchingEngine {
             maker.stopLoss,
             maker.takeProfit,
             maker.positionSide,
-            bookOf(maker)
+            bookOf(maker),
+            maker.productType
           );
         } else {
           console.error(
@@ -449,7 +450,8 @@ class MatchingEngine {
           order.stopLoss,
           order.takeProfit,
           order.positionSide,
-          bookOf(order)
+          bookOf(order),
+          order.productType
         );
 
         order.filledQuantity = add(order.filledQuantity, remainingQty);
@@ -992,7 +994,7 @@ class MatchingEngine {
    * doc.save) for the CLOSED transition so concurrent SL+TP+manual
    * closes can't double-settle.
    */
-  async _updatePosition(accountId, userId, instrumentId, symbol, side, qty, price, leverage, tradeId, closeOnly = false, stopLoss = null, takeProfit = null, positionSide = null, book = 'B_BOOK') {
+  async _updatePosition(accountId, userId, instrumentId, symbol, side, qty, price, leverage, tradeId, closeOnly = false, stopLoss = null, takeProfit = null, positionSide = null, book = 'B_BOOK', productType = 'NORMAL') {
     // HEDGE MODE — LONG and SHORT positions on the same instrument coexist.
     // Position identity is (accountId, symbol, positionSide), so a BUY fill
     // never auto-closes a SHORT position and vice versa.
@@ -1078,6 +1080,7 @@ class MatchingEngine {
         quantity: qty,
         entryPrice: price,
         leverage: leverage || 1,
+        productType: productType || 'NORMAL',
         margin,
         // Carry SL/TP from the opening order onto the new position. Without
         // this, the order-time inputs were stored on the Order doc but
@@ -1141,6 +1144,8 @@ class MatchingEngine {
       closeQty,
       closePrice: price,
       closePnl,
+      productType: pos.productType,
+      entryPrice: pos.entryPrice,
     });
     try { fee = await subscriptionService.applyFeeDiscount(userId, fee); } catch (_) { /* keep raw fee */ }
 

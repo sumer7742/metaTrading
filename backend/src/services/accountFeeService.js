@@ -16,7 +16,7 @@
  * has no tier metadata (truly orphaned legacy accounts).
  */
 const accountPlansService = require('./accountPlansService');
-const { mul, gt } = require('../utils/decimal');
+const { mul, add, gt } = require('../utils/decimal');
 const { computeInstrumentCommission, findCommissionOverride, computeOverrideCommission, resolveCommissionType } = require('../utils/commission');
 
 // Display grouping for a fee TYPE — the SAME categorization the UI uses:
@@ -59,16 +59,24 @@ async function _resolvePlan(account) {
  */
 async function computeCloseFee(args) {
   const brokerage = await _computeBrokerage(args);
-  const { instrument, closeQty, closePrice } = args;
+  const { instrument, closeQty, closePrice, entryPrice, productType } = args;
   if (instrument && (instrument.exchange === 'NSE' || instrument.exchange === 'BSE')) {
     const { computeEquityCharges } = require('./indianCharges');
-    const { total } = computeEquityCharges({
-      side: 'SELL',
-      turnover: mul(closeQty, closePrice),
-      exchange: instrument.exchange,
-      product: 'INTRADAY',
-      brokerage,
+    // DELIVERY → STT 0.1% on BOTH legs; INTRADAY → 0.025% sell-only. Default
+    // INTRADAY keeps the prior behaviour for any caller that omits productType.
+    const product = String(productType).toUpperCase() === 'DELIVERY' ? 'DELIVERY' : 'INTRADAY';
+    const sell = computeEquityCharges({
+      side: 'SELL', turnover: mul(closeQty, closePrice), exchange: instrument.exchange, product, brokerage,
     });
+    let total = sell.total;
+    // Delivery: the entry (buy) leg also attracts STT + stamp + exchange/SEBI/GST.
+    // No extra brokerage on the buy leg (platform charges its fee once, at close).
+    if (product === 'DELIVERY' && entryPrice != null) {
+      const buy = computeEquityCharges({
+        side: 'BUY', turnover: mul(closeQty, entryPrice), exchange: instrument.exchange, product, brokerage: '0',
+      });
+      total = add(total, buy.total);
+    }
     return total;
   }
   return brokerage;

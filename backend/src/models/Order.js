@@ -36,6 +36,9 @@ const orderSchema = new mongoose.Schema(
     takeProfit: String,
 
     leverage: { type: Number, default: 1 },
+    // Indian cash-equity product type (DELIVERY / INTRADAY). NORMAL = n/a for
+    // forex/crypto/F&O. Carried onto the Position at open.
+    productType: { type: String, enum: ['DELIVERY', 'INTRADAY', 'NORMAL'], default: 'NORMAL' },
 
     status: { type: String, enum: Object.values(ORDER_STATUS), default: ORDER_STATUS.PENDING, index: true },
     // @deprecated — preserved for backward compat with existing reports.

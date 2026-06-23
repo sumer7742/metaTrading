@@ -27,6 +27,10 @@ const positionSchema = new mongoose.Schema(
     closedQuantity: { type: String, default: '0' },
     entryPrice: { type: String, required: true },
     leverage: { type: Number, default: 1 },
+    // Indian cash-equity product type. DELIVERY = full cash (1x); INTRADAY =
+    // leveraged + auto square-off at 15:15 IST + intraday STT. NORMAL = n/a
+    // (forex/crypto/F&O — keeps existing behaviour).
+    productType: { type: String, enum: ['DELIVERY', 'INTRADAY', 'NORMAL'], default: 'NORMAL' },
     margin: { type: String, default: '0' }, // locked margin
 
     // Which book holds this position's risk — stamped at open from the opening
@@ -78,7 +82,7 @@ const positionSchema = new mongoose.Schema(
     // user-initiated closes this stays null and renders as "N/A".
     closeReason: {
       type: String,
-      enum: ['TAKE_PROFIT', 'STOP_LOSS', 'TRAILING_STOP', 'MARGIN_STOPOUT', 'NEGATIVE_BALANCE', 'MANUAL', 'EXPIRY'],
+      enum: ['TAKE_PROFIT', 'STOP_LOSS', 'TRAILING_STOP', 'MARGIN_STOPOUT', 'NEGATIVE_BALANCE', 'MANUAL', 'EXPIRY', 'INTRADAY_SQUAREOFF'],
       default: null,
     },
 

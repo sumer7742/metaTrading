@@ -913,6 +913,53 @@ const checkExpiry = async () => {
 };
 
 /**
+ * Intraday (MIS) auto square-off. Any OPEN equity position opened with
+ * productType:'INTRADAY' is force-closed at/after 15:15 IST on a trading day —
+ * same atomic OPEN→CLOSING claim + closeOnly route as expiry/SL-TP, so wallet
+ * settlement (incl. intraday STT) runs normally. closeOnly via orderRouter, so
+ * the market-closed gate doesn't block it. Tunable: INTRADAY_SQUAREOFF_IST (min).
+ */
+const SQUAREOFF_IST_MIN = Number(process.env.INTRADAY_SQUAREOFF_IST) || (15 * 60 + 15); // 15:15 IST
+
+const checkIntradaySquareOff = async () => {
+  const ist = new Date(Date.now() + 5.5 * 60 * 60 * 1000); // shift to IST (read via getUTC*)
+  const istMin = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+  const istDay = ist.getUTCDay();
+  if (istDay === 0 || istDay === 6) return;   // weekend — nothing to square off
+  if (istMin < SQUAREOFF_IST_MIN) return;     // before the square-off time
+
+  const positions = await Position.find({
+    productType: 'INTRADAY', status: POSITION_STATUS.OPEN, settled: { $ne: true },
+  });
+  for (const pos of positions) {
+    const claimed = await Position.findOneAndUpdate(
+      { _id: pos._id, status: POSITION_STATUS.OPEN, settled: { $ne: true } },
+      { $set: { status: POSITION_STATUS.CLOSING, closeReason: 'INTRADAY_SQUAREOFF' } },
+      { new: true }
+    );
+    if (!claimed) continue;
+    const oppositeSide = pos.side === 'BUY' ? 'SELL' : 'BUY';
+    const sourcePositionSide = pos.positionSide || (pos.side === 'BUY' ? 'LONG' : 'SHORT');
+    const closingOrder = await Order.create({
+      userId: pos.userId, accountId: pos.accountId, instrumentId: pos.instrumentId,
+      symbol: pos.symbol, side: oppositeSide, positionSide: sourcePositionSide,
+      type: ORDER_TYPE.MARKET, quantity: pos.quantity, leverage: pos.leverage,
+      status: ORDER_STATUS.PENDING, closeOnly: true, reduceOnly: true,
+    });
+    try {
+      await _submit(closingOrder);
+      notifyUser(String(pos.userId), 'positions', { event: 'INTRADAY_SQUAREOFF', positionId: String(pos._id), symbol: pos.symbol });
+    } catch (e) {
+      await Position.updateOne(
+        { _id: pos._id, status: POSITION_STATUS.CLOSING, settled: { $ne: true } },
+        { $set: { status: POSITION_STATUS.OPEN } }
+      );
+      console.error('[Worker] intraday square-off failed:', e.message);
+    }
+  }
+};
+
+/**
  * Apply due corporate actions (cash equity) once, on/after exDate.
  *   SPLIT/BONUS — adjust open positions (qty ×mult, entry ÷mult, SL/TP ÷mult,
  *     closedQty ×mult) + resting orders; notional/margin unchanged. Idempotent
@@ -1006,6 +1053,7 @@ const tick = async () => {
     await checkPriceAlerts();
     await checkAutoModeSwitch();
     await checkExpiry();
+    await checkIntradaySquareOff();
   } catch (e) {
     console.error('[Worker] tick error:', e.message);
   } finally {
