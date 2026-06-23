@@ -271,7 +271,7 @@ export default function Wallet() {
   ];
 
   return (
-    <div className="max-w-[1600px] grid grid-cols-12 gap-3 lg:-ml-4 xl:-ml-6">
+    <div className="max-w-[1600px] grid grid-cols-12 gap-3 lg:-ml-4 xl:-ml-6 overflow-x-hidden">
       {/* ── LEFT NAV — sticky so it stays visible as the main content
           (wizard, transactions, etc.) scrolls underneath. Layout's
           global header is sticky top-0 with h-16 nav (64 px) + the
@@ -544,23 +544,24 @@ const NISubscription = () => <NS><rect x="2" y="6" width="20" height="14" rx="2"
 
 function Stat({ label, value, secondary, hint, color, emphasis }) {
   return (
-    <div>
+    <div className="min-w-0">
       <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted">{label}</div>
       <div
-        className={`mt-1 font-bold font-mono tabular-nums ${emphasis ? 'text-2xl sm:text-3xl' : 'text-xl sm:text-2xl'}`}
+        className={`mt-1 font-bold font-mono tabular-nums truncate ${emphasis ? 'text-xl sm:text-3xl' : 'text-lg sm:text-2xl'}`}
         style={{ color: color || undefined }}
+        title={typeof value === 'string' ? value : undefined}
       >
         {value}
       </div>
-      {secondary && <div className="text-[11px] font-mono text-text-muted mt-0.5">{secondary}</div>}
-      {hint && <div className="text-[11px] text-text-muted mt-1">{hint}</div>}
+      {secondary && <div className="text-[11px] font-mono text-text-muted mt-0.5 truncate">{secondary}</div>}
+      {hint && <div className="text-[11px] text-text-muted mt-1 truncate">{hint}</div>}
     </div>
   );
 }
 
 function MetricCard({ tint, icon: Icon, label, value, secondary, sub, valueColor }) {
   return (
-    <div className="rounded-2xl border border-border-dark bg-white p-4 hover:shadow-card transition-shadow">
+    <div className="rounded-2xl border border-border-dark bg-white p-4 hover:shadow-card transition-shadow min-w-0">
       <div className="flex items-start justify-between">
         <span
           className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
@@ -569,12 +570,12 @@ function MetricCard({ tint, icon: Icon, label, value, secondary, sub, valueColor
           <Icon />
         </span>
       </div>
-      <div className="text-[11px] uppercase tracking-wider text-text-muted font-semibold mt-3">{label}</div>
-      <div className="text-xl font-bold font-mono tabular-nums mt-0.5" style={{ color: valueColor || undefined }}>
+      <div className="text-[11px] uppercase tracking-wider text-text-muted font-semibold mt-3 truncate">{label}</div>
+      <div className="text-lg sm:text-xl font-bold font-mono tabular-nums mt-0.5 truncate" style={{ color: valueColor || undefined }} title={typeof value === 'string' ? value : undefined}>
         {value}
       </div>
-      {secondary && <div className="text-[11px] font-mono text-text-muted mt-0.5">{secondary}</div>}
-      {sub && <div className="text-[11px] text-text-muted mt-1">{sub}</div>}
+      {secondary && <div className="text-[11px] font-mono text-text-muted mt-0.5 truncate">{secondary}</div>}
+      {sub && <div className="text-[11px] text-text-muted mt-1 truncate">{sub}</div>}
     </div>
   );
 }
@@ -1869,21 +1870,21 @@ function AccountOverviewView({ totals, usd, usdSub, usdSubSigned, realBalances, 
             <span className="text-sm font-bold text-text-primary">Trading Performance</span>
             <button onClick={() => setView('history')} className="text-xs font-semibold text-primary-600 hover:text-primary-700">View ledger →</button>
           </div>
-          <div className="grid grid-cols-3 gap-4">
-            <div>
+          <div className="grid grid-cols-3 gap-3 sm:gap-4">
+            <div className="min-w-0">
               <div className="text-[10px] uppercase tracking-wider font-semibold text-text-muted">Open Positions</div>
-              <div className="text-2xl font-bold text-text-primary mt-1">{openCount}</div>
+              <div className="text-xl sm:text-2xl font-bold text-text-primary mt-1">{openCount}</div>
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="text-[10px] uppercase tracking-wider font-semibold text-text-muted">Win Rate</div>
-              <div className="text-2xl font-bold mt-1" style={{ color: winRate != null && winRate >= 50 ? '#16A34A' : '#DC2626' }}>
+              <div className="text-xl sm:text-2xl font-bold mt-1" style={{ color: winRate != null && winRate >= 50 ? '#16A34A' : '#DC2626' }}>
                 {winRate != null ? `${winRate}%` : '—'}
               </div>
             </div>
-            <div>
+            <div className="min-w-0">
               <div className="text-[10px] uppercase tracking-wider font-semibold text-text-muted">Margin Used</div>
-              <div className="text-2xl font-bold text-text-primary mt-1 font-mono tabular-nums">{usd(totals.locked)}</div>
-              <div className="text-[11px] font-mono text-text-muted mt-0.5">{usdSub(totals.locked)}</div>
+              <div className="text-base sm:text-2xl font-bold text-text-primary mt-1 font-mono tabular-nums truncate" title={usd(totals.locked)}>{usd(totals.locked)}</div>
+              <div className="text-[11px] font-mono text-text-muted mt-0.5 truncate">{usdSub(totals.locked)}</div>
             </div>
           </div>
         </div>
