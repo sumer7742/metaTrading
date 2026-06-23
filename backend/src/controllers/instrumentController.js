@@ -6,9 +6,19 @@ const matchingEngine = require('../matching-engine/MatchingEngine');
 const externalFeed = require('../services/externalFeedService');
 const { D } = require('../utils/decimal');
 
+// Options are accessed through the dedicated option-chain endpoint, never the
+// bulk catalog — thousands of contracts would flood every consumer (Explore,
+// search, watchlists, the instrument strip) and slow the whole app. Callers that
+// genuinely want options pass ?segment=OPT (or ?includeOptions=true).
+const _excludeOptions = (req, filter) => {
+  if (req.query.segment) filter.segment = String(req.query.segment).toUpperCase();
+  else if (String(req.query.includeOptions) !== 'true') filter.segment = { $ne: 'OPT' };
+};
+
 const list = asyncHandler(async (req, res) => {
   const filter = { isActive: true };
   if (req.query.category) filter.category = req.query.category;
+  _excludeOptions(req, filter);
   const items = await Instrument.find(filter).lean();
   // Enrich with any ACTIVE leverage / fixed-volume overrides so the client
   // can show indicators and lock the volume input. Batched (no N+1).
@@ -61,6 +71,7 @@ const volumeUsage = asyncHandler(async (req, res) => {
 const watchlist = asyncHandler(async (req, res) => {
   const filter = { isActive: true };
   if (req.query.category) filter.category = req.query.category;
+  _excludeOptions(req, filter);
   const items = await Instrument.find(filter).lean();
   if (!items.length) return sendSuccess(res, []);
 
@@ -191,6 +202,28 @@ const getOne = asyncHandler(async (req, res) => {
   const inst = await Instrument.findOne({ symbol: req.params.symbol.toUpperCase() }).lean();
   if (!inst) throw new AppError('Instrument not found', 404);
   sendSuccess(res, inst);
+});
+
+// Global instrument search. Prioritises equities / futures / forex / crypto;
+// options are returned ONLY when the query is option-like (carries a strike
+// number or CE/PE) so a normal search isn't drowned by thousands of contracts.
+const search = asyncHandler(async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (!q) return sendSuccess(res, []);
+  const limit = Math.min(Number(req.query.limit) || 25, 50);
+  const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+  const sel = 'symbol name category exchange segment lastPrice quoteCurrency lotSize underlying expiryDate strike optionType';
+
+  const base = await Instrument.find({ isActive: true, segment: { $ne: 'OPT' }, $or: [{ symbol: rx }, { name: rx }] })
+    .select(sel).limit(limit).lean();
+
+  const optionLike = /\d{3,}/.test(q) || /(^|[^A-Z])(CE|PE)([^A-Z]|$)/i.test(q);
+  let opts = [];
+  if (optionLike && base.length < limit) {
+    opts = await Instrument.find({ isActive: true, segment: 'OPT', symbol: rx })
+      .select(sel).limit(limit - base.length).lean();
+  }
+  sendSuccess(res, [...base, ...opts]);
 });
 
 const candles = asyncHandler(async (req, res) => {
@@ -384,4 +417,4 @@ const optionChain = asyncHandler(async (req, res) => {
   sendSuccess(res, { underlying, expiry, expiries, spot: spotDoc ? spotDoc.lastPrice : null, rows });
 });
 
-module.exports = { list, watchlist, getOne, volumeUsage, candles, orderbook, create, update, remove, bulkRouting, optionChain };
+module.exports = { list, watchlist, getOne, search, volumeUsage, candles, orderbook, create, update, remove, bulkRouting, optionChain };
