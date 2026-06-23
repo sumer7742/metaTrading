@@ -17,9 +17,14 @@ const { mapFnoKeys } = require('../src/services/upstoxFnoMap');
   if (!URI) { console.error('Set MONGODB_URI'); process.exit(1); }
   await mongoose.connect(URI);
   const r = await mapFnoKeys();
-  console.log('[upstox-fno]', r);
-  if (r.fno > 0 && r.matched === 0) {
-    console.log('  ⚠ 0 matched — check expiry/strike formats or that F&O are imported.');
+  console.log(`[upstox-fno] fno=${r.fno} matched=${r.matched} missing=${r.missing} updated=${r.updated} (upstox contracts indexed: ${r.upstoxContracts})`);
+  for (const [u, s] of Object.entries(r.byUnder || {})) {
+    console.log(`  ${u.padEnd(12)} matched ${String(s.matched).padStart(4)} / missing ${String(s.missing).padStart(4)}`);
   }
+  if (r.missSamples && r.missSamples.length) {
+    console.log('  unmatched examples (our key we looked up):');
+    for (const s of r.missSamples) console.log(`    ${s}`);
+  }
+  if (r.fno > 0 && r.matched === 0) console.log('  ⚠ 0 matched — check underlying/expiry/strike formats.');
   await mongoose.disconnect();
 })().catch((e) => { console.error(e.stack || e.message); process.exit(1); });
