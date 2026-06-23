@@ -414,7 +414,12 @@ const optionChain = asyncHandler(async (req, res) => {
   const rows = [...byStrike.values()].sort((a, b) => Number(a.strike) - Number(b.strike));
 
   const spotDoc = await Instrument.findOne({ symbol: underlying }).select('lastPrice').lean();
-  sendSuccess(res, { underlying, expiry, expiries, spot: spotDoc ? spotDoc.lastPrice : null, rows });
+
+  // Futures on the same underlying — so the F&O page shows both in one place.
+  const futures = await Instrument.find({ segment: 'FUT', underlying, isActive: true })
+    .select('symbol expiryDate lastPrice lotSize').sort({ expiryDate: 1 }).lean();
+
+  sendSuccess(res, { underlying, expiry, expiries, spot: spotDoc ? spotDoc.lastPrice : null, rows, futures });
 });
 
 module.exports = { list, watchlist, getOne, search, volumeUsage, candles, orderbook, create, update, remove, bulkRouting, optionChain };

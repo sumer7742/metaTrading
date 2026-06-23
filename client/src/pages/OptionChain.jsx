@@ -41,6 +41,7 @@ export default function OptionChain() {
       Math.abs(Number(r.strike) - spot) < Math.abs(Number(best.strike) - spot) ? r : best, rows[0]).strike;
   }
 
+  const futures = data?.futures || [];
   const go = (sym) => sym && navigate(`/trade?symbol=${encodeURIComponent(sym)}`);
   const fmtExp = (iso) => (iso ? new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '');
 
@@ -48,7 +49,7 @@ export default function OptionChain() {
     <div className="max-w-3xl mx-auto px-3 py-4">
       {/* Header */}
       <div className="flex flex-wrap items-center gap-2 mb-3">
-        <h1 className="text-lg font-semibold mr-auto">Option Chain</h1>
+        <h1 className="text-lg font-semibold mr-auto">F&amp;O — Futures &amp; Options</h1>
         <form
           onSubmit={(e) => { e.preventDefault(); setUnderlying(input.trim().toUpperCase()); }}
           className="flex items-center gap-2"
@@ -85,8 +86,32 @@ export default function OptionChain() {
         )}
       </div>
 
+      {/* Futures on this underlying — F&O in one place. */}
+      {!loading && !err && futures.length > 0 && (
+        <div className="mb-3">
+          <div className="text-xs font-semibold text-gray-500 mb-1">Futures</div>
+          <div className="flex flex-wrap gap-2">
+            {futures.map((f) => (
+              <button
+                key={f.symbol}
+                onClick={() => go(f.symbol)}
+                className="px-3 py-1.5 rounded-lg border border-gray-300 dark:border-gray-700 hover:border-primary-500 hover:shadow text-left transition-colors"
+                title={`Trade ${f.symbol}`}
+              >
+                <div className="text-[11px] text-gray-500">{fmtExp(f.expiryDate)}{f.lotSize ? ` · lot ${f.lotSize}` : ''}</div>
+                <div className="text-sm font-semibold">₹{fmtNum(f.lastPrice, 2)}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {loading && <div className="py-10 text-center text-sm text-gray-500">Loading…</div>}
       {err && <div className="py-6 text-center text-sm text-red-500">{err}</div>}
+
+      {!loading && !err && rows.length > 0 && (
+        <div className="text-xs font-semibold text-gray-500 mb-1">Option chain</div>
+      )}
 
       {!loading && !err && rows.length > 0 && (
         <div className="overflow-x-auto rounded border border-gray-200 dark:border-gray-800">
