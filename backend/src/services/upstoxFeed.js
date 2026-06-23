@@ -102,17 +102,10 @@ async function _ltp(keys) {
   return out;
 }
 
-async function _publishTick(inst, ltp) {
-  const price = Number(ltp).toFixed(inst.pricePrecision || 2);
-  await Instrument.updateOne({ _id: inst._id }, { $set: { lastPrice: price, lastPriceUpdatedAt: new Date() } });
-  try { await updateCandlesForTrade({ symbol: inst.symbol, price, quantity: '0', ts: Date.now() }); } catch (_) { /* */ }
-  if (broadcaster) broadcaster.publish(`ticker:${inst.symbol}`, { lastPrice: price, ts: Date.now(), source: 'UPSTOX' });
-}
-
 async function _pollOnce() {
   const insts = await Instrument.find({
     exchange: { $in: ['NSE', 'BSE', 'NFO', 'BFO'] }, isActive: true,
-  }).select('_id symbol exchange segment underlying strike optionType isin pricePrecision tickSize').lean();
+  }).select('_id symbol exchange segment underlying strike optionType isin pricePrecision tickSize lastPrice').lean();
   if (!insts.length) return;
 
   const isinBySym = new Map();
@@ -128,14 +121,29 @@ async function _pollOnce() {
   if (!uniq.size) return;
 
   const priceByKey = await _ltp([...uniq]);
-  let wrote = 0;
+
+  // Only touch instruments whose price actually CHANGED — bulk-write the price
+  // updates (one op, not ~6k sequential writes), then candle + broadcast for the
+  // changed ones. Most options' intrinsic is stable → skipped → cycle stays fast.
+  const now = new Date();
+  const bulk = [];
+  const changed = [];
   for (const i of insts) {
     const k = keyFor.get(String(i._id));
     const px = priceFor(i, k ? priceByKey.get(k) : null);
     if (px == null) continue;
-    await _publishTick(i, px); wrote += 1;
+    const priceStr = Number(px).toFixed(i.pricePrecision || 2);
+    if (priceStr === String(i.lastPrice)) continue; // unchanged — skip
+    bulk.push({ updateOne: { filter: { _id: i._id }, update: { $set: { lastPrice: priceStr, lastPriceUpdatedAt: now } } } });
+    changed.push([i, priceStr]);
   }
-  if (wrote) { try { require('./feedOrchestrator').recordTick('UPSTOX'); } catch (_) {} }
+  if (!bulk.length) return;
+  for (let b = 0; b < bulk.length; b += 1000) await Instrument.bulkWrite(bulk.slice(b, b + 1000), { ordered: false });
+  for (const [i, priceStr] of changed) {
+    try { await updateCandlesForTrade({ symbol: i.symbol, price: priceStr, quantity: '0', ts: Date.now() }); } catch (_) { /* */ }
+    if (broadcaster) broadcaster.publish(`ticker:${i.symbol}`, { lastPrice: priceStr, ts: Date.now(), source: 'UPSTOX' });
+  }
+  try { require('./feedOrchestrator').recordTick('UPSTOX'); } catch (_) {}
 }
 
 async function _loop() {
