@@ -1202,7 +1202,13 @@ const recalcPartnerTiersIfNewMonth = async () => {
 // unless Dhan is configured. Idempotent via the IST day guard.
 let _lastDhanSyncDay = null;
 const syncDhanDaily = async () => {
-  if (!(process.env.DHAN_CLIENT_ID && process.env.DHAN_ACCESS_TOKEN)) return;
+  // Run whenever an Indian feed is configured — the scrip-master CSV is FREE
+  // (no Dhan creds needed), so an Upstox/Yahoo-only setup must still get the
+  // daily instrument refresh. (Previously gated on Dhan creds → never ran for
+  // Upstox users.)
+  const indianActive = process.env.INDIAN_FEED
+    || (process.env.DHAN_CLIENT_ID && process.env.DHAN_ACCESS_TOKEN);
+  if (!indianActive) return;
   const f = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Kolkata', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit',
   });
@@ -1214,7 +1220,15 @@ const syncDhanDaily = async () => {
   _lastDhanSyncDay = day;
   try {
     const r = await require('./dhanInstrumentSync').syncAll();
-    console.log(`[Worker] Dhan instrument sync: ${r.ops} contracts (upserted ${r.upserted}, modified ${r.modified})`);
+    console.log(`[Worker] Dhan instrument sync: ${r.ops} contracts (upserted ${r.upserted}, modified ${r.modified}, optKept ${r.optKept ?? '-'})`);
+    // Upstox feed: map F&O contracts to Upstox instrument_keys so the feed serves
+    // real premiums (not spot-proxy/intrinsic). F&O tokens roll each series.
+    if ((process.env.INDIAN_FEED || '').toLowerCase() === 'upstox') {
+      try {
+        const m = await require('./upstoxFnoMap').mapFnoKeys();
+        console.log(`[Worker] Upstox F&O map: matched ${m.matched}/${m.fno} (updated ${m.updated})`);
+      } catch (e) { console.error('[Worker] Upstox F&O map failed:', e.message); }
+    }
   } catch (e) {
     console.error('[Worker] Dhan instrument sync failed:', e.message);
     _lastDhanSyncDay = null;                    // retry next slow-tick

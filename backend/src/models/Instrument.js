@@ -22,6 +22,9 @@ const instrumentSchema = new mongoose.Schema(
     upperCircuit: { type: String, default: null },      // daily upper price band (SM_UPPER_LIMIT)
     lowerCircuit: { type: String, default: null },      // daily lower price band (SM_LOWER_LIMIT)
     freezeQty: { type: String, default: null },         // max qty per F&O order (SM_FREEZE_QTY)
+    // Upstox instrument_key for F&O contracts (NSE_FO|<token>) — lets the live
+    // feed pull the REAL futures/option price instead of a spot-proxy/intrinsic.
+    upstoxKey: { type: String, default: null },
 
     // ── Derivatives (Phase 2: Futures, Phase 3: Options) ──
     // expiryDate triggers auto square-off; underlying links FUT/OPT to its spot.

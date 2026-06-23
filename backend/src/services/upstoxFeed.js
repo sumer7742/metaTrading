@@ -64,6 +64,20 @@ function spotKeyFor(inst, isinBySym) {
   return isin ? `NSE_EQ|${isin}` : null;
 }
 
+// Live key + how to read its price. 'direct' = the key IS this instrument's own
+// contract (EQ via ISIN, or an F&O contract mapped to its Upstox key) → use the
+// price as-is. 'spot' = underlying spot for an F&O without a mapped key →
+// priceFor() derives a proxy (FUT) / intrinsic (OPT).
+function feedKeyFor(inst, isinBySym) {
+  if (inst.segment === 'EQ') {
+    const k = spotKeyFor(inst, isinBySym);
+    return k ? { key: k, mode: 'direct' } : { key: null };
+  }
+  if (inst.upstoxKey) return { key: inst.upstoxKey, mode: 'direct' }; // real F&O premium
+  const k = spotKeyFor(inst, isinBySym);
+  return k ? { key: k, mode: 'spot' } : { key: null };
+}
+
 // Derive an instrument's price from its underlying spot (same rules as yahooFeed).
 function priceFor(inst, spot) {
   if (spot == null) return null;
@@ -114,7 +128,7 @@ async function _mapPool(items, n, fn) {
 async function _pollOnce() {
   const insts = await Instrument.find({
     exchange: { $in: ['NSE', 'BSE', 'NFO', 'BFO'] }, isActive: true,
-  }).select('_id symbol exchange segment underlying strike optionType isin pricePrecision tickSize lastPrice').lean();
+  }).select('_id symbol exchange segment underlying strike optionType isin upstoxKey pricePrecision tickSize lastPrice').lean();
   if (!insts.length) return;
 
   const isinBySym = new Map();
@@ -123,9 +137,9 @@ async function _pollOnce() {
   const keyFor = new Map();
   const uniq = new Set();
   for (const i of insts) {
-    const k = spotKeyFor(i, isinBySym);
-    keyFor.set(String(i._id), k);
-    if (k) uniq.add(k);
+    const m = feedKeyFor(i, isinBySym);
+    keyFor.set(String(i._id), m);
+    if (m.key) uniq.add(m.key);
   }
   if (!uniq.size) return;
 
@@ -138,8 +152,10 @@ async function _pollOnce() {
   const bulk = [];
   const changed = [];
   for (const i of insts) {
-    const k = keyFor.get(String(i._id));
-    const px = priceFor(i, k ? priceByKey.get(k) : null);
+    const m = keyFor.get(String(i._id));
+    const raw = m && m.key ? priceByKey.get(m.key) : null;
+    // direct = real contract/equity price as-is; spot = derive proxy/intrinsic.
+    const px = raw == null ? null : (m.mode === 'direct' ? raw : priceFor(i, raw));
     if (px == null) continue;
     const priceStr = Number(px).toFixed(i.pricePrecision || 2);
     if (priceStr === String(i.lastPrice)) continue; // unchanged — skip
