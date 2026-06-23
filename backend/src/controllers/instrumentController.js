@@ -413,13 +413,27 @@ const optionChain = asyncHandler(async (req, res) => {
   }
   const rows = [...byStrike.values()].sort((a, b) => Number(a.strike) - Number(b.strike));
 
-  const spotDoc = await Instrument.findOne({ symbol: underlying }).select('lastPrice').lean();
-
   // Futures on the same underlying — so the F&O page shows both in one place.
   const futures = await Instrument.find({ segment: 'FUT', underlying, isActive: true })
     .select('symbol expiryDate lastPrice lotSize').sort({ expiryDate: 1 }).lean();
 
-  sendSuccess(res, { underlying, expiry, expiries, spot: spotDoc ? spotDoc.lastPrice : null, rows, futures });
+  // Spot reference for Greeks: the underlying instrument's price, else the
+  // nearest future (index spot often isn't a tradable instrument here).
+  const spotDoc = await Instrument.findOne({ symbol: underlying }).select('lastPrice').lean();
+  let spot = spotDoc && Number(spotDoc.lastPrice) > 0 ? Number(spotDoc.lastPrice) : null;
+  if (!spot && futures.length && Number(futures[0].lastPrice) > 0) spot = Number(futures[0].lastPrice);
+
+  // Attach Black-Scholes Greeks (IV/Δ/Γ/Θ/Vega) per leg — display only.
+  const og = require('../services/optionGreeks');
+  const expMs = expiry ? new Date(expiry).getTime() : null;
+  if (spot && expMs) {
+    for (const r of rows) {
+      if (r.ce) r.ce.greeks = og.computeForOption({ type: 'CE', S: spot, K: Number(r.strike), expiryMs: expMs, premium: Number(r.ce.lastPrice) });
+      if (r.pe) r.pe.greeks = og.computeForOption({ type: 'PE', S: spot, K: Number(r.strike), expiryMs: expMs, premium: Number(r.pe.lastPrice) });
+    }
+  }
+
+  sendSuccess(res, { underlying, expiry, expiries, spot: spot != null ? String(spot) : null, rows, futures });
 });
 
 module.exports = { list, watchlist, getOne, search, volumeUsage, candles, orderbook, create, update, remove, bulkRouting, optionChain };
