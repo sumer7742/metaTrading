@@ -142,7 +142,32 @@ const updateCandlesForTrade = async ({ symbol, price, quantity, ts }) => {
 };
 
 const getCandles = async (symbol, timeframe, limit = 500) => {
-  return Candle.find({ symbol, timeframe }).sort({ openTime: -1 }).limit(limit).lean();
+  const tfMs = TF_MS[timeframe];
+  const rows = await Candle.find({ symbol, timeframe }).sort({ openTime: -1 }).limit(limit).lean();
+  if (!tfMs || rows.length === 0) return rows;
+
+  // Forward-fill missing buckets with flat carry-forward candles. A real-time
+  // feed only writes a candle when the price CHANGES (perf), so stable stretches
+  // leave holes — without this the chart shows dashes-with-gaps instead of a
+  // continuous series. In-memory only (no DB writes). The last real candle is
+  // filled up to (not incl.) the current live bucket, which the WS feed owns.
+  const FILL_CAP = 3000; // safety: never synthesize more than this per gap
+  const asc = rows.slice().reverse();
+  const out = [];
+  for (let i = 0; i < asc.length; i += 1) {
+    out.push(asc[i]);
+    const curTs = new Date(asc[i].openTime).getTime();
+    const nextTs = i + 1 < asc.length ? new Date(asc[i + 1].openTime).getTime() : bucket(Date.now(), tfMs);
+    let gaps = Math.floor((nextTs - curTs) / tfMs) - 1;
+    if (gaps <= 0) continue;
+    if (gaps > FILL_CAP) gaps = FILL_CAP;
+    const c = asc[i].close;
+    for (let g = 1; g <= gaps; g += 1) {
+      const ot = new Date(curTs + g * tfMs);
+      out.push({ symbol, timeframe, openTime: ot, closeTime: new Date(ot.getTime() + tfMs), open: c, high: c, low: c, close: c, volume: '0' });
+    }
+  }
+  return out.reverse(); // desc, matching the original contract
 };
 
 module.exports = { updateCandlesForTrade, getCandles, TF_MS };
