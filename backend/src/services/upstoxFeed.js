@@ -102,6 +102,15 @@ async function _ltp(keys) {
   return out;
 }
 
+// Bounded-concurrency map (keeps candle writes from running all-at-once).
+async function _mapPool(items, n, fn) {
+  let i = 0;
+  const workers = Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (i < items.length) { const idx = i++; await fn(items[idx]); }
+  });
+  await Promise.all(workers);
+}
+
 async function _pollOnce() {
   const insts = await Instrument.find({
     exchange: { $in: ['NSE', 'BSE', 'NFO', 'BFO'] }, isActive: true,
@@ -139,10 +148,12 @@ async function _pollOnce() {
   }
   if (!bulk.length) return;
   for (let b = 0; b < bulk.length; b += 1000) await Instrument.bulkWrite(bulk.slice(b, b + 1000), { ordered: false });
-  for (const [i, priceStr] of changed) {
+  // Candle writes are the per-cycle bottleneck (one DB upsert each) — run them
+  // with bounded concurrency instead of sequentially so the cycle stays snappy.
+  await _mapPool(changed, 12, async ([i, priceStr]) => {
     try { await updateCandlesForTrade({ symbol: i.symbol, price: priceStr, quantity: '0', ts: Date.now() }); } catch (_) { /* */ }
     if (broadcaster) broadcaster.publish(`ticker:${i.symbol}`, { lastPrice: priceStr, ts: Date.now(), source: 'UPSTOX' });
-  }
+  });
   try { require('./feedOrchestrator').recordTick('UPSTOX'); } catch (_) {}
 }
 
