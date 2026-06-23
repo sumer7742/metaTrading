@@ -151,7 +151,13 @@ async function _pollOnce() {
   // Candle writes are the per-cycle bottleneck (one DB upsert each) — run them
   // with bounded concurrency instead of sequentially so the cycle stays snappy.
   await _mapPool(changed, 12, async ([i, priceStr]) => {
-    try { await updateCandlesForTrade({ symbol: i.symbol, price: priceStr, quantity: '0', ts: Date.now() }); } catch (_) { /* */ }
+    // Skip candle aggregation for OPTIONS — there are thousands, their intrinsic
+    // barely moves, and their charts are rarely viewed. Writing candles for all of
+    // them (×8 timeframes, each with a gap-backfill) is what overloads a small box.
+    // They still get lastPrice (bulk-written above) + a live ticker broadcast.
+    if (i.segment !== 'OPT') {
+      try { await updateCandlesForTrade({ symbol: i.symbol, price: priceStr, quantity: '0', ts: Date.now() }); } catch (_) { /* */ }
+    }
     if (broadcaster) broadcaster.publish(`ticker:${i.symbol}`, { lastPrice: priceStr, ts: Date.now(), source: 'UPSTOX' });
   });
   try { require('./feedOrchestrator').recordTick('UPSTOX'); } catch (_) {}
