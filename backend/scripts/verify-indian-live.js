@@ -89,7 +89,18 @@ async function upstoxLtp(keys) {
   } else if (FEED === 'upstox') {
     const hasTok = !!process.env.UPSTOX_ACCESS_TOKEN;
     console.log(`  UPSTOX_ACCESS_TOKEN : ${hasTok ? ok(`set (${process.env.UPSTOX_ACCESS_TOKEN.length} chars)`) : bad('MISSING')}`);
-    console.log(dim('  FREE real-time (Upstox market-quote). Token is DAILY — regenerate ~03:30 IST.'));
+    if (hasTok) {
+      try {
+        const seg = process.env.UPSTOX_ACCESS_TOKEN.split('.')[1];
+        const p = JSON.parse(Buffer.from(seg, 'base64url').toString());
+        if (p.exp) {
+          const days = Math.round((p.exp * 1000 - Date.now()) / 86400000);
+          const expStr = new Date(p.exp * 1000).toISOString().slice(0, 10);
+          console.log(`  token expiry        : ${days <= 1 ? bad(`${expStr} (${days}d — REGENERATE)`) : ok(`${expStr} (${days}d left)`)}`);
+        }
+      } catch (_) { /* not a JWT */ }
+    }
+    console.log(dim('  FREE real-time (Upstox market-quote). Long-lived "Analytics Token" lasts ~1yr; standard OAuth token is daily.'));
     console.log(dim('  Equity needs ISIN (re-import after adding ISIN). Futures = spot proxy, options = intrinsic.'));
     if (!hasTok) { console.log(bad('  → Set UPSTOX_ACCESS_TOKEN in backend/.env + restart.')); hardFail = true; }
   } else {
