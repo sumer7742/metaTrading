@@ -232,7 +232,17 @@
       "Bash(echo \"done: $?\")",
       "Bash(git commit -q -m 'upstoxFnoMap: debug shows Upstox'\\\\''s actual expiry days per strike \\(diagnose date mismatch\\) *)",
       "Bash(node --check backend/scripts/seed-nfo-options.js)",
-      "Bash(git commit -q -m 'seed-nfo-options: window strikes to tradeable band \\(skip far-OTM Upstox doesn'\\\\''t list\\) *)"
+      "Bash(git commit -q -m 'seed-nfo-options: window strikes to tradeable band \\(skip far-OTM Upstox doesn'\\\\''t list\\) *)",
+      "Bash(node --check src/services/optionGreeks.js)",
+      "Bash(node --check src/services/candleService.js)",
+      "Bash(node --check src/services/upstoxFeed.js)",
+      "Bash(node --check src/services/optionChain.js)",
+      "Bash(node -e \"const p=require\\('./backend/package.json'\\); console.log\\('test:', \\(p.scripts||{}\\).test || 'none'\\); console.log\\('jest dep:', !!\\(\\(p.devDependencies||{}\\).jest || \\(p.dependencies||{}\\).jest\\)\\)\")",
+      "Bash(node tests/optionChain.test.js)",
+      "Bash(echo \"exit: $?\")",
+      "Bash(node --check src/config/indianFnoUnderlyings.js)",
+      "Bash(node -e \"console.log\\('FNO underlyings:', require\\('./src/config/indianFnoUnderlyings'\\).FNO_UNDERLYINGS.length, '→', require\\('./src/config/indianFnoUnderlyings'\\).FNO_UNDERLYINGS.join\\(','\\)\\)\")",
+      "Bash(node -e \"const s=require\\('fs'\\).readFileSync\\('src/components/AssetIcon.jsx','utf8'\\); require\\('@babel/core'\\)?.transformSync ? console.log\\('babel present'\\) : console.log\\('no babel'\\)\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\rijju\\.claude\\projects\\c--Users-rijju-OneDrive-Desktop-trading-platform--last-and\\memory"

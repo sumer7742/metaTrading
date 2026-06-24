@@ -165,10 +165,10 @@ function GasIcon({ size }) {
 // Map of commodity codes → custom SVG component. Falls back to a tile glyph
 // for anything not listed below.
 const COMMODITY_ICONS = {
-  XAU: GoldIcon, GOLD: GoldIcon,
-  XAG: SilverIcon, SILVER: SilverIcon,
-  WTI: OilIcon, BRENT: OilIcon, USOIL: OilIcon, OIL: OilIcon,
-  NGAS: GasIcon, GAS: GasIcon,
+  XAU: GoldIcon, GOLD: GoldIcon, GOLDM: GoldIcon,
+  XAG: SilverIcon, SILVER: SilverIcon, SILVERM: SilverIcon,
+  WTI: OilIcon, BRENT: OilIcon, USOIL: OilIcon, OIL: OilIcon, CRUDEOIL: OilIcon,
+  NGAS: GasIcon, GAS: GasIcon, NATURALGAS: GasIcon,
   COPPER: CopperIcon, COP: CopperIcon,
 };
 
@@ -176,6 +176,10 @@ const COMMODITY_ICONS = {
 const COMMODITY = {
   WHEAT: { glyph: 'WHE', bg: '#A16207' },
   CORN:  { glyph: 'COR', bg: '#CA8A04' },
+  ZINC:      { glyph: 'Zn', bg: '#64748B' },
+  ALUMINIUM: { glyph: 'Al', bg: '#94A3B8' },
+  LEAD:      { glyph: 'Pb', bg: '#475569' },
+  NICKEL:    { glyph: 'Ni', bg: '#6B7280' },
 };
 
 const INDEX = {
@@ -188,6 +192,69 @@ const INDEX = {
   HK50:   { glyph: 'HK',  bg: '#EA580C' },
   AUS200: { glyph: 'AU',  bg: '#0EA5E9' },
 };
+
+// ── Index / Stock tile glyphs ─────────────────────────────────────────────
+// Indian indices and equities have no logo CDN, so instead of plain text
+// initials we render a clean white chart glyph on a coloured gradient tile —
+// a bar-chart for indices, an up-trend line for stocks. The tile colour is
+// derived deterministically from the underlying so every NIFTY tile is the
+// same blue, every SBIN tile the same teal, etc. (recognisable at a glance
+// without relying on the letters).
+
+// Curated, high-contrast palette (no muddy/low-contrast hues against white).
+const TILE_PALETTE = [
+  ['#2563EB', '#1E40AF'], ['#7C3AED', '#5B21B6'], ['#0891B2', '#155E75'],
+  ['#16A34A', '#15803D'], ['#EA580C', '#C2410C'], ['#DB2777', '#9D174D'],
+  ['#0D9488', '#115E59'], ['#CA8A04', '#92600A'], ['#DC2626', '#991B1B'],
+  ['#4F46E5', '#3730A3'], ['#0EA5E9', '#0369A1'], ['#9333EA', '#6B21A8'],
+];
+// Brand-ish tints for the four big indices so they read as "themselves".
+const INDEX_TINT = {
+  NIFTY: ['#2563EB', '#1E40AF'], BANKNIFTY: ['#7C3AED', '#5B21B6'],
+  FINNIFTY: ['#0D9488', '#115E59'], MIDCPNIFTY: ['#EA580C', '#C2410C'],
+  SENSEX: ['#DC2626', '#991B1B'],
+};
+function _tileColor(keyStr) {
+  let h = 0;
+  for (let i = 0; i < keyStr.length; i++) h = (h * 31 + keyStr.charCodeAt(i)) >>> 0;
+  return TILE_PALETTE[h % TILE_PALETTE.length];
+}
+
+function GlyphTile({ size, round, colors, children }) {
+  const g = Math.round(size * 0.58);
+  return (
+    <span
+      className={`keep-white flex items-center justify-center shrink-0 ${round ? 'rounded-full' : 'rounded-xl'}`}
+      style={{
+        width: size,
+        height: size,
+        background: `linear-gradient(140deg, ${colors[0]}, ${colors[1]})`,
+        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.25), 0 1px 2px rgba(0,0,0,0.18)',
+      }}
+    >
+      <svg width={g} height={g} viewBox="0 0 24 24" fill="none"
+           stroke="#FFFFFF" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+        {children}
+      </svg>
+    </span>
+  );
+}
+
+// Ascending bar-chart → indices.
+const IndexGlyph = () => (
+  <>
+    <rect x="3.5" y="13" width="4" height="7.5" rx="1" fill="#FFFFFF" stroke="none" />
+    <rect x="10" y="8.5" width="4" height="12" rx="1" fill="#FFFFFF" stroke="none" opacity="0.85" />
+    <rect x="16.5" y="4" width="4" height="16.5" rx="1" fill="#FFFFFF" stroke="none" />
+  </>
+);
+// Up-trend line with arrow head → stocks.
+const StockGlyph = () => (
+  <>
+    <path d="M4 16.5 L9.5 11 L13 14 L20 6.5" />
+    <path d="M15.5 6.5 H20 V11" />
+  </>
+);
 
 function CryptoImage({ symbol, size }) {
   // Some coin logos aren't in the CDN — gracefully fall back to a coloured
@@ -261,6 +328,9 @@ export default function AssetIcon({
   // when category/baseCurrency are blank.
   let base = (baseCurrency ?? row?.baseCurrency ?? '').toUpperCase();
   if (!base) base = _inferBaseFromSymbol(sym);
+  // Underlying (F&O rows carry it) — used as the colour key so every NIFTY /
+  // SBIN contract shares one tile colour regardless of expiry/strike suffix.
+  const under = String(row?.underlying || '').toUpperCase();
 
   // CRYPTO → real coin logo when available. We accept either:
   //   1. an explicit category=CRYPTO row
@@ -273,9 +343,11 @@ export default function AssetIcon({
     }
   }
 
-  // COMMODITY → custom SVG icon (gold coin, silver coin, oil drop, flame…)
-  if (cat === 'COMMODITY' || COMMODITY_ICONS[base] || COMMODITY_ICONS[sym]) {
-    const Icon = COMMODITY_ICONS[base] || COMMODITY_ICONS[sym];
+  // COMMODITY → custom SVG icon (gold coin, silver coin, oil drop, flame…).
+  // F&O commodity futures carry the metal/energy in `underlying` (e.g. GOLD)
+  // while symbol is the contract code (GOLD26JULFUT) — check it first.
+  if (cat === 'COMMODITY' || COMMODITY_ICONS[under] || COMMODITY_ICONS[base] || COMMODITY_ICONS[sym]) {
+    const Icon = COMMODITY_ICONS[under] || COMMODITY_ICONS[base] || COMMODITY_ICONS[sym];
     if (Icon) return <Icon size={size} />;
   }
 
@@ -301,14 +373,36 @@ export default function AssetIcon({
     );
   }
 
+  // INDEX → bar-chart glyph tile (Indian indices: NIFTY/BANKNIFTY/… have no
+  // logo). US/global indices kept in the INDEX map below still use their short
+  // recognisable text glyph (NQ/DJ/SP) so they don't lose identity.
+  if (cat === 'INDEX' && !INDEX[sym]) {
+    const colorKey = under || base || sym;
+    const colors = INDEX_TINT[colorKey] || INDEX_TINT[under] || _tileColor(colorKey);
+    return <GlyphTile size={size} round={round} colors={colors}><IndexGlyph /></GlyphTile>;
+  }
+
+  // STOCK → up-trend glyph tile (Indian + global equities; no logo CDN). The
+  // accompanying symbol label identifies the name; the tile gives a premium,
+  // consistent look in place of two-letter initials.
+  if (cat === 'STOCK') {
+    const colors = _tileColor(under || base || sym);
+    return <GlyphTile size={size} round={round} colors={colors}><StockGlyph /></GlyphTile>;
+  }
+
   // COMMODITY / INDEX / fallback → coloured tile with text glyph.
   // Use the resolved BASE for the fallback so BTCUSD shows "BTC" instead
   // of the symbol-prefix "BT" (which scans as a country code, not a coin).
-  const fallbackGlyph = (base.length >= 3 ? base.slice(0, 3) : base || sym.slice(0, 2) || '?');
+  const fallbackGlyph = (
+    under && under.length >= 3 ? under.slice(0, 3)
+      : base.length >= 3 ? base.slice(0, 3)
+        : base || sym.slice(0, 2) || '?'
+  );
   const meta =
-    COMMODITY[base] ||
-    COMMODITY[sym]  ||
-    INDEX[sym]      ||
+    COMMODITY[under] ||
+    COMMODITY[base]  ||
+    COMMODITY[sym]   ||
+    INDEX[sym]       ||
     { glyph: fallbackGlyph, bg: '#475569' };
 
   // Inline `color: #FFFFFF` + `keep-white` class — Tailwind's text-white

@@ -16,7 +16,6 @@ import { fmtNum } from '../utils/format';
 const INDEX_UNDERLYINGS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY'];
 const POPULAR = ['RELIANCE', 'TCS', 'INFY', 'SBIN', 'HDFCBANK', 'ICICIBANK', 'LT', 'BAJFINANCE', 'AXISBANK', 'MARUTI', 'TITAN', 'SUNPHARMA'];
 
-const pctClass = (c) => (Number(c) >= 0 ? 'text-bull' : 'text-bear');
 const pct = (c) => (c == null || !Number.isFinite(Number(c)) ? '—' : `${Number(c) >= 0 ? '+' : ''}${Number(c).toFixed(2)}%`);
 
 export default function FnoHome() {
@@ -111,9 +110,15 @@ export default function FnoHome() {
 
   return (
     <div className="max-w-[1400px] mx-auto px-3 sm:px-4 py-4 space-y-6">
-      <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl sm:text-2xl font-bold text-text-primary">F&amp;O</h1>
-        <Link to="/options" className="text-sm font-semibold text-primary-600 hover:text-primary-700">Full option chain →</Link>
+      <div className="flex items-end justify-between gap-3">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold text-text-primary leading-tight">Futures &amp; Options</h1>
+          <p className="text-xs sm:text-sm text-text-muted mt-0.5">Live index &amp; stock futures, MCX commodities and real option-chain insight.</p>
+        </div>
+        <Link to="/options" className="shrink-0 inline-flex items-center gap-1 text-sm font-semibold text-primary-600 hover:text-primary-700">
+          Option chain
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+        </Link>
       </div>
 
       {/* ── Indices ── */}
@@ -151,12 +156,16 @@ export default function FnoHome() {
       {/* ── Popular F&O underlyings → chain ── */}
       <Section title="Popular F&O stocks">
         <div className="flex flex-wrap gap-2">
-          {POPULAR.map((u) => (
-            <button key={u} onClick={() => goChain(u)}
-              className="px-3 py-1.5 rounded-full border border-border-dark text-sm font-medium text-text-secondary hover:border-primary-500 hover:text-primary-600 transition-colors">
-              {(eqBySym.get(u)?.name) || u}
-            </button>
-          ))}
+          {POPULAR.map((u) => {
+            const r = eqBySym.get(u);
+            return (
+              <button key={u} onClick={() => goChain(u)}
+                className="inline-flex items-center gap-1.5 pl-1.5 pr-3 py-1.5 rounded-full border border-border-dark text-sm font-medium text-text-secondary hover:border-primary-500 hover:text-primary-600 hover:bg-primary-500/5 transition-colors">
+                {r ? <AssetIcon row={r} size={20} /> : <span className="w-5 h-5 rounded-full bg-primary-500/15 inline-block" />}
+                {(r?.name) || u}
+              </button>
+            );
+          })}
         </div>
       </Section>
 
@@ -241,15 +250,37 @@ function Scroller({ children }) {
   return <div className="flex gap-3 overflow-x-auto no-scrollbar pb-1">{children}</div>;
 }
 
+function ChangePill({ change }) {
+  const n = Number(change);
+  const has = change != null && Number.isFinite(n);
+  const up = n >= 0;
+  const tone = !has ? 'bg-bg-hover text-text-muted' : up ? 'bg-bull/10 text-bull' : 'bg-bear/10 text-bear';
+  return (
+    <span className={`inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-xs font-bold tabular-nums shrink-0 ${tone}`}>
+      {has && (
+        <svg width="9" height="9" viewBox="0 0 12 12" fill="currentColor" className={up ? '' : 'rotate-180'}>
+          <path d="M6 2l4 6H2z" />
+        </svg>
+      )}
+      {pct(change)}
+    </span>
+  );
+}
+
 function PriceCard({ row, price, label, sub, onClick }) {
   return (
-    <button onClick={onClick} className="text-left rounded-2xl border border-border-dark bg-white p-4 hover:border-primary-500 hover:shadow-card transition-all min-w-0">
-      <div className="flex items-center gap-2 mb-2">
-        <AssetIcon row={row} size={22} round />
-        <span className="text-sm font-bold text-text-primary truncate">{label}{sub ? <span className="text-[10px] text-text-muted ml-1">{sub}</span> : ''}</span>
+    <button onClick={onClick} className="group text-left rounded-2xl border border-border-dark bg-white p-4 hover:border-primary-500/60 hover:shadow-card hover:-translate-y-0.5 transition-all min-w-0">
+      <div className="flex items-center gap-2.5 mb-3">
+        <AssetIcon row={row} size={38} />
+        <div className="min-w-0">
+          <div className="text-sm font-bold text-text-primary truncate leading-tight">{label}</div>
+          {sub ? <div className="text-[10px] uppercase tracking-wider text-text-muted font-semibold">{sub}</div> : null}
+        </div>
       </div>
-      <div className="text-lg font-bold font-mono tabular-nums text-text-primary truncate">₹{fmtNum(price, 2)}</div>
-      <div className={`text-xs font-semibold ${pctClass(row.change24h)}`}>{pct(row.change24h)}</div>
+      <div className="flex items-end justify-between gap-2">
+        <div className="text-lg font-bold font-mono tabular-nums text-text-primary truncate">₹{fmtNum(price, 2)}</div>
+        <ChangePill change={row.change24h} />
+      </div>
     </button>
   );
 }
@@ -257,14 +288,18 @@ function PriceCard({ row, price, label, sub, onClick }) {
 function FutCard({ row, price, onClick }) {
   const exp = row.expiryDate ? new Date(row.expiryDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : '';
   return (
-    <button onClick={onClick} className="shrink-0 w-40 text-left rounded-2xl border border-border-dark bg-white p-4 hover:border-primary-500 hover:shadow-card transition-all">
-      <div className="flex items-center gap-2 mb-1.5">
-        <AssetIcon row={row} size={20} round />
-        <span className="text-[13px] font-bold text-text-primary truncate">{row.underlying || row.symbol}</span>
+    <button onClick={onClick} className="group shrink-0 w-44 text-left rounded-2xl border border-border-dark bg-white p-4 hover:border-primary-500/60 hover:shadow-card hover:-translate-y-0.5 transition-all">
+      <div className="flex items-center gap-2.5 mb-2.5">
+        <AssetIcon row={row} size={34} />
+        <div className="min-w-0">
+          <div className="text-[13px] font-bold text-text-primary truncate leading-tight">{row.underlying || row.symbol}</div>
+          <div className="text-[10px] text-text-muted truncate">{exp}{row.lotSize ? ` · lot ${row.lotSize}` : ''}</div>
+        </div>
       </div>
-      <div className="text-[10px] text-text-muted mb-1">{exp}{row.lotSize ? ` · lot ${row.lotSize}` : ''}</div>
-      <div className="text-base font-bold font-mono tabular-nums truncate">₹{fmtNum(price, 2)}</div>
-      <div className={`text-xs font-semibold ${pctClass(row.change24h)}`}>{pct(row.change24h)}</div>
+      <div className="flex items-end justify-between gap-2">
+        <div className="text-base font-bold font-mono tabular-nums truncate">₹{fmtNum(price, 2)}</div>
+        <ChangePill change={row.change24h} />
+      </div>
     </button>
   );
 }
@@ -287,9 +322,14 @@ function MoversTable({ title, rows, priceOf, onPick }) {
         <tbody>
           {rows.map((r) => (
             <tr key={r.symbol} className="border-b border-border-subtle last:border-0 hover:bg-bg-hover cursor-pointer" onClick={() => onPick(r.symbol)}>
-              <td className="px-4 py-2 font-medium text-text-primary truncate">{r.underlying || r.symbol}</td>
+              <td className="px-4 py-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <AssetIcon row={r} size={22} />
+                  <span className="font-medium text-text-primary truncate">{r.underlying || r.symbol}</span>
+                </div>
+              </td>
               <td className="px-4 py-2 text-right font-mono tabular-nums">₹{fmtNum(priceOf(r), 2)}</td>
-              <td className={`px-4 py-2 text-right font-semibold ${pctClass(r.change24h)}`}>{pct(r.change24h)}</td>
+              <td className="px-4 py-2"><div className="flex justify-end"><ChangePill change={r.change24h} /></div></td>
             </tr>
           ))}
         </tbody>
