@@ -81,13 +81,19 @@ const _backfillGaps = async (symbol, tf, tfMs, currentBucketTs, fallbackClose) =
  * error. Before the upsert we run a fast gap-backfill so the live candle
  * sits flush against the historical series with no visual hole.
  */
-const updateCandlesForTrade = async ({ symbol, price, quantity, ts }) => {
+const updateCandlesForTrade = async ({ symbol, price, quantity, ts, timeframes }) => {
   const t = ts || Date.now();
   const priceNum = Number(price);
   const qtyNum = Number(quantity);
   const priceStr = String(price);
 
-  for (const [tf, ms] of Object.entries(TF_MS)) {
+  // Optional subset of timeframes to write (e.g. options only need intraday TFs
+  // — writing all 8 ×thousands of contracts overloads the box). Default = all.
+  const tfEntries = timeframes && timeframes.length
+    ? timeframes.filter((tf) => TF_MS[tf]).map((tf) => [tf, TF_MS[tf]])
+    : Object.entries(TF_MS);
+
+  for (const [tf, ms] of tfEntries) {
     const bucketTs = bucket(t, ms);
     const openTime = new Date(bucketTs);
     const closeTime = new Date(bucketTs + ms);
@@ -144,7 +150,23 @@ const updateCandlesForTrade = async ({ symbol, price, quantity, ts }) => {
 const getCandles = async (symbol, timeframe, limit = 500) => {
   const tfMs = TF_MS[timeframe];
   const rows = await Candle.find({ symbol, timeframe }).sort({ openTime: -1 }).limit(limit).lean();
-  if (!tfMs || rows.length === 0) return rows;
+  if (!tfMs) return rows;
+
+  // No stored candles yet (e.g. an option that hasn't ticked, or market closed) —
+  // synthesize a short flat series at the instrument's last price so the chart
+  // isn't blank. Live ticks then build real candles on top.
+  if (rows.length === 0) {
+    const inst = await require('../models/Instrument').findOne({ symbol }).select('lastPrice').lean();
+    const px = inst && Number(inst.lastPrice) > 0 ? String(inst.lastPrice) : null;
+    if (!px) return rows;
+    const cur = bucket(Date.now(), tfMs);
+    const out = [];
+    for (let i = 0; i < 60; i += 1) { // newest-first (desc), matching the normal return
+      const ot = new Date(cur - i * tfMs);
+      out.push({ symbol, timeframe, openTime: ot, closeTime: new Date(ot.getTime() + tfMs), open: px, high: px, low: px, close: px, volume: '0' });
+    }
+    return out;
+  }
 
   // Forward-fill missing buckets with flat carry-forward candles. A real-time
   // feed only writes a candle when the price CHANGES (perf), so stable stretches
