@@ -35,7 +35,7 @@ const I = {
 const PRIMARY_NAV = [
   { to: '/explore', label: 'Explore' },
   { to: '/watchlist', label: 'Watchlist' },
-  { to: '/options', label: 'F&O' },
+  { to: '/fno', label: 'F&O' },
   { to: '/dashboard', label: 'Portfolio' },
   { to: '/wallet', label: 'Wallets' },
   { to: '/copy-trading', label: 'Copy Trading' },
