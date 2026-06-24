@@ -1221,8 +1221,13 @@ const syncDhanDaily = async () => {
   try {
     const r = await require('./dhanInstrumentSync').syncAll();
     console.log(`[Worker] Dhan instrument sync: ${r.ops} contracts (upserted ${r.upserted}, modified ${r.modified}, optKept ${r.optKept ?? '-'})`);
-    // Upstox feed: map F&O contracts to Upstox instrument_keys so the feed serves
-    // real premiums (not spot-proxy/intrinsic). F&O tokens roll each series.
+    // MCX commodity futures (separate, lightweight).
+    try {
+      const mc = await require('./mcxSync').syncMcxFutures();
+      console.log(`[Worker] MCX futures sync: kept ${mc.kept} (deactivated ${mc.deactivated})`);
+    } catch (e) { console.error('[Worker] MCX sync failed:', e.message); }
+    // Upstox feed: map F&O + MCX contracts to Upstox instrument_keys so the feed
+    // serves real prices (not spot-proxy/intrinsic). Tokens roll each series.
     if ((process.env.INDIAN_FEED || '').toLowerCase() === 'upstox') {
       try {
         const m = await require('./upstoxFnoMap').mapFnoKeys();

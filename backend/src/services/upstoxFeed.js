@@ -127,7 +127,7 @@ async function _mapPool(items, n, fn) {
 
 async function _pollOnce() {
   const insts = await Instrument.find({
-    exchange: { $in: ['NSE', 'BSE', 'NFO', 'BFO'] }, isActive: true,
+    exchange: { $in: ['NSE', 'BSE', 'NFO', 'BFO', 'MCX'] }, isActive: true,
   }).select('_id symbol exchange segment underlying strike optionType isin upstoxKey pricePrecision tickSize lastPrice').lean();
   if (!insts.length) return;
 

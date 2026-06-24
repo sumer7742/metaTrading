@@ -53,7 +53,17 @@ export default function FnoHome() {
       .sort((a, b) => Math.abs(Number(b.change24h) || 0) - Math.abs(Number(a.change24h) || 0)).slice(0, 12),
     [futures],
   );
-  const commodities = useMemo(() => rows.filter((r) => (r.category || '').toUpperCase() === 'COMMODITY').slice(0, 6), [rows]);
+  // MCX commodity FUTURES (nearest expiry per commodity) — real F&O, not spot CFDs.
+  const commodityFutures = useMemo(() => {
+    const m = new Map();
+    for (const f of futures) {
+      if ((f.exchange || '').toUpperCase() !== 'MCX') continue;
+      const u = (f.underlying || f.symbol).toUpperCase();
+      const cur = m.get(u);
+      if (!cur || new Date(f.expiryDate || 0) < new Date(cur.expiryDate || 0)) m.set(u, f);
+    }
+    return [...m.values()];
+  }, [futures]);
 
   // F&O movers (futures, by % change) — real, OI/volume omitted.
   const movers = useMemo(() => {
@@ -65,9 +75,9 @@ export default function FnoHome() {
   // ── Live prices for everything visible. ──
   const liveSymbols = useMemo(() => {
     const s = new Set();
-    [...indexCards, ...indexFutures, ...stockFutures, ...commodities].forEach((r) => r && s.add(r.symbol));
+    [...indexCards, ...indexFutures, ...stockFutures, ...commodityFutures].forEach((r) => r && s.add(r.symbol));
     return [...s];
-  }, [indexCards, indexFutures, stockFutures, commodities]);
+  }, [indexCards, indexFutures, stockFutures, commodityFutures]);
 
   useEffect(() => {
     if (!liveSymbols.length) return undefined;
@@ -182,14 +192,14 @@ export default function FnoHome() {
         </Section>
       )}
 
-      {/* ── Commodities ── */}
-      {commodities.length > 0 && (
-        <Section title="Commodities">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            {commodities.map((r) => (
-              <PriceCard key={r.symbol} row={r} price={priceOf(r)} label={r.name || r.symbol} onClick={() => goTrade(r.symbol)} />
+      {/* ── Commodity futures (MCX) ── */}
+      {commodityFutures.length > 0 && (
+        <Section title="Commodity futures (MCX)">
+          <Scroller>
+            {commodityFutures.map((r) => (
+              <FutCard key={r.symbol} row={r} price={priceOf(r)} onClick={() => goTrade(r.symbol)} />
             ))}
-          </div>
+          </Scroller>
         </Section>
       )}
 

@@ -57,7 +57,7 @@ async function mapFnoKeys() {
   const ustCT = new Map();
   for (const it of json) {
     const seg = it.segment || it.exchange_segment || '';
-    if (seg !== 'NSE_FO' && seg !== 'BSE_FO') continue;
+    if (seg !== 'NSE_FO' && seg !== 'BSE_FO' && seg !== 'MCX_FO') continue;
     if (!it.instrument_key || !it.expiry) continue;
     const type = String(it.instrument_type || '').toUpperCase(); // CE / PE / FUT
     const under = canon(it.underlying_symbol || it.asset_symbol || it.name);

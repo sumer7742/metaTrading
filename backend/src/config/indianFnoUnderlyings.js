@@ -24,4 +24,11 @@ const FNO_UNDERLYINGS = (process.env.DHAN_SYNC_FNO ? process.env.DHAN_SYNC_FNO.s
   .map((s) => s.trim().toUpperCase())
   .filter(Boolean);
 
-module.exports = { FNO_UNDERLYINGS, FNO_DEFAULT };
+// ── MCX commodity futures (FUTCOM). Few contracts, light on the box. ──
+// Override via DHAN_SYNC_MCX. Empty = MCX import off.
+const MCX_DEFAULT = ['GOLD', 'GOLDM', 'SILVER', 'SILVERM', 'CRUDEOIL', 'NATURALGAS', 'COPPER', 'ZINC', 'ALUMINIUM'];
+const MCX_UNDERLYINGS = (process.env.DHAN_SYNC_MCX != null ? process.env.DHAN_SYNC_MCX.split(',') : MCX_DEFAULT)
+  .map((s) => s.trim().toUpperCase())
+  .filter(Boolean);
+
+module.exports = { FNO_UNDERLYINGS, FNO_DEFAULT, MCX_UNDERLYINGS, MCX_DEFAULT };
