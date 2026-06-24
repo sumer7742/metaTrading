@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useInstruments } from '../hooks/useInstruments';
+import { api } from '../services/api';
 import AssetIcon from './AssetIcon';
 import WatchlistButton from './WatchlistButton';
 
@@ -33,7 +34,23 @@ export default function SearchModal({ open, onClose }) {
   const { rows, loading } = useInstruments();
   const [category, setCategory] = useState('ALL');
   const [query, setQuery] = useState('');
+  // Options are excluded from the cached catalog, so surface them on demand via
+  // the server search — but only for option-like queries (a strike number or
+  // CE/PE), so a normal search isn't flooded with contracts.
+  const [optionResults, setOptionResults] = useState([]);
   const inputRef = useRef(null);
+
+  useEffect(() => {
+    const q = query.trim();
+    const optionLike = /\d{3,}/.test(q) || /(^|[^a-z])(ce|pe)([^a-z]|$)/i.test(q);
+    if (!q || !optionLike) { setOptionResults([]); return undefined; }
+    const id = setTimeout(() => {
+      api.get(`/instruments/search?q=${encodeURIComponent(q)}`)
+        .then((res) => setOptionResults((res.data?.data || []).filter((r) => r.segment === 'OPT')))
+        .catch(() => setOptionResults([]));
+    }, 250);
+    return () => clearTimeout(id);
+  }, [query]);
 
   // Reset state every time the modal opens, and focus the input.
   useEffect(() => {
@@ -91,7 +108,10 @@ export default function SearchModal({ open, onClose }) {
   if (!open) return null;
 
   const showTrending = !query.trim();
-  const list = showTrending ? trending : visible;
+  // Merge in server-found options (deduped) when searching.
+  const list = showTrending
+    ? trending
+    : [...visible, ...optionResults.filter((o) => !visible.some((v) => v.symbol === o.symbol))];
 
   return (
     <div
@@ -164,7 +184,7 @@ export default function SearchModal({ open, onClose }) {
         {/* Results / trending list */}
         <div className="max-h-[60vh] overflow-y-auto">
           <div className="px-5 pt-4 pb-2 text-sm font-semibold text-text-secondary">
-            {showTrending ? `All markets (${visible.length})` : `Results (${visible.length})`}
+            {showTrending ? `All markets (${visible.length})` : `Results (${list.length})`}
           </div>
 
           {loading && (
