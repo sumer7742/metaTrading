@@ -391,8 +391,9 @@ const optionChain = asyncHandler(async (req, res) => {
   const underlying = String(req.query.underlying || '').toUpperCase();
   if (!underlying) throw new AppError('underlying required', 400);
 
+  // Pull the fields the validator needs (token + tick + tick-age).
   const all = await Instrument.find({ segment: 'OPT', underlying, isActive: true })
-    .select('symbol strike optionType expiryDate lastPrice lotSize').lean();
+    .select('symbol strike optionType expiryDate lastPrice lastPriceUpdatedAt lotSize instrumentToken tickSize').lean();
 
   const expiries = [...new Set(all.map((o) => (o.expiryDate ? new Date(o.expiryDate).toISOString() : null)).filter(Boolean))].sort();
 
@@ -402,38 +403,38 @@ const optionChain = asyncHandler(async (req, res) => {
     expiry = expiries.find((e) => new Date(e).getTime() >= now) || expiries[0] || null;
   }
 
-  const forExpiry = all.filter((o) => o.expiryDate && new Date(o.expiryDate).toISOString() === expiry);
-  const byStrike = new Map();
-  for (const o of forExpiry) {
-    const k = String(o.strike);
-    if (!byStrike.has(k)) byStrike.set(k, { strike: o.strike, ce: null, pe: null });
-    const leg = { symbol: o.symbol, lastPrice: o.lastPrice, lotSize: o.lotSize };
-    if (o.optionType === 'CE') byStrike.get(k).ce = leg;
-    else if (o.optionType === 'PE') byStrike.get(k).pe = leg;
-  }
-  const rows = [...byStrike.values()].sort((a, b) => Number(a.strike) - Number(b.strike));
-
-  // Futures on the same underlying — so the F&O page shows both in one place.
+  // Futures on the same underlying — shown alongside, and the FORWARD used to
+  // price options (intrinsic = max(F−K,0)). Prefer the SAME-expiry future so
+  // there's no basis mismatch; else fall back to the nearest + flag it.
   const futures = await Instrument.find({ segment: 'FUT', underlying, isActive: true })
-    .select('symbol expiryDate lastPrice lotSize').sort({ expiryDate: 1 }).lean();
+    .select('symbol expiryDate lastPrice lotSize lastPriceUpdatedAt').sort({ expiryDate: 1 }).lean();
+  const futForExpiry = futures.find((f) => f.expiryDate && new Date(f.expiryDate).toISOString() === expiry);
+  const refFut = futForExpiry || futures[0] || null;
+  let ref = refFut && Number(refFut.lastPrice) > 0 ? Number(refFut.lastPrice) : 0;
+  if (!ref) {
+    const spotDoc = await Instrument.findOne({ symbol: underlying }).select('lastPrice').lean();
+    if (spotDoc && Number(spotDoc.lastPrice) > 0) ref = Number(spotDoc.lastPrice);
+  }
+  const expiryBasisWarning = !!(refFut && !futForExpiry); // ref future has a DIFFERENT expiry
 
-  // Spot reference for Greeks: the underlying instrument's price, else the
-  // nearest future (index spot often isn't a tradable instrument here).
-  const spotDoc = await Instrument.findOne({ symbol: underlying }).select('lastPrice').lean();
-  let spot = spotDoc && Number(spotDoc.lastPrice) > 0 ? Number(spotDoc.lastPrice) : null;
-  if (!spot && futures.length && Number(futures[0].lastPrice) > 0) spot = Number(futures[0].lastPrice);
-
-  // Attach Black-Scholes Greeks (IV/Δ/Γ/Θ/Vega) per leg — display only.
-  const og = require('../services/optionGreeks');
+  const { buildChain } = require('../services/optionChain');
   const expMs = expiry ? new Date(expiry).getTime() : null;
-  if (spot && expMs) {
-    for (const r of rows) {
-      if (r.ce) r.ce.greeks = og.computeForOption({ type: 'CE', S: spot, K: Number(r.strike), expiryMs: expMs, premium: Number(r.ce.lastPrice) });
-      if (r.pe) r.pe.greeks = og.computeForOption({ type: 'PE', S: spot, K: Number(r.strike), expiryMs: expMs, premium: Number(r.pe.lastPrice) });
+  const { rows, atm, integrity } = buildChain({ options: all, expiryIso: expiry, ref, refExpiryMs: expMs });
+
+  // Data-integrity log (symbol/strike/expiry/token/LTP/IV/Δ/Θ for a few legs).
+  if (integrity.invalidLegs || integrity.ceMonotonicityViolations || integrity.peMonotonicityViolations) {
+    console.warn(`[optchain] ${underlying} exp=${(expiry || '').slice(0, 10)} ref=${ref} atm=${atm} | invalid=${integrity.invalidLegs} stale=${integrity.staleLegs} ceViol=${integrity.ceMonotonicityViolations} peViol=${integrity.peMonotonicityViolations}${expiryBasisWarning ? ' BASIS-MISMATCH' : ''}`);
+    for (const r of rows.filter((x) => (x.ce && !x.ce.valid) || (x.pe && !x.pe.valid)).slice(0, 5)) {
+      const bad = (r.ce && !r.ce.valid && r.ce) || (r.pe && !r.pe.valid && r.pe);
+      if (bad) console.warn(`  [optchain] ${bad.symbol} K=${r.strike} tok=${bad.token} ltp=${bad.ltp} reason=${bad.reason} age=${bad.ageSec}s iv=${bad.iv} Δ=${bad.delta} Θ=${bad.theta}`);
     }
   }
 
-  sendSuccess(res, { underlying, expiry, expiries, spot: spot != null ? String(spot) : null, rows, futures });
+  sendSuccess(res, {
+    underlying, expiry, expiries,
+    spot: ref ? String(ref) : null, atm, rows, futures, integrity, expiryBasisWarning,
+    lastUpdated: new Date().toISOString(),
+  });
 });
 
 module.exports = { list, watchlist, getOne, search, volumeUsage, candles, orderbook, create, update, remove, bulkRouting, optionChain };

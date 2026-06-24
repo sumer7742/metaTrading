@@ -35,7 +35,8 @@ function bsPrice(type, S, K, T, r, sigma) {
 function impliedVol(type, mkt, S, K, T, r) {
   if (!(mkt > 0) || !(S > 0) || !(K > 0) || !(T > 0)) return null;
   const intrinsic = type === 'CE' ? Math.max(S - K * Math.exp(-r * T), 0) : Math.max(K * Math.exp(-r * T) - S, 0);
-  if (mkt < intrinsic - 1e-6) return null; // price below intrinsic — can't solve
+  // No meaningful time value (price at/below intrinsic) → IV is undefined.
+  if (mkt <= intrinsic + Math.max(0.05, intrinsic * 1e-4)) return null;
   let lo = 0.001; let hi = 5;
   for (let i = 0; i < 64; i++) {
     const mid = (lo + hi) / 2;

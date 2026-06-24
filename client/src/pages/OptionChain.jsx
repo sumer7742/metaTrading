@@ -34,23 +34,35 @@ export default function OptionChain() {
 
   const spot = data?.spot != null ? Number(data.spot) : null;
   const rows = data?.rows || [];
-  // ATM = strike closest to spot.
-  let atm = null;
-  if (spot != null && rows.length) {
-    atm = rows.reduce((best, r) =>
-      Math.abs(Number(r.strike) - spot) < Math.abs(Number(best.strike) - spot) ? r : best, rows[0]).strike;
-  }
+  const atm = data?.atm != null ? String(data.atm) : null; // server-validated ATM (vs forward)
 
   const futures = data?.futures || [];
   const go = (sym) => sym && navigate(`/trade?symbol=${encodeURIComponent(sym)}`);
-  // Compact Greeks line under a premium: IV · delta · theta.
+
+  // Greeks line: invalid IV → "N/A". Only for trustworthy legs.
   const gkLine = (leg) => {
-    const g = leg && leg.greeks;
-    if (!g || g.iv == null) return null;
+    if (!leg || !leg.valid) return null;
+    const iv = leg.iv != null ? `${(leg.iv * 100).toFixed(1)}%` : 'N/A';
     return (
       <div className="text-[9px] text-gray-400 mt-0.5 leading-tight">
-        IV {(g.iv * 100).toFixed(1)}% · δ {g.delta != null ? g.delta.toFixed(2) : '—'} · θ {g.theta != null ? g.theta.toFixed(1) : '—'}
+        IV {iv} · δ {leg.delta != null ? leg.delta.toFixed(2) : '—'} · θ {leg.theta != null ? leg.theta.toFixed(1) : '—'}
       </div>
+    );
+  };
+
+  // Premium cell: NEVER 0.00 — show "--" for missing/invalid; dim + "·" when stale.
+  const premium = (leg, colorCls) => {
+    if (!leg || !leg.valid || leg.ltp == null) {
+      return <span className="text-gray-400" title={leg && leg.reason ? leg.reason : 'no data'}>--</span>;
+    }
+    return (
+      <button
+        onClick={() => go(leg.symbol)}
+        className={`px-2 py-0.5 rounded ${colorCls} hover:underline font-medium ${leg.stale ? 'opacity-50' : ''}`}
+        title={leg.stale ? `stale (${leg.ageSec}s ago)` : `time value ${leg.timeValue ?? '—'}`}
+      >
+        {fmtNum(leg.ltp, 2)}{leg.stale ? ' ·' : ''}
+      </button>
     );
   };
   const fmtExp = (iso) => (iso ? new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }) : '');
@@ -74,10 +86,20 @@ export default function OptionChain() {
         </form>
       </div>
 
-      {/* Meta: spot + expiry tabs */}
+      {/* Data-integrity notices (forward/expiry mismatch). */}
+      {data?.expiryBasisWarning && (
+        <div className="mb-2 text-[11px] text-amber-600 bg-amber-50 dark:bg-amber-900/10 rounded px-2 py-1">
+          ⚠ No same-expiry future — pricing uses a different-expiry forward (basis may be off).
+        </div>
+      )}
+
+      {/* Meta: spot + expiry tabs + last updated */}
       <div className="flex flex-wrap items-center gap-3 mb-2 text-sm">
         {spot != null && (
-          <span className="font-medium">{underlying} spot: <span className="text-primary-600">₹{fmtNum(spot, 2)}</span></span>
+          <span className="font-medium">{underlying} fwd: <span className="text-primary-600">₹{fmtNum(spot, 2)}</span></span>
+        )}
+        {data?.lastUpdated && (
+          <span className="text-[11px] text-gray-400">updated {new Date(data.lastUpdated).toLocaleTimeString('en-IN')}</span>
         )}
         {data?.expiries?.length > 0 && (
           <div className="flex items-center gap-1 flex-wrap">
@@ -138,26 +160,16 @@ export default function OptionChain() {
                 const isAtm = String(r.strike) === String(atm);
                 return (
                   <tr key={r.strike} className={`border-b border-gray-100 dark:border-gray-900 ${isAtm ? 'bg-amber-50 dark:bg-amber-900/10' : ''}`}>
-                    <td className="py-1.5 px-3 text-right">
-                      {r.ce ? (
-                        <>
-                          <button onClick={() => go(r.ce.symbol)} className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400 hover:underline font-medium">
-                            {fmtNum(r.ce.lastPrice, 2)}
-                          </button>
-                          {gkLine(r.ce)}
-                        </>
-                      ) : <span className="text-gray-400">—</span>}
+                    {/* CALL — ITM when strike < spot (subtle tint) */}
+                    <td className={`py-1.5 px-3 text-right ${spot != null && Number(r.strike) < spot ? 'bg-emerald-50/40 dark:bg-emerald-900/10' : ''}`}>
+                      {premium(r.ce, 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/20 dark:text-emerald-400')}
+                      {gkLine(r.ce)}
                     </td>
                     <td className={`py-1.5 px-3 text-center font-semibold ${isAtm ? 'text-amber-600' : ''}`}>{fmtNum(r.strike, 0)}</td>
-                    <td className="py-1.5 px-3 text-left">
-                      {r.pe ? (
-                        <>
-                          <button onClick={() => go(r.pe.symbol)} className="px-2 py-0.5 rounded bg-rose-50 text-rose-700 dark:bg-rose-900/20 dark:text-rose-400 hover:underline font-medium">
-                            {fmtNum(r.pe.lastPrice, 2)}
-                          </button>
-                          {gkLine(r.pe)}
-                        </>
-                      ) : <span className="text-gray-400">—</span>}
+                    {/* PUT — ITM when strike > spot */}
+                    <td className={`py-1.5 px-3 text-left ${spot != null && Number(r.strike) > spot ? 'bg-rose-50/40 dark:bg-rose-900/10' : ''}`}>
+                      {premium(r.pe, 'bg-rose-50 text-rose-700 dark:bg-rose-900/20 dark:text-rose-400')}
+                      {gkLine(r.pe)}
                     </td>
                   </tr>
                 );
