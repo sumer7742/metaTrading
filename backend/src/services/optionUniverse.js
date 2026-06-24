@@ -19,8 +19,8 @@
  */
 const DAY = 24 * 60 * 60 * 1000;
 
-const FO_UNDERLYINGS = (process.env.DHAN_SYNC_FNO || 'NIFTY,BANKNIFTY,FINNIFTY')
-  .split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+const { FNO_UNDERLYINGS } = require('../config/indianFnoUnderlyings');
+const FO_UNDERLYINGS = FNO_UNDERLYINGS;
 const OPT_EXPIRIES = Math.max(1, Number(process.env.DHAN_OPT_EXPIRIES) || 2);
 const OPT_STRIKE_PCT = process.env.DHAN_OPT_STRIKE_PCT != null
   ? Number(process.env.DHAN_OPT_STRIKE_PCT)

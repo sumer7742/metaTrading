@@ -24,8 +24,8 @@ const { LIQUID_NSE_SET } = require('../config/indianLiquidStocks');
 const { isUnderlyingAllowed, nearestExpiries, strikeInWindow } = require('./optionUniverse');
 
 const CSV_URL = process.env.DHAN_SCRIP_URL || 'https://images.dhan.co/api-data/api-scrip-master-detailed.csv';
-const FO_UNDERLYINGS = (process.env.DHAN_SYNC_FNO || 'NIFTY,BANKNIFTY,FINNIFTY')
-  .split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+const { FNO_UNDERLYINGS } = require('../config/indianFnoUnderlyings');
+const FO_UNDERLYINGS = FNO_UNDERLYINGS;
 // Default 'curated': only keep the liquid universe (real-price-able on the free
 // Yahoo feed). Set DHAN_SYNC_EQUITY=all to import every listed scrip again.
 const EQUITY_MODE = (process.env.DHAN_SYNC_EQUITY || 'curated').toLowerCase();
