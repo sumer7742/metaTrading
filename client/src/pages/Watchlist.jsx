@@ -7,6 +7,7 @@ import { Z } from '../components/modalLayers';
 import { useInstruments } from '../hooks/useInstruments';
 import { useWatchlists } from '../hooks/useWatchlists';
 import { wsClient } from '../services/ws';
+import { api } from '../services/api';
 import { fmtNum } from '../utils/format';
 import { buildShareLink, exportWatchlistFile, parseImport, decodeWatchlist } from '../utils/watchlistShare';
 
@@ -164,15 +165,32 @@ function AddSymbolsModal({ open, onClose, instruments, existingSymbols, onAdd })
   const [q, setQ] = useState('');
   const [picked, setPicked] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
-  useEffect(() => { if (open) { setQ(''); setPicked(new Set()); } }, [open]);
+  const [optResults, setOptResults] = useState([]); // options surfaced on option-like queries
+  useEffect(() => { if (open) { setQ(''); setPicked(new Set()); setOptResults([]); } }, [open]);
+
+  // Options aren't in the cached catalog — fetch them on demand when the query
+  // looks option-like (strike number or CE/PE).
+  useEffect(() => {
+    const term = q.trim();
+    const optionLike = /\d{3,}/.test(term) || /(^|[^a-z])(ce|pe)([^a-z]|$)/i.test(term);
+    if (!term || !optionLike) { setOptResults([]); return undefined; }
+    const id = setTimeout(() => {
+      api.get(`/instruments/search?q=${encodeURIComponent(term)}`)
+        .then((res) => setOptResults((res.data?.data || []).filter((r) => r.segment === 'OPT')))
+        .catch(() => setOptResults([]));
+    }, 250);
+    return () => clearTimeout(id);
+  }, [q]);
 
   const results = useMemo(() => {
     const term = q.trim().toLowerCase();
     const existing = new Set(existingSymbols);
     let rows = instruments.filter((r) => !existing.has(r.symbol));
     if (term) rows = rows.filter((r) => r.symbol.toLowerCase().includes(term) || (r.name || '').toLowerCase().includes(term));
-    return rows.slice(0, 60);
-  }, [q, instruments, existingSymbols]);
+    rows = rows.slice(0, 60);
+    const opts = optResults.filter((o) => !existing.has(o.symbol) && !rows.some((r) => r.symbol === o.symbol));
+    return [...rows, ...opts].slice(0, 80);
+  }, [q, instruments, existingSymbols, optResults]);
 
   const toggle = (sym) => setPicked((prev) => { const n = new Set(prev); n.has(sym) ? n.delete(sym) : n.add(sym); return n; });
 
@@ -517,6 +535,24 @@ export default function Watchlist() {
     return () => { unsubs.forEach((u) => u && u()); };
   }, [activeSymbols.join(',')]);
 
+  // ── On-demand instruments: options (and anything excluded from the cached
+  //    catalog) aren't in `instrBySymbol`, so a watchlisted option wouldn't
+  //    render. Fetch each missing symbol once and merge it in.
+  const [extra, setExtra] = useState({});
+  const fetchedRef = useRef(new Set());
+  useEffect(() => {
+    const missing = activeSymbols.filter((s) => !instrBySymbol.has(s) && !fetchedRef.current.has(s));
+    if (!missing.length) return;
+    missing.forEach((s) => fetchedRef.current.add(s));
+    Promise.all(missing.map((s) => api.get(`/instruments/${encodeURIComponent(s)}`)
+      .then((r) => [s, r.data?.data]).catch(() => [s, null])))
+      .then((pairs) => setExtra((prev) => {
+        const next = { ...prev };
+        for (const [s, d] of pairs) if (d) next[s] = d;
+        return next;
+      }));
+  }, [activeSymbols.join(','), instrBySymbol]);
+
   // ── UI state ───────────────────────────────────────────────────────
   const [search, setSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
@@ -553,13 +589,13 @@ export default function Watchlist() {
     const q = search.trim().toLowerCase();
     if (!q) return items;
     return items.filter((it) => {
-      const r = instrBySymbol.get(it.symbol);
+      const r = instrBySymbol.get(it.symbol) || extra[it.symbol];
       return it.symbol.toLowerCase().includes(q) || (r?.name || '').toLowerCase().includes(q);
     });
-  }, [activeList, search, instrBySymbol]);
+  }, [activeList, search, instrBySymbol, extra]);
 
   const rowFor = (sym) => {
-    const base = instrBySymbol.get(sym);
+    const base = instrBySymbol.get(sym) || extra[sym];
     if (!base) return null;
     return priceMap[sym] ? { ...base, lastPrice: priceMap[sym] } : base;
   };
