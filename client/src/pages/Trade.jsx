@@ -182,6 +182,10 @@ export default function Trade() {
   }, [sync.time, sync.dateRange, sync.crosshair, layout.n, layout.id, chartRegVersion]);
 
   const [instruments, setInstruments] = useState([]);
+  // Options (and anything excluded from the bulk /instruments list) aren't in
+  // `instruments`, so the active symbol can't be resolved from it — fetch the
+  // single instrument on demand so the chart + order form still work.
+  const [fetchedInstrument, setFetchedInstrument] = useState(null);
   const [accounts, setAccounts] = useState([]);
   // Restore the user's last-selected trading account from localStorage on
   // mount so a page refresh / re-login keeps them on the right account
@@ -498,7 +502,21 @@ export default function Trade() {
     });
   };
 
-  const instrumentBase = useMemo(() => instruments.find((i) => i.symbol === symbol), [instruments, symbol]);
+  // If the symbol isn't in the bulk list (e.g. an option), fetch it singly.
+  useEffect(() => {
+    if (instruments.find((i) => i.symbol === symbol)) { setFetchedInstrument(null); return undefined; }
+    let cancelled = false;
+    api.get(`/instruments/${encodeURIComponent(symbol)}`)
+      .then((res) => { if (!cancelled) setFetchedInstrument(res.data?.data || null); })
+      .catch(() => { if (!cancelled) setFetchedInstrument(null); });
+    return () => { cancelled = true; };
+  }, [symbol, instruments]);
+
+  const instrumentBase = useMemo(
+    () => instruments.find((i) => i.symbol === symbol)
+      || (fetchedInstrument && fetchedInstrument.symbol === symbol ? fetchedInstrument : null),
+    [instruments, symbol, fetchedInstrument],
+  );
   // Merge the live ticker enrichment (24h fields from Binance) onto the
   // base instrument record so all downstream consumers (OrderForm price
   // strip, Performance panel, Market Depth fallback) see fresh values
