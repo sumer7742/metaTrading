@@ -3288,14 +3288,17 @@ export default function Trade() {
           )}
         </aside>
 
-        {/* Right re-open tab (desktop) — vertical pill on the right edge.
-            Mobile uses a separate floating FAB rendered below. */}
+        {/* Right re-open tab (desktop) — slim SOLID vertical tab on the right
+            edge. A flex sibling (own 28px column) so it never overlaps the
+            chart; solid bg (not translucent `glass`) so the chart's right price
+            scale can't bleed through and look "covered". ml-1 keeps a clear gap
+            from the chart's price axis. Mobile uses the FAB below. */}
         {!showOrderPanel && !isFullscreen && (
           <button
             type="button"
             onClick={() => setShowOrderPanel(true)}
             title="Show order panel"
-            className="hidden lg:flex w-7 shrink-0 self-start flex-col items-center justify-center gap-2 py-3 glass border border-border-dark rounded-xl text-text-secondary hover:text-text-primary transition-colors"
+            className="hidden lg:flex w-7 shrink-0 self-stretch ml-1 flex-col items-center justify-center gap-2 py-3 bg-bg-card border border-border-dark rounded-xl shadow-card text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg>
             <span className="text-[9px] uppercase tracking-[0.2em] font-bold whitespace-nowrap" style={{ writingMode: 'vertical-rl' }}>

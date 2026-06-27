@@ -3552,7 +3552,7 @@ export default function PriceChart({
         )}
       {/* Crosshair wrapper — spans the main pane + all indicator sub-panes so
           the custom crosshair overlay can draw one continuous line across them. */}
-      <div ref={chartWrapRef} className="relative flex-1 flex flex-col min-h-0" onMouseMove={moveCrosshair} onMouseLeave={hideCrosshair}>
+      <div ref={chartWrapRef} className="relative flex-1 flex flex-col min-h-0 min-w-0" onMouseMove={moveCrosshair} onMouseLeave={hideCrosshair}>
       <div className="relative w-full flex-1 min-h-0" style={{ background: tvCanvas(theme).background }}>
         <div ref={containerRef} className="w-full h-full" />
         {/* TradingView demo chart — official tv.js widget, overlays our chart
