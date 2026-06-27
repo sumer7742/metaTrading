@@ -291,9 +291,86 @@ const requestWithdrawal = asyncHandler(async (req, res) => {
   const account = await TradingAccount.findOne({ _id: accountId, userId: req.userId });
   if (!account) throw new AppError('Account not found', 404);
 
-  // Block withdrawals from DEMO accounts
-  if (account.accountType === 'DEMO') {
-    throw new AppError('Withdrawals not allowed from demo accounts', 400);
+  // ── Demo / virtual accounts: instant self-service withdrawal ─────────
+  // Practice money — no real payout, so no admin review, KYC, whitelist or
+  // AML. Just validate the balance, debit immediately, and record a
+  // COMPLETED row so the user's history stays consistent.
+  const isDemoLike = account.accountType === 'DEMO' || account.accountType === 'VIRTUAL';
+  if (isDemoLike) {
+    const displayCur = currency || 'INR';
+    const conv = await currencyService.toBase(displayCur, amtNum);
+    const baseAmountStr = String(conv.baseAmount);
+
+    const wallet = await Wallet.findOne({ userId: req.userId, accountId, currency: BASE_CURRENCY });
+    if (!wallet) throw new AppError('No funds on this account.', 400, 'INSUFFICIENT_FUNDS');
+    const freeBase = gt(wallet.balance, wallet.locked || '0') ? sub(wallet.balance, wallet.locked || '0') : '0';
+    if (gt(baseAmountStr, freeBase)) {
+      const freeDisplay = await currencyService.fromBase(displayCur, Number(freeBase));
+      throw new AppError(
+        `Insufficient balance. Available: ${freeDisplay.toFixed(2)} ${displayCur} (requested ${amtNum} ${displayCur}).`,
+        400,
+        'INSUFFICIENT_FUNDS'
+      );
+    }
+
+    const { WALLET_TX_TYPE } = require('../config/constants');
+    // Debit first (the money-moving op). If the history record then fails to
+    // write, refund so demo balance can't silently vanish.
+    await walletService.debit({
+      userId: req.userId,
+      accountId,
+      currency: BASE_CURRENCY,
+      amount: baseAmountStr,
+      type: WALLET_TX_TYPE.WITHDRAWAL,
+      referenceType: 'withdrawal',
+      note: `Demo withdrawal (auto-approved) · ${amtNum} ${displayCur}`,
+    });
+
+    let wd;
+    try {
+      wd = await Withdrawal.create({
+        userId: req.userId,
+        accountId,
+        currency: displayCur,
+        amount: String(amtNum),
+        baseCurrency: BASE_CURRENCY,
+        baseAmount: baseAmountStr,
+        fxRateUsed: conv.rate,
+        method: (method || 'DEMO').toUpperCase(),
+        destination: 'Demo balance withdrawal (auto-approved)',
+        status: 'COMPLETED',
+        approvedAt: new Date(),
+        payoutAt: new Date(),
+      });
+    } catch (createErr) {
+      try {
+        await walletService.credit({
+          userId: req.userId,
+          accountId,
+          currency: BASE_CURRENCY,
+          amount: baseAmountStr,
+          type: WALLET_TX_TYPE.ADJUSTMENT,
+          referenceType: 'withdrawal',
+          note: 'Refund — demo withdrawal record failed',
+        });
+      } catch (e) {
+        console.error('[wallet] failed to refund after demo withdrawal create error:', e.message);
+      }
+      throw createErr;
+    }
+
+    try {
+      const broadcaster = require('../websocket/server');
+      broadcaster.notifyUser(String(req.userId), 'wallet', {
+        action: 'debited',
+        reason: 'WITHDRAWAL_COMPLETED',
+        withdrawalId: String(wd._id),
+        amount: wd.amount,
+        currency: wd.currency,
+      });
+    } catch (_) {}
+
+    return sendSuccess(res, wd, 201);
   }
 
   // KYC gate — every real withdrawal needs KYC APPROVED (AML requirement).

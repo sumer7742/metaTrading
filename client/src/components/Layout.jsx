@@ -460,7 +460,12 @@ export default function Layout({ children }) {
           <div className="flex-1 flex flex-col min-h-0">{children}</div>
         ) : (
           <>
-            <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-6 min-w-0 overflow-x-hidden">{children}</div>
+            {/* overflow-x-CLIP (not hidden): clips horizontal overflow without
+                turning this wrapper into a scroll container. `overflow-x: hidden`
+                forces overflow-y to compute to `auto`, which makes this the
+                nearest scrolling ancestor and breaks every `position: sticky`
+                child (e.g. the WalletSidebar). `clip` avoids that. */}
+            <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-6 min-w-0 overflow-x-clip">{children}</div>
             {/* CMS-driven footer — links managed entirely from the admin panel. */}
             <CmsFooter />
           </>

@@ -57,9 +57,13 @@ const dashboard = asyncHandler(async (req, res) => {
     },
   ]);
 
-  // Net exposure per instrument
+  // Net exposure per instrument — REAL accounts only (demo/virtual carry no
+  // broker risk, so they don't belong in an exposure figure).
   const exposureAgg = await Position.aggregate([
     { $match: { status: 'OPEN', ...uidIn } },
+    { $lookup: { from: TradingAccount.collection.collectionName, localField: 'accountId', foreignField: '_id', as: '_acc' } },
+    { $unwind: '$_acc' },
+    { $match: { '_acc.accountType': { $nin: ['DEMO', 'VIRTUAL'] } } },
     {
       $group: {
         _id: { symbol: '$symbol', side: '$side' },
@@ -2045,11 +2049,19 @@ async function _computeExposure(userIds, query = {}) {
 
   const agg = await Position.aggregate([
     { $match: match },
+    // Exclude demo/virtual accounts — market exposure is the broker's REAL
+    // open risk. Practice-money positions carry no real exposure.
+    { $lookup: { from: TradingAccount.collection.collectionName, localField: 'accountId', foreignField: '_id', as: '_acc' } },
+    { $unwind: '$_acc' },
+    { $match: { '_acc.accountType': { $nin: ['DEMO', 'VIRTUAL'] } } },
     { $group: {
         _id: { symbol: '$symbol', side: '$side' },
         lots: { $sum: _num('$quantity') },
         positions: { $sum: 1 },
         users: { $addToSet: '$userId' },
+        // Sum of qty×entryPrice (quote ccy) — lets us derive live unrealized
+        // PnL per symbol = (mark − entry) notional, like a mark-to-market.
+        entryNotional: { $sum: { $multiply: [_num('$quantity'), _num('$entryPrice')] } },
     } },
   ]);
 
@@ -2070,8 +2082,14 @@ async function _computeExposure(userIds, query = {}) {
     const inst = instMap.get(sym) || {};
     const price = Number(inst.lastPrice) || 0;
     const amount = toUsd(a.lots * price, inst.quoteCurrency);
-    const r = rows[sym] || (rows[sym] = { symbol: sym, lastPrice: price, buyLots: 0, buyAmount: 0, buyPositions: 0, sellLots: 0, sellAmount: 0, sellPositions: 0 });
+    // Live unrealized PnL (USD): LONG profits when mark > entry, SHORT inverse.
+    const markNotional = a.lots * price;
+    const entryNotional = Number(a.entryNotional) || 0;
+    const pnlQuote = a._id.side === 'BUY' ? (markNotional - entryNotional) : (entryNotional - markNotional);
+    const pnlUsd = toUsd(pnlQuote, inst.quoteCurrency);
+    const r = rows[sym] || (rows[sym] = { symbol: sym, lastPrice: price, buyLots: 0, buyAmount: 0, buyPositions: 0, sellLots: 0, sellAmount: 0, sellPositions: 0, pnl: 0 });
     (a.users || []).forEach((u) => userSet.add(String(u)));
+    r.pnl += pnlUsd;
     if (a._id.side === 'BUY')       { r.buyLots = a.lots;  r.buyAmount = amount;  r.buyPositions = a.positions; }
     else if (a._id.side === 'SELL') { r.sellLots = a.lots; r.sellAmount = amount; r.sellPositions = a.positions; }
   }
@@ -2087,6 +2105,8 @@ async function _computeExposure(userIds, query = {}) {
       buyLots: round4(r.buyLots), buyAmount, buyPositions: r.buyPositions,
       sellLots: round4(r.sellLots), sellAmount, sellPositions: r.sellPositions,
       net,
+      // Aggregate client unrealized P&L on this symbol's open positions (USD).
+      pnl: round2(r.pnl),
       buyPct: total > 0 ? round2((buyAmount / total) * 100) : 0,
       sellPct: total > 0 ? round2((sellAmount / total) * 100) : 0,
       status: net > 0 ? 'NET BUY' : net < 0 ? 'NET SELL' : 'BALANCED',
@@ -2095,12 +2115,14 @@ async function _computeExposure(userIds, query = {}) {
 
   const totalBuyAmount = round2(instruments.reduce((s, r) => s + r.buyAmount, 0));
   const totalSellAmount = round2(instruments.reduce((s, r) => s + r.sellAmount, 0));
+  const totalPnl = round2(instruments.reduce((s, r) => s + r.pnl, 0));
   const grand = totalBuyAmount + totalSellAmount;
 
   return {
     totalUsers: userSet.size,
     totalBuyAmount,
     totalSellAmount,
+    totalPnl,
     difference: round2(totalBuyAmount - totalSellAmount),
     buyPercentage: grand > 0 ? round2((totalBuyAmount / grand) * 100) : 0,
     sellPercentage: grand > 0 ? round2((totalSellAmount / grand) * 100) : 0,
@@ -2115,6 +2137,7 @@ const exposureSummary = asyncHandler(async (req, res) => {
     totalUsers: d.totalUsers,
     totalBuyAmount: d.totalBuyAmount,
     totalSellAmount: d.totalSellAmount,
+    totalPnl: d.totalPnl,
     difference: d.difference,
     buyPercentage: d.buyPercentage,
     sellPercentage: d.sellPercentage,

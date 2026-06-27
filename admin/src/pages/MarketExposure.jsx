@@ -114,13 +114,13 @@ export default function MarketExposure() {
     : (instruments[0]?.symbol || allInstruments[0]?.symbol || 'BTCUSD');
   const tvSymbol = tvSymbolFor(chartSym, instMeta);
 
-  const k = summary || { totalUsers: 0, totalBuyAmount: 0, totalSellAmount: 0, difference: 0, buyPercentage: 0, sellPercentage: 0 };
+  const k = summary || { totalUsers: 0, totalBuyAmount: 0, totalSellAmount: 0, totalPnl: 0, difference: 0, buyPercentage: 0, sellPercentage: 0 };
   const netPositive = k.difference >= 0;
 
   // ── Exports ──
   const exportRows = () => ([
-    ['Symbol', 'Buy Lots', 'Buy Amount (USD)', 'Sell Lots', 'Sell Amount (USD)', 'Net Difference (USD)', 'Buy %', 'Sell %', 'Status'],
-    ...sortedRows.map((r) => [r.symbol, r.buyLots, r.buyAmount, r.sellLots, r.sellAmount, r.net, r.buyPct, r.sellPct, r.status]),
+    ['Symbol', 'Buy Lots', 'Buy Amount (USD)', 'Sell Lots', 'Sell Amount (USD)', 'Net Difference (USD)', 'Total P&L (USD)', 'Buy %', 'Sell %', 'Status'],
+    ...sortedRows.map((r) => [r.symbol, r.buyLots, r.buyAmount, r.sellLots, r.sellAmount, r.net, r.pnl, r.buyPct, r.sellPct, r.status]),
   ]);
   const exportCSV = () => {
     const rows = [['Market Exposure Report'], ['Total Buy', k.totalBuyAmount], ['Total Sell', k.totalSellAmount], ['Net', k.difference], [], ...exportRows()];
@@ -197,10 +197,11 @@ export default function MarketExposure() {
       {/* ── Exposure overview + progress bar ── */}
       <div className="card p-5">
         <h3 className="text-sm font-bold text-white mb-4">Exposure Overview</h3>
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-5">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
           <Big label="Total Buy Amount" value={money(k.totalBuyAmount)} cls="text-emerald-400" />
           <Big label="Total Sell Amount" value={money(k.totalSellAmount)} cls="text-rose-400" />
           <Big label="Net Difference" value={signedMoney(k.difference)} cls={netPositive ? 'text-emerald-400' : 'text-rose-400'} />
+          <Big label="Total P&L" value={signedMoney(k.totalPnl)} cls={(k.totalPnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'} />
           <Big label="Buy %" value={pct(k.buyPercentage)} cls="text-emerald-400" />
           <Big label="Sell %" value={pct(k.sellPercentage)} cls="text-rose-400" />
         </div>
@@ -234,6 +235,7 @@ export default function MarketExposure() {
               <th className="text-right p-3">Sell Lots</th>
               <th className="text-right p-3 cursor-pointer select-none hover:text-white" onClick={() => setSortKey('sellAmount')}>Sell Amount{sortArrow('sellAmount')}</th>
               <th className="text-right p-3 cursor-pointer select-none hover:text-white" onClick={() => setSortKey('net')}>Net Difference{sortArrow('net')}</th>
+              <th className="text-right p-3 cursor-pointer select-none hover:text-white" onClick={() => setSortKey('pnl')}>Total P&L{sortArrow('pnl')}</th>
               <th className="text-right p-3">Buy %</th>
               <th className="text-right p-3">Sell %</th>
             </tr>
@@ -241,10 +243,10 @@ export default function MarketExposure() {
           <tbody>
             {showSkeleton ? (
               Array.from({ length: 6 }).map((_, i) => (
-                <tr key={i} className="border-b border-border-subtle"><td colSpan={8} className="p-3"><div className="h-5 rounded bg-bg-hover animate-pulse" /></td></tr>
+                <tr key={i} className="border-b border-border-subtle"><td colSpan={9} className="p-3"><div className="h-5 rounded bg-bg-hover animate-pulse" /></td></tr>
               ))
             ) : sortedRows.length === 0 ? (
-              <tr><td colSpan={8} className="p-10 text-center text-text-muted">No open exposure for the current filters.</td></tr>
+              <tr><td colSpan={9} className="p-10 text-center text-text-muted">No open exposure for the current filters.</td></tr>
             ) : sortedRows.map((r) => (
               <tr key={r.symbol} className="table-row">
                 <td className="p-3 font-semibold text-white">{r.symbol}</td>
@@ -253,6 +255,7 @@ export default function MarketExposure() {
                 <td className="p-3 text-right font-mono text-rose-400/90">{fmtLots(r.sellLots)}</td>
                 <td className="p-3 text-right font-mono text-rose-400">{money(r.sellAmount)}</td>
                 <td className={`p-3 text-right font-mono font-semibold ${r.net > 0 ? 'text-emerald-400' : r.net < 0 ? 'text-rose-400' : 'text-gray-400'}`}>{signedMoney(r.net)}</td>
+                <td className={`p-3 text-right font-mono font-semibold ${r.pnl > 0 ? 'text-emerald-400' : r.pnl < 0 ? 'text-rose-400' : 'text-gray-400'}`}>{signedMoney(r.pnl)}</td>
                 <td className="p-3 text-right font-mono text-emerald-400/80">{pct(r.buyPct)}</td>
                 <td className="p-3 text-right font-mono text-rose-400/80">{pct(r.sellPct)}</td>
               </tr>

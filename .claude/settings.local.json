@@ -273,7 +273,13 @@
       "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/pages/Profile.jsx','utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\('Profile.jsx OK'\\);\")",
       "Bash(node -e \"const c=require\\('./config/constants'\\); console.log\\(c.ACCOUNT_TYPES\\)\")",
       "Bash(node -e \"require\\('./src/controllers/walletController'\\); console.log\\('walletController OK'\\);\")",
-      "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/pages/Wallet.jsx','utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\('Wallet.jsx OK'\\);\")"
+      "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/pages/Wallet.jsx','utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\('Wallet.jsx OK'\\);\")",
+      "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/pages/Trade.jsx','utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\('Trade.jsx OK'\\);\")",
+      "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/pages/MarketExposure.jsx','utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\('MarketExposure.jsx OK'\\);\")",
+      "Bash(awk 'NR>=2028 && NR<=2730 && \\(/STEPS|stepId|effectiveSteps|step ===|setStep|step <|step >|\\\\.length/\\)' pages/Wallet.jsx)",
+      "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/components/Layout.jsx','utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\('Layout.jsx OK'\\);\")",
+      "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/components/WalletSidebar.jsx','utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\('WalletSidebar.jsx OK'\\);\")",
+      "Bash(node -e \"require\\('./src/services/candleService'\\); console.log\\('candleService OK'\\);\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\rijju\\.claude\\projects\\c--Users-rijju-OneDrive-Desktop-trading-platform--last-and\\memory"

@@ -324,7 +324,7 @@ export default function Trade() {
   // Active panel tab in the left mini-sidebar — TradingView-style icon
   // strip on the far edge that switches what content the 280px panel
   // shows. 'watchlist' is the default (= the existing instruments list).
-  const [leftPanelTab, setLeftPanelTab] = useState('watchlist');
+  const [leftPanelTab, setLeftPanelTab] = useState('positions');
   // Live order-book snapshot for the active symbol — populated only when
   // the Market Depth tab is open (avoid wasted polling/subscriptions for
   // tabs the user never visits).
@@ -1938,12 +1938,12 @@ export default function Trade() {
             </button>
 
             {[
+              { id: 'positions',    label: 'Positions',    icon: <SbPositionsI /> },
               { id: 'watchlist',    label: 'Instruments',  icon: <SbWatchI /> },
               { id: 'details',      label: 'Details',      icon: <SbDetailsI /> },
               { id: 'about',        label: 'About',        icon: <SbAboutI /> },
               { id: 'performance',  label: 'Performance',  icon: <SbPerfI /> },
               { id: 'depth',        label: 'Depth',        icon: <SbDepthI /> },
-              { id: 'positions',    label: 'Positions',    icon: <SbPositionsI /> },
               { id: 'pending',      label: 'Pending',      icon: <SbPendingI /> },
               { id: 'hotlist',      label: 'Movers',       icon: <SbHotI /> },
             ].map((t) => {

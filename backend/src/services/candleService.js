@@ -173,13 +173,30 @@ const getCandles = async (symbol, timeframe, limit = 500) => {
   // leave holes — without this the chart shows dashes-with-gaps instead of a
   // continuous series. In-memory only (no DB writes). The last real candle is
   // filled up to (not incl.) the current live bucket, which the WS feed owns.
+  // Is the market currently open for this symbol? When CLOSED we must NOT
+  // forward-fill from the last real candle up to "now" — on a weekend (forex)
+  // or after-hours that produces a giant flat run that swamps the real price
+  // action, so the chart looks blank/flat. When closed we stop at the last real
+  // candle so the chart shows actual history. Gaps BETWEEN real candles are
+  // still filled either way (keeps the series visually contiguous).
+  let marketOpen = true;
+  try {
+    const inst = await require('../models/Instrument').findOne({ symbol }).select('exchange category').lean();
+    if (inst) marketOpen = !!require('./marketHours').isInstrumentTradeable(inst).tradeable;
+  } catch (_) { /* default open — never block the chart on a lookup error */ }
+
   const FILL_CAP = 3000; // safety: never synthesize more than this per gap
   const asc = rows.slice().reverse();
   const out = [];
   for (let i = 0; i < asc.length; i += 1) {
     out.push(asc[i]);
     const curTs = new Date(asc[i].openTime).getTime();
-    const nextTs = i + 1 < asc.length ? new Date(asc[i + 1].openTime).getTime() : bucket(Date.now(), tfMs);
+    const isLast = i + 1 >= asc.length;
+    // Trailing gap (last real candle → now): only bridge to the live bucket
+    // while the market is OPEN. When closed, leave the last real candle as the
+    // right edge of the chart.
+    if (isLast && !marketOpen) continue;
+    const nextTs = !isLast ? new Date(asc[i + 1].openTime).getTime() : bucket(Date.now(), tfMs);
     let gaps = Math.floor((nextTs - curTs) / tfMs) - 1;
     if (gaps <= 0) continue;
     if (gaps > FILL_CAP) gaps = FILL_CAP;

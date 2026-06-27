@@ -1140,11 +1140,20 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
                   const sel = a._id === accountId;
                   const isR = a.accountType !== 'DEMO' && a.accountType !== 'VIRTUAL';
                   const accCcy = a.baseCurrency || 'USD';
-                  // Per-account balance in its native currency.
-                  const w = (typeof balances !== 'undefined' && Array.isArray(balances))
-                    ? balances.find((b) => b.accountId === a._id && b.currency === accCcy)
-                    : null;
-                  const bal = Number(w?.balance || 0);
+                  const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
+                  // Funds may sit in the native wallet OR the canonical USD
+                  // wallet (every deposit credits USD). Sum ALL of this
+                  // account's wallets, converted into its display currency, so
+                  // the card reflects credited funds whichever wallet they hit.
+                  const bal = (Array.isArray(balances) ? balances : [])
+                    .filter((b) => b.accountId === a._id)
+                    .reduce((sum, b) => {
+                      const v = Number(b.balance) || 0;
+                      if (b.currency === accCcy) return sum + v;
+                      if (b.currency === 'USD' && accCcy === 'INR') return sum + v * rate;
+                      if (b.currency === 'INR' && accCcy === 'USD') return sum + v / rate;
+                      return sum + v; // unknown currency — best-effort 1:1
+                    }, 0);
                   return (
                     <button
                       key={a._id}
@@ -2117,14 +2126,17 @@ function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCance
     { id: 'destination', label: 'Destination',   sub: 'Where to send' },
     { id: 'confirm',     label: 'Confirmation',  sub: 'Review & confirm' },
   ];
-  const stepId = STEPS[step]?.id;
+  // Demo / virtual accounts withdraw instantly (practice money) — no real
+  // payout, so the method + destination steps are skipped entirely.
+  const effectiveSteps = isDemo ? STEPS.filter((s) => s.id !== 'method' && s.id !== 'destination') : STEPS;
+  const stepId = effectiveSteps[step]?.id;
 
   const selectedMethodMeta = METHODS.find((m) => m.id === method) || METHODS[0];
   const canNext = (() => {
-    if (step === 0) return !!accountId && !isDemo;
-    if (step === 1) return !!method;
-    if (step === 2) return amount && Number(amount) >= (selectedMethodMeta.min || 1) && !isOverBudget;
-    if (step === 3) {
+    if (stepId === 'account') return !!accountId;
+    if (stepId === 'method')  return !!method;
+    if (stepId === 'amount')  return amount && Number(amount) >= (isDemo ? 1 : (selectedMethodMeta.min || 1)) && !isOverBudget;
+    if (stepId === 'destination') {
       if (method === 'UPI')    return upiId && upiId.includes('@');
       if (method === 'BANK')   return bankAccountNumber.length >= 5 && bankIFSC.length === 11 && !!bankAccountHolderName.trim();
       if (method === 'CRYPTO') return cryptoAddress.length >= 20;
@@ -2132,11 +2144,10 @@ function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCance
     return true;
   })();
 
-  const goNext = () => setStep((s) => Math.min(s + 1, STEPS.length - 1));
+  const goNext = () => setStep((s) => Math.min(s + 1, effectiveSteps.length - 1));
   const goBack = () => setStep((s) => Math.max(s - 1, 0));
 
   const submit = async () => {
-    if (isDemo) { toast.error('Withdrawals not allowed from demo accounts'); return; }
     if (!amount || Number(amount) <= 0) { toast.error('Enter a valid amount'); return; }
     if (Number(amount) > availableBalance) {
       toast.error(`Insufficient balance. Available: ${sym}${availableBalance.toLocaleString('en-IN')}`);
@@ -2168,7 +2179,9 @@ function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCance
         payload.cryptoNetwork = cryptoNetwork;
       }
       await api.post('/wallet/withdrawals', payload);
-      toast.success('Withdrawal request submitted — admin will process within 24 hours');
+      toast.success(isDemo
+        ? 'Demo withdrawal completed instantly'
+        : 'Withdrawal request submitted — admin will process within 24 hours');
       onDone && onDone();
     } catch (err) {
       toast.error(errorMessage(err));
@@ -2204,7 +2217,7 @@ function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCance
         {/* ── Stepper ──────────────────────────────────────────────── */}
         <div className="px-6 py-5 border-b border-border-subtle">
           <div className="flex items-start gap-1.5 sm:gap-3">
-            {STEPS.map((s, i) => {
+            {effectiveSteps.map((s, i) => {
               const isActive = i === step;
               const isDone = i < step;
               return (
@@ -2227,7 +2240,7 @@ function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCance
                     <span className={`text-[13px] font-bold truncate ${isActive ? 'text-text-primary' : isDone ? 'text-text-primary' : 'text-text-muted'}`}>{s.label}</span>
                     <span className="text-[11px] text-text-muted truncate">{s.sub}</span>
                   </div>
-                  {i < STEPS.length - 1 && (
+                  {i < effectiveSteps.length - 1 && (
                     <span className="flex-1 mx-1 sm:mx-2 mt-4 h-px border-t border-dashed border-border-dark" />
                   )}
                 </div>
@@ -2244,7 +2257,7 @@ function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCance
             <div className="space-y-4">
               <div>
                 <h3 className="text-lg font-bold text-text-primary">Withdraw from</h3>
-                <p className="text-xs text-text-muted mt-0.5">Pick a real account to withdraw funds from.</p>
+                <p className="text-xs text-text-muted mt-0.5">Pick an account to withdraw funds from.</p>
               </div>
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                 {accounts.map((a) => {
@@ -2259,8 +2272,7 @@ function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCance
                       key={a._id}
                       type="button"
                       onClick={() => setAccountId(a._id)}
-                      disabled={!isR}
-                      className={`relative w-full p-5 rounded-2xl border-2 text-left transition-all hover:shadow-card disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:shadow-none ${sel ? 'shadow-card' : 'hover:-translate-y-0.5'}`}
+                      className={`relative w-full p-5 rounded-2xl border-2 text-left transition-all hover:shadow-card ${sel ? 'shadow-card' : 'hover:-translate-y-0.5'}`}
                       style={sel
                         ? { borderColor: '#3B82F6', background: '#3B82F608' }
                         : { borderColor: '#E5E7EB', background: '#FFFFFF' }
@@ -2317,8 +2329,8 @@ function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCance
                 })}
               </div>
               {isDemo && (
-                <div className="rounded-xl bg-bear/10 border border-bear/30 p-3 text-xs text-bear font-semibold">
-                  Withdrawals are not allowed from demo accounts.
+                <div className="rounded-xl bg-info/10 border border-info/30 p-3 text-xs text-text-primary">
+                  ✨ Demo withdrawals are processed instantly — no payment details or admin review needed.
                 </div>
               )}
             </div>
@@ -2697,9 +2709,9 @@ function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCance
           </button>
           <span className="hidden md:flex items-center gap-2 text-[12px] text-text-secondary">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#3B82F6" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="11" width="16" height="9" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
-            Withdrawals are processed manually within 1–24 hours
+            {isDemo ? 'Demo withdrawals are processed instantly' : 'Withdrawals are processed manually within 1–24 hours'}
           </span>
-          {step < STEPS.length - 1 ? (
+          {step < effectiveSteps.length - 1 ? (
             <button
               type="button"
               onClick={goNext}
@@ -2718,7 +2730,7 @@ function WithdrawView({ accounts, balances, withdrawals, fxRate, onDone, onCance
               style={{ background: '#3B82F6', color: '#FFFFFF' }}
             >
               <span className="keep-white" style={{ color: '#FFFFFF' }}>
-                {loading ? 'Submitting…' : `Request Withdrawal of ${sym}${fmtNum(Number(amount) || 0, 2)}`}
+                {loading ? 'Submitting…' : isDemo ? `Withdraw ${sym}${fmtNum(Number(amount) || 0, 2)} instantly` : `Request Withdrawal of ${sym}${fmtNum(Number(amount) || 0, 2)}`}
               </span>
             </button>
           )}
