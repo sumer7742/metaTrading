@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useInstruments } from '../hooks/useInstruments';
+import { useRecommendedMarkets } from '../hooks/useRecommendedMarkets';
 import { api } from '../services/api';
 import AssetIcon from './AssetIcon';
 import WatchlistButton from './WatchlistButton';
@@ -32,7 +33,11 @@ const SearchIcon = (props) => (
 export default function SearchModal({ open, onClose }) {
   const navigate = useNavigate();
   const { rows, loading } = useInstruments();
+  const { symbols: recommended } = useRecommendedMarkets();
   const [category, setCategory] = useState('ALL');
+  // Recommended defaults to the admin order; this toggle alphabetises it client-
+  // side (other tabs are always alphabetical).
+  const [recSortAlpha, setRecSortAlpha] = useState(false);
   const [query, setQuery] = useState('');
   // Options are excluded from the cached catalog, so surface them on demand via
   // the server search — but only for option-like queries (a strike number or
@@ -52,15 +57,16 @@ export default function SearchModal({ open, onClose }) {
     return () => clearTimeout(id);
   }, [query]);
 
-  // Reset state every time the modal opens, and focus the input.
+  // Reset state every time the modal opens, and focus the input. Default to the
+  // "Recommended" tab when the admin has configured one, else "All".
   useEffect(() => {
     if (!open) return;
     setQuery('');
-    setCategory('ALL');
+    setCategory(recommended.length ? 'RECOMMENDED' : 'ALL');
     // Slight delay so the input is mounted + paint-stable before focus.
     const id = setTimeout(() => inputRef.current?.focus(), 30);
     return () => clearTimeout(id);
-  }, [open]);
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Esc to close, and Cmd/Ctrl+K passthrough at the global level is handled
   // by the parent; here we only react to Escape inside the modal.
@@ -79,12 +85,22 @@ export default function SearchModal({ open, onClose }) {
 
   const visible = useMemo(() => {
     const q = query.trim().toUpperCase();
-    return rows.filter((r) => {
-      if (category !== 'ALL' && (r.category || '').toUpperCase() !== category) return false;
-      if (!q) return true;
-      return r.symbol?.toUpperCase().includes(q) || (r.name || '').toUpperCase().includes(q);
-    });
-  }, [rows, category, query]);
+    // "Recommended" = admin-curated set, kept in the admin's configured order
+    // (never re-sorted). Every other tab is sorted alphabetically by name.
+    const byName = (a, b) => (a.name || a.symbol).localeCompare(b.name || b.symbol, undefined, { sensitivity: 'base' });
+    let base;
+    if (category === 'RECOMMENDED') {
+      const bySym = new Map(rows.map((r) => [r.symbol, r]));
+      base = recommended.map((s) => bySym.get(s)).filter(Boolean);
+      if (recSortAlpha) base = [...base].sort(byName); // opt-in alphabetise
+    } else {
+      base = rows
+        .filter((r) => category === 'ALL' || (r.category || '').toUpperCase() === category)
+        .sort(byName);
+    }
+    if (!q) return base;
+    return base.filter((r) => r.symbol?.toUpperCase().includes(q) || (r.name || '').toUpperCase().includes(q));
+  }, [rows, category, query, recommended, recSortAlpha]);
 
   // When the query is empty we show the FULL filtered set (not a slice), so the
   // list matches the category count badge (e.g. "All 16" really shows 16).
@@ -97,8 +113,18 @@ export default function SearchModal({ open, onClose }) {
       const k = (r.category || 'OTHER').toUpperCase();
       out[k] = (out[k] || 0) + 1;
     }
+    const rowSet = new Set(rows.map((r) => r.symbol));
+    out.RECOMMENDED = recommended.filter((s) => rowSet.has(s)).length;
     return out;
-  }, [rows]);
+  }, [rows, recommended]);
+
+  // "Recommended" sits right after "All" — only when the admin has configured
+  // markets that resolve to live instruments (else it's hidden entirely).
+  const categories = useMemo(() => (
+    counts.RECOMMENDED > 0
+      ? [CATEGORIES[0], { key: 'RECOMMENDED', label: 'Recommended' }, ...CATEGORIES.slice(1)]
+      : CATEGORIES
+  ), [counts.RECOMMENDED]);
 
   const handlePick = (sym) => {
     onClose?.();
@@ -144,17 +170,18 @@ export default function SearchModal({ open, onClose }) {
           <button
             type="button"
             onClick={onClose}
-            className="hidden sm:inline-flex items-center text-[10px] font-semibold text-text-muted border border-border-dark rounded-md px-1.5 py-0.5"
-            aria-label="Close (Esc)"
+            className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors"
+            title="Close (Esc)"
+            aria-label="Close"
           >
-            ESC
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
           </button>
         </div>
 
         {/* Category pills */}
         <div className="px-5 py-3 border-b border-border-subtle">
           <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
-            {CATEGORIES.map((c) => {
+            {categories.map((c) => {
               const active = category === c.key;
               const count = counts[c.key];
               if (c.key !== 'ALL' && !count) return null;
@@ -183,8 +210,30 @@ export default function SearchModal({ open, onClose }) {
 
         {/* Results / trending list */}
         <div className="max-h-[60vh] overflow-y-auto">
-          <div className="px-5 pt-4 pb-2 text-sm font-semibold text-text-secondary">
-            {showTrending ? `All markets (${visible.length})` : `Results (${list.length})`}
+          <div className="px-5 pt-4 pb-2 flex items-center justify-between gap-2">
+            <span className="text-sm font-semibold text-text-secondary">
+              {showTrending
+                ? `${category === 'RECOMMENDED' ? 'Recommended' : 'All markets'} (${visible.length})`
+                : `Results (${list.length})`}
+            </span>
+            {category === 'RECOMMENDED' && showTrending && (
+              <button
+                type="button"
+                onClick={() => setRecSortAlpha((v) => !v)}
+                aria-pressed={recSortAlpha}
+                title={recSortAlpha ? 'Showing A–Z — click for the recommended order' : 'Sort A–Z'}
+                className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-md border transition-colors ${
+                  recSortAlpha
+                    ? 'border-primary-500 text-primary-600 bg-primary-500/10'
+                    : 'border-border-dark text-text-muted hover:text-text-primary hover:border-primary-500/40'
+                }`}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 6h11M3 12h8M3 18h5" /><path d="M17 8l3-3 3 3M20 5v14" />
+                </svg>
+                A–Z
+              </button>
+            )}
           </div>
 
           {loading && (

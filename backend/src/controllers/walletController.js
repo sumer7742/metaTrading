@@ -22,6 +22,13 @@ const getBalances = asyncHandler(async (req, res) => {
   sendSuccess(res, enriched);
 });
 
+// Where to SEND money for a manual deposit (admin-configured per method).
+// Shown to the client in the "Add funds" modal. Read-only.
+const depositDetails = asyncHandler(async (req, res) => {
+  const systemSettings = require('../services/systemSettings.service');
+  sendSuccess(res, await systemSettings.getSetting('deposit.paymentDetails'));
+});
+
 const getLedger = asyncHandler(async (req, res) => {
   const { limit = 100, accountId } = req.query;
   const filter = { userId: req.userId };
@@ -94,22 +101,31 @@ const createDeposit = asyncHandler(async (req, res) => {
   const account = await TradingAccount.findOne({ _id: accountId, userId: req.userId });
   if (!account) throw new AppError('Account not found', 404);
 
+  // Practice-money accounts (DEMO / VIRTUAL) skip every real-money gate: no
+  // KYC, no payment screenshot, no admin review — they auto-credit instantly.
+  // EVERY other type is a live plan tier (STANDARD / PRO / FREE / +IC variants,
+  // legacy REAL, CUSTOM) and is treated as real money. Previously these gates
+  // only matched the legacy 'REAL' type, so plan-coded live accounts slipped
+  // past KYC + screenshot entirely.
+  const isDemoLike = account.accountType === 'DEMO' || account.accountType === 'VIRTUAL';
+  const isRealMoney = !isDemoLike;
+
   // KYC gate — real-money deposits are blocked until KYC APPROVED.
   // Demo / virtual accounts are exempt (no real funds at risk).
   // Disable with KYC_REQUIRED=false in env for staging / sandbox.
   const kycRequired = (process.env.KYC_REQUIRED || 'true').toLowerCase() !== 'false';
-  if (kycRequired && account.accountType === 'REAL') {
+  if (kycRequired && isRealMoney) {
     if (req.user?.kycStatus !== 'APPROVED') {
       throw new AppError(
-        'KYC verification must be approved before depositing on a real account.',
+        'KYC verification must be approved before depositing on a real-money account.',
         403,
         'KYC_REQUIRED'
       );
     }
   }
 
-  // For REAL accounts, screenshot is MANDATORY (proof of payment)
-  if (account.accountType === 'REAL') {
+  // For real-money accounts, screenshot is MANDATORY (proof of payment)
+  if (isRealMoney) {
     if (!screenshot) {
       throw new AppError('Payment screenshot is required for real account deposits', 400);
     }
@@ -128,8 +144,9 @@ const createDeposit = asyncHandler(async (req, res) => {
     }
   }
 
-  // For DEMO accounts, allow direct credit without screenshot (instant top-up)
-  if (account.accountType === 'DEMO') {
+  // For practice accounts (DEMO / VIRTUAL), allow direct credit without
+  // screenshot (instant top-up) — no admin review, no real funds at risk.
+  if (isDemoLike) {
     // Cap per-request and per-day so a user can't self-fund unlimited demo
     // balances, which would skew the trader-profile / routing analytics
     // and waste DB rows.
@@ -186,6 +203,26 @@ const createDeposit = asyncHandler(async (req, res) => {
   // REAL deposits — pending admin review. Pre-compute the USD base
   // figure so the eventual admin confirm credits the base wallet.
   const convReal = await currencyService.toBase(currency || 'INR', amtNum);
+
+  // ─── Minimum-deposit gate (per AccountPlan tier) ────────────────────
+  // Each live tier defines a minimum deposit amount (USD base), enforced on
+  // EVERY deposit — not just the first. Demo/virtual practice accounts are
+  // exempt (handled above; they return before this point).
+  {
+    const accountFeeService = require('../services/accountFeeService');
+    const minDep = await accountFeeService.getMinDeposit(account); // USD
+    if (minDep > 0) {
+      const baseAmt = Number(convReal.baseAmount);
+      if (baseAmt < minDep) {
+        throw new AppError(
+          `Minimum deposit for the ${account.nickname || account.accountType} plan is ${minDep} USD — you entered ≈ ${baseAmt.toFixed(2)} USD.`,
+          400,
+          'BELOW_MIN_DEPOSIT'
+        );
+      }
+    }
+  }
+
   const dep = await Deposit.create({
     userId: req.userId,
     accountId,
@@ -654,13 +691,32 @@ const createRazorpayOrder = asyncHandler(async (req, res) => {
   }
   const account = await TradingAccount.findOne({ _id: accountId, userId: req.userId });
   if (!account) throw new AppError('Account not found', 404);
-  if (account.accountType !== 'REAL') {
-    throw new AppError('Razorpay deposits only allowed on real accounts', 400);
+  const isDemoLike = account.accountType === 'DEMO' || account.accountType === 'VIRTUAL';
+  if (isDemoLike) {
+    throw new AppError('Razorpay deposits are only for real-money accounts', 400);
   }
   // KYC gate — same as the manual flow.
   const kycRequired = (process.env.KYC_REQUIRED || 'true').toLowerCase() !== 'false';
   if (kycRequired && req.user?.kycStatus !== 'APPROVED') {
     throw new AppError('KYC must be approved before depositing.', 403, 'KYC_REQUIRED');
+  }
+
+  // Minimum-deposit gate (per AccountPlan tier) — enforced on EVERY deposit,
+  // mirroring the manual flow.
+  {
+    const accountFeeService = require('../services/accountFeeService');
+    const minDep = await accountFeeService.getMinDeposit(account); // USD
+    if (minDep > 0) {
+      const conv = await currencyService.toBase(currency || 'INR', amtNum);
+      const baseAmt = Number(conv.baseAmount);
+      if (baseAmt < minDep) {
+        throw new AppError(
+          `Minimum deposit for the ${account.nickname || account.accountType} plan is ${minDep} USD — you entered ≈ ${baseAmt.toFixed(2)} USD.`,
+          400,
+          'BELOW_MIN_DEPOSIT'
+        );
+      }
+    }
   }
 
   // Create the Razorpay order. If RAZORPAY env vars aren't set, the
@@ -946,6 +1002,7 @@ const transferToUser = asyncHandler(async (req, res) => {
 
 module.exports = {
   getBalances,
+  depositDetails,
   getLedger,
   createDeposit,
   listDeposits,

@@ -131,10 +131,12 @@ const register = asyncHandler(async (req, res) => {
     console.warn('[REGISTER] hierarchy auto-assign failed:', e.message);
   }
 
-  // Default account on signup: DEMO with a ₹1,00,000 virtual seed so
-  // the user can try the platform before depositing real money. To open
-  // a live trading account (STANDARD / STANDARD_IC / PRO / PRO_IC /
-  // FREE / FREE_IC) they use the /accounts/new tier picker after login.
+  // Default account on signup: a DEMO/practice account (₹1,00,000 virtual seed,
+  // instant top-up, no KYC, virtual funds NOT withdrawable) so the user can try
+  // the platform before depositing real money. It's TYPED DEMO for those safety
+  // behaviours but LABELLED "Standard" — DEMO already maps to the STANDARD tier's
+  // fees/leverage (config/accountTypes.getAccountTypeDef). To open a real live
+  // account they use the /accounts/new tier picker after login.
   const practiceAccountNumber = 'TA' + Date.now().toString().slice(-9);
   const practiceAccount = await TradingAccount.create({
     userId: user._id,
@@ -143,7 +145,7 @@ const register = asyncHandler(async (req, res) => {
     baseCurrency: 'INR',
     leverage: 100,
     mode: TRADING_MODE.HYBRID,
-    nickname: 'Demo Account',
+    nickname: 'Standard Account',
   });
   await Wallet.create({ userId: user._id, accountId: practiceAccount._id, currency: 'INR', balance: '100000' });
 
@@ -517,6 +519,57 @@ const resetPassword = asyncHandler(async (req, res) => {
 });
 
 /**
+ * Authenticated password change (Profile → Security). Requires the CURRENT
+ * password, enforces the shared strength policy, and signs out OTHER devices
+ * while keeping this session alive (when the client passes its refresh token).
+ */
+const changePassword = asyncHandler(async (req, res) => {
+  const { currentPassword, newPassword, keepRefreshToken } = req.body;
+  if (!currentPassword || !newPassword) throw new AppError('Current and new password are required', 400);
+
+  const { validatePasswordStrength } = require('../utils/passwordPolicy');
+  const strengthErr = validatePasswordStrength(newPassword);
+  if (strengthErr) throw new AppError(strengthErr, 400, 'WEAK_PASSWORD');
+
+  const user = await User.findById(req.userId);
+  if (!user) throw new AppError('User not found', 404);
+
+  const ok = await bcrypt.compare(currentPassword, user.passwordHash);
+  if (!ok) throw new AppError('Current password is incorrect', 400, 'INVALID_CURRENT_PASSWORD');
+
+  const same = await bcrypt.compare(newPassword, user.passwordHash);
+  if (same) throw new AppError('New password must be different from your current password', 400, 'SAME_PASSWORD');
+
+  user.passwordHash = await bcrypt.hash(newPassword, 12);
+  // Revoke every OTHER session; keep this device signed in when it sends its
+  // own refresh token (else sign out everywhere).
+  user.refreshTokens = keepRefreshToken
+    ? (user.refreshTokens || []).filter((t) => t.token === keepRefreshToken)
+    : [];
+  await user.save();
+
+  sendSuccess(res, { ok: true, message: 'Password changed successfully.' });
+
+  setImmediate(async () => {
+    try {
+      const { AuditLog } = require('../models');
+      await AuditLog.create({
+        actorId: user._id, actorRole: user.role, action: 'PASSWORD_CHANGED',
+        targetType: 'USER', targetId: String(user._id), ip: req.ip, userAgent: req.headers['user-agent'],
+      });
+    } catch (_) { /* best-effort */ }
+    try {
+      await require('../services/emailService').send({
+        to: user.email,
+        subject: 'Your password was changed',
+        html: '<p>Your TradePro password was just changed from your profile. If this wasn\'t you, reset it immediately and contact support.</p>',
+        text: 'Your TradePro password was just changed. If this wasn\'t you, reset it immediately and contact support.',
+      });
+    } catch (_) { /* non-fatal */ }
+  });
+});
+
+/**
  * List the user's currently active sessions (refresh tokens) for self-service revoke.
  *
  * Returns each session's stable Mongo subdoc `_id` so revokeDevice can target
@@ -591,4 +644,4 @@ const resendVerifyEmail = asyncHandler(async (req, res) => {
   sendSuccess(res, { ok: true });
 });
 
-module.exports = { register, login, refresh, logout, me, endImpersonation, setup2FA, enable2FA, disable2FA, requestPasswordReset, resetPassword, listDevices, revokeDevice, verifyEmail, resendVerifyEmail };
+module.exports = { register, login, refresh, logout, me, endImpersonation, setup2FA, enable2FA, disable2FA, changePassword, requestPasswordReset, resetPassword, listDevices, revokeDevice, verifyEmail, resendVerifyEmail };

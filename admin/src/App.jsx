@@ -10,6 +10,7 @@ import Portfolio from './pages/Portfolio';
 import Users from './pages/Users';
 import Accounts from './pages/Accounts';
 import Instruments from './pages/Instruments';
+import RecommendedMarkets from './pages/RecommendedMarkets';
 import MarketExposure from './pages/MarketExposure';
 import Orders from './pages/Orders';
 import CmsPages from './pages/CmsPages';
@@ -103,6 +104,7 @@ export default function App() {
       <Route path="/users" element={wrap(<Users />)} />
       <Route path="/accounts" element={wrap(<Accounts />)} />
       <Route path="/instruments" element={wrap(<Instruments />)} />
+      <Route path="/recommended-markets" element={wrap(<RecommendedMarkets />)} />
       <Route path="/market-exposure" element={wrap(<MarketExposure />)} />
       <Route path="/orders" element={wrap(<Orders />)} />
       <Route path="/cms-pages" element={wrap(<CmsPages />)} />

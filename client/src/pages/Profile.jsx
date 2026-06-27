@@ -4,8 +4,30 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { useAuthStore } from '../store/auth';
 import { useConfirm } from '../components/ConfirmProvider';
+import PasswordInput from '../components/PasswordInput';
 
 const VALID_TABS = new Set(['profile', 'kyc', 'security', 'devices']);
+
+// Shared password policy (mirrors the backend util) — used by the change-
+// password checklist.
+const PASSWORD_RULES = [
+  { test: (p) => p.length >= 8,          label: 'At least 8 characters' },
+  { test: (p) => /[A-Z]/.test(p),        label: 'One uppercase letter' },
+  { test: (p) => /[a-z]/.test(p),        label: 'One lowercase letter' },
+  { test: (p) => /[0-9]/.test(p),        label: 'One number' },
+  { test: (p) => /[^A-Za-z0-9]/.test(p), label: 'One special character' },
+];
+
+// Show a friendly country name from a stored ISO-2 code (e.g. "IN" → "India").
+// Falls back to the raw value when it's already a full name or an unknown code.
+const countryName = (code) => {
+  if (!code) return '—';
+  try {
+    return new Intl.DisplayNames(['en'], { type: 'region' }).of(String(code).toUpperCase()) || code;
+  } catch {
+    return code;
+  }
+};
 
 export default function Profile() {
   const { user, refreshUser } = useAuthStore();
@@ -290,12 +312,20 @@ function ProfileTab({ user, onUpdate }) {
               placeholder="Last name"
             />
           </Field>
-          <Field label="Phone" className="md:col-span-2">
+          <Field label="Phone">
             <input
               className="input"
               value={form.phone}
               onChange={(e) => setForm({ ...form, phone: e.target.value })}
               placeholder="+91 98xxxxxxxx"
+            />
+          </Field>
+          <Field label="Country">
+            <input
+              className="input opacity-70 cursor-not-allowed"
+              value={countryName(user?.country)}
+              disabled
+              title="Set at registration / KYC"
             />
           </Field>
         </div>
@@ -348,7 +378,12 @@ function KycTab({ user, onUpdate }) {
     finally { setUploading(false); }
   };
 
-  const status = user?.kycStatus || 'NOT_SUBMITTED';
+  const rawStatus = user?.kycStatus || 'NOT_SUBMITTED';
+  // If documents are on file but the account status hasn't flipped yet (legacy
+  // accounts uploaded under the old "needs 2 docs" rule), treat it as PENDING —
+  // a submitted document IS under review.
+  const hasReviewableDocs = docs.some((d) => d.status !== 'REJECTED');
+  const status = rawStatus === 'NOT_SUBMITTED' && hasReviewableDocs ? 'PENDING' : rawStatus;
   const statusMeta = {
     APPROVED:      { color: 'bull',  bg: 'bg-bull/10  border-bull/20',  text: 'text-bull',  desc: 'Your identity is verified. You have full trading access.' },
     PENDING:       { color: 'warn',  bg: 'bg-warn/10  border-warn/20',  text: 'text-warn',  desc: 'We are reviewing your documents. This usually takes 1-2 business days.' },
@@ -480,6 +515,81 @@ const fileToBase64 = (file) => new Promise((res, rej) => {
   r.readAsDataURL(file);
 });
 
+// ============== CHANGE PASSWORD ==============
+function ChangePasswordCard() {
+  const [cur, setCur] = useState('');
+  const [pwd, setPwd] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const rulesPass = PASSWORD_RULES.every((r) => r.test(pwd));
+  const match = pwd && pwd === confirm;
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!cur) return toast.error('Enter your current password');
+    if (!rulesPass) return toast.error('New password does not meet all requirements');
+    if (!match) return toast.error('Passwords do not match');
+    setLoading(true);
+    try {
+      await api.post('/auth/change-password', {
+        currentPassword: cur,
+        newPassword: pwd,
+        // Keep THIS session alive; sign out other devices.
+        keepRefreshToken: localStorage.getItem('refreshToken') || undefined,
+      });
+      toast.success('Password changed. Other devices have been signed out.');
+      setCur(''); setPwd(''); setConfirm('');
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <SectionCard icon={IconLock} title="Password" subtitle="Change your account password.">
+      <form onSubmit={submit} className="space-y-4 max-w-md">
+        <Field label="Current password">
+          <PasswordInput value={cur} onChange={(e) => setCur(e.target.value)} autoComplete="current-password" placeholder="Current password" />
+        </Field>
+        <Field label="New password">
+          <PasswordInput value={pwd} onChange={(e) => setPwd(e.target.value)} autoComplete="new-password" placeholder="New password" minLength={8} maxLength={128} />
+        </Field>
+
+        <ul className="space-y-1">
+          {PASSWORD_RULES.map((r) => {
+            const ok = r.test(pwd);
+            return (
+              <li key={r.label} className={`flex items-center gap-2 text-[12px] ${ok ? 'text-bull' : 'text-text-muted'}`}>
+                <span className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 ${ok ? 'bg-bull/15' : 'bg-bg-hover'}`}>
+                  {ok ? <IconCheck className="w-3 h-3" /> : <span className="w-1 h-1 rounded-full bg-text-muted" />}
+                </span>
+                {r.label}
+              </li>
+            );
+          })}
+        </ul>
+
+        <Field label="Confirm new password">
+          <PasswordInput
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            autoComplete="new-password"
+            placeholder="Re-enter new password"
+            aria-invalid={confirm && !match ? true : undefined}
+          />
+          {confirm && !match && <p className="mt-1 text-[11px] text-bear font-semibold">Passwords do not match</p>}
+        </Field>
+
+        <button type="submit" disabled={loading || !cur || !rulesPass || !match} className="btn-primary">
+          {loading ? 'Updating…' : 'Update password'}
+        </button>
+      </form>
+    </SectionCard>
+  );
+}
+
 // ============== SECURITY ==============
 function SecurityTab({ user, onUpdate }) {
   const [setup, setSetup] = useState(null);
@@ -515,6 +625,9 @@ function SecurityTab({ user, onUpdate }) {
 
   return (
     <div className="space-y-5">
+      {/* Change password */}
+      <ChangePasswordCard />
+
       {/* 2FA card */}
       <SectionCard
         icon={IconLock}

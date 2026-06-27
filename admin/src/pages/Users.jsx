@@ -782,6 +782,25 @@ function UserDetail({ userId, onClose, onJumpToUser }) {
     }
   };
 
+  // KYC files sit behind an admin-only Bearer endpoint, so a plain <a href> /
+  // <img src> can't load them (browser won't attach the auth header). Fetch as
+  // a blob with the interceptor's token, then open the object URL in a new tab.
+  const [viewingDoc, setViewingDoc] = useState(null);
+  const viewKycDoc = async (doc) => {
+    setViewingDoc(doc._id);
+    try {
+      const r = await api.get(`/compliance/kyc/documents/${doc._id}/file`, { responseType: 'blob' });
+      const url = URL.createObjectURL(r.data);
+      window.open(url, '_blank', 'noopener');
+      // Revoke a bit later so the new tab has time to load it.
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setViewingDoc(null);
+    }
+  };
+
   const adjustBalance = async (accountId, currency) => {
     const amount = prompt('Amount to add (negative to debit):');
     if (!amount) return;
@@ -880,7 +899,7 @@ function UserDetail({ userId, onClose, onJumpToUser }) {
   };
 
   if (!data) return null;
-  const { user, accounts, wallets, referees = [], bonusQuota } = data;
+  const { user, accounts, wallets, referees = [], bonusQuota, kycDocuments = [] } = data;
   // Default quota for older API responses that don't return it.
   const quota = bonusQuota || { refereeCount: referees.length, credited: 0, available: referees.length };
   const bonusAvailable = quota.available > 0;
@@ -1226,19 +1245,37 @@ function UserDetail({ userId, onClose, onJumpToUser }) {
             );
           })()}
 
-          {user.kycDocuments?.length > 0 && (
-            <div>
-              <h3 className="font-semibold text-white mb-2">KYC Documents</h3>
+          <div>
+            <h3 className="font-semibold text-white mb-2">KYC Documents ({kycDocuments.length})</h3>
+            {kycDocuments.length === 0 ? (
+              <div className="bg-bg-dark p-3 rounded text-sm text-gray-500">No documents uploaded yet.</div>
+            ) : (
               <div className="space-y-2">
-                {user.kycDocuments.map((d, i) => (
-                  <div key={i} className="bg-bg-dark p-2 rounded text-sm">
-                    <span className="text-gray-400">{d.type}: </span>
-                    <a href={d.url} target="_blank" rel="noreferrer" className="text-primary-500 underline break-all">{d.url}</a>
+                {kycDocuments.map((d) => (
+                  <div key={d._id} className="bg-bg-dark p-3 rounded text-sm flex items-center gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium text-white">{(d.docType || '').replace(/_/g, ' ')}</div>
+                      <div className="text-xs text-gray-500 truncate">
+                        {d.originalFilename} · {new Date(d.createdAt).toLocaleString()}
+                      </div>
+                    </div>
+                    <span className={`text-[10px] px-2 py-0.5 rounded font-bold uppercase ${
+                      d.status === 'APPROVED' ? 'bg-bull/20 text-bull' :
+                      d.status === 'REJECTED' ? 'bg-bear/20 text-bear' :
+                      'bg-warn/20 text-warn'
+                    }`}>{d.status}</span>
+                    <button
+                      onClick={() => viewKycDoc(d)}
+                      disabled={viewingDoc === d._id}
+                      className="btn-secondary text-xs px-3 py-1 disabled:opacity-50"
+                    >
+                      {viewingDoc === d._id ? 'Opening…' : 'View'}
+                    </button>
                   </div>
                 ))}
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
           <div>
             <h3 className="font-semibold text-white mb-2">Trading Accounts ({accounts.length})</h3>

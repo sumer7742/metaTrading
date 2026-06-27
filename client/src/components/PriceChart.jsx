@@ -1019,6 +1019,7 @@ export default function PriceChart({
   const [showTvDemo, setShowTvDemo] = useState(false);
   const vLineRef = useRef(null);
   const hLineRef = useRef(null);
+  const resizeFnRef = useRef(null); // exposes the live chart's layout-resize handler to other effects
   const priceLinesRef = useRef(new Map());
   const candlesRef = useRef([]);
   // Live-price / instrument refs — synced via effects below so the drag
@@ -1383,13 +1384,12 @@ export default function PriceChart({
       });
     };
     const chart = createChart(containerRef.current, {
-      // `autoSize: true` makes lightweight-charts attach its own
-      // ResizeObserver and follow the container's box. This is the
-      // reliable fix for "chart canvas keeps the expanded height after
-      // collapsing back" — the library tracks shrinks and grows itself
-      // instead of relying on our manual window-resize pings.
+      // autoSize ON — lightweight-charts owns canvas sizing via its own
+      // ResizeObserver (the reliable, conflict-free path). We no longer call
+      // chart.resize() anywhere. `minimumWidth` below reserves the axis gutter
+      // so the price scale can't collapse when the layout width changes.
       autoSize: true,
-      width: containerRef.current.clientWidth,
+      width: Math.max(1, containerRef.current.clientWidth || (chartWrapRef.current?.clientWidth || 300)),
       height: initialHeight,
       localization: {
         locale: (typeof navigator !== 'undefined' && navigator.language) || 'en-US',
@@ -1416,14 +1416,26 @@ export default function PriceChart({
         shiftVisibleRangeOnNewBar: true,
       },
       rightPriceScale: {
+        // Keep the right price scale PERMANENTLY visible — it must never vanish
+        // when the chart box changes (order panel / sidebar / fullscreen /
+        // window resize). The resize lifecycle below re-asserts this too.
+        visible: true,
+        borderVisible: true,
         borderColor: tvCanvas(theme).border,
+        // RESERVE a fixed minimum gutter for the axis so it can NEVER collapse
+        // into the chart / overlap the candles + crosshair label when the chart
+        // narrows (e.g. order panel opens). lightweight-charts keeps ≥70px for
+        // the labels and shrinks the plot area instead.
+        minimumWidth: 70,
         // Slightly more top breathing room (10 %) so big upward spikes
         // don't push wicks against the chart's top edge. Bottom keeps
         // 18% reserved for the volume row beneath the candles.
         autoScale: true,
         scaleMargins: { top: 0.10, bottom: 0.18 },
         mode: 0,                  // normal (not log, not percentage)
-        entireTextOnly: true,
+        // false → Y-axis values keep rendering even when the scale is narrow.
+        // (true used to hide labels on tight widths right after a resize.)
+        entireTextOnly: false,
         alignLabels: true,
         ticksVisible: true,
       },
@@ -1521,32 +1533,59 @@ export default function PriceChart({
       animRafRef.current = requestAnimationFrame(tick);
     };
 
-    const resize = () => {
-      if (chart && containerRef.current) {
-        const w = containerRef.current.clientWidth;
-        const h = containerRef.current.clientHeight;
-        const opts = {};
-        if (w > 0) opts.width = w;
-        if (h > 0) opts.height = h;
-        if (Object.keys(opts).length) chart.applyOptions(opts);
+    // ── Robust resize lifecycle ───────────────────────────────────────
+    // Measure the REAL box (getBoundingClientRect) and chart.resize() to it,
+    // then re-assert the right price scale so it can never stay hidden after a
+    // box change (panel / sidebar / fullscreen / window). This is the fix for
+    // "Y-axis + last-price label + crosshair label disappear on resize".
+    const reassertScale = () => {
+      try { chart.priceScale('right').applyOptions({ visible: true, minimumWidth: 70 }); } catch (_) { /* */ }
+      // A resize can leave the custom autoscale provider holding a stale / empty
+      // range → the scale renders no labels and collapses to 0 width (the
+      // "Y-axis vanished after toggling the panel" bug). Re-trigger autoScale so
+      // the provider recomputes the visible range and the labels come back.
+      // Skip when the user has manually stretched the axis (drag-lock).
+      if (!manualPriceScaleRef.current) {
+        try { candleSeriesRef.current?.priceScale().applyOptions({ autoScale: true }); } catch (_) { /* */ }
+        try { kickAnimRef.current?.(); } catch (_) { /* */ }
       }
+    };
+    // MAIN chart sizing is owned ENTIRELY by lightweight-charts' `autoSize`
+    // (its internal ResizeObserver tracks the container). We deliberately do
+    // NOT call chart.resize() ourselves — running both fought each other and
+    // left the right price scale collapsed after a panel toggle (only a refresh
+    // recovered it). Here we just (a) keep indicator sub-panes in sync (they
+    // have no autoSize) and (b) RE-ASSERT the right price scale so its 70px
+    // gutter + labels can never vanish on a layout change.
+    const onLayoutResize = () => {
       Object.values(subPanelChartsRef.current).forEach((sc) => {
         if (sc?.chart && sc?.container) {
-          const w = sc.container.clientWidth;
-          if (w > 0) sc.chart.applyOptions({ width: w });
+          const w = Math.floor(sc.container.getBoundingClientRect().width);
+          if (w > 0) { try { sc.chart.applyOptions({ width: w }); } catch (_) { /* */ } }
         }
       });
+      requestAnimationFrame(reassertScale);
     };
-    window.addEventListener('resize', resize);
+    resizeFnRef.current = onLayoutResize;
+    window.addEventListener('resize', onLayoutResize);
+    document.addEventListener('fullscreenchange', onLayoutResize);
+    document.addEventListener('webkitfullscreenchange', onLayoutResize);
 
     let ro = null;
-    if (typeof ResizeObserver !== 'undefined' && containerRef.current) {
-      ro = new ResizeObserver(resize);
-      ro.observe(containerRef.current);
+    if (typeof ResizeObserver !== 'undefined' && chartWrapRef.current) {
+      // Re-assert the scale whenever the wrapper's box changes (panel/sidebar/
+      // split/fullscreen) — autoSize resizes the canvas, this guards the scale.
+      ro = new ResizeObserver(() => onLayoutResize());
+      ro.observe(chartWrapRef.current);
     }
+    // Re-assert a few times on mount (SPA navigation lays out after mount).
+    requestAnimationFrame(reassertScale);
+    [120, 300, 600].forEach((ms) => setTimeout(reassertScale, ms));
 
     return () => {
-      window.removeEventListener('resize', resize);
+      window.removeEventListener('resize', onLayoutResize);
+      document.removeEventListener('fullscreenchange', onLayoutResize);
+      document.removeEventListener('webkitfullscreenchange', onLayoutResize);
       if (ro) ro.disconnect();
       if (_refitTimer) cancelAnimationFrame(_refitTimer);
       if (animRafRef.current != null) {
@@ -1554,6 +1593,7 @@ export default function PriceChart({
         animRafRef.current = null;
       }
       kickAnimRef.current = null;
+      resizeFnRef.current = null;
       try { chart.timeScale().unsubscribeVisibleLogicalRangeChange(requestRefit); } catch (_) {}
       for (const sc of Object.values(subPanelChartsRef.current)) {
         try { sc.chart?.remove(); } catch (_) {}
@@ -1603,6 +1643,23 @@ export default function PriceChart({
       }
     }
   }, [chartPrefs, chartReady, chartType]);
+
+  // Belt-and-suspenders: guarantee the right price scale stays VISIBLE with a
+  // reserved 70px gutter on the LIVE chart instance — applied directly (not just
+  // at creation) so it also takes effect across hot-reloads where the chart was
+  // created before this option existed. This is what stops the Y-axis from
+  // collapsing into / overlapping the plot when the layout width changes.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    try { chart.priceScale('right').applyOptions({ visible: true, minimumWidth: 70 }); } catch (_) { /* */ }
+    // Once the chart is ready, force a few resizes — on SPA navigation the
+    // container often finishes laying out AFTER mount, so this guarantees the
+    // canvas + price scale render without needing a manual page refresh.
+    resizeFnRef.current?.();
+    requestAnimationFrame(() => resizeFnRef.current?.());
+    setTimeout(() => resizeFnRef.current?.(), 200);
+  }, [chartReady]);
 
   // ─── OHLC status line — track the candle under the crosshair ─────────────
   useEffect(() => {
@@ -3490,7 +3547,7 @@ export default function PriceChart({
         {drawingRail === undefined && !hideDrawingToolbar && (
           <div
             ref={setInnerRailEl}
-            className={`relative shrink-0 overflow-visible transition-[width] duration-150 ${drawCollapsed ? 'w-0' : 'w-12 border-r border-border-dark bg-white'}`}
+            className={`relative shrink-0 overflow-visible transition-[width] duration-150 ${drawCollapsed ? 'w-0' : 'w-10 border-r border-border-dark bg-white'}`}
           />
         )}
       {/* Crosshair wrapper — spans the main pane + all indicator sub-panes so

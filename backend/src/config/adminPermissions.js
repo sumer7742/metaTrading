@@ -16,7 +16,7 @@ const ADMIN_PERMISSIONS = [
   { key: 'DASHBOARD',        label: 'Dashboard',         route: '/dashboard',            apiPrefix: ['/dashboard'] },
   { key: 'USERS',            label: 'User Management',   route: '/users',                apiPrefix: ['/users'] },
   { key: 'ACCOUNTS',         label: 'Accounts',          route: '/accounts',             apiPrefix: ['/accounts'] },
-  { key: 'INSTRUMENTS',      label: 'Instruments',       route: '/instruments',          apiPrefix: ['/instruments', '/leverage-overrides', '/volume-overrides'] },
+  { key: 'INSTRUMENTS',      label: 'Instruments',       route: '/instruments',          apiPrefix: ['/instruments', '/leverage-overrides', '/volume-overrides', '/recommended-markets'] },
   { key: 'MARKET_EXPOSURE',  label: 'Market Exposure',   route: '/market-exposure',      apiPrefix: ['/exposure'] },
   { key: 'DEPOSITS',         label: 'Deposits',          route: '/deposits',             apiPrefix: ['/deposits'] },
   { key: 'WITHDRAWALS',      label: 'Withdrawals',       route: '/withdrawals',          apiPrefix: ['/withdrawals'] },

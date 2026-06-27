@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { EconomicCalendarSection } from '../components/EconomicCalendar';
 import AssetIcon from '../components/AssetIcon';
@@ -38,6 +38,7 @@ const I = {
   cal:      <Icon d={['M19 4H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2z', 'M16 2v4', 'M8 2v4', 'M3 10h18']} />,
   reports:  <Icon d={['M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z', 'M14 2v6h6', 'M9 13h6', 'M9 17h6']} />,
   close:    <Icon d={['M18 6L6 18', 'M6 6l12 12']} size={12} />,
+  check:    <Icon d="M20 6L9 17l-5-5" size={14} />,
   fire:     <Icon d={['M12 2s4 4 4 8a4 4 0 0 1-8 0c0-2 1-3 1-3', 'M12 14a4 4 0 1 0 0 8 4 4 0 0 0 0-8z']} size={12} />,
   // Sector glyphs
   chip:     <Icon d={['M9 3v4', 'M15 3v4', 'M9 17v4', 'M15 17v4', 'M3 9h4', 'M3 15h4', 'M17 9h4', 'M17 15h4', 'M7 7h10v10H7z', 'M10 10h4v4h-4z']} />,
@@ -341,6 +342,18 @@ export default function Explore() {
   const { rows: instruments, loading } = useInstruments();
 
   const [moverTab, setMoverTab] = useState('Gainers');
+  // Multi-select asset-class filter for Market movers ([] = all categories).
+  const [moverCategories, setMoverCategories] = useState([]);
+  const [catMenuOpen, setCatMenuOpen] = useState(false);
+  const catMenuRef = useRef(null);
+  const toggleMoverCategory = (key) => setMoverCategories((prev) =>
+    prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]);
+  useEffect(() => {
+    if (!catMenuOpen) return undefined;
+    const onDown = (e) => { if (catMenuRef.current && !catMenuRef.current.contains(e.target)) setCatMenuOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [catMenuOpen]);
   const [selectedSector, setSelectedSector] = useState(null);
   const [priceMap, setPriceMap] = useState({});
 
@@ -516,6 +529,9 @@ export default function Explore() {
     if (selectedSector) {
       pool = pool.filter(selectedSector.match);
     }
+    if (moverCategories.length) {
+      pool = pool.filter((m) => moverCategories.includes(String(m.category || '').toUpperCase()));
+    }
     const sortFns = {
       Gainers:       (a, b) => (Number(b.change24h) || -Infinity) - (Number(a.change24h) || -Infinity),
       Losers:        (a, b) => (Number(a.change24h) ||  Infinity) - (Number(b.change24h) ||  Infinity),
@@ -523,7 +539,7 @@ export default function Explore() {
       Trending:      (a, b) => Math.abs(Number(b.change24h) || 0) - Math.abs(Number(a.change24h) || 0),
     };
     return [...pool].sort(sortFns[moverTab] || sortFns.Gainers).slice(0, 8);
-  }, [lived, moverTab, selectedSector]);
+  }, [lived, moverTab, selectedSector, moverCategories]);
 
   const openTrade = (sym) => navigate(`/trade?symbol=${encodeURIComponent(sym)}`);
 
@@ -648,6 +664,52 @@ export default function Explore() {
             )}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
+            {/* Multi-select asset-class filter */}
+            <div className="relative" ref={catMenuRef}>
+              <button
+                type="button"
+                onClick={() => setCatMenuOpen((o) => !o)}
+                className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-full border border-border-dark bg-white text-text-secondary hover:text-text-primary hover:border-text-primary/40 transition-all"
+                title="Filter by category"
+              >
+                {moverCategories.length === 0
+                  ? 'All categories'
+                  : `${moverCategories.length} categor${moverCategories.length === 1 ? 'y' : 'ies'}`}
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className={`transition-transform ${catMenuOpen ? 'rotate-180' : ''}`}><path d="M6 9l6 6 6-6" /></svg>
+              </button>
+              {catMenuOpen && (
+                <div className="absolute right-0 mt-2 z-30 w-48 bg-white border border-border-dark rounded-xl shadow-elevated p-1">
+                  <button
+                    type="button"
+                    onClick={() => setMoverCategories([])}
+                    className="w-full flex items-center justify-between text-sm px-3 py-2 rounded-lg hover:bg-bg-hover text-text-secondary"
+                  >
+                    All categories
+                    {moverCategories.length === 0 && I.check}
+                  </button>
+                  {[
+                    { key: 'FOREX', label: 'Forex' },
+                    { key: 'CRYPTO', label: 'Crypto' },
+                    { key: 'COMMODITY', label: 'Commodities' },
+                    { key: 'INDEX', label: 'Indices' },
+                    { key: 'STOCK', label: 'Stocks' },
+                  ].map((c) => {
+                    const on = moverCategories.includes(c.key);
+                    return (
+                      <button
+                        key={c.key}
+                        type="button"
+                        onClick={() => toggleMoverCategory(c.key)}
+                        className={`w-full flex items-center justify-between text-sm px-3 py-2 rounded-lg hover:bg-bg-hover ${on ? 'text-primary-600 font-semibold' : 'text-text-secondary'}`}
+                      >
+                        {c.label}
+                        {on && I.check}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
             {['Gainers', 'Losers', 'Most Active', 'Trending'].map((t) => (
               <button
                 key={t}

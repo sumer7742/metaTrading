@@ -299,6 +299,13 @@
   to   { opacity: 1; transform: translateY(0); }
 }
 
+/* Expanded child trade-rows — smooth reveal under a parent position row. */
+@keyframes fadeInRow {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-in-row { animation: fadeInRow 0.18s ease-out both; }
+
 /* Live pulse */
 @keyframes pulse-slow {
   0%, 100% { opacity: 1; }

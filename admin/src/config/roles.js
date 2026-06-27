@@ -104,6 +104,7 @@ export const ADMIN_ROUTE_PERMISSION = Object.freeze({
   '/users': 'USERS',
   '/accounts': 'ACCOUNTS',
   '/instruments': 'INSTRUMENTS',
+  '/recommended-markets': 'INSTRUMENTS',
   '/market-exposure': 'MARKET_EXPOSURE',
   '/deposits': 'DEPOSITS',
   '/withdrawals': 'WITHDRAWALS',

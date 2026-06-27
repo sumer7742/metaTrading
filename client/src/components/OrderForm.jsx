@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
+import { orderToast } from '../utils/toast';
 import { api, errorMessage } from '../services/api';
 import { wsClient } from '../services/ws';
 import { useTradeSettings } from '../store/tradeSettings';
@@ -390,7 +391,7 @@ export default function OrderForm({
 
       const { data } = await api.post('/trading/orders', payload);
       const sideWord = effectiveSide === 'BUY' ? 'Buy' : 'Sell';
-      toast.success(`✓ ${sideWord} ${quantity} ${instrument.symbol} — Order ${data.data.status}`, { duration: 4000 });
+      orderToast(`✓ ${sideWord} ${quantity} ${instrument.symbol} — Order ${data.data.status}`);
       onPlaced?.(data.data);
       // Reset form for the next entry — keep instrument/leverage/side
       // (sticky UX), reset quantity to the minimum-order default so the

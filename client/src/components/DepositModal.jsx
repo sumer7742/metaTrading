@@ -48,6 +48,14 @@ export default function DepositModal({
   const [accounts, setAccounts] = useState([]);
   const [walletsByAcc, setWalletsByAcc] = useState({});
   const [sourceAccountId, setSourceAccountId] = useState('');
+  const [payDetails, setPayDetails] = useState(null); // admin-configured "where to send money"
+
+  // Where the client should SEND money (per method) — shown in step 2.
+  useEffect(() => {
+    api.get('/wallet/deposit-details')
+      .then((r) => setPayDetails(r.data?.data || null))
+      .catch(() => setPayDetails(null));
+  }, []);
 
   const sym = currency === 'USD' ? '$' : `${currency} `;
   const fmt = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -225,8 +233,54 @@ export default function DepositModal({
 
           {step === 2 && method && method.id !== 'TRADING' && (
             <div className="space-y-3">
+              {/* WHERE to send the money (admin-configured per method) */}
+              {(() => {
+                const d = payDetails?.[method.id];
+                const rows = [];
+                if (method.id === 'UPI') { rows.push(['UPI ID', d?.upiId, true]); rows.push(['Name', d?.payeeName, false]); }
+                else if (method.id === 'BANK') { rows.push(['Account name', d?.accountName, false]); rows.push(['Account no.', d?.accountNumber, true]); rows.push(['IFSC', d?.ifsc, true]); rows.push(['Bank', d?.bankName, false]); }
+                else if (method.id === 'CRYPTO') { rows.push(['Address', d?.address, true]); rows.push(['Network', d?.network, false]); }
+                else { rows.push(['Email', d?.email, true]); }
+                const visible = rows.filter(([, v]) => String(v || '').trim());
+                if (!visible.length) {
+                  return (
+                    <div className="rounded-xl border border-amber-300/60 bg-amber-50 px-3 py-2.5 text-[12px] text-amber-800 leading-snug">
+                      Payment details for {method.label} aren't set up yet. Please contact support before sending money.
+                    </div>
+                  );
+                }
+                return (
+                  <div className="rounded-xl border border-primary-500/30 bg-primary-500/5 p-3 space-y-2">
+                    <div className="text-[11px] uppercase tracking-wider font-bold text-text-muted">Pay to</div>
+                    {visible.map(([label, value, copy]) => (
+                      <div key={label} className="flex items-center justify-between gap-2">
+                        <span className="text-[11px] text-text-muted shrink-0">{label}</span>
+                        <span className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-sm font-semibold text-text-primary font-mono truncate">{value}</span>
+                          {copy && (
+                            <button
+                              type="button"
+                              onClick={() => { navigator.clipboard.writeText(String(value)); toast.success(`${label} copied`); }}
+                              className="shrink-0 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-primary-500/10 text-primary-600 hover:bg-primary-500/15 transition-colors"
+                            >
+                              Copy
+                            </button>
+                          )}
+                        </span>
+                      </div>
+                    ))}
+                    {d?.note && <div className="text-[11px] text-text-secondary pt-1.5 border-t border-border-subtle/60 leading-snug">{d.note}</div>}
+                    {d?.qr && (
+                      <div className="pt-2 mt-1 border-t border-border-subtle/60 flex flex-col items-center gap-1">
+                        <img src={d.qr} alt="Payment QR" className="w-32 h-32 rounded-lg border border-border-dark bg-white object-contain p-1" />
+                        <span className="text-[10px] text-text-muted">Scan to pay</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
               <div className="rounded-xl border border-primary-500/30 bg-primary-500/5 px-3 py-2.5 text-[12px] text-text-secondary leading-snug">
-                Send <span className="font-bold text-text-primary">{sym}{n.toFixed(2)}</span> via {method.label}, then upload proof. An admin will verify and credit your {walletName}.
+                Send <span className="font-bold text-text-primary">{sym}{n.toFixed(2)}</span> via {method.label} to the details above, then upload proof. An admin will verify and credit your {walletName}.
               </div>
               <div>
                 <div className="text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1.5">Transaction reference *</div>

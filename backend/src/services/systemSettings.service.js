@@ -102,6 +102,20 @@ const DEFAULTS = {
   'copyTrading.minFee':                0,    // percent floor
   'copyTrading.maxFee':                50,   // percent ceiling
 
+  // ── Deposit payment details (where clients SEND money) ──
+  // Admin-configured per method, shown to the client in the "Add funds" modal
+  // so they know exactly which UPI / bank / wallet to pay. Pure display config;
+  // the deposit still goes through manual admin verification. Blank fields are
+  // hidden in the UI. Edited from Admin → Settings → Deposit payment details.
+  // `qr` (UPI / CRYPTO) is an optional scan-to-pay image stored as a data URL.
+  'deposit.paymentDetails': {
+    UPI:      { upiId: '', payeeName: '', note: '', qr: '' },
+    BANK:     { accountName: '', accountNumber: '', ifsc: '', bankName: '', note: '' },
+    CRYPTO:   { address: '', network: 'TRC20', note: '', qr: '' },
+    SKRILL:   { email: '', note: '' },
+    NETELLER: { email: '', note: '' },
+  },
+
   // Subscription billing. Plans bill from the MAIN WALLET only by default.
   // The Bonus Wallet is NEVER a billing source (enforced in code). When this
   // is true, the Trading Wallet is used as a SECONDARY source if the Main

@@ -232,6 +232,10 @@ function PlanForm({ plan, onClose, onSaved }) {
     description:    plan.description || '',
     monthlyPrice:   plan.monthlyPrice || '0',
     yearlyPrice:    plan.yearlyPrice || '0',
+    // Billing-cycle length (value + unit) — drives subscription expiry.
+    monthlyDays:    plan.billingDays?.monthly ?? 30,
+    yearlyDays:     plan.billingDays?.yearly ?? 365,
+    billingUnit:    plan.billingDays?.unit || 'DAYS',
     sortOrder:      plan.sortOrder ?? 0,
     badge:          plan.badge || '',
     isPopular:      !!plan.isPopular,
@@ -280,6 +284,11 @@ function PlanForm({ plan, onClose, onSaved }) {
       description: form.description.trim(),
       monthlyPrice: String(form.monthlyPrice || 0),
       yearlyPrice: String(form.yearlyPrice || 0),
+      billingDays: {
+        monthly: Number(form.monthlyDays) > 0 ? Number(form.monthlyDays) : 30,
+        yearly:  Number(form.yearlyDays)  > 0 ? Number(form.yearlyDays)  : 365,
+        unit:    ['MINUTES', 'HOURS', 'DAYS'].includes(form.billingUnit) ? form.billingUnit : 'DAYS',
+      },
       sortOrder: Number(form.sortOrder) || 0,
       badge: form.badge.trim() || undefined,
       isPopular: !!form.isPopular,
@@ -362,6 +371,26 @@ function PlanForm({ plan, onClose, onSaved }) {
                 <input type="number" className="input" value={form.sortOrder} onChange={(e) => set('sortOrder', e.target.value)} />
               </Field>
             </div>
+          </Section>
+
+          {/* Billing-cycle length — controls when a subscription expires. */}
+          <Section title="Billing cycle length">
+            <div className="grid grid-cols-3 gap-3">
+              <Field label="Monthly cycle">
+                <input type="number" min="1" className="input" value={form.monthlyDays} onChange={(e) => set('monthlyDays', e.target.value)} placeholder="30" />
+              </Field>
+              <Field label="Yearly cycle">
+                <input type="number" min="1" className="input" value={form.yearlyDays} onChange={(e) => set('yearlyDays', e.target.value)} placeholder="365" />
+              </Field>
+              <Field label="Unit">
+                <select className="input" value={form.billingUnit} onChange={(e) => set('billingUnit', e.target.value)}>
+                  <option value="DAYS">Days</option>
+                  <option value="HOURS">Hours</option>
+                  <option value="MINUTES">Minutes</option>
+                </select>
+              </Field>
+            </div>
+            <p className="text-[11px] text-text-muted mt-2">A subscription expires after <b>{form.monthlyDays || 30} {(form.billingUnit || 'DAYS').toLowerCase()}</b> (monthly) / <b>{form.yearlyDays || 365} {(form.billingUnit || 'DAYS').toLowerCase()}</b> (yearly). Default 30 / 365 days. Set unit = Minutes for ultra-fast testing of the expiry → account-suspension flow.</p>
           </Section>
 
           {/* Limits */}

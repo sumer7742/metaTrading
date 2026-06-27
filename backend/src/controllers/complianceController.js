@@ -68,10 +68,13 @@ const uploadKycDocument = asyncHandler(async (req, res) => {
     status: 'PENDING',
   });
 
-  // Update User.kycStatus to PENDING if user has uploaded enough docs
-  const docCount = await KycDocument.countDocuments({ userId: req.userId, status: { $ne: 'REJECTED' } });
-  if (docCount >= 2) {
-    await User.findByIdAndUpdate(req.userId, { kycStatus: KYC_STATUS.PENDING });
+  // Reflect submission immediately: the first uploaded document moves the user
+  // into PENDING (under review). Re-uploads after a REJECTED / NOT_SUBMITTED /
+  // PENDING state also stay PENDING. We never downgrade an already-APPROVED user.
+  const u = await User.findById(req.userId).select('kycStatus');
+  if (u && u.kycStatus !== KYC_STATUS.APPROVED && u.kycStatus !== KYC_STATUS.PENDING) {
+    u.kycStatus = KYC_STATUS.PENDING;
+    await u.save();
   }
 
   sendSuccess(res, { id: doc._id, docType, sha256, status: doc.status }, 201);

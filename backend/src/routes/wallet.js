@@ -32,6 +32,7 @@ router.use((req, _res, next) => {
 router.use(authenticate);
 
 router.get('/balances', c.getBalances);
+router.get('/deposit-details', c.depositDetails); // where to send money (admin-configured)
 router.get('/ledger', c.getLedger);
 
 router.post('/deposits', c.createDeposit);

@@ -23,6 +23,7 @@ const I = {
   orders: <Icon d={['M9 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2h-4', 'M9 3v4h6V3', 'M8 12l2 2 4-4']} />,
   logout: <Icon d={['M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4', 'M16 17l5-5-5-5', 'M21 12H9']} />,
   bell: <Icon d={['M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9', 'M13.73 21a2 2 0 0 1-3.46 0']} />,
+  star: <Icon d={['M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14l-5-4.87 6.91-1.01L12 2z']} />,
 };
 
 // Sectioned nav — matches the client's premium sidebar pattern. TRADE
@@ -42,6 +43,7 @@ const NAV_SECTIONS = [
       { to: '/users', icon: I.users, label: 'Users' },
       { to: '/accounts', icon: I.plans, label: 'Accounts' },
       { to: '/instruments', icon: I.instruments, label: 'Instruments' },
+      { to: '/recommended-markets', icon: I.star, label: 'Recommended Markets' },
       { to: '/orders', icon: I.orders, label: 'Orders Management' },
       { to: '/market-exposure', icon: I.reports, label: 'Market Exposure' },
     ],

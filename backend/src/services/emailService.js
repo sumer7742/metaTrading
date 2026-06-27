@@ -10,9 +10,17 @@ const nodemailer = require('nodemailer');
  */
 
 let transporter = null;
-let mode = 'console'; // 'smtp' | 'console'
+let mode = 'console'; // 'brevo' | 'smtp' | 'console'
 
 const initEmail = () => {
+  // Priority: Brevo HTTP API → SMTP relay → console (dev). Brevo's transactional
+  // API only needs an API key (no SMTP login) and avoids outbound-SMTP-port
+  // blocks common on cloud hosts.
+  if (process.env.BREVO_API_KEY) {
+    mode = 'brevo';
+    console.log('[Email] Brevo API transport configured');
+    return;
+  }
   if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
     transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
@@ -27,12 +35,63 @@ const initEmail = () => {
     console.log('[Email] SMTP transport configured:', process.env.SMTP_HOST);
   } else {
     mode = 'console';
-    console.log('[Email] No SMTP credentials - emails will be logged to console');
+    console.log('[Email] No email provider configured - emails will be logged to console');
+  }
+};
+
+// Parse EMAIL_FROM ("Name <email@x>" or bare "email@x") into Brevo's sender shape.
+const parseFrom = (from) => {
+  const m = /^\s*"?([^"<]*)"?\s*<([^>]+)>\s*$/.exec(from || '');
+  if (m) return { name: (m[1] || '').trim() || 'TradePro', email: m[2].trim() };
+  return { name: 'TradePro', email: (from || '').trim() };
+};
+
+// Brevo transactional email API. The sender MUST be a Brevo-verified sender or a
+// verified domain, else Brevo returns 400 — set EMAIL_FROM (or BREVO_SENDER_EMAIL)
+// accordingly.
+const sendViaBrevo = async ({ from, to, subject, html, text }) => {
+  const parsed = parseFrom(from);
+  const sender = {
+    name: process.env.BREVO_SENDER_NAME || parsed.name,
+    email: process.env.BREVO_SENDER_EMAIL || parsed.email,
+  };
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 10000);
+  try {
+    const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'POST',
+      headers: {
+        'api-key': process.env.BREVO_API_KEY,
+        'Content-Type': 'application/json',
+        accept: 'application/json',
+      },
+      body: JSON.stringify({
+        sender,
+        to: [{ email: to }],
+        subject,
+        htmlContent: html,
+        textContent: text || stripHtml(html),
+      }),
+      signal: ctl.signal,
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      console.error(`[Email] Brevo send failed: HTTP ${res.status} ${body}`);
+      return;
+    }
+    console.log(`[Email] Sent via Brevo: "${subject}" -> ${to}`);
+  } catch (e) {
+    console.error('[Email] Brevo send error:', e.message);
+  } finally {
+    clearTimeout(t);
   }
 };
 
 const send = async ({ to, subject, html, text }) => {
   const from = process.env.EMAIL_FROM || 'no-reply@tradingplatform.local';
+  if (mode === 'brevo') {
+    return sendViaBrevo({ from, to, subject, html, text });
+  }
   if (mode === 'smtp' && transporter) {
     try {
       await transporter.sendMail({ from, to, subject, html, text: text || stripHtml(html) });
@@ -97,6 +156,21 @@ const sendPasswordReset = ({ to, resetToken, baseUrl }) => {
     ),
   });
 };
+
+// Forgot-password 6-digit OTP (primary reset channel).
+const sendPasswordResetOtp = ({ to, otp }) =>
+  send({
+    to,
+    subject: 'Reset Your Password',
+    html: tpl(
+      'Reset your password',
+      `<p>Your verification code is:</p>
+       <div style="font-size:34px;font-weight:bold;letter-spacing:10px;color:#fff;background:#0a0e13;border:1px solid #222a36;border-radius:8px;padding:18px;text-align:center;margin:18px 0;font-family:monospace;">${otp}</div>
+       <p>This code expires in 10 minutes.</p>
+       <p style="font-size:12px;color:#9ca3af;">If you did not request this reset, please ignore this email.</p>`
+    ),
+    text: `Your verification code is: ${otp}\n\nThis code expires in 10 minutes.\n\nIf you did not request this reset, please ignore this email.`,
+  });
 
 const sendWithdrawalAlert = ({ to, amount, currency, status, destination }) =>
   send({
@@ -188,6 +262,7 @@ module.exports = {
   send,
   sendWelcome,
   sendPasswordReset,
+  sendPasswordResetOtp,
   sendWithdrawalAlert,
   sendMarginCallAlert,
   sendKycReviewed,

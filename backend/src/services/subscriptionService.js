@@ -17,10 +17,14 @@ const getEffectivePlan = async (userId) => {
 
   const sub = await Subscription.findOne({ userId }).lean();
   let plan = null;
+  let lapsedFromPaid = false;
 
   if (sub && (sub.status === 'ACTIVE' || sub.status === 'TRIAL')) {
     if (!sub.expiresAt || sub.expiresAt > new Date()) {
       plan = await Plan.findById(sub.planId).lean();
+    } else {
+      // ACTIVE/TRIAL but past expiry → a PAID plan has just lapsed.
+      lapsedFromPaid = !!(sub.planCode && sub.planCode !== 'FREE');
     }
   }
 
@@ -39,6 +43,21 @@ const getEffectivePlan = async (userId) => {
   }
 
   planCache.set(String(userId), { plan, expiresAt: Date.now() + CACHE_TTL_MS });
+
+  // ── Instant plan enforcement ──────────────────────────────────────────
+  // The moment a PAID subscription lapses, suspend the user's over-cap
+  // accounts immediately — don't make them wait for the hourly expiry sweep.
+  // Idempotent (only writes when state changes); it self-limits to the short
+  // window before the sweep flips the subscription to FREE. Awaited so callers
+  // that re-read the account right after (e.g. order routing) see the result.
+  if (lapsedFromPaid) {
+    try {
+      await require('./planEnforcementService').enforce(userId, plan, 'Subscription expired');
+    } catch (e) {
+      console.warn('[plan] instant enforce on expiry failed:', e.message);
+    }
+  }
+
   return plan;
 };
 
@@ -83,9 +102,16 @@ const subscribe = async ({ userId, planCode, billingCycle = 'MONTHLY', paymentRe
   const plan = await Plan.findOne({ code: planCode.toUpperCase(), isActive: true });
   if (!plan) throw new Error(`Plan ${planCode} not found`);
 
+  // Cycle length is admin-configurable per plan (Plan.billingDays = value +
+  // unit), falling back to the standard 30 / 365 DAYS when unset or invalid.
+  // unit=MINUTES/HOURS enables ultra-fast testing of the expiry → suspension flow.
+  const UNIT_MS = { MINUTES: 60 * 1000, HOURS: 60 * 60 * 1000, DAYS: 24 * 60 * 60 * 1000 };
+  const unitMs = UNIT_MS[plan.billingDays?.unit] || UNIT_MS.DAYS;
+  const monthlyVal = Number(plan.billingDays?.monthly) > 0 ? Number(plan.billingDays.monthly) : 30;
+  const yearlyVal = Number(plan.billingDays?.yearly) > 0 ? Number(plan.billingDays.yearly) : 365;
   let expiresAt = null;
-  if (billingCycle === 'MONTHLY') expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-  else if (billingCycle === 'YEARLY') expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+  if (billingCycle === 'MONTHLY') expiresAt = new Date(Date.now() + monthlyVal * unitMs);
+  else if (billingCycle === 'YEARLY') expiresAt = new Date(Date.now() + yearlyVal * unitMs);
 
   // Capture the previous plan so leverage audit row can show
   // "BASIC → VIP" in the history.

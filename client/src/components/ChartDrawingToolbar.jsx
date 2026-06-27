@@ -91,7 +91,7 @@ export default function ChartDrawingToolbar({ controls }) {
   }
 
   return (
-    <div className="chart-drawing-toolbar hidden md:flex absolute top-0 left-0 bottom-0 z-20 flex-col items-center gap-1 p-1 rounded-br-xl border border-l-0 border-t-0 border-border-dark bg-white/90 backdrop-blur-sm shadow-card overflow-y-auto overflow-x-visible"
+    <div className="chart-drawing-toolbar hidden md:flex absolute top-0 left-0 bottom-0 z-20 flex-col items-center gap-1 p-1 border border-l-0 border-t-0 border-border-dark bg-white/90 backdrop-blur-sm shadow-card overflow-y-auto overflow-x-visible"
       style={{ scrollbarWidth: 'thin', scrollbarColor: '#cbd5e1 transparent' }}>
       <button type="button" onClick={() => setCollapsed(true)} title="Hide drawing tools" aria-label="Hide drawing tools"
         className="keep-white w-8 h-7 rounded-md flex items-center justify-center bg-primary-600 hover:bg-primary-700 shadow-sm ring-1 ring-primary-700/30 transition-colors" style={{ color: '#FFFFFF' }}>

@@ -103,6 +103,13 @@ const _validate = (account, instrument, order) => {
 };
 
 const routeOrder = async ({ order, userId }) => {
+  // 0. Instant plan enforcement — resolving the effective plan suspends the
+  //    user's over-cap accounts the MOMENT a paid subscription lapses (no
+  //    waiting for the hourly sweep). Done before the account read below so the
+  //    freshly-loaded account reflects any just-applied suspension and
+  //    _validate blocks new orders. Non-fatal — never block trading on this.
+  try { await require('./subscriptionService').getEffectivePlan(userId); } catch (_) { /* */ }
+
   // 1. Load account + instrument + user in PARALLEL — independent reads, so
   //    this cuts ~2 sequential DB round-trips off the order hot path.
   const [account, instrument, user] = await Promise.all([

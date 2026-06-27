@@ -184,9 +184,14 @@ const listUsers = asyncHandler(async (req, res) => {
         { $match: { $expr: { $and: [{ $eq: ['$userId', '$$uid'] }, { $eq: ['$type', 'INTERNAL_TRANSFER_OUT'] }] } } },
         { $group: { _id: null, total: { $sum: toUsd(num('$amount'), '$currency') } } },
       ], as: '_tout' } },
-    // Realized PnL + win/trade counts from CLOSED positions.
+    // Realized PnL + win/trade counts from CLOSED positions — REAL-money only.
+    // Demo/virtual accounts are excluded so Total PnL / commission / trade stats
+    // stay consistent with wallet balance + deposits below (which also exclude demo).
     { $lookup: { from: Position.collection.collectionName, let: { uid: '$_id' }, pipeline: [
         { $match: { $expr: { $and: [{ $eq: ['$userId', '$$uid'] }, { $eq: ['$status', 'CLOSED'] }] } } },
+        { $lookup: { from: TradingAccount.collection.collectionName, localField: 'accountId', foreignField: '_id', as: '_acc' } },
+        { $unwind: '$_acc' },
+        { $match: { '_acc.accountType': { $nin: ['DEMO', 'VIRTUAL'] } } },
         { $group: { _id: null,
             pnl: { $sum: num('$realizedPnl') },
             comm: { $sum: num('$commission') },
@@ -338,6 +343,13 @@ const getUser = asyncHandler(async (req, res) => {
   }
   const accounts = await TradingAccount.find({ userId: user._id }).lean();
   const wallets = await Wallet.find({ userId: user._id }).lean();
+  // Uploaded KYC documents for review. Never expose storagePath; the file
+  // itself is served (admin-only) via GET /compliance/kyc/documents/:id/file.
+  const { KycDocument } = require('../models/Compliance');
+  const kycDocuments = await KycDocument.find({ userId: user._id })
+    .select('-storagePath')
+    .sort({ createdAt: -1 })
+    .lean();
   // Direct referrals (level-1 only) — anyone who signed up with this
   // user's code. Surfaces the affiliate fan-out for compliance review.
   const referees = await User.find({ referredBy: user._id })
@@ -361,7 +373,7 @@ const getUser = asyncHandler(async (req, res) => {
     available: Math.max(0, referees.length - bonusesCredited),
   };
 
-  sendSuccess(res, { user, accounts, wallets, referees, bonusQuota });
+  sendSuccess(res, { user, accounts, wallets, referees, bonusQuota, kycDocuments });
 });
 
 const updateUserStatus = asyncHandler(async (req, res) => {
@@ -1110,6 +1122,25 @@ const getSystemSettings = asyncHandler(async (req, res) => {
     settings,
     lpProviders: listProviderStatus(),
   });
+});
+
+// ── Deposit payment details (where clients send money) — Admin → Settings ──
+const getDepositDetails = asyncHandler(async (req, res) => {
+  const systemSettings = require('../services/systemSettings.service');
+  sendSuccess(res, await systemSettings.getSetting('deposit.paymentDetails'));
+});
+
+const updateDepositDetails = asyncHandler(async (req, res) => {
+  const systemSettings = require('../services/systemSettings.service');
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  // Merge over current so a partial update keeps the rest + the shape stays valid.
+  const current = (await systemSettings.getSetting('deposit.paymentDetails')) || {};
+  const merged = { ...current };
+  for (const k of ['UPI', 'BANK', 'CRYPTO', 'SKRILL', 'NETELLER']) {
+    if (body[k] && typeof body[k] === 'object') merged[k] = { ...(current[k] || {}), ...body[k] };
+  }
+  const saved = await systemSettings.setSetting('deposit.paymentDetails', merged, req.userId);
+  sendSuccess(res, saved);
 });
 
 /**
@@ -2581,6 +2612,8 @@ module.exports = {
   updateUserRiskControls,
   getSystemSettings,
   updateSystemSettings,
+  getDepositDetails,
+  updateDepositDetails,
   listUserTransfers,
   listPartners,
   setPartnerLevel,

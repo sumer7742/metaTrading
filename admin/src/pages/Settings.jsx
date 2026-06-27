@@ -196,6 +196,9 @@ export default function Settings() {
       {/* Partner / Referral program. */}
       <PartnerSettingsCard settings={settings} save={save} saving={saving} />
 
+      {/* Deposit payment details — where clients send money (shown in their Add-funds modal). */}
+      <DepositDetailsCard />
+
       {/* Raw settings dump — useful for debugging. */}
       <details className="text-xs text-text-muted">
         <summary className="cursor-pointer hover:text-text-secondary">Raw settings</summary>
@@ -313,6 +316,156 @@ function UserTransfersSettingsCard({ settings, save, saving }) {
           className="px-4 py-1.5 rounded text-xs font-bold bg-primary-500 text-white disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary-600 transition-colors"
         >
           {saving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Deposit payment details — where clients SEND money for a manual deposit.
+ * Self-contained: loads/saves via the dedicated /admin/system/deposit-details
+ * endpoints (the generic settings PUT is whitelisted and won't accept these).
+ * Whatever is filled here shows in the client's "Add funds" modal per method.
+ */
+function DepositDetailsCard() {
+  const [d, setD] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get('/admin/system/deposit-details')
+      .then((r) => setD(r.data.data || {}))
+      .catch((e) => toast.error(errorMessage(e)));
+  }, []);
+
+  const set = (method, field, val) =>
+    setD((prev) => ({ ...prev, [method]: { ...(prev?.[method] || {}), [field]: val } }));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const r = await api.put('/admin/system/deposit-details', d);
+      setD(r.data.data);
+      toast.success('Deposit details saved');
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Plain helper (NOT a component) so inputs keep focus across keystrokes.
+  const field = (method, key, label, ph) => (
+    <div>
+      <label className="block text-[10px] text-text-muted mb-0.5">{label}</label>
+      <input
+        value={d?.[method]?.[key] || ''}
+        onChange={(e) => set(method, key, e.target.value)}
+        placeholder={ph}
+        className="w-full px-2 py-1.5 rounded bg-bg-dark border border-border-dark text-xs font-mono text-white focus:border-primary-500 focus:outline-none"
+      />
+    </div>
+  );
+
+  // Scan-to-pay QR upload (UPI / Crypto). Stored as a data URL.
+  const onQr = (method, file) => {
+    if (!file) return;
+    if (file.size > 500 * 1024) { toast.error('QR image must be under 500 KB'); return; }
+    const reader = new FileReader();
+    reader.onload = () => set(method, 'qr', reader.result);
+    reader.readAsDataURL(file);
+  };
+  const qrUpload = (method) => (
+    <div className="sm:col-span-2">
+      <label className="block text-[10px] text-text-muted mb-1">QR code (scan to pay)</label>
+      <div className="flex items-center gap-3">
+        {d?.[method]?.qr ? (
+          <img src={d[method].qr} alt="QR" className="w-16 h-16 rounded border border-border-dark bg-white object-contain p-0.5" />
+        ) : (
+          <div className="w-16 h-16 rounded border border-dashed border-border-dark flex items-center justify-center text-[9px] text-text-muted">No QR</div>
+        )}
+        <div className="flex flex-col gap-1.5">
+          <label className="px-2 py-1 rounded bg-bg-dark border border-border-dark text-[11px] text-text-secondary cursor-pointer hover:border-primary-500 w-fit transition-colors">
+            <input type="file" accept="image/*" className="hidden" onChange={(e) => onQr(method, e.target.files?.[0])} />
+            Upload QR
+          </label>
+          {d?.[method]?.qr && (
+            <button type="button" onClick={() => set(method, 'qr', '')} className="text-[10px] text-bear hover:underline w-fit">Remove</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  if (!d) return <div className="card p-6 text-text-muted text-sm">Loading deposit details…</div>;
+
+  return (
+    <div className="card p-6">
+      <h2 className="text-base font-semibold text-white mb-1">Deposit payment details</h2>
+      <p className="text-xs text-text-muted mb-4 max-w-md">
+        Where clients send money for a manual deposit. Filled fields appear in the client's
+        “Add funds” modal under each method (blank fields are hidden). Display only — deposits
+        still go through manual verification.
+      </p>
+
+      <div className="space-y-4">
+        <fieldset className="border border-border-dark rounded-lg p-3">
+          <legend className="px-1 text-[11px] uppercase tracking-wider font-bold text-text-secondary">📱 UPI</legend>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {field('UPI', 'upiId', 'UPI ID', 'name@bank')}
+            {field('UPI', 'payeeName', 'Payee name', 'TradePro')}
+            <div className="sm:col-span-2">{field('UPI', 'note', 'Note (optional)', 'Add your user-id in the remarks')}</div>
+            {qrUpload('UPI')}
+          </div>
+        </fieldset>
+
+        <fieldset className="border border-border-dark rounded-lg p-3">
+          <legend className="px-1 text-[11px] uppercase tracking-wider font-bold text-text-secondary">🏦 Bank transfer</legend>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {field('BANK', 'accountName', 'Account name', 'TradePro Pvt Ltd')}
+            {field('BANK', 'accountNumber', 'Account number', '0000 0000 0000')}
+            {field('BANK', 'ifsc', 'IFSC', 'HDFC0000001')}
+            {field('BANK', 'bankName', 'Bank name', 'HDFC Bank')}
+            <div className="sm:col-span-2">{field('BANK', 'note', 'Note (optional)', '')}</div>
+          </div>
+        </fieldset>
+
+        <fieldset className="border border-border-dark rounded-lg p-3">
+          <legend className="px-1 text-[11px] uppercase tracking-wider font-bold text-text-secondary">🪙 Crypto (USDT)</legend>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {field('CRYPTO', 'address', 'Wallet address', 'T...')}
+            {field('CRYPTO', 'network', 'Network', 'TRC20')}
+            <div className="sm:col-span-2">{field('CRYPTO', 'note', 'Note (optional)', 'Send only USDT on this network')}</div>
+            {qrUpload('CRYPTO')}
+          </div>
+        </fieldset>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <fieldset className="border border-border-dark rounded-lg p-3">
+            <legend className="px-1 text-[11px] uppercase tracking-wider font-bold text-text-secondary">💳 Skrill</legend>
+            <div className="space-y-2">
+              {field('SKRILL', 'email', 'Skrill email', 'pay@tradepro.com')}
+              {field('SKRILL', 'note', 'Note (optional)', '')}
+            </div>
+          </fieldset>
+          <fieldset className="border border-border-dark rounded-lg p-3">
+            <legend className="px-1 text-[11px] uppercase tracking-wider font-bold text-text-secondary">💳 Neteller</legend>
+            <div className="space-y-2">
+              {field('NETELLER', 'email', 'Neteller email', 'pay@tradepro.com')}
+              {field('NETELLER', 'note', 'Note (optional)', '')}
+            </div>
+          </fieldset>
+        </div>
+      </div>
+
+      <div className="mt-4 flex justify-end">
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving}
+          className="px-4 py-1.5 rounded text-xs font-bold bg-primary-500 text-white disabled:opacity-50 disabled:cursor-not-allowed hover:bg-primary-600 transition-colors"
+        >
+          {saving ? 'Saving…' : 'Save deposit details'}
         </button>
       </div>
     </div>

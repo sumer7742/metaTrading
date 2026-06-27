@@ -811,10 +811,44 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
   const [screenshotMimeType, setScreenshotMimeType] = useState(null);
   const [screenshotPreview, setScreenshotPreview] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [payDetails, setPayDetails] = useState(null); // admin-configured "where to send money"
+  // Plan catalogue (code → plan) so we can enforce each tier's minimum
+  // deposit (USD) in the UI, mirroring the backend gate. Keyed by account
+  // type code (FREE / STANDARD / PRO / +IC variants …).
+  const [planByCode, setPlanByCode] = useState({});
+
+  useEffect(() => {
+    api.get('/wallet/deposit-details')
+      .then((r) => setPayDetails(r.data?.data || null))
+      .catch(() => setPayDetails(null));
+    api.get('/account-plans')
+      .then((r) => {
+        const map = {};
+        for (const p of (r.data?.data || [])) map[String(p.code).toUpperCase()] = p;
+        setPlanByCode(map);
+      })
+      .catch(() => setPlanByCode({}));
+  }, []);
 
   const selectedAccount = accounts.find((a) => a._id === accountId);
   const isReal = selectedAccount && selectedAccount.accountType !== 'DEMO' && selectedAccount.accountType !== 'VIRTUAL';
   const isDemo = selectedAccount?.accountType === 'DEMO';
+
+  // ── Per-tier minimum-deposit check (USD base, like the backend) ──────
+  const _fxRate = Number(fxRate) > 0 ? Number(fxRate) : 83;
+  const planMinUsd = (() => {
+    const p = selectedAccount ? planByCode[String(selectedAccount.accountType).toUpperCase()] : null;
+    return p ? Number(p.minDeposit || 0) : 0;
+  })();
+  // Convert the typed amount to USD. INR uses the live rate; USD/USDT are
+  // 1:1; anything else (e.g. BTC) returns null → defer to the backend gate.
+  const amountUsd = (() => {
+    const amt = Number(amount) || 0;
+    if (currency === 'INR') return amt / _fxRate;
+    if (currency === 'USD' || currency === 'USDT') return amt;
+    return null;
+  })();
+  const belowMinDeposit = isReal && planMinUsd > 0 && amountUsd != null && amountUsd < planMinUsd;
 
   const handleFileChange = (e) => {
     const file = e.target.files?.[0];
@@ -908,6 +942,13 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
 
   const submit = async (e) => {
     e.preventDefault();
+
+    // Per-tier minimum deposit — mirrors the backend gate so the user gets
+    // immediate feedback instead of a round-trip rejection.
+    if (belowMinDeposit) {
+      toast.error(`Minimum deposit for ${selectedAccount?.nickname || selectedAccount?.accountType} is $${fmtNum(planMinUsd, 2)}.`);
+      return;
+    }
 
     // Razorpay path skips the screenshot flow entirely.
     if (method === 'RAZORPAY') {
@@ -1007,7 +1048,7 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
   const canNext = (() => {
     if (step === 0) return !!accountId;
     if (step === 1) return !!method;
-    if (step === 2) return amount && Number(amount) >= (METHODS.find((m) => m.id === method)?.min || 1);
+    if (step === 2) return amount && Number(amount) >= (METHODS.find((m) => m.id === method)?.min || 1) && !belowMinDeposit;
     if (step === 3) {
       if (skipProof) return true;
       return !!screenshot && !!txReference.trim() && !!senderName.trim();
@@ -1215,28 +1256,57 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
                       <span className="text-sm font-bold text-text-primary">Pay to these details</span>
                       <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-bull/15 text-bull">Verified</span>
                     </div>
-                    <button type="button" title="Show QR" className="p-1.5 rounded-md hover:bg-white text-text-secondary hover:text-text-primary transition-colors">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><path d="M14 14h3v3h-3z" /><path d="M14 20h7M20 14v7" /></svg>
-                    </button>
+                    {payDetails?.[method]?.qr && (
+                      <span className="text-[10px] font-semibold text-text-muted inline-flex items-center gap-1">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><path d="M14 14h3v3h-3z" /><path d="M14 20h7M20 14v7" /></svg>
+                        Scan below
+                      </span>
+                    )}
                   </div>
-                  <div className="space-y-2 text-xs">
-                    {[
-                      { l: 'UPI ID',      v: 'tradepro@upi' },
-                      { l: 'Bank A/C',    v: 'XXXX-XXXX-1234' },
-                      { l: 'IFSC',        v: 'HDFC0001234' },
-                      { l: 'Beneficiary', v: 'TradePro Pvt Ltd' },
-                    ].map((r) => (
-                      <div key={r.l} className="flex items-center justify-between gap-3">
-                        <span className="text-text-muted">{r.l}</span>
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="font-mono font-semibold text-text-primary truncate">{r.v}</span>
-                          <button type="button" onClick={() => copy(r.v, `${r.l} copied`)} className="p-1 rounded text-text-muted hover:text-primary-600 hover:bg-white transition-colors shrink-0">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
-                          </button>
+                  {(() => {
+                    // Admin-configured payment details for the selected method
+                    // (no more hardcoded values).
+                    const dd = payDetails?.[method] || {};
+                    const rows = method === 'UPI'
+                      ? [{ l: 'UPI ID', v: dd.upiId, c: true }, { l: 'Beneficiary', v: dd.payeeName, c: false }]
+                      : method === 'BANK'
+                        ? [{ l: 'Beneficiary', v: dd.accountName, c: false }, { l: 'Bank A/C', v: dd.accountNumber, c: true }, { l: 'IFSC', v: dd.ifsc, c: true }, { l: 'Bank', v: dd.bankName, c: false }]
+                        : method === 'CRYPTO'
+                          ? [{ l: 'Address', v: dd.address, c: true }, { l: 'Network', v: dd.network, c: false }]
+                          : [{ l: 'Email', v: dd.email, c: true }];
+                    const visible = rows.filter((r) => String(r.v || '').trim());
+                    if (!visible.length) {
+                      return (
+                        <div className="rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2.5 text-[12px] text-amber-800 leading-snug">
+                          Payment details for {method} aren&apos;t set up yet. Please contact support before sending money.
                         </div>
+                      );
+                    }
+                    return (
+                      <div className="space-y-2 text-xs">
+                        {visible.map((r) => (
+                          <div key={r.l} className="flex items-center justify-between gap-3">
+                            <span className="text-text-muted">{r.l}</span>
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="font-mono font-semibold text-text-primary truncate">{r.v}</span>
+                              {r.c && (
+                                <button type="button" onClick={() => copy(r.v, `${r.l} copied`)} className="p-1 rounded text-text-muted hover:text-primary-600 hover:bg-white transition-colors shrink-0">
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                        {dd.note && <div className="text-[11px] text-text-secondary pt-2 border-t border-border-subtle/60 leading-snug">{dd.note}</div>}
+                        {dd.qr && (
+                          <div className="pt-2 mt-1 border-t border-border-subtle/60 flex flex-col items-center gap-1">
+                            <img src={dd.qr} alt="Payment QR" className="w-32 h-32 rounded-lg border border-border-dark bg-white object-contain p-1" />
+                            <span className="text-[10px] text-text-muted">Scan to pay</span>
+                          </div>
+                        )}
                       </div>
-                    ))}
-                  </div>
+                    );
+                  })()}
                 </div>
               )}
             </div>
@@ -1318,6 +1388,15 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
                   </>
                 );
               })()}
+
+              {belowMinDeposit && (
+                <div className="rounded-xl bg-bear/10 border border-bear/30 p-3 text-xs text-text-primary">
+                  ⚠ Minimum deposit for the <span className="font-bold">{selectedAccount?.nickname || selectedAccount?.accountType}</span> plan is{' '}
+                  <span className="font-bold">${fmtNum(planMinUsd, 2)}</span>
+                  {currency === 'INR' && <> (≈ ₹{fmtNum(planMinUsd * _fxRate, 0)})</>}.
+                  {' '}You entered ≈ ${fmtNum(amountUsd || 0, 2)} — please increase the amount.
+                </div>
+              )}
 
               {isDemo && (
                 <div className="rounded-xl bg-info/10 border border-info/30 p-3 text-xs text-text-primary">

@@ -118,6 +118,9 @@ router.patch('/users/:id/risk-controls', c.updateUserRiskControls);
 // Hybrid platform-wide (per-user overrides live on risk-controls).
 router.get('/system/settings', c.getSystemSettings);
 router.put('/system/settings', c.updateSystemSettings);
+// Deposit payment details (where clients send money) — gated by SETTINGS module.
+router.get('/system/deposit-details', c.getDepositDetails);
+router.put('/system/deposit-details', c.updateDepositDetails);
 
 // Portfolio — platform-wide statistics, SUPER_ADMIN only (403 otherwise).
 router.get('/portfolio', requireRole(ROLES.SUPER_ADMIN), c.getPortfolio);
@@ -223,5 +226,14 @@ const corpActions = require('../controllers/corporateActionController');
 router.get('/corporate-actions', corpActions.list);
 router.post('/corporate-actions', corpActions.create);
 router.delete('/corporate-actions/:id', corpActions.remove);
+
+// ── Recommended markets (drives the ticker strip + "Recommended" selector tab).
+// `reorder` declared before `:id` so the literal path isn't swallowed. Gated by
+// the INSTRUMENTS admin module (see config/adminPermissions). ──
+const recMarkets = require('../controllers/recommendedMarketController');
+router.get('/recommended-markets', recMarkets.adminList);
+router.post('/recommended-markets', recMarkets.adminCreate);
+router.put('/recommended-markets/reorder', recMarkets.adminReorder);
+router.delete('/recommended-markets/:id', recMarkets.adminRemove);
 
 module.exports = router;

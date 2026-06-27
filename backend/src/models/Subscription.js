@@ -20,6 +20,15 @@ const planSchema = new mongoose.Schema(
     description: String,
     monthlyPrice: { type: String, default: '0' }, // USD per month, string for decimal precision
     yearlyPrice: { type: String, default: '0' },
+    // Billing-cycle length — admin-configurable; drives the subscription expiry
+    // date. `monthly`/`yearly` are the cycle VALUES expressed in `unit`
+    // (MINUTES / HOURS / DAYS). Defaults: 30 / 365 DAYS. Set unit=MINUTES for
+    // ultra-fast testing of the expiry → account-suspension flow.
+    billingDays: {
+      monthly: { type: Number, default: 30 },
+      yearly: { type: Number, default: 365 },
+      unit: { type: String, enum: ['MINUTES', 'HOURS', 'DAYS'], default: 'DAYS' },
+    },
     isActive: { type: Boolean, default: true },
     sortOrder: { type: Number, default: 0 },
 
