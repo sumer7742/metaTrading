@@ -284,6 +284,30 @@ const create = asyncHandler(async (req, res) => {
   sendSuccess(res, inst, 201);
 });
 
+// Admin: import Indian instruments from the OFFICIAL Dhan sync (full exchange
+// metadata) on demand — the panel-friendly alternative to the CLI scripts.
+//   EQUITY / FUTURES / OPTIONS  → specific symbols via Dhan scrip master
+//   MCX                         → MCX commodity futures (near-expiry set)
+//   INDICES                     → NIFTY/BANKNIFTY/… spot tiles
+const syncIndian = asyncHandler(async (req, res) => {
+  const type = String(req.body.type || 'EQUITY').toUpperCase();
+  const symbols = String(req.body.symbols || '').split(',').map((s) => s.trim()).filter(Boolean);
+
+  if (type === 'MCX') {
+    return sendSuccess(res, { type, ...(await require('../services/mcxSync').syncMcxFutures()) });
+  }
+  if (type === 'INDICES') {
+    return sendSuccess(res, { type, ...(await require('../services/indianIndices').ensureIndianIndices()) });
+  }
+  if (!['EQUITY', 'FUTURES', 'OPTIONS'].includes(type)) {
+    throw new AppError('type must be EQUITY, FUTURES, OPTIONS, MCX, or INDICES', 400);
+  }
+  if (!symbols.length) throw new AppError('symbols required (comma-separated, e.g. RELIANCE,TCS)', 400);
+  if (symbols.length > 25) throw new AppError('Max 25 symbols per import — split into batches.', 400);
+  const { importDhanInstruments } = require('../services/dhanImport');
+  return sendSuccess(res, { type, ...(await importDhanInstruments({ kind: type, symbols })) });
+});
+
 const update = asyncHandler(async (req, res) => {
   // Check final state against current record
   const current = await Instrument.findOne({ symbol: req.params.symbol.toUpperCase() });
@@ -437,4 +461,4 @@ const optionChain = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { list, watchlist, getOne, search, volumeUsage, candles, orderbook, create, update, remove, bulkRouting, optionChain };
+module.exports = { list, watchlist, getOne, search, volumeUsage, candles, orderbook, create, update, remove, bulkRouting, optionChain, syncIndian };

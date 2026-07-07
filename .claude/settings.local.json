@@ -289,7 +289,12 @@
       "Bash(node -e \"const {ensureIndianIndices, INDIAN_INDICES}=require\\('./src/services/indianIndices'\\); require\\('./src/services/backgroundWorker'\\); console.log\\('OK — modules load. Indices:', INDIAN_INDICES.map\\(i=>i.symbol\\).join\\(', '\\)\\);\")",
       "Read(//c/Users/rijju/.claude/projects/c--Users-rijju-OneDrive-Desktop-trading-platform--last-and/memory/**)",
       "Bash(cd \"c:/Users/rijju/OneDrive/Desktop/trading-platform  last and\" && echo \"=== compose: backend volumes/build ===\" && grep -nE \"backend|build|volumes|context|dockerfile|\\\\./|/app|command\" docker-compose.yml 2>/dev/null | head -40 && echo \"\" && echo \"=== files present? ===\" && ls docker-compose*.yml 2>/dev/null; ls backend/Dockerfile 2>/dev/null)",
-      "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/components/SearchModal.jsx','utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\('SearchModal.jsx OK'\\);\")"
+      "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/components/SearchModal.jsx','utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\('SearchModal.jsx OK'\\);\")",
+      "Bash(cd \"c:/Users/rijju/OneDrive/Desktop/trading-platform  last and/backend/src\" && echo \"=== binance feed: keys off externalProvider/externalFeedSymbol? ===\" && grep -rniE \"externalProvider|externalFeedSymbol|BINANCE|reload|refresh.*60|setInterval|isActive.*true\" services/*binance* services/externalFeed* 2>/dev/null | head -20 && echo \"--- files ---\" && ls services/ | grep -iE \"binance|external|feed\")",
+      "Read(//c/Users/rijju/OneDrive/Desktop/trading-platform last and/backend/**)",
+      "Bash(node -e \"require\\('./src/services/yahooFeed'\\); console.log\\('yahooFeed OK'\\);\")",
+      "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/pages/Instruments.jsx','utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\('Instruments.jsx OK'\\);\")",
+      "Bash(node -e \"require\\('./src/services/dhanImport'\\); require\\('./src/controllers/instrumentController'\\); require\\('./src/routes/instrument'\\); console.log\\('backend Indian-import OK'\\);\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\rijju\\.claude\\projects\\c--Users-rijju-OneDrive-Desktop-trading-platform--last-and\\memory"

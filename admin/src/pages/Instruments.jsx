@@ -49,6 +49,81 @@ const EMPTY = {
   externalFeedSymbol: '',
 };
 
+// Feed-symbol placeholder + hint per provider. YAHOO & BINANCE are key-free →
+// add an instrument with one of these and the price flows automatically.
+const FEED_PLACEHOLDER = {
+  YAHOO: 'AAPL · ^GSPC · EURUSD=X · GC=F · BTC-USD',
+  BINANCE: 'SOLUSDT',
+  FINNHUB: 'AAPL · OANDA:EUR_USD · BINANCE:BTCUSDT',
+  OANDA: 'EUR_USD',
+  TWELVE_DATA: 'EUR/USD',
+};
+const FEED_HINT = {
+  YAHOO: 'Yahoo ticker — stock AAPL / RELIANCE.NS · index ^GSPC / ^NSEI · forex EURUSD=X · commodity GC=F (gold) / CL=F (oil) · crypto BTC-USD. FREE, no key.',
+  BINANCE: 'Binance pair — e.g. SOLUSDT. Real-time bid/ask/depth + history backfill. FREE, no key.',
+  FINNHUB: 'Finnhub symbol — stock AAPL · forex OANDA:EUR_USD · crypto BINANCE:BTCUSDT. Needs FINNHUB_API_KEY (free tier).',
+  OANDA: 'OANDA instrument (underscore) — EUR_USD, XAU_USD, SPX500_USD. Needs OANDA_API_KEY.',
+  TWELVE_DATA: 'Twelve Data symbol (slash) — EUR/USD, XAU/USD, AAPL. Needs TWELVE_DATA_API_KEY.',
+};
+
+// ── Smart autofill: guess the rest of the form from the Symbol ──────────
+const _CCY = new Set(['USD', 'EUR', 'GBP', 'JPY', 'CHF', 'AUD', 'NZD', 'CAD', 'INR', 'CNH', 'CNY', 'SGD', 'HKD', 'ZAR', 'SAR', 'AED', 'TRY', 'MXN', 'SEK', 'NOK', 'DKK', 'PLN', 'THB', 'KRW', 'BRL', 'RUB', 'ILS', 'CZK', 'HUF', 'MYR', 'IDR', 'PHP', 'QAR', 'KWD', 'BHD', 'OMR']);
+const _CCY_NAME = { USD: 'US Dollar', EUR: 'Euro', GBP: 'British Pound', JPY: 'Japanese Yen', CHF: 'Swiss Franc', AUD: 'Australian Dollar', NZD: 'New Zealand Dollar', CAD: 'Canadian Dollar', INR: 'Indian Rupee', CNH: 'Chinese Yuan', CNY: 'Chinese Yuan', SGD: 'Singapore Dollar', HKD: 'Hong Kong Dollar', ZAR: 'South African Rand', SAR: 'Saudi Riyal', AED: 'UAE Dirham', TRY: 'Turkish Lira', MXN: 'Mexican Peso', SEK: 'Swedish Krona', NOK: 'Norwegian Krone', DKK: 'Danish Krone', PLN: 'Polish Zloty', THB: 'Thai Baht', KRW: 'South Korean Won', BRL: 'Brazilian Real', RUB: 'Russian Ruble', ILS: 'Israeli Shekel', QAR: 'Qatari Riyal', KWD: 'Kuwaiti Dinar' };
+const _CRYPTO = { BTC: 'Bitcoin', ETH: 'Ethereum', SOL: 'Solana', XRP: 'Ripple', DOGE: 'Dogecoin', ADA: 'Cardano', BNB: 'BNB', AVAX: 'Avalanche', MATIC: 'Polygon', LINK: 'Chainlink', LTC: 'Litecoin', DOT: 'Polkadot', TRX: 'Tron', SHIB: 'Shiba Inu' };
+// Known Indian symbols — used ONLY to DETECT a manual Indian entry and warn the
+// admin off it. Indian instruments must come from the official Dhan Sync (which
+// carries full exchange metadata); the manual form is for global markets only.
+const _INDIAN_STOCK = new Set(['RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN', 'HINDUNILVR', 'ITC', 'BHARTIARTL', 'KOTAKBANK', 'LT', 'AXISBANK', 'BAJFINANCE', 'ASIANPAINT', 'MARUTI', 'WIPRO', 'HCLTECH', 'SUNPHARMA', 'TATAMOTORS', 'TATASTEEL', 'ADANIENT', 'ADANIPORTS', 'ONGC', 'NTPC', 'POWERGRID', 'TITAN', 'ULTRACEMCO', 'NESTLEIND', 'JSWSTEEL', 'COALINDIA', 'TECHM', 'GRASIM', 'HINDALCO', 'DRREDDY', 'CIPLA', 'BPCL', 'EICHERMOT', 'HEROMOTOCO', 'BRITANNIA', 'INDUSINDBK', 'APOLLOHOSP', 'TATACONSUM']);
+const _INDIAN_INDEX = new Set(['NIFTY', 'NIFTY50', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX']);
+// An instrument is "Indian" when it carries an Indian exchange (set by Dhan sync).
+const _INDIAN_EXCHANGES = new Set(['NSE', 'BSE', 'NFO', 'BFO', 'MCX', 'NCDEX']);
+const isIndianInstrument = (it) => _INDIAN_EXCHANGES.has(String((it && it.exchange) || '').toUpperCase());
+const regionOf = (it) => (isIndianInstrument(it) ? 'INDIAN' : 'GLOBAL');
+
+// True when the symbol looks like an Indian exchange instrument (stock / index /
+// F&O / .NS|.BO). Drives the "use Dhan Sync" warning + suppresses global autofill.
+function isIndianSymbol(raw) {
+  const s = String(raw || '').toUpperCase().trim();
+  if (!s) return false;
+  if (/\.(NS|BO)$/.test(s)) return true;                                  // Yahoo NSE/BSE suffix
+  if (_INDIAN_STOCK.has(s) || _INDIAN_INDEX.has(s)) return true;          // known NSE stock / index
+  if (/(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d{2}(FUT|\d+(CE|PE))$/.test(s)) return true; // NSE F&O tag
+  return false;
+}
+const _COMMODITY = {
+  GOLD: { base: 'XAU', yf: 'GC=F', name: 'Gold' }, XAUUSD: { base: 'XAU', yf: 'GC=F', name: 'Gold' },
+  SILVER: { base: 'XAG', yf: 'SI=F', name: 'Silver' }, XAGUSD: { base: 'XAG', yf: 'SI=F', name: 'Silver' },
+  OIL: { base: 'OIL', yf: 'CL=F', name: 'Crude Oil' }, CRUDEOIL: { base: 'OIL', yf: 'CL=F', name: 'Crude Oil' }, WTI: { base: 'OIL', yf: 'CL=F', name: 'Crude Oil' },
+  NATGAS: { base: 'NG', yf: 'NG=F', name: 'Natural Gas' },
+};
+
+// Best-effort guess of the type-derived fields from a raw symbol. Returns a
+// partial form; callers only apply it to still-empty/default fields.
+function guessFromSymbol(raw) {
+  const s = String(raw || '').toUpperCase().trim();
+  if (!s) return {};
+  // Indian instruments are sync-only — never autofill them as a manual/global
+  // instrument. The form shows a "use Dhan Sync" warning instead.
+  if (isIndianSymbol(s)) return {};
+  if (_COMMODITY[s]) {
+    const c = _COMMODITY[s];
+    return { category: 'COMMODITY', baseCurrency: c.base, quoteCurrency: 'USD', name: `${c.name} / USD`, pricePrecision: 2, quantityPrecision: 2, minOrderSize: '0.01', externalProvider: 'YAHOO', externalFeedSymbol: c.yf };
+  }
+  if (/^[A-Z]{6}$/.test(s) && _CCY.has(s.slice(0, 3)) && _CCY.has(s.slice(3))) {
+    const b = s.slice(0, 3); const q = s.slice(3);
+    return { category: 'FOREX', baseCurrency: b, quoteCurrency: q, name: `${_CCY_NAME[b] || b} / ${_CCY_NAME[q] || q}`, pricePrecision: q === 'JPY' ? 3 : 5, quantityPrecision: 2, minOrderSize: '0.01', externalProvider: 'YAHOO', externalFeedSymbol: `${s}=X` };
+  }
+  const cm = s.match(/^([A-Z0-9]{2,6})(USDT|USD)$/);
+  const coin = (cm && _CRYPTO[cm[1]]) ? cm[1] : (_CRYPTO[s] ? s : null);
+  if (coin) {
+    return { category: 'CRYPTO', baseCurrency: coin, quoteCurrency: 'USD', name: `${_CRYPTO[coin]} / USD`, pricePrecision: 2, quantityPrecision: 4, minOrderSize: '0.001', externalProvider: 'BINANCE', externalFeedSymbol: `${coin}USDT` };
+  }
+  if (/^[A-Z][A-Z.]{0,9}$/.test(s)) { // plain ticker → global stock via Yahoo
+    return { category: 'STOCK', baseCurrency: s.replace(/\..*/, ''), quoteCurrency: 'USD', name: s, pricePrecision: 2, quantityPrecision: 2, minOrderSize: '0.01', externalProvider: 'YAHOO', externalFeedSymbol: s };
+  }
+  return {};
+}
+
 // ── UTC datetime helpers (admin schedules are entered/displayed in UTC) ──
 const isoToInput = (iso) => { try { return new Date(iso).toISOString().slice(0, 16); } catch { return ''; } };
 const inputToIso = (v) => {
@@ -132,6 +207,8 @@ export default function Instruments() {
   const confirm = useConfirm();
   const [items, setItems] = useState([]);
   const [search, setSearch] = useState('');
+  const [catFilter, setCatFilter] = useState('ALL'); // category filter pill
+  const [regionFilter, setRegionFilter] = useState('ALL'); // ALL | GLOBAL | INDIAN
   const [liveVol, setLiveVol] = useState({}); // symbol -> { buy, sell, net }
   const [editing, setEditing] = useState(null);
   const [overridesFor, setOverridesFor] = useState(null);
@@ -139,6 +216,7 @@ export default function Instruments() {
   const [selected, setSelected] = useState(() => new Set());
   const [bulkRoute, setBulkRoute] = useState('B_BOOK');
   const [bulkSaving, setBulkSaving] = useState(false);
+  const [indianOpen, setIndianOpen] = useState(false); // Import Indian (Dhan) modal
 
   const toggleSel = (symbol) => setSelected((s) => { const n = new Set(s); n.has(symbol) ? n.delete(symbol) : n.add(symbol); return n; });
   const applyBulkRouting = async () => {
@@ -187,11 +265,15 @@ export default function Instruments() {
     }
   };
 
-  // Search filter — symbol / name / category (case-insensitive).
+  // Region + category + search filter (case-insensitive).
   const q = search.trim().toLowerCase();
-  const filtered = q
-    ? items.filter((it) => `${it.symbol || ''} ${it.name || ''} ${it.category || ''}`.toLowerCase().includes(q))
-    : items;
+  const _matchCat = (it) => catFilter === 'ALL' || String(it.category || '').toUpperCase() === catFilter;
+  const _matchRegion = (it) => regionFilter === 'ALL' || regionOf(it) === regionFilter;
+  const filtered = items.filter((it) => {
+    if (!_matchRegion(it) || !_matchCat(it)) return false;
+    if (q && !`${it.symbol || ''} ${it.name || ''} ${it.category || ''}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
 
   return (
     <div className="space-y-4 max-w-[1600px]">
@@ -200,7 +282,10 @@ export default function Instruments() {
         title="Instruments"
         subtitle="Add or edit tradable symbols, configure routing, leverage, spread, and B-book settings per instrument."
         actions={
-          <button onClick={() => setEditing({ ...EMPTY })} className="btn-primary text-sm">+ Add Instrument</button>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setIndianOpen(true)} className="btn-ghost text-sm" title="Import Indian instruments from Dhan (full exchange metadata)">🇮🇳 Import Indian (Dhan)</button>
+            <button onClick={() => setEditing({ ...EMPTY })} className="btn-primary text-sm">+ Add Instrument</button>
+          </div>
         }
       />
 
@@ -237,6 +322,50 @@ export default function Instruments() {
           )}
         </div>
         <span className="text-text-muted text-xs">{filtered.length} of {items.length}</span>
+      </div>
+
+      {/* Region filter — Global vs Indian (Indian = carries an Indian exchange) */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {[['ALL', 'All regions'], ['GLOBAL', '🌐 Global'], ['INDIAN', '🇮🇳 Indian']].map(([r, label]) => {
+          const count = items.filter((it) => _matchCat(it) && (r === 'ALL' || regionOf(it) === r)).length;
+          const active = regionFilter === r;
+          return (
+            <button
+              key={r}
+              type="button"
+              onClick={() => setRegionFilter(r)}
+              className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
+                active ? 'bg-bg-hover border-white/50 text-white' : 'border-border-dark text-text-secondary hover:text-white hover:border-white/30'
+              }`}
+            >
+              {label}<span className={`ml-1.5 ${active ? 'text-white' : 'text-text-muted'}`}>{count}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Category filter pills (counts respect the region filter) */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {['ALL', 'FOREX', 'CRYPTO', 'STOCK', 'INDEX', 'COMMODITY'].map((c) => {
+          const count = items.filter((it) => _matchRegion(it) && (c === 'ALL' || String(it.category || '').toUpperCase() === c)).length;
+          if (c !== 'ALL' && count === 0) return null;
+          const active = catFilter === c;
+          return (
+            <button
+              key={c}
+              type="button"
+              onClick={() => setCatFilter(c)}
+              className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
+                active
+                  ? 'bg-bg-hover border-white/50 text-white'
+                  : 'border-border-dark text-text-secondary hover:text-white hover:border-white/30'
+              }`}
+            >
+              {c === 'ALL' ? 'All' : c.charAt(0) + c.slice(1).toLowerCase()}
+              <span className={`ml-1.5 ${active ? 'text-white' : 'text-text-muted'}`}>{count}</span>
+            </button>
+          );
+        })}
       </div>
 
       <div className="card overflow-x-auto">
@@ -352,7 +481,8 @@ export default function Instruments() {
         </table>
       </div>
 
-      {editing && <InstrumentEditor data={editing} onSave={save} onClose={() => setEditing(null)} />}
+      {editing && <InstrumentEditor data={editing} existing={items} onSave={save} onClose={() => setEditing(null)} />}
+      {indianOpen && <IndianImportModal onClose={() => setIndianOpen(false)} onDone={load} />}
       {overridesFor && <OverridesModal instrument={overridesFor} onClose={() => { setOverridesFor(null); load(); }} />}
     </div>
   );
@@ -447,10 +577,111 @@ function CommissionOverrides({ value, onChange }) {
   );
 }
 
-function InstrumentEditor({ data, onSave, onClose }) {
+// On-demand Indian import via the OFFICIAL Dhan sync (POST /instruments/sync-indian).
+// The panel-friendly way to load Indian stocks/F&O/MCX/indices with full metadata.
+function IndianImportModal({ onClose, onDone }) {
+  const [type, setType] = useState('EQUITY');
+  const [symbols, setSymbols] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const needsSymbols = type === 'EQUITY' || type === 'FUTURES' || type === 'OPTIONS';
+  const PLACEHOLDER = { EQUITY: 'RELIANCE, TCS, SBIN, INFY', FUTURES: 'NIFTY, BANKNIFTY, RELIANCE', OPTIONS: 'NIFTY, BANKNIFTY' };
+
+  const run = async () => {
+    if (busy) return;
+    if (needsSymbols && !symbols.trim()) { toast.error('Enter symbol(s), e.g. RELIANCE, TCS'); return; }
+    setBusy(true); setResult(null);
+    try {
+      const { data } = await api.post('/instruments/sync-indian', { type, symbols });
+      const d = data.data;
+      setResult(d);
+      toast.success(`Imported — matched ${d.matched ?? d.total ?? '-'} · added ${d.upserted ?? d.inserted ?? 0} · updated ${d.modified ?? d.updated ?? 0}`);
+      onDone && onDone();
+    } catch (e) { toast.error(errorMessage(e)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+      <div className="card max-w-lg w-full">
+        <div className="px-5 py-3 border-b border-border-dark flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-white">🇮🇳 Import Indian Instruments (Dhan Sync)</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-white text-xl">×</button>
+        </div>
+        <div className="p-5 space-y-4">
+          <p className="text-xs text-gray-400 leading-snug">
+            Official Dhan scrip-master import — full exchange metadata (exchange, segment,
+            ISIN, tick/lot, expiry, strike, circuit limits). Live price is served by the
+            configured feed (Upstox/Yahoo). Idempotent — safe to re-run.
+          </p>
+          <div>
+            <label className="label">Type</label>
+            <select className="input" value={type} onChange={(e) => setType(e.target.value)} disabled={busy}>
+              <option value="EQUITY">NSE Stocks (Equity)</option>
+              <option value="FUTURES">Index / Stock Futures</option>
+              <option value="OPTIONS">Options (near-expiry chain)</option>
+              <option value="MCX">MCX Commodity Futures (all configured)</option>
+              <option value="INDICES">Index spot tiles (NIFTY / BANKNIFTY / SENSEX …)</option>
+            </select>
+          </div>
+          {needsSymbols ? (
+            <div>
+              <label className="label">Symbols {type === 'EQUITY' ? '(NSE tickers)' : '(underlyings)'}</label>
+              <input className="input font-mono uppercase" value={symbols} onChange={(e) => setSymbols(e.target.value)} placeholder={PLACEHOLDER[type]} disabled={busy} />
+              <div className="text-[10px] text-gray-500 mt-1">Comma-separated, max 25. e.g. <code>{PLACEHOLDER[type]}</code></div>
+            </div>
+          ) : (
+            <div className="text-[11px] text-gray-500">
+              {type === 'MCX' ? 'Imports all configured MCX commodities (DHAN_SYNC_MCX).' : 'Ensures NIFTY 50, BANKNIFTY, FINNIFTY, MIDCPNIFTY, SENSEX spot tiles.'}
+            </div>
+          )}
+          {result && (
+            <div className="rounded-lg border border-border-dark p-3 text-xs text-gray-300 font-mono">
+              matched {result.matched ?? result.total ?? '-'} · added {result.upserted ?? result.inserted ?? 0} · updated {result.modified ?? result.updated ?? 0}
+              {result.deactivated != null && ` · deactivated ${result.deactivated}`}
+              {result.note && <div className="text-amber-400 mt-1 whitespace-normal">{result.note}</div>}
+              {result.symbols?.length > 0 && <div className="text-gray-500 mt-1 whitespace-normal">{result.symbols.join(', ')}{result.symbols.length >= 25 ? ' …' : ''}</div>}
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t border-border-dark flex justify-end gap-2">
+          <button onClick={onClose} className="btn-ghost">Close</button>
+          <button onClick={run} disabled={busy} className="btn-primary disabled:opacity-50">{busy ? 'Importing…' : 'Import'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InstrumentEditor({ data, existing = [], onSave, onClose }) {
   const [form, setForm] = useState(data);
+  const [submitting, setSubmitting] = useState(false);
   const update = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   const checkbox = (k) => (e) => setForm({ ...form, [k]: e.target.checked });
+
+  // Duplicate-symbol guard — a NEW instrument can't reuse an existing symbol
+  // (the DB unique index rejects it → "Duplicate value for symbol"). Warn early
+  // so the admin fixes it before submitting instead of hitting a raw error.
+  const symUpper = String(form.symbol || '').trim().toUpperCase();
+  const isDuplicate = !form._id && !!symUpper && existing.some((i) => String(i.symbol || '').toUpperCase() === symUpper);
+
+  // Smart autofill — on leaving the Symbol field (new instruments only), guess
+  // Name / currencies / category / precisions / feed from the symbol. Only fills
+  // fields the admin hasn't touched (empty or still at the EMPTY default), so it
+  // never clobbers a manual edit.
+  const autofillFromSymbol = () => {
+    if (form._id) return; // editing an existing instrument → leave it alone
+    const g = guessFromSymbol(form.symbol);
+    if (!Object.keys(g).length) return;
+    setForm((prev) => {
+      const next = { ...prev };
+      for (const [k, v] of Object.entries(g)) {
+        const cur = prev[k];
+        if (cur == null || cur === '' || cur === EMPTY[k]) next[k] = v;
+      }
+      return next;
+    });
+  };
 
   // Global executed volume for THIS instrument (all users, all-time) — drives
   // the live usage indicator below the lifetime limit fields.
@@ -474,11 +705,14 @@ function InstrumentEditor({ data, onSave, onClose }) {
           <button onClick={onClose} className="text-gray-400 hover:text-white text-xl">×</button>
         </div>
         <form
-          onSubmit={(e) => {
+          onSubmit={async (e) => {
             e.preventDefault();
+            if (isDuplicate || submitting) return; // block dupes + double-submit
+            setSubmitting(true);
+            try {
             // Normalise the daily volume cap: disabled → 0/unlimited; enabled →
             // numeric lots (empty/invalid coerced to 0 so the Number cast is safe).
-            onSave({
+            await onSave({
               ...form,
               dailyVolumeLimitEnabled: !!form.dailyVolumeLimitEnabled,
               dailyBuyLimit:  form.dailyVolumeLimitEnabled ? (Number(form.dailyBuyLimit) || 0) : 0,
@@ -494,12 +728,40 @@ function InstrumentEditor({ data, onSave, onClose }) {
                   commissionValue: Number(o.commissionValue) || 0,
                 })),
             });
+            } finally { setSubmitting(false); }
           }}
           className="p-5 grid grid-cols-2 gap-3"
         >
+          {!form._id && isIndianSymbol(form.symbol) && (
+            <div className="col-span-2 rounded-lg border p-3 text-xs leading-snug" style={{ background: '#F59E0B14', borderColor: '#F59E0B55', color: '#FCD34D' }}>
+              ⚠ <b>Indian instruments should be imported using Dhan Sync.</b> Manual creation is
+              intended only for testing and will not include complete exchange metadata
+              <span className="opacity-80"> (exchange, segment, ISIN, tick/lot size, expiry,
+              strike, circuit limits, market hours, statutory charges).</span>
+            </div>
+          )}
           <div>
             <label className="label">Symbol</label>
-            <input className="input font-mono uppercase" value={form.symbol} onChange={update('symbol')} required disabled={!!form._id} />
+            <input
+              className="input font-mono uppercase"
+              value={form.symbol}
+              onChange={update('symbol')}
+              onBlur={autofillFromSymbol}
+              required
+              disabled={!!form._id}
+            />
+            {isDuplicate && (
+              <div className="text-[11px] text-rose-400 mt-1 font-semibold">
+                Symbol "{symUpper}" already exists — edit that instrument instead of adding a new one.
+              </div>
+            )}
+            {!form._id && (
+              <div className="text-[10px] text-gray-500 mt-1 leading-snug">
+                Manual add = <b>global markets &amp; crypto</b> (Crypto, Global Stocks/Forex/Indices/Commodities).
+                Type a symbol (e.g. <code>BTCUSD</code>, <code>EURUSD</code>, <code>AAPL</code>, <code>GOLD</code>) then click out —
+                Name, currencies, category &amp; live feed auto-fill. <b>Indian</b> (NSE/BSE/MCX) → use <b>Dhan Sync</b>.
+              </div>
+            )}
           </div>
           <div>
             <label className="label">Name</label>
@@ -606,19 +868,29 @@ function InstrumentEditor({ data, onSave, onClose }) {
           <div>
             <label className="label">Price Feed Provider</label>
             <select className="input" value={form.externalProvider || ''} onChange={update('externalProvider')}>
-              <option value="">None (no live feed)</option>
-              <option value="BINANCE">BINANCE (crypto — live)</option>
+              <option value="">None (no live feed — static price)</option>
+              <option value="YAHOO">YAHOO — FREE, no key (stocks / indices / forex / commodities / crypto)</option>
+              <option value="BINANCE">BINANCE — FREE, no key (crypto)</option>
+              <option value="FINNHUB">FINNHUB — needs FINNHUB_API_KEY (stocks / forex / crypto)</option>
+              <option value="OANDA">OANDA — needs OANDA_API_KEY (forex / indices / commodities)</option>
+              <option value="TWELVE_DATA">TWELVE DATA — needs TWELVE_DATA_API_KEY (stocks / forex / indices)</option>
             </select>
             <div className="text-[10px] text-gray-500 mt-1 leading-snug">
-              Set <b>BINANCE</b> + the feed symbol below to stream real prices
-              (crypto). Picked up by the live feed within ~60s — no restart.
+              <b>YAHOO</b> &amp; <b>BINANCE</b> are FREE (no API key). Pick one + a feed symbol
+              below → prices flow automatically within ~60s (no restart). The others need
+              their API key set once in the backend <code>.env</code>.
             </div>
           </div>
           <div>
             <label className="label">External Feed Symbol</label>
-            <input className="input" value={form.externalFeedSymbol || ''} onChange={update('externalFeedSymbol')} placeholder="e.g. SOLUSDT" />
+            <input
+              className="input"
+              value={form.externalFeedSymbol || ''}
+              onChange={update('externalFeedSymbol')}
+              placeholder={FEED_PLACEHOLDER[form.externalProvider] || 'provider symbol'}
+            />
             <div className="text-[10px] text-gray-500 mt-1 leading-snug">
-              The provider's symbol — e.g. <b>SOLUSDT</b> for SOL on Binance.
+              {FEED_HINT[form.externalProvider] || "The provider's symbol for this instrument."}
             </div>
           </div>
           <div>
@@ -748,7 +1020,7 @@ function InstrumentEditor({ data, onSave, onClose }) {
               active and the table's Disable action handles deactivation. */}
           <div className="col-span-2 flex justify-end space-x-2 pt-3 border-t border-border-dark">
             <button type="button" onClick={onClose} className="btn-ghost">Cancel</button>
-            <button type="submit" className="btn-primary">Save</button>
+            <button type="submit" disabled={isDuplicate || submitting} className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed">{submitting ? 'Saving…' : 'Save'}</button>
           </div>
         </form>
       </div>

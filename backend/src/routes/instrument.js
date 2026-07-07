@@ -18,6 +18,7 @@ router.get('/:symbol/orderbook', c.orderbook);
 // Admin only
 router.post('/', authenticate, requireAdmin, c.create);
 router.post('/bulk-routing', authenticate, requireAdmin, c.bulkRouting); // before /:symbol
+router.post('/sync-indian', authenticate, requireAdmin, c.syncIndian);  // on-demand Dhan import (Indian)
 router.put('/:symbol', authenticate, requireAdmin, c.update);
 router.delete('/:symbol', authenticate, requireAdmin, c.remove);
 

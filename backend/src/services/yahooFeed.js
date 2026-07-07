@@ -146,30 +146,60 @@ async function _pollOnce() {
   if (wrote) { try { require('./feedOrchestrator').recordTick('YAHOO'); } catch (_) {} }
 }
 
+// Global instruments (any asset class) that opt into the FREE Yahoo feed via
+// externalProvider='YAHOO' + externalFeedSymbol=<Yahoo ticker>. Examples:
+//   stock AAPL · index ^GSPC/^NSEI · forex EURUSD=X · gold GC=F · crypto BTC-USD
+// NOT NSE-gated — each ticker's own market decides freshness (Yahoo returns the
+// last close outside hours). This is what makes "add from the admin form → live
+// price, no API key" work for global forex/stocks/indices/commodities/crypto.
+// Returns how many such instruments exist so the loop can idle-back-off.
+async function _pollGlobalYahoo() {
+  const insts = await Instrument.find({
+    externalProvider: 'YAHOO', externalFeedSymbol: { $exists: true, $ne: null }, isActive: true,
+  }).select('_id symbol externalFeedSymbol pricePrecision').lean();
+  if (!insts.length) return 0;
+  const uniq = [...new Set(insts.map((i) => String(i.externalFeedSymbol).trim()).filter(Boolean))].slice(0, MAX);
+  const prices = new Map(await _mapPool(uniq, CONC, async (s) => [s, await _yahooQuote(s)]));
+  let wrote = 0;
+  for (const i of insts) {
+    const px = prices.get(String(i.externalFeedSymbol).trim());
+    if (px == null) continue;
+    await _publishTick(i, px); wrote += 1;   // spot instruments → price is the LTP as-is
+  }
+  if (wrote) { try { require('./feedOrchestrator').recordTick('YAHOO'); } catch (_) {} }
+  return insts.length;
+}
+
 async function _loop() {
   if (!active) return;
-  let open = true;
-  try { open = require('./marketHours').isExchangeOpen('NSE'); } catch (_) { /* default open */ }
-  if (open) {
-    try {
-      await _pollOnce();
-      try { require('./feedOrchestrator').recordConnection('YAHOO', true); } catch (_) {}
-    } catch (e) {
-      console.error('[Yahoo] poll error:', e.message);
-      try { require('./feedOrchestrator').recordError('YAHOO', e); } catch (_) {}
+  // 1) Global YAHOO-provider instruments — always polled (own market decides freshness).
+  let globalN = 0;
+  try { globalN = await _pollGlobalYahoo(); }
+  catch (e) { console.error('[Yahoo] global poll error:', e.message); }
+
+  // 2) Indian instruments — only when Yahoo is the ACTIVE Indian provider AND
+  //    NSE is open (unchanged behaviour; off in prod where INDIAN_FEED=upstox).
+  let indianOpen = false;
+  if (_enabled()) {
+    try { indianOpen = require('./marketHours').isExchangeOpen('NSE'); } catch (_) { indianOpen = true; }
+    if (indianOpen) {
+      try {
+        await _pollOnce();
+        try { require('./feedOrchestrator').recordConnection('YAHOO', true); } catch (_) {}
+      } catch (e) {
+        console.error('[Yahoo] poll error:', e.message);
+        try { require('./feedOrchestrator').recordError('YAHOO', e); } catch (_) {}
+      }
     }
   }
-  _timer = setTimeout(_loop, open ? POLL_MS : 60000);
+  // Fast cadence while something is live to poll; idle-back-off otherwise.
+  _timer = setTimeout(_loop, (globalN || indianOpen) ? POLL_MS : 60000);
 }
 
 const start = () => {
-  if (!_enabled()) {
-    console.log('[Yahoo] Indian feed handled by Dhan (or disabled) — Yahoo feed off.');
-    return;
-  }
   if (active) return;
   active = true;
-  console.log(`[Yahoo] starting FREE Indian feed (poll ${POLL_MS}ms, NSE session-gated, no API key)`);
+  console.log(`[Yahoo] FREE feed started (poll ${POLL_MS}ms, no API key) — global via externalProvider=YAHOO; Indian NSE-gated when active.`);
   _loop().catch((e) => console.error('[Yahoo] start error:', e.message));
 };
 
