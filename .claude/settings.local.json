@@ -287,7 +287,9 @@
       "Bash(cd \"c:/Users/rijju/OneDrive/Desktop/trading-platform  last and/backend\" && echo \"=== dev seed Indian indices? ===\" && grep -rniE \"NIFTY|SENSEX|BANKNIFTY|category: 'INDEX'\" src/utils/seed.js 2>/dev/null | head && echo \"\" && echo \"=== ensure-underlying-spot logic anywhere? ===\" && grep -rniE \"ensureUnderlyingSpot|ensureIndexSpot|spot instrument|upsert.*underlying|INDEX_UNDERLYING|indexUnderlyings|createSpot\" src/services/ | head && echo \"\" && echo \"=== upstoxFeed full index map + how spot updated ===\" && grep -niE \"NSE_INDEX|BANKNIFTY|SENSEX|FINNIFTY|MIDCP|lastPrice.*update|updateOne\" src/services/upstoxFeed.js | head -15)",
       "Bash(cd \"c:/Users/rijju/OneDrive/Desktop/trading-platform  last and/backend\" && grep -nE \"mongoose.connect|MONGODB_URI|MONGO_URI|process.env.MONGO\" scripts/verify-indian-live.js scripts/curate-indian-equity.js 2>/dev/null | head)",
       "Bash(node -e \"const {ensureIndianIndices, INDIAN_INDICES}=require\\('./src/services/indianIndices'\\); require\\('./src/services/backgroundWorker'\\); console.log\\('OK — modules load. Indices:', INDIAN_INDICES.map\\(i=>i.symbol\\).join\\(', '\\)\\);\")",
-      "Read(//c/Users/rijju/.claude/projects/c--Users-rijju-OneDrive-Desktop-trading-platform--last-and/memory/**)"
+      "Read(//c/Users/rijju/.claude/projects/c--Users-rijju-OneDrive-Desktop-trading-platform--last-and/memory/**)",
+      "Bash(cd \"c:/Users/rijju/OneDrive/Desktop/trading-platform  last and\" && echo \"=== compose: backend volumes/build ===\" && grep -nE \"backend|build|volumes|context|dockerfile|\\\\./|/app|command\" docker-compose.yml 2>/dev/null | head -40 && echo \"\" && echo \"=== files present? ===\" && ls docker-compose*.yml 2>/dev/null; ls backend/Dockerfile 2>/dev/null)",
+      "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/components/SearchModal.jsx','utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\('SearchModal.jsx OK'\\);\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\rijju\\.claude\\projects\\c--Users-rijju-OneDrive-Desktop-trading-platform--last-and\\memory"

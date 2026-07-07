@@ -14,13 +14,29 @@ import WatchlistButton from './WatchlistButton';
  * through the existing Trade page.
  */
 
+// Indian instruments carry an exchange; global CFDs don't. Used to split the
+// Stocks / Indices tabs into Indian vs Global.
+const INDIAN_EXCHANGES = new Set(['NSE', 'BSE', 'NFO', 'BFO', 'MCX', 'NCDEX']);
+const isIndian = (r) => INDIAN_EXCHANGES.has(String(r.exchange || '').toUpperCase());
+
+// An instrument's effective filter key — STOCK / INDEX get a region suffix so
+// Indian and global markets live under separate tabs.
+const catKeyOf = (r) => {
+  const c = (r.category || '').toUpperCase();
+  if (c === 'STOCK') return isIndian(r) ? 'STOCK_IN' : 'STOCK_GL';
+  if (c === 'INDEX') return isIndian(r) ? 'INDEX_IN' : 'INDEX_GL';
+  return c;
+};
+
 const CATEGORIES = [
   { key: 'ALL',       label: 'All' },
   { key: 'FOREX',     label: 'Forex' },
   { key: 'CRYPTO',    label: 'Crypto' },
   { key: 'COMMODITY', label: 'Commodities' },
-  { key: 'INDEX',     label: 'Indices' },
-  { key: 'STOCK',     label: 'Stocks' },
+  { key: 'INDEX_IN',  label: 'Indian Indices' },
+  { key: 'INDEX_GL',  label: 'Global Indices' },
+  { key: 'STOCK_IN',  label: 'Indian Stocks' },
+  { key: 'STOCK_GL',  label: 'Global Stocks' },
 ];
 
 const SearchIcon = (props) => (
@@ -95,7 +111,7 @@ export default function SearchModal({ open, onClose }) {
       if (recSortAlpha) base = [...base].sort(byName); // opt-in alphabetise
     } else {
       base = rows
-        .filter((r) => category === 'ALL' || (r.category || '').toUpperCase() === category)
+        .filter((r) => category === 'ALL' || catKeyOf(r) === category)
         .sort(byName);
     }
     if (!q) return base;
@@ -110,7 +126,7 @@ export default function SearchModal({ open, onClose }) {
   const counts = useMemo(() => {
     const out = { ALL: rows.length };
     for (const r of rows) {
-      const k = (r.category || 'OTHER').toUpperCase();
+      const k = catKeyOf(r) || 'OTHER';
       out[k] = (out[k] || 0) + 1;
     }
     const rowSet = new Set(rows.map((r) => r.symbol));
@@ -267,7 +283,7 @@ export default function SearchModal({ open, onClose }) {
                       </span>
                       <span className="block text-[11px] text-text-muted truncate">
                         {r.symbol}
-                        {r.category ? ` · ${formatCategory(r.category)}` : ''}
+                        {r.category ? ` · ${formatCategory(r)}` : ''}
                       </span>
                     </span>
                   </button>
@@ -282,7 +298,9 @@ export default function SearchModal({ open, onClose }) {
   );
 }
 
-function formatCategory(c) {
-  const map = { FOREX: 'Forex', CRYPTO: 'Crypto', COMMODITY: 'Commodity', INDEX: 'Index', STOCK: 'Stock' };
-  return map[(c || '').toUpperCase()] || c;
+function formatCategory(r) {
+  const c = (r.category || '').toUpperCase();
+  const base = { FOREX: 'Forex', CRYPTO: 'Crypto', COMMODITY: 'Commodity', INDEX: 'Index', STOCK: 'Stock' }[c] || c;
+  // Region-tag stocks + indices so a result reads e.g. "Indian Stock" / "Global Index".
+  return (c === 'STOCK' || c === 'INDEX') ? `${isIndian(r) ? 'Indian' : 'Global'} ${base}` : base;
 }
