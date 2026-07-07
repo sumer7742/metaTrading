@@ -31,8 +31,13 @@ export default function LandingHeader({ sticky = true }) {
   }, [sticky]);
 
   const frosted = dark ? 'bg-bg-card/90 backdrop-blur-xl border-b border-border-subtle shadow-card' : 'bg-white/90 backdrop-blur-xl border-b border-border-subtle shadow-card';
+  // At the top of the page the bar stays lighter but still carries a soft
+  // shadow so it reads as a distinct header (not floating text on the hero).
+  const topBar = dark
+    ? 'bg-bg-card/70 backdrop-blur-md shadow-card'
+    : 'bg-white/70 backdrop-blur-md shadow-[0_4px_18px_rgba(15,23,42,0.08)]';
   const wrapCls = sticky
-    ? `sticky top-0 z-50 transition-all ${scrolled ? frosted : 'bg-transparent'}`
+    ? `sticky top-0 z-50 transition-all ${scrolled ? frosted : topBar}`
     : 'relative z-10';
   const white = dark ? { color: '#fff' } : undefined;
 

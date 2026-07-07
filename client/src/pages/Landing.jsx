@@ -30,6 +30,21 @@ const FEATURES = [
   { icon: 'support', title: '24/7 support', body: 'Real humans, round the clock, in chat and helpdesk whenever you need them.' },
 ];
 
+// Per-feature colorful logo gradients (badge bg) + matching soft shadows.
+const FEAT_GRAD = {
+  bolt:    'linear-gradient(135deg,#FBBF24 0%,#F97316 100%)',
+  chart:   'linear-gradient(135deg,#38BDF8 0%,#3B82F6 100%)',
+  copy:    'linear-gradient(135deg,#A78BFA 0%,#6366F1 100%)',
+  shield:  'linear-gradient(135deg,#34D399 0%,#059669 100%)',
+  coins:   'linear-gradient(135deg,#FB7185 0%,#EC4899 100%)',
+  support: 'linear-gradient(135deg,#22D3EE 0%,#0EA5E9 100%)',
+  _default:'linear-gradient(135deg,#60A5FA 0%,#3B82F6 100%)',
+};
+const FEAT_SH = {
+  bolt: 'rgba(249,115,22,0.40)', chart: 'rgba(59,130,246,0.40)', copy: 'rgba(99,102,241,0.40)',
+  shield: 'rgba(16,185,129,0.40)', coins: 'rgba(236,72,153,0.40)', support: 'rgba(14,165,233,0.40)',
+};
+
 const MARKETS = [
   { name: 'Forex', desc: '60+ currency pairs', c: +0.42, icon: 'fx' },
   { name: 'Crypto', desc: 'BTC, ETH & 100+ coins', c: +2.18, icon: 'crypto' },
@@ -84,21 +99,21 @@ function Hero() {
       </div>
       <div className="relative max-w-[1200px] mx-auto px-4 sm:px-6 pt-16 pb-12 lg:pt-24 lg:pb-20 grid lg:grid-cols-2 gap-12 items-center">
         <div>
-          <span className="badge-primary mb-5">● Free to start · 24/7 access · Trusted platform</span>
+          <span className="badge-primary mb-5">● Secure & safe · Always open market · Low fees on trades</span>
           <h1 className="text-[40px] leading-[1.08] sm:text-[56px] font-extrabold tracking-tight">
-            Trade free, anytime —<br />on a platform <span style={{ background: 'linear-gradient(90deg,#1D4ED8,#3B82F6)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>you can trust.</span>
+            Trade <span style={{ background: 'linear-gradient(90deg,#1D4ED8,#3B82F6)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Free</span> Forever —<br /><span style={{ background: 'linear-gradient(90deg,#1D4ED8,#3B82F6)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>Always Open. Always Free.</span>
           </h1>
           <p className="mt-5 text-lg text-text-secondary max-w-xl">
-            No platform fees, no hidden charges. Markets open round the clock, with bank-grade security and 99.98% uptime — built to stay reliable for the long run.
+            Your gateway to unlimited, ultra-low-commission trading. With 24/7 market access and round-the-clock support, you can learn, practice and trade without limits — simple, secure and built for traders of all levels. A universal trading platform, not tied to any single country, because opportunity never sleeps.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-3">
             <Link to="/register" className="btn-primary text-base px-7 py-3.5 shadow-elevated">Start trading free →</Link>
             <Link to="/login" className="btn-ghost text-base px-7 py-3.5">Sign in</Link>
           </div>
           <div className="mt-7 flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-text-muted">
-            <span className="inline-flex items-center gap-1.5"><Check /> 100% free to start</span>
-            <span className="inline-flex items-center gap-1.5"><Check /> 24/7 access</span>
-            <span className="inline-flex items-center gap-1.5"><Check /> Bank-grade security</span>
+            <span className="inline-flex items-center gap-1.5"><Check /> Always open · 24/7</span>
+            <span className="inline-flex items-center gap-1.5"><Check /> Ultra-low fees</span>
+            <span className="inline-flex items-center gap-1.5"><Check /> Trade without limits</span>
           </div>
         </div>
         <HeroVisual />
@@ -206,17 +221,24 @@ function Ticker() {
 /* ───────────────────────────── Pillars ───────────────────────────── */
 function Pillars() {
   const items = [
-    { icon: 'gift', title: 'Free to start', body: 'No signup fees, no platform charges, and a free demo balance to practice risk-free. Keep more of what you make.' },
-    { icon: 'clock', title: '24/7 access', body: 'Markets, charts and live support available round the clock — trade crypto any hour and manage your positions whenever you want.' },
-    { icon: 'shield', title: 'Forever trustable', body: 'Bank-grade encryption, 2FA, segregated funds and 99.98% uptime. A platform built to stay reliable for the long run.' },
+    { icon: 'gift',   title: 'Free to start',     body: 'No signup fees, no platform charges, and a free demo balance to practice risk-free. Keep more of what you make.', g: 'linear-gradient(135deg,#F472B6 0%,#FB7185 45%,#F59E0B 100%)', sh: 'rgba(251,113,133,0.45)' },
+    { icon: 'clock',  title: '24/7 access',       body: 'Markets, charts and live support available round the clock — trade crypto any hour and manage your positions whenever you want.', g: 'linear-gradient(135deg,#22D3EE 0%,#3B82F6 50%,#6366F1 100%)', sh: 'rgba(59,130,246,0.45)' },
+    { icon: 'shield', title: 'Forever trustable', body: 'Bank-grade encryption, 2FA, segregated funds and 99.98% uptime. A platform built to stay reliable for the long run.', g: 'linear-gradient(135deg,#34D399 0%,#10B981 50%,#059669 100%)', sh: 'rgba(16,185,129,0.45)' },
   ];
   return (
     <section className="max-w-[1200px] mx-auto px-4 sm:px-6 pt-14 -mb-2">
       <div className="grid md:grid-cols-3 gap-4">
         {items.map((it) => (
           <div key={it.title} className="card p-7 text-center hover:border-primary-500/40 hover:shadow-elevated transition-all">
-            <div className="w-14 h-14 rounded-2xl bg-primary-500/10 text-primary-600 flex items-center justify-center mx-auto mb-4">
-              <FeatureIcon name={it.icon} />
+            {/* Colorful gradient logo badge — unique vibrant gradient + glossy
+                highlight + a soft drop-shadow tinted to match, with a crisp
+                white icon on top. */}
+            <div
+              className="keep-white relative overflow-hidden w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4"
+              style={{ background: it.g, color: '#FFFFFF', boxShadow: `0 12px 26px ${it.sh}` }}
+            >
+              <span className="pointer-events-none absolute inset-0" style={{ background: 'radial-gradient(120% 80% at 30% 12%, rgba(255,255,255,0.45), transparent 60%)' }} />
+              <span className="relative scale-125"><FeatureIcon name={it.icon} /></span>
             </div>
             <h3 className="text-lg font-bold">{it.title}</h3>
             <p className="mt-2 text-sm text-text-secondary leading-relaxed">{it.body}</p>
@@ -250,9 +272,19 @@ function Features() {
       <SectionHead eyebrow="Why TradePro" title="Everything you need to trade" sub="A complete terminal built for speed, depth and control." />
       <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 mt-10">
         {FEATURES.map((f) => (
-          <div key={f.title} className="card p-6 hover:border-primary-500/40 hover:shadow-elevated transition-all group">
-            <div className="w-12 h-12 rounded-xl bg-primary-500/10 text-primary-600 flex items-center justify-center mb-4 group-hover:scale-105 transition-transform">
-              <FeatureIcon name={f.icon} />
+          <div
+            key={f.title}
+            className="card p-6 hover:border-primary-500/40 hover:shadow-elevated transition-all group"
+            /* Soft brand tint — semi-transparent so it adapts to both light &
+               dark themes (the section bg shows through the low-opacity wash). */
+            style={{ background: 'linear-gradient(160deg, rgba(99,102,241,0.10) 0%, rgba(59,130,246,0.05) 100%)' }}
+          >
+            <div
+              className="keep-white relative overflow-hidden w-12 h-12 rounded-xl flex items-center justify-center mb-4 group-hover:scale-105 transition-transform"
+              style={{ background: FEAT_GRAD[f.icon] || FEAT_GRAD._default, color: '#FFFFFF', boxShadow: `0 8px 18px ${FEAT_SH[f.icon] || 'rgba(59,130,246,0.4)'}` }}
+            >
+              <span className="pointer-events-none absolute inset-0" style={{ background: 'radial-gradient(120% 80% at 30% 12%, rgba(255,255,255,0.45), transparent 60%)' }} />
+              <span className="relative"><FeatureIcon name={f.icon} /></span>
             </div>
             <h3 className="text-base font-bold">{f.title}</h3>
             <p className="mt-1.5 text-sm text-text-secondary leading-relaxed">{f.body}</p>
@@ -358,13 +390,26 @@ function Steps() {
 function FinalCTA() {
   return (
     <section className="max-w-[1200px] mx-auto px-4 sm:px-6 py-16">
-      <div className="relative rounded-2xl overflow-hidden px-6 sm:px-12 py-14 text-center" style={{ background: 'linear-gradient(135deg,#1E3A8A 0%,#1D4ED8 55%,#3B82F6 100%)' }}>
-        <div className="pointer-events-none absolute inset-0 opacity-20" style={{ background: 'radial-gradient(circle at 20% 20%,#fff,transparent 40%)' }} />
-        <h2 className="relative text-3xl sm:text-4xl font-extrabold text-white">Start trading — free</h2>
-        <p className="relative mt-3 text-white/85 max-w-xl mx-auto">Join thousands of traders on a platform built to be trusted. Free to start, open 24/7, demo balance included — set up in under two minutes.</p>
+      <div
+        className="relative rounded-2xl overflow-hidden px-6 sm:px-12 py-14 text-center"
+        style={{
+          // Premium mesh gradient — a blue→indigo base with cyan / violet /
+          // teal color glows layered on top for depth and vibrancy.
+          background: [
+            'radial-gradient(at 15% 18%, rgba(56,189,248,0.55) 0px, transparent 55%)',
+            'radial-gradient(at 85% 8%, rgba(139,92,246,0.55) 0px, transparent 50%)',
+            'radial-gradient(at 92% 88%, rgba(37,99,235,0.65) 0px, transparent 55%)',
+            'radial-gradient(at 8% 92%, rgba(20,184,166,0.40) 0px, transparent 50%)',
+            'linear-gradient(135deg, #1E3A8A 0%, #1D4ED8 50%, #4F46E5 100%)',
+          ].join(', '),
+        }}
+      >
+        <div className="pointer-events-none absolute inset-0 opacity-25" style={{ background: 'radial-gradient(120% 90% at 30% 8%, rgba(255,255,255,0.5), transparent 55%)' }} />
+        <h2 className="keep-white relative text-3xl sm:text-4xl font-extrabold" style={{ color: '#FFFFFF' }}>Start trading — free</h2>
+        <p className="keep-white relative mt-3 max-w-xl mx-auto" style={{ color: 'rgba(255,255,255,0.9)' }}>Join thousands of traders on a platform built to be trusted. Free to start, open 24/7, demo balance included — set up in under two minutes.</p>
         <div className="relative mt-8 flex flex-wrap justify-center gap-3">
-          <Link to="/register" className="keep-white bg-white text-primary-600 font-bold rounded-lg px-8 py-3.5 text-base hover:shadow-elevated transition-shadow">Create free account</Link>
-          <Link to="/login" className="border border-white/60 text-white font-bold rounded-lg px-8 py-3.5 text-base hover:bg-white/10 transition-colors">Sign in</Link>
+          <Link to="/register" className="keep-white bg-white font-bold rounded-lg px-8 py-3.5 text-base hover:shadow-elevated transition-shadow" style={{ color: '#1D4ED8' }}>Create free account</Link>
+          <Link to="/login" className="keep-white border font-bold rounded-lg px-8 py-3.5 text-base hover:bg-white/10 transition-colors" style={{ color: '#FFFFFF', borderColor: 'rgba(255,255,255,0.6)' }}>Sign in</Link>
         </div>
       </div>
     </section>

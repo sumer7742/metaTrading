@@ -1226,6 +1226,12 @@ const syncDhanDaily = async () => {
       const mc = await require('./mcxSync').syncMcxFutures();
       console.log(`[Worker] MCX futures sync: kept ${mc.kept} (deactivated ${mc.deactivated})`);
     } catch (e) { console.error('[Worker] MCX sync failed:', e.message); }
+    // Ensure the Indian INDEX spot tiles (NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY/
+    // SENSEX) exist so they show + tick live alongside their F&O contracts.
+    try {
+      const ix = await require('./indianIndices').ensureIndianIndices();
+      console.log(`[Worker] Indian index spots: ensured ${ix.total} (inserted ${ix.inserted}, updated ${ix.updated})`);
+    } catch (e) { console.error('[Worker] index-spot ensure failed:', e.message); }
     // Upstox feed: map F&O + MCX contracts to Upstox instrument_keys so the feed
     // serves real prices (not spot-proxy/intrinsic). Tokens roll each series.
     if ((process.env.INDIAN_FEED || '').toLowerCase() === 'upstox') {

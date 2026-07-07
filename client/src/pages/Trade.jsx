@@ -535,6 +535,27 @@ export default function Trade() {
     });
   };
 
+  // ── Drag-to-reorder open tabs (native HTML5 DnD; no library) ─────────
+  // Pick a tab and drop it on another to change its position. The new order
+  // persists automatically (tabs → localStorage effect above).
+  const dragTabRef = useRef(null);                     // symbol currently dragged
+  const [dragOverTab, setDragOverTab] = useState(null); // symbol under the cursor
+  const reorderTabs = (toSym) => {
+    const fromSym = dragTabRef.current;
+    dragTabRef.current = null;
+    setDragOverTab(null);
+    if (!fromSym || fromSym === toSym) return;
+    setTabs((prev) => {
+      const from = prev.indexOf(fromSym);
+      const to = prev.indexOf(toSym);
+      if (from === -1 || to === -1) return prev;
+      const next = [...prev];
+      next.splice(from, 1);
+      next.splice(to, 0, fromSym);
+      return next;
+    });
+  };
+
   // If the symbol isn't in the bulk list (e.g. an option), fetch it singly.
   useEffect(() => {
     if (instruments.find((i) => i.symbol === symbol)) { setFetchedInstrument(null); return undefined; }
@@ -1559,13 +1580,20 @@ export default function Trade() {
                 key={sym}
                 role="button"
                 tabIndex={0}
+                draggable
+                onDragStart={(e) => { dragTabRef.current = sym; try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', sym); } catch (_) {} }}
+                onDragOver={(e) => { e.preventDefault(); if (dragOverTab !== sym) setDragOverTab(sym); }}
+                onDragLeave={() => setDragOverTab((p) => (p === sym ? null : p))}
+                onDrop={(e) => { e.preventDefault(); reorderTabs(sym); }}
+                onDragEnd={() => { dragTabRef.current = null; setDragOverTab(null); }}
                 onClick={() => setParams({ symbol: sym })}
                 onKeyDown={(e) => { if (e.key === 'Enter') setParams({ symbol: sym }); }}
-                className={`group shrink-0 inline-flex items-center gap-2 pl-2.5 pr-1 py-1.5 rounded-lg text-sm transition-all border cursor-pointer ${
+                title="Drag to reorder"
+                className={`group shrink-0 inline-flex items-center gap-2 pl-2.5 pr-1 py-1.5 rounded-lg text-sm transition-all border cursor-grab active:cursor-grabbing ${
                   active
                     ? 'border-primary-500 bg-primary-500/5 text-text-primary font-semibold'
                     : 'border-transparent text-text-secondary hover:text-text-primary hover:bg-bg-hover'
-                }`}
+                } ${dragOverTab === sym ? 'ring-2 ring-primary-500/50 ring-offset-1 ring-offset-white' : ''}`}
               >
                 <AssetIcon row={inst} size={20} round />
                 <span className="font-medium">{sym}</span>
