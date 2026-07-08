@@ -231,7 +231,7 @@ export default function Instruments() {
 
   const load = async () => {
     const [inst, lv] = await Promise.allSettled([
-      api.get('/instruments'),
+      api.get('/instruments?includeInactive=true'), // admin sees disabled ones too (to re-enable)
       api.get('/admin/instruments/live-volume'),
     ]);
     if (inst.status === 'fulfilled') setItems(inst.value.data.data);
@@ -252,6 +252,14 @@ export default function Instruments() {
     } catch (e) {
       toast.error(errorMessage(e));
     }
+  };
+
+  const enable = async (symbol) => {
+    try {
+      await api.put(`/instruments/${symbol}`, { isActive: true });
+      toast.success('Enabled');
+      load();
+    } catch (e) { toast.error(errorMessage(e)); }
   };
 
   const remove = async (symbol) => {
@@ -412,7 +420,12 @@ export default function Instruments() {
               return (
                 <tr key={it._id} className="table-row">
                   <td className="p-3"><input type="checkbox" checked={selected.has(it.symbol)} onChange={() => toggleSel(it.symbol)} /></td>
-                  <td className="p-3 font-medium">{it.symbol}</td>
+                  <td className="p-3 font-medium">
+                    {it.symbol}
+                    {it.isActive === false && (
+                      <span className="ml-2 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30">Disabled</span>
+                    )}
+                  </td>
                   <td className="p-3 text-gray-400">{it.name}</td>
                   <td className="p-3 text-xs">{it.category}</td>
                   <td className="p-3 text-right font-mono">{fmtNum(it.lastPrice, it.pricePrecision)}</td>
@@ -472,7 +485,9 @@ export default function Instruments() {
                   <td className="p-3 text-right space-x-1">
                     <button onClick={() => setOverridesFor(it)} className="btn-ghost text-xs text-amber-400">Overrides</button>
                     <button onClick={() => setEditing(it)} className="btn-ghost text-xs">Edit</button>
-                    <button onClick={() => remove(it.symbol)} className="btn-ghost text-xs text-bear">Disable</button>
+                    {it.isActive === false
+                      ? <button onClick={() => enable(it.symbol)} className="btn-ghost text-xs text-emerald-400">Enable</button>
+                      : <button onClick={() => remove(it.symbol)} className="btn-ghost text-xs text-bear">Disable</button>}
                   </td>
                 </tr>
               );
@@ -663,7 +678,9 @@ function InstrumentEditor({ data, existing = [], onSave, onClose }) {
   // (the DB unique index rejects it → "Duplicate value for symbol"). Warn early
   // so the admin fixes it before submitting instead of hitting a raw error.
   const symUpper = String(form.symbol || '').trim().toUpperCase();
-  const isDuplicate = !form._id && !!symUpper && existing.some((i) => String(i.symbol || '').toUpperCase() === symUpper);
+  const dupMatch = (!form._id && symUpper) ? existing.find((i) => String(i.symbol || '').toUpperCase() === symUpper) : null;
+  const isDuplicate = !!dupMatch;
+  const dupDisabled = !!dupMatch && dupMatch.isActive === false;
 
   // Smart autofill — on leaving the Symbol field (new instruments only), guess
   // Name / currencies / category / precisions / feed from the symbol. Only fills
@@ -752,7 +769,9 @@ function InstrumentEditor({ data, existing = [], onSave, onClose }) {
             />
             {isDuplicate && (
               <div className="text-[11px] text-rose-400 mt-1 font-semibold">
-                Symbol "{symUpper}" already exists — edit that instrument instead of adding a new one.
+                {dupDisabled
+                  ? `Symbol "${symUpper}" already exists but is DISABLED — close this and click "Enable" on its row instead of re-adding.`
+                  : `Symbol "${symUpper}" already exists — edit that instrument instead of adding a new one.`}
               </div>
             )}
             {!form._id && (

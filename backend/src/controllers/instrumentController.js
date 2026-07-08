@@ -16,7 +16,10 @@ const _excludeOptions = (req, filter) => {
 };
 
 const list = asyncHandler(async (req, res) => {
-  const filter = { isActive: true };
+  // Admin management view can request inactive instruments too (to see + re-enable
+  // a disabled symbol). The public trader list never passes this flag, so it stays
+  // active-only everywhere else.
+  const filter = req.query.includeInactive === 'true' ? {} : { isActive: true };
   if (req.query.category) filter.category = req.query.category;
   _excludeOptions(req, filter);
   const items = await Instrument.find(filter).lean();
