@@ -481,7 +481,13 @@ function KycTab({ user, onUpdate }) {
           </div>
         ) : (
           <div className="divide-y divide-border-subtle">
-            {docs.map((d) => (
+            {docs.map((d) => {
+              // A verified account ⇒ every uploaded doc is effectively approved.
+              // The per-doc status can lag (older reviews only set the account
+              // status), so fall back to the account's kycStatus for display.
+              const ds = rawStatus === 'APPROVED' ? 'APPROVED'
+                : (rawStatus === 'REJECTED' && d.status === 'PENDING' ? 'REJECTED' : d.status);
+              return (
               <div key={d._id} className="flex items-center gap-3 px-5 py-3 hover:bg-bg-hover transition-colors">
                 <div className="shrink-0 w-9 h-9 rounded-lg bg-primary-500/10 text-primary-600 flex items-center justify-center">
                   <IconFile className="w-4 h-4" />
@@ -495,12 +501,13 @@ function KycTab({ user, onUpdate }) {
                   </div>
                 </div>
                 <span className={`shrink-0 text-[10px] uppercase tracking-wider font-extrabold px-2 py-1 rounded ${
-                  d.status === 'APPROVED' ? 'bg-bull/10 text-bull' :
-                  d.status === 'REJECTED' ? 'bg-bear/10 text-bear' :
+                  ds === 'APPROVED' ? 'bg-bull/10 text-bull' :
+                  ds === 'REJECTED' ? 'bg-bear/10 text-bear' :
                   'bg-warn/10 text-warn'
-                }`}>{d.status}</span>
+                }`}>{ds}</span>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </SectionCard>

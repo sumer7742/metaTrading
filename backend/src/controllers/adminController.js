@@ -404,6 +404,19 @@ const reviewKyc = asyncHandler(async (req, res) => {
   user.kycReviewedAt = new Date();
   user.kycReviewedBy = req.userId;
   await user.save();
+
+  // Reflect the decision on the uploaded documents too — otherwise each doc row
+  // stays "PENDING" forever (shown to the user + in the admin viewer) even after
+  // the account is approved/rejected.
+  try {
+    const { KycDocument } = require('../models/Compliance');
+    const docStatus = decision === 'APPROVE' ? 'APPROVED' : 'REJECTED';
+    await KycDocument.updateMany(
+      { userId: user._id, status: 'PENDING' },
+      { $set: { status: docStatus } },
+    );
+  } catch (e) { /* non-fatal */ }
+
   await logAction(req, `KYC_${decision}`, { type: 'USER', id: user._id }, { reason });
 
   // Email user the decision
