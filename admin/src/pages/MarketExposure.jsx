@@ -46,6 +46,7 @@ export default function MarketExposure() {
   // filters — no date range: exposure is always LIVE (all open positions).
   const [symbolFilter, setSymbolFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all'); // all | buy | sell
+  const [includeDemo, setIncludeDemo] = useState(false);   // include demo/virtual accounts
   const [search, setSearch] = useState('');
 
   // table sort + bottom tab
@@ -53,13 +54,13 @@ export default function MarketExposure() {
   const [tab, setTab] = useState('buy'); // buy | sell | net
 
   // keep latest filter for the silent auto-refresh interval
-  const filtersRef = useRef({ symbolFilter });
-  filtersRef.current = { symbolFilter };
+  const filtersRef = useRef({ symbolFilter, includeDemo });
+  filtersRef.current = { symbolFilter, includeDemo };
 
   const fetchExposure = async (silent) => {
     if (!silent) setLoading(true);
-    const { symbolFilter: sf } = filtersRef.current;
-    const params = { symbol: sf !== 'all' ? sf : undefined };
+    const { symbolFilter: sf, includeDemo: dm } = filtersRef.current;
+    const params = { symbol: sf !== 'all' ? sf : undefined, includeDemo: dm ? 'true' : undefined };
     try {
       const [s, inst] = await Promise.all([
         api.get('/admin/exposure/summary', { params }),
@@ -80,7 +81,7 @@ export default function MarketExposure() {
     const id = setInterval(() => fetchExposure(true), 4000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbolFilter]);
+  }, [symbolFilter, includeDemo]);
 
   // Instrument metadata (for the symbol dropdown + TradingView mapping).
   useEffect(() => {
@@ -172,6 +173,20 @@ export default function MarketExposure() {
         <div className="flex-1 min-w-[180px]">
           <label className="label">Search</label>
           <input className="input" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Symbol…" />
+        </div>
+        <div className="pb-2">
+          <label className="label">Accounts</label>
+          <button
+            type="button"
+            onClick={() => setIncludeDemo((v) => !v)}
+            title="Real-money only excludes demo/virtual accounts. Toggle to include demo (useful for testing)."
+            className={`input w-40 flex items-center justify-between gap-2 cursor-pointer ${includeDemo ? 'text-amber-400 border-amber-500/40' : ''}`}
+          >
+            <span>{includeDemo ? 'Real + Demo' : 'Real money only'}</span>
+            <span className={`w-8 h-4 rounded-full relative transition-colors ${includeDemo ? 'bg-amber-500/60' : 'bg-border-dark'}`}>
+              <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-all ${includeDemo ? 'left-4' : 'left-0.5'}`} />
+            </span>
+          </button>
         </div>
         <div className="flex items-center gap-1.5 text-[11px] text-text-muted pb-2">
           <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" /> Live

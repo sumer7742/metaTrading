@@ -2047,23 +2047,27 @@ async function _computeExposure(userIds, query = {}) {
     if (query.to)   match.openedAt.$lte = new Date(new Date(query.to).setHours(23, 59, 59, 999));
   }
 
-  const agg = await Position.aggregate([
-    { $match: match },
-    // Exclude demo/virtual accounts — market exposure is the broker's REAL
-    // open risk. Practice-money positions carry no real exposure.
-    { $lookup: { from: TradingAccount.collection.collectionName, localField: 'accountId', foreignField: '_id', as: '_acc' } },
-    { $unwind: '$_acc' },
-    { $match: { '_acc.accountType': { $nin: ['DEMO', 'VIRTUAL'] } } },
-    { $group: {
-        _id: { symbol: '$symbol', side: '$side' },
-        lots: { $sum: _num('$quantity') },
-        positions: { $sum: 1 },
-        users: { $addToSet: '$userId' },
-        // Sum of qty×entryPrice (quote ccy) — lets us derive live unrealized
-        // PnL per symbol = (mark − entry) notional, like a mark-to-market.
-        entryNotional: { $sum: { $multiply: [_num('$quantity'), _num('$entryPrice')] } },
-    } },
-  ]);
+  const pipeline = [{ $match: match }];
+  // By default exclude demo/virtual accounts — market exposure is the broker's
+  // REAL open risk. But while the platform is mostly demo during testing that
+  // makes everything $0, so `?includeDemo=true` keeps demo positions in.
+  if (query.includeDemo !== 'true') {
+    pipeline.push(
+      { $lookup: { from: TradingAccount.collection.collectionName, localField: 'accountId', foreignField: '_id', as: '_acc' } },
+      { $unwind: '$_acc' },
+      { $match: { '_acc.accountType': { $nin: ['DEMO', 'VIRTUAL'] } } },
+    );
+  }
+  pipeline.push({ $group: {
+    _id: { symbol: '$symbol', side: '$side' },
+    lots: { $sum: _num('$quantity') },
+    positions: { $sum: 1 },
+    users: { $addToSet: '$userId' },
+    // Sum of qty×entryPrice (quote ccy) — lets us derive live unrealized
+    // PnL per symbol = (mark − entry) notional, like a mark-to-market.
+    entryNotional: { $sum: { $multiply: [_num('$quantity'), _num('$entryPrice')] } },
+  } });
+  const agg = await Position.aggregate(pipeline);
 
   const symbols = [...new Set(agg.map((a) => a._id.symbol))];
   const insts = symbols.length

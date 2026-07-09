@@ -23,6 +23,9 @@ ReactDOM.createRoot(document.getElementById('root')).render(
       </ConfirmProvider>
       <Toaster
         position="top-right"
+        /* Push toasts below the top bar so the order-filled popup never covers
+           the account / balance pill on the Trade page (and the header elsewhere). */
+        containerStyle={{ top: 72 }}
         toastOptions={{
           style: { background: '#FFFFFF', color: '#1F2937', border: '1px solid #E5E7EB', boxShadow: '0 6px 24px rgba(17,24,39,0.08)' },
           success: { iconTheme: { primary: '#1D4ED8', secondary: '#fff' } },

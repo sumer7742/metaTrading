@@ -6,6 +6,10 @@ import App from './App.jsx';
 import ConfirmProvider from './components/ConfirmProvider.jsx';
 import './index.css';
 
+// Apply the saved theme BEFORE first paint so there's no dark→light flash.
+// Default = dark (the admin's original look).
+document.documentElement.setAttribute('data-theme', localStorage.getItem('admin_theme') || 'dark');
+
 // Match React Router's basename to Vite's build-time base so all client-
 // side links/redirects work when the SPA is mounted at /admin/* under the
 // combined container. Strip trailing slash — react-router expects bare path.

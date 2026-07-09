@@ -20,6 +20,32 @@
   --color-text-muted: 110 110 120;
 }
 
+/* Light theme — activated by data-theme="light" on <html>. Every surface/text
+   color is variable-driven, so flipping these swaps the whole admin. */
+:root[data-theme='light'] {
+  --color-bg-dark: 244 246 249;
+  --color-bg-card: 255 255 255;
+  --color-bg-panel: 248 250 252;
+  --color-bg-hover: 238 242 247;
+  --color-bg-sidebar: 255 255 255;
+  --color-border-dark: 224 229 236;
+  --color-border-subtle: 237 240 245;
+  --color-text-primary: 17 24 39;
+  --color-text-secondary: 71 85 105;
+  --color-text-muted: 148 163 184;
+}
+
+/* The admin was built dark-first, so ~280 places hard-code `text-white` (fine on
+   dark, invisible on light cards). In light mode remap it to the primary text
+   colour so nothing disappears. Escape hatch: add `keep-white` to any element
+   that genuinely must stay white (e.g. text on a solid coloured chip). */
+:root[data-theme='light'] .text-white:not(.keep-white) { color: rgb(var(--color-text-primary)); }
+/* Same for the pure-white surface/border utilities used as dark-mode accents. */
+:root[data-theme='light'] .border-white\/10 { border-color: rgb(var(--color-border-dark)); }
+/* Solid coloured buttons keep white text (the remap above would darken it). */
+:root[data-theme='light'] .btn-bull,
+:root[data-theme='light'] .btn-bear { color: #FFFFFF !important; }
+
 @layer base {
   body {
     @apply bg-bg-dark text-text-primary antialiased;

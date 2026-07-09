@@ -25,6 +25,19 @@ const _assertPositive = (amount, label = 'amount') => {
   return d.toString();
 };
 
+// Push a live wallet update to the user's open sessions so balance / free
+// margin / equity refresh in REAL TIME (the client re-fetches on this event).
+// Best-effort — never throws, so a WS hiccup can't roll back a wallet mutation.
+const _notifyWallet = (userId, accountId, reason) => {
+  try {
+    require('../websocket/server').notifyUser(String(userId), 'wallet', {
+      action: reason || 'updated',
+      accountId: accountId ? String(accountId) : undefined,
+      ts: Date.now(),
+    });
+  } catch (_) { /* ws optional */ }
+};
+
 // Upsert-based getOrCreate is race-safe; two concurrent callers can't both
 // insert because the unique index on (userId, accountId, currency) rejects
 // the second insert and the upsert returns the existing doc.
@@ -72,6 +85,7 @@ const credit = async ({ userId, accountId, currency, amount, type, referenceType
     }
     throw err;
   }
+  _notifyWallet(userId, accountId, 'credit');
   return updated;
 };
 
@@ -119,6 +133,7 @@ const debit = async ({ userId, accountId, currency, amount, type, referenceType,
     }
     throw err;
   }
+  _notifyWallet(userId, accountId, 'debit');
   return updated;
 };
 
@@ -229,6 +244,7 @@ const lockMargin = async ({ userId, accountId, currency, amount, orderId, note }
     referenceId: orderId,
     note: note || `Margin locked: ${amt}`,
   });
+  _notifyWallet(userId, accountId, 'margin_locked');
   return updated;
 };
 
@@ -270,6 +286,7 @@ const releaseMargin = async ({ userId, accountId, currency, amount, orderId, pos
     referenceId: positionId || orderId,
     note: note || `Margin released: ${amt}`,
   });
+  _notifyWallet(userId, accountId, 'margin_released');
   return updated;
 };
 

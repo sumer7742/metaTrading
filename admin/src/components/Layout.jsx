@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
 import { canUserAccessPath } from '../config/roles';
@@ -68,7 +69,7 @@ const NAV_SECTIONS = [
       { to: '/withdrawals', icon: I.withdrawal, label: 'Withdrawals' },
       { to: '/plans', icon: I.plans, label: 'Plans' },
       { to: '/account-plans', icon: I.plans, label: 'Account Plans' },
-      { to: '/subscription-wallets', icon: I.plans, label: 'Sub. Wallets' },
+      { to: '/subscription-wallets', icon: I.plans, label: 'Main Wallet' },
       { to: '/bonus-wallets', icon: I.plans, label: 'Bonus Wallets' },
       { to: '/user-transfers', icon: I.deposit, label: 'User Transfers' },
       { to: '/partners', icon: I.plans, label: 'Partners' },
@@ -125,6 +126,18 @@ export default function Layout({ children }) {
   };
 
   const initials = (user?.email || 'A').split('@')[0].slice(0, 2).toUpperCase();
+
+  // Light / dark theme — flips the CSS-variable palette on <html> and persists.
+  // main.jsx applies the saved value before first paint (no flash).
+  const [theme, setTheme] = useState(
+    () => (typeof document !== 'undefined' && document.documentElement.getAttribute('data-theme')) || 'dark'
+  );
+  const toggleTheme = () => setTheme((t) => {
+    const next = t === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem('admin_theme', next); } catch (_) { /* private mode */ }
+    return next;
+  });
 
   return (
     <div className="h-screen flex bg-bg-dark overflow-hidden">
@@ -185,6 +198,19 @@ export default function Layout({ children }) {
               </div>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={toggleTheme}
+            title="Toggle light / dark theme"
+            className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg border border-border-dark text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors text-xs"
+          >
+            {theme === 'dark' ? (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="5" /><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4" /></svg>
+            ) : (
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></svg>
+            )}
+            <span>{theme === 'dark' ? 'Light mode' : 'Dark mode'}</span>
+          </button>
           <button
             type="button"
             onClick={handleLogout}

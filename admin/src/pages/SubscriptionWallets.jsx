@@ -56,8 +56,8 @@ export default function SubscriptionWallets() {
     <div className="space-y-5 max-w-[1400px]">
       <PageHero
         eyebrow="Subscriptions"
-        title="Subscription Wallets"
-        subtitle="Manually credit/debit user subscription balances, toggle auto-renew, set grace period, and inspect the full payment log."
+        title="Main Wallet"
+        subtitle="Manually credit/debit user main (subscription) balances, toggle auto-renew, set grace period, and inspect the full payment log."
         actions={
           <div className="flex items-center gap-2">
             <button onClick={() => setActionPanel({ mode: 'credit' })} className="btn-primary text-sm">+ Credit</button>

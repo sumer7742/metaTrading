@@ -294,7 +294,15 @@
       "Read(//c/Users/rijju/OneDrive/Desktop/trading-platform last and/backend/**)",
       "Bash(node -e \"require\\('./src/services/yahooFeed'\\); console.log\\('yahooFeed OK'\\);\")",
       "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/pages/Instruments.jsx','utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\('Instruments.jsx OK'\\);\")",
-      "Bash(node -e \"require\\('./src/services/dhanImport'\\); require\\('./src/controllers/instrumentController'\\); require\\('./src/routes/instrument'\\); console.log\\('backend Indian-import OK'\\);\")"
+      "Bash(node -e \"require\\('./src/services/dhanImport'\\); require\\('./src/controllers/instrumentController'\\); require\\('./src/routes/instrument'\\); console.log\\('backend Indian-import OK'\\);\")",
+      "Bash(grep -roE \"text-white\\(\\\\\\\\\\\\\\\\?/[0-9]+\\)?\" pages/ components/)",
+      "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/index.css','utf8'\\),{loader:'css'}\\);console.log\\('index.css OK'\\);\")",
+      "Bash(grep -rhoE \"text-\\\\[#[fF]{3,6}\\\\]\" pages/ components/)",
+      "Skill(artifact-design)",
+      "Skill(artifact-design:*)",
+      "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/pages/Login.jsx','utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\('Login.jsx OK'\\);\")",
+      "Bash(node -e \"require\\('./src/services/walletService'\\); console.log\\('walletService OK'\\);\")",
+      "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/main.jsx','utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\('main.jsx OK'\\);\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\rijju\\.claude\\projects\\c--Users-rijju-OneDrive-Desktop-trading-platform--last-and\\memory"

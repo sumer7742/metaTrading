@@ -10,6 +10,7 @@ import MultiChartToolbar from '../components/MultiChartToolbar';
 import SearchModal from '../components/SearchModal';
 import { getLayout, DEFAULT_SYNC } from '../components/chartLayouts';
 import OrderForm from '../components/OrderForm';
+import SidebarOptionChain from '../components/SidebarOptionChain';
 import NotificationCenter from '../components/NotificationCenter';
 import MarketWatch from '../components/MarketWatch';
 import { fmtNum, fmtPnlSimple, fmtMoney, fmtPriceDual, fmtMoneyDual, currencySymbol, fmtDate } from '../utils/format';
@@ -1967,6 +1968,7 @@ export default function Trade() {
 
             {[
               { id: 'positions',    label: 'Positions',    icon: <SbPositionsI /> },
+              { id: 'chain',        label: 'Chain',        icon: <SbChainI /> },
               { id: 'watchlist',    label: 'Instruments',  icon: <SbWatchI /> },
               { id: 'details',      label: 'Details',      icon: <SbDetailsI /> },
               { id: 'about',        label: 'About',        icon: <SbAboutI /> },
@@ -2033,6 +2035,7 @@ export default function Trade() {
             <div className="flex items-center gap-2">
               <span className="text-[11px] uppercase tracking-[0.15em] font-extrabold text-text-primary">
                 {leftPanelTab === 'watchlist' ? 'Instruments'
+                 : leftPanelTab === 'chain' ? 'Option Chain'
                  : leftPanelTab === 'details' ? 'Symbol Details'
                  : leftPanelTab === 'about' ? 'About'
                  : leftPanelTab === 'performance' ? 'Performance'
@@ -2064,6 +2067,12 @@ export default function Trade() {
           </div>
 
           {/* ── Panel content switches by leftPanelTab ─────────────── */}
+          {leftPanelTab === 'chain' && (
+            <SidebarOptionChain
+              defaultUnderlying={instrument?.underlying || instrument?.symbol || 'NIFTY'}
+              onPick={(sym) => openTab(sym)}
+            />
+          )}
           {leftPanelTab === 'watchlist' && (<>
           <div className="p-2 border-b border-border-subtle space-y-2">
             <input
@@ -3448,6 +3457,7 @@ const SbS = ({ children }) => (
 const SbWatchI   = () => <SbS><line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><circle cx="4" cy="6" r="1" fill="currentColor" /><circle cx="4" cy="12" r="1" fill="currentColor" /><circle cx="4" cy="18" r="1" fill="currentColor" /></SbS>;
 const SbDetailsI = () => <SbS><circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" /></SbS>;
 const SbHotI     = () => <SbS><polyline points="23 6 13.5 15.5 8.5 10.5 1 18" /><polyline points="17 6 23 6 23 12" /></SbS>;
+const SbChainI   = () => <SbS><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5" /><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.5-1.5" /></SbS>;
 const SbAboutI   = () => <SbS><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" /><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" /></SbS>;
 const SbPerfI    = () => <SbS><path d="M3 3v18h18" /><path d="M7 14l4-4 4 4 5-7" /><circle cx="11" cy="10" r="0.7" fill="currentColor" /></SbS>;
 const SbDepthI   = () => <SbS><line x1="3" y1="6"  x2="21" y2="6" /><line x1="6" y1="10" x2="18" y2="10" /><line x1="3" y1="14" x2="21" y2="14" /><line x1="6" y1="18" x2="18" y2="18" /></SbS>;
