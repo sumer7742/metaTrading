@@ -12,13 +12,22 @@
  * "Nifty Bank", …) and expiry is matched with ±1-day tolerance (Dhan stores
  * midnight, Upstox ~15:30 IST — a timezone edge can shift the day).
  *
- * Env: UPSTOX_INSTRUMENTS_URL (optional override of the NSE master URL).
+ * We download BOTH the NSE (index + stock F&O) and MCX (commodity F&O) masters,
+ * so MCX futures (GOLD/SILVER/CRUDEOIL/NATURALGAS/…) get a real upstoxKey and
+ * are priced by the live feed instead of sitting at 0.
+ *
+ * Env: UPSTOX_INSTRUMENTS_URL (optional override — a single URL or a
+ * comma-separated list of gzipped masters; replaces the NSE+MCX defaults).
  */
 const zlib = require('zlib');
 const Instrument = require('../models/Instrument');
 
-const URL = process.env.UPSTOX_INSTRUMENTS_URL
-  || 'https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz';
+const URLS = (process.env.UPSTOX_INSTRUMENTS_URL
+  ? process.env.UPSTOX_INSTRUMENTS_URL.split(',').map((s) => s.trim()).filter(Boolean)
+  : [
+    'https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz',
+    'https://assets.upstox.com/market-quote/instruments/exchange/MCX.json.gz',
+  ]);
 
 // Canonicalise an index/underlying name so both sides agree.
 const ALIAS = {
@@ -45,29 +54,48 @@ const key = (cu, day, strike, type) => {
   return `${cu}|${day}|${t === 'FUT' ? '' : String(Number(strike))}|${t}`;
 };
 
-async function mapFnoKeys() {
-  const res = await fetch(URL);
-  if (!res.ok) throw new Error(`Upstox instruments HTTP ${res.status}`);
+async function fetchMaster(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Upstox instruments HTTP ${res.status} (${url})`);
   const buf = Buffer.from(await res.arrayBuffer());
-  const json = JSON.parse(zlib.gunzipSync(buf).toString('utf8'));
+  return JSON.parse(zlib.gunzipSync(buf).toString('utf8'));
+}
 
+async function mapFnoKeys() {
   // Index Upstox F&O contracts by canonical key, plus a reverse index
   // (underlying|strike|type → expiry days) for diagnosing date mismatches.
+  // We accumulate across every master (NSE + MCX) so one exchange's contracts
+  // don't clobber the other's — a failed master is skipped, not fatal, so an
+  // MCX outage never breaks the NSE mapping (and vice-versa).
   const lut = new Map();
   const ustCT = new Map();
-  for (const it of json) {
-    const seg = it.segment || it.exchange_segment || '';
-    if (seg !== 'NSE_FO' && seg !== 'BSE_FO' && seg !== 'MCX_FO') continue;
-    if (!it.instrument_key || !it.expiry) continue;
-    const type = String(it.instrument_type || '').toUpperCase(); // CE / PE / FUT
-    const under = canon(it.underlying_symbol || it.asset_symbol || it.name);
-    if (!under) continue;
-    const day = istDay(it.expiry);
-    lut.set(key(under, day, it.strike_price, type), it.instrument_key);
-    const ct = `${under}|${type === 'FUT' ? '' : String(Number(it.strike_price))}|${type === 'FUT' ? 'FUT' : type}`;
-    if (!ustCT.has(ct)) ustCT.set(ct, new Set());
-    ustCT.get(ct).add(day);
+  const sources = [];
+  for (const url of URLS) {
+    let json;
+    try {
+      json = await fetchMaster(url);
+    } catch (e) {
+      sources.push({ url, ok: false, error: e.message });
+      continue;
+    }
+    let n = 0;
+    for (const it of json) {
+      const seg = it.segment || it.exchange_segment || '';
+      if (seg !== 'NSE_FO' && seg !== 'BSE_FO' && seg !== 'MCX_FO') continue;
+      if (!it.instrument_key || !it.expiry) continue;
+      const type = String(it.instrument_type || '').toUpperCase(); // CE / PE / FUT
+      const under = canon(it.underlying_symbol || it.asset_symbol || it.name);
+      if (!under) continue;
+      const day = istDay(it.expiry);
+      lut.set(key(under, day, it.strike_price, type), it.instrument_key);
+      const ct = `${under}|${type === 'FUT' ? '' : String(Number(it.strike_price))}|${type === 'FUT' ? 'FUT' : type}`;
+      if (!ustCT.has(ct)) ustCT.set(ct, new Set());
+      ustCT.get(ct).add(day);
+      n += 1;
+    }
+    sources.push({ url, ok: true, contracts: n });
   }
+  if (!lut.size) throw new Error(`Upstox instruments: no F&O contracts parsed from ${URLS.length} master(s)`);
 
   // Stamp the key onto our active F&O instruments.
   const ours = await Instrument.find({ segment: { $in: ['FUT', 'OPT'] }, isActive: true })
@@ -102,7 +130,7 @@ async function mapFnoKeys() {
   for (let k = 0; k < ops.length; k += 2000) {
     await Instrument.bulkWrite(ops.slice(k, k + 2000), { ordered: false });
   }
-  return { fno: ours.length, matched, missing, updated: ops.length, upstoxContracts: lut.size, byUnder, missSamples };
+  return { fno: ours.length, matched, missing, updated: ops.length, upstoxContracts: lut.size, sources, byUnder, missSamples };
 }
 
 module.exports = { mapFnoKeys };
