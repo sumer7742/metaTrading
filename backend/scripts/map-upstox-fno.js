@@ -4,9 +4,11 @@
  *
  *   docker compose exec backend node scripts/map-upstox-fno.js
  *
- * Downloads Upstox's NSE instrument master, matches by underlying|expiry|strike|
- * type, and sets Instrument.upstoxKey. Re-run whenever new F&O contracts/expiries
- * are imported (the background worker also does this daily).
+ * Downloads Upstox's NSE + MCX instrument masters, matches by underlying|expiry|
+ * strike|type, and sets Instrument.upstoxKey — so MCX commodity futures
+ * (GOLD/SILVER/CRUDEOIL/NATURALGAS/…) get priced too. Re-run whenever new
+ * F&O contracts/expiries are imported (the background worker also does this
+ * daily when INDIAN_FEED=upstox).
  */
 require('dotenv').config();
 const mongoose = require('mongoose');
@@ -17,6 +19,9 @@ const { mapFnoKeys } = require('../src/services/upstoxFnoMap');
   if (!URI) { console.error('Set MONGODB_URI'); process.exit(1); }
   await mongoose.connect(URI);
   const r = await mapFnoKeys();
+  for (const s of r.sources || []) {
+    console.log(s.ok ? `  master OK: ${s.contracts} F&O contracts  (${s.url})` : `  master FAILED: ${s.error}`);
+  }
   console.log(`[upstox-fno] fno=${r.fno} matched=${r.matched} missing=${r.missing} updated=${r.updated} (upstox contracts indexed: ${r.upstoxContracts})`);
   for (const [u, s] of Object.entries(r.byUnder || {})) {
     console.log(`  ${u.padEnd(12)} matched ${String(s.matched).padStart(4)} / missing ${String(s.missing).padStart(4)}`);

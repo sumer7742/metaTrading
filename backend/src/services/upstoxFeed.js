@@ -180,7 +180,13 @@ async function _pollOnce() {
 async function _loop() {
   if (!active) return;
   let open = true;
-  try { open = require('./marketHours').isExchangeOpen('NSE'); } catch (_) { /* default open */ }
+  // Poll while EITHER NSE (09:15–15:30) or MCX (09:00–23:30) is open, so MCX
+  // commodity futures keep pricing through their evening session — not just
+  // during NSE hours. _pollOnce covers both exchanges in one query.
+  try {
+    const mh = require('./marketHours');
+    open = mh.isExchangeOpen('NSE') || mh.isExchangeOpen('MCX');
+  } catch (_) { /* default open */ }
   if (open) {
     try {
       await _pollOnce();
@@ -201,7 +207,7 @@ const start = () => {
   }
   if (active) return;
   active = true;
-  console.log(`[Upstox] starting FREE real-time Indian feed (poll ${POLL_MS}ms, NSE session-gated)`);
+  console.log(`[Upstox] starting FREE real-time Indian feed (poll ${POLL_MS}ms, NSE+MCX session-gated)`);
   _loop().catch((e) => console.error('[Upstox] start error:', e.message));
 };
 
