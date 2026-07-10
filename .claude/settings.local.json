@@ -309,7 +309,8 @@
       "Bash(node -e \"require\\('./src/controllers/orderController.js'\\);console.log\\('orderController.js OK'\\)\")",
       "Bash(node -e \"const fs=require\\('fs'\\);const e=require\\('esbuild'\\);for\\(const f of ['src/pages/Trade.jsx','src/components/Layout.jsx','src/store/selectedAccount.js']\\){e.transformSync\\(fs.readFileSync\\(f,'utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\(f,'OK'\\)}\")",
       "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/components/Layout.jsx','utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\('Layout.jsx OK'\\)\")",
-      "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/pages/Explore.jsx','utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\('Explore.jsx OK'\\)\")"
+      "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/pages/Explore.jsx','utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\('Explore.jsx OK'\\)\")",
+      "Bash(node -e \"const fs=require\\('fs'\\);require\\('esbuild'\\).transformSync\\(fs.readFileSync\\('src/pages/FnoHome.jsx','utf8'\\),{loader:'jsx',jsx:'automatic'}\\);console.log\\('FnoHome.jsx OK'\\)\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\rijju\\.claude\\projects\\c--Users-rijju-OneDrive-Desktop-trading-platform--last-and\\memory"
