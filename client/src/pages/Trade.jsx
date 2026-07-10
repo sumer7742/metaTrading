@@ -24,6 +24,7 @@ import { recordRecentlyViewed } from '../hooks/useRecentlyViewed';
 import AssetIcon from '../components/AssetIcon';
 import TradeSettingsPanel from '../components/settings/TradeSettingsPanel';
 import { useTradeSettings } from '../store/tradeSettings';
+import { useSelectedAccount } from '../store/selectedAccount';
 import { getMarketSession } from '../utils/marketSession';
 import { useConfirm } from '../components/ConfirmProvider';
 
@@ -221,14 +222,12 @@ export default function Trade() {
   // mount so a page refresh / re-login keeps them on the right account
   // instead of always snapping back to the first (often the demo).
   const ACCOUNT_KEY = 'tradepro:selected-account';
-  const [selectedAccountId, _setSelectedAccountId] = useState(() => {
-    if (typeof window === 'undefined') return null;
-    try { return localStorage.getItem(ACCOUNT_KEY) || null; } catch (_) { return null; }
-  });
-  const setSelectedAccountId = (id) => {
-    _setSelectedAccountId(id);
-    try { if (id) localStorage.setItem(ACCOUNT_KEY, id); } catch (_) {}
-  };
+  // Selected account now lives in a shared store so the header profile menu's
+  // account switcher and this terminal stay in lock-step — changing it in
+  // either place updates the other instantly (and persists to localStorage
+  // under the same ACCOUNT_KEY as before).
+  const selectedAccountId = useSelectedAccount((s) => s.accountId);
+  const setSelectedAccountId = useSelectedAccount((s) => s.setAccountId);
   const [openOrders, setOpenOrders] = useState([]);
   const [positions, setPositions] = useState([]);
   const [closedTrades, setClosedTrades] = useState([]);
@@ -716,22 +715,53 @@ export default function Trade() {
     })();
   }, []);
 
+  // Latest selected account id, mirrored into a ref so async refreshes can
+  // detect a mid-flight account switch and discard the stale response instead
+  // of painting the previous account's Open/Pending/Closed rows.
+  const accountIdRef = useRef(null);
+  useEffect(() => { accountIdRef.current = account?._id || null; }, [account?._id]);
+
   const refresh = async () => {
+    const accId = account?._id || null;
+    const accParam = accId ? { accountId: accId } : {};
     // Use allSettled so a single endpoint failure doesn't blank both
     // tables. Each side keeps its prior data on transient errors.
+    // Every list is scoped to the selected account so switching accounts
+    // (Demo ↔ Live ↔ ECN …) shows ONLY that account's Open / Pending / Closed.
     const [o, p, h] = await Promise.allSettled([
-      api.get('/trading/orders/open'),
-      api.get('/trading/positions'),
-      api.get('/trading/positions/history', { params: { ...(account?._id ? { accountId: account._id } : {}), limit: 50 } }),
+      api.get('/trading/orders/open', { params: accParam }),
+      api.get('/trading/positions', { params: accParam }),
+      api.get('/trading/positions/history', { params: { ...accParam, limit: 50 } }),
     ]);
-    if (o.status === 'fulfilled') setOpenOrders(o.value.data.data);
-    if (p.status === 'fulfilled') setPositions(p.value.data.data);
-    if (h.status === 'fulfilled') setClosedTrades(h.value.data.data.items || []);
+    // Drop the response if the user switched accounts while it was in flight.
+    if (accId !== accountIdRef.current) return;
+    // Belt-and-suspenders: also filter client-side by accountId so no other
+    // account's row can leak through even before the backend redeploys (and so
+    // a user-wide WS refresh never mixes accounts).
+    const scoped = (arr) => {
+      if (!accId) return arr || [];
+      return (arr || []).filter((x) => !x.accountId || String(x.accountId) === String(accId));
+    };
+    if (o.status === 'fulfilled') setOpenOrders(scoped(o.value.data.data));
+    if (p.status === 'fulfilled') setPositions(scoped(p.value.data.data));
+    if (h.status === 'fulfilled') setClosedTrades(scoped(h.value.data.data.items || []));
   };
 
+  // Always call the newest refresh (with the current account) from listeners
+  // whose effect deps are [] (the WS subscriptions below).
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+
   useEffect(() => {
+    // Clear immediately on account switch so the previous account's rows (and
+    // the chart's TP/SL + pending-order lines that derive from them) vanish at
+    // once — the fresh, account-scoped data replaces them when refresh resolves.
+    setOpenOrders([]);
+    setPositions([]);
+    setClosedTrades([]);
     refresh();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account?._id]);
 
   // Subscribe to live ticker for the selected chart symbol.
   // Resetting livePrice on symbol switch is critical — otherwise the chart's
@@ -845,9 +875,12 @@ export default function Trade() {
   // the 'orders' subscription, a triggered STOP would leave a stale price-line
   // on the chart until the next manual interaction.
   useEffect(() => {
-    const unsub = wsClient.subscribe('positions', () => refresh());
-    const orders = wsClient.subscribe('orders', () => refresh());
-    const wallet = wsClient.subscribe('wallet', () => refresh());
+    // These channels are user-wide (a fill on ANY account pings them), so we
+    // re-run the account-scoped refresh via the ref — it re-fetches and filters
+    // to the currently-selected account, dropping events for other accounts.
+    const unsub = wsClient.subscribe('positions', () => refreshRef.current());
+    const orders = wsClient.subscribe('orders', () => refreshRef.current());
+    const wallet = wsClient.subscribe('wallet', () => refreshRef.current());
     return () => {
       unsub && unsub();
       orders && orders();

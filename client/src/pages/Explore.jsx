@@ -7,6 +7,7 @@ import { useInstruments } from '../hooks/useInstruments';
 import { useRecentlyViewed } from '../hooks/useRecentlyViewed';
 import { wsClient } from '../services/ws';
 import { api, errorMessage } from '../services/api';
+import { useSelectedAccount } from '../store/selectedAccount';
 import { fmtNum } from '../utils/format';
 import toast from 'react-hot-toast';
 import { useConfirm } from '../components/ConfirmProvider';
@@ -399,24 +400,43 @@ export default function Explore() {
   // while the corresponding API call is in flight to prevent
   // double-fires from impatient clicks.
   const [bulkBusy, setBulkBusy] = useState(false);
+  // Active account (shared with the Trade terminal + profile menu). This card
+  // shows ONLY the selected account's positions / pending orders — switching
+  // the account re-scopes it instantly.
+  const selectedAccountId = useSelectedAccount((s) => s.accountId);
+  const accountIdRef = useRef(null);
+  useEffect(() => { accountIdRef.current = selectedAccountId || null; }, [selectedAccountId]);
   useEffect(() => {
     let cancelled = false;
+    // Clear on switch so the previous account's rows vanish immediately.
+    setPositions([]);
+    setPendingOrders([]);
     const load = async () => {
+      const accId = accountIdRef.current;
+      const accParam = accId ? { accountId: accId } : {};
       try {
         const [posRes, ordRes] = await Promise.all([
-          api.get('/trading/positions'),
-          api.get('/trading/orders/open').catch(() => ({ data: { data: [] } })),
+          api.get('/trading/positions', { params: accParam }),
+          api.get('/trading/orders/open', { params: accParam }).catch(() => ({ data: { data: [] } })),
         ]);
-        if (cancelled) return;
-        setPositions(Array.isArray(posRes?.data?.data) ? posRes.data.data : []);
-        setPendingOrders(Array.isArray(ordRes?.data?.data) ? ordRes.data.data : []);
+        // Drop if the account changed mid-flight.
+        if (cancelled || accId !== accountIdRef.current) return;
+        // Belt-and-suspenders: filter client-side so no other account's row
+        // leaks through (and a user-wide WS refresh never mixes accounts).
+        const scoped = (arr) => {
+          const list = Array.isArray(arr) ? arr : [];
+          if (!accId) return list;
+          return list.filter((x) => !x.accountId || String(x.accountId) === String(accId));
+        };
+        setPositions(scoped(posRes?.data?.data));
+        setPendingOrders(scoped(ordRes?.data?.data));
       } catch (_) { /* keep prior; empty state will render */ }
     };
     load();
     const unsubP = wsClient.subscribe('positions', load);
     const unsubO = wsClient.subscribe('orders', load);
     return () => { cancelled = true; unsubP && unsubP(); unsubO && unsubO(); };
-  }, []);
+  }, [selectedAccountId]);
   const livePositions = useMemo(() => positions.map((p) => {
     const markPx = Number(priceMap[p.symbol] ?? p.markPrice ?? p.entryPrice);
     const entry = Number(p.entryPrice);
@@ -442,7 +462,7 @@ export default function Explore() {
     if (!(await confirm(`Close all ${livePositions.length} open position(s)?`))) return;
     setBulkBusy(true);
     try {
-      const accountId = livePositions[0]?.accountId;
+      const accountId = selectedAccountId || livePositions[0]?.accountId;
       const { data } = await api.post('/trading/positions/close-all', accountId ? { accountId } : {});
       const r = data?.data || {};
       if (r.failed?.length) toast.error(`Closed ${r.closed}/${r.total}. ${r.failed.length} failed.`);

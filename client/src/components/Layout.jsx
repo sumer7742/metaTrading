@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/auth';
 import { useThemeStore } from '../store/theme';
+import { useSelectedAccount } from '../store/selectedAccount';
 import SearchModal from './SearchModal';
 import InstrumentStrip from './InstrumentStrip';
 import NotificationCenter from './NotificationCenter';
@@ -69,6 +70,9 @@ export default function Layout({ children }) {
     document.addEventListener('mousedown', onDoc);
     return () => document.removeEventListener('mousedown', onDoc);
   }, [profileOpen]);
+
+  // Always reopen the profile menu with the account list collapsed.
+  useEffect(() => { if (!profileOpen) setAcctSwitchOpen(false); }, [profileOpen]);
 
   // Collapse menus on route change so the menu doesn't linger after nav.
   useEffect(() => {
@@ -150,6 +154,47 @@ export default function Layout({ children }) {
     load();
     const unsub = wsClient.subscribe('wallet', load);
     return () => { cancelled = true; unsub && unsub(); };
+  }, [user]);
+
+  // ── Active-account switcher (shared with the Trade terminal) ──────────
+  // The full account list drives the "Switch account" section in the profile
+  // menu. Selecting one writes the shared store, so the Trade page's
+  // positions/orders/balances re-scope to it instantly.
+  const selectedAccountId = useSelectedAccount((s) => s.accountId);
+  const setSelectedAccountId = useSelectedAccount((s) => s.setAccountId);
+  const [accountList, setAccountList] = useState([]);
+  // The account list is collapsed by default — it opens only when the user
+  // clicks the "Switch account" row, so the profile menu stays compact.
+  const [acctSwitchOpen, setAcctSwitchOpen] = useState(false);
+  const formatAccountLabel = (a) => {
+    if (!a) return '';
+    const type = String(a.accountType || '').toUpperCase();
+    return a.nickname || a.label || a.name ||
+      (type ? type.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : 'Account');
+  };
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const loadAccounts = async () => {
+      try {
+        const { data } = await api.get('/user/accounts');
+        if (cancelled) return;
+        const list = data?.data || [];
+        setAccountList(list);
+        // Seed a default selection if none is set yet (first account) — keeps
+        // the menu's active highlight and the Trade page in agreement.
+        if (!selectedAccountId && list.length) setSelectedAccountId(list[0]._id);
+        // If the saved selection no longer exists, snap to the first account.
+        else if (selectedAccountId && list.length && !list.some((a) => a._id === selectedAccountId)) {
+          setSelectedAccountId(list[0]._id);
+        }
+      } catch (_) { /* keep prior */ }
+    };
+    loadAccounts();
+    // Refresh the list on wallet events (a new account may have been created).
+    const unsub = wsClient.subscribe('wallet', loadAccounts);
+    return () => { cancelled = true; unsub && unsub(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
   // Convert the real balance (USD-base) into INR for the primary
@@ -335,6 +380,77 @@ export default function Layout({ children }) {
                     <div className="text-sm font-semibold text-text-primary truncate">{fullName}</div>
                     <div className="text-xs text-text-muted truncate">{user?.email || ''}</div>
                   </div>
+
+                  {/* Switch account — collapsed by default; clicking the row
+                      opens the list. Shares the same store as the Trade
+                      terminal, so picking one here re-scopes the Trade page's
+                      positions / orders / balances to that account instantly. */}
+                  {accountList.length > 0 && (
+                    <div className="border-b border-border-subtle">
+                      <button
+                        type="button"
+                        onClick={() => setAcctSwitchOpen((o) => !o)}
+                        className="w-full flex items-center justify-between gap-3 px-4 py-2.5 hover:bg-bg-hover transition-colors"
+                        role="menuitem"
+                        aria-expanded={acctSwitchOpen}
+                      >
+                        <div className="flex items-center gap-3 min-w-0 text-sm text-text-primary">
+                          <span className="text-text-muted">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M17 1l4 4-4 4" /><path d="M3 11V9a4 4 0 0 1 4-4h14" /><path d="M7 23l-4-4 4-4" /><path d="M21 13v2a4 4 0 0 1-4 4H3" /></svg>
+                          </span>
+                          <div className="min-w-0">
+                            <div className="font-medium">Switch account</div>
+                            <div className="text-[10px] text-text-muted truncate">
+                              {formatAccountLabel(accountList.find((a) => a._id === selectedAccountId)) || 'Select an account'}
+                            </div>
+                          </div>
+                        </div>
+                        <span className={`text-text-muted transition-transform ${acctSwitchOpen ? 'rotate-180' : ''}`}>
+                          {I.chevron}
+                        </span>
+                      </button>
+                      {acctSwitchOpen && (
+                      <div className="px-2 pb-2 max-h-52 overflow-y-auto flex flex-col gap-0.5">
+                        {accountList.map((a) => {
+                          const type = String(a.accountType || '').toUpperCase();
+                          const isDemo = type === 'DEMO' || type === 'VIRTUAL';
+                          const active = a._id === selectedAccountId;
+                          const label = a.nickname || a.label || a.name ||
+                            (type ? type.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : 'Account');
+                          return (
+                            <button
+                              key={a._id}
+                              type="button"
+                              onClick={() => { setSelectedAccountId(a._id); setProfileOpen(false); }}
+                              className={`w-full flex items-center justify-between gap-2 px-2 py-2 rounded-lg text-left transition-colors ${active ? 'bg-primary-500/10' : 'hover:bg-bg-hover'}`}
+                              role="menuitem"
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${active ? 'bg-primary-500' : 'bg-border-dark'}`} />
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-sm font-medium text-text-primary truncate">{label}</span>
+                                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${isDemo ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                                      {isDemo ? 'DEMO' : 'LIVE'}
+                                    </span>
+                                  </div>
+                                  <div className="text-[10px] text-text-muted truncate">
+                                    {(a.baseCurrency || 'USD')} · #{String(a._id).slice(-6)}
+                                  </div>
+                                </div>
+                              </div>
+                              {active && (
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-primary-500 flex-shrink-0">
+                                  <path d="M20 6L9 17l-5-5" />
+                                </svg>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      )}
+                    </div>
+                  )}
 
                   <Link
                     to="/wallet"

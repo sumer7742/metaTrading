@@ -655,10 +655,14 @@ const cancelOrder = asyncHandler(async (req, res) => {
 });
 
 const listOpen = asyncHandler(async (req, res) => {
-  const orders = await Order.find({
+  // Optional per-account scope (?accountId=<id>) — see listPositions. Lets the
+  // Trade page show only the selected account's pending orders on switch.
+  const openFilter = {
     userId: req.userId,
     status: { $in: [ORDER_STATUS.PENDING, ORDER_STATUS.PARTIALLY_FILLED] },
-  })
+  };
+  if (req.query.accountId) openFilter.accountId = req.query.accountId;
+  const orders = await Order.find(openFilter)
     .sort({ createdAt: -1 })
     .lean();
   if (!orders.length) return sendSuccess(res, []);
@@ -707,6 +711,8 @@ const listHistory = asyncHandler(async (req, res) => {
     userId: req.userId,
     status: { $in: [ORDER_STATUS.FILLED, ORDER_STATUS.CANCELLED, ORDER_STATUS.REJECTED] },
   };
+  // Optional per-account scope (?accountId=<id>) — see listPositions.
+  if (req.query.accountId) baseFilter.accountId = req.query.accountId;
   // Suspended accounts only show the last 3 months of history (plan rule).
   // Non-suspended accounts keep full history.
   const filter = await applySuspendedHistoryClip(req.userId, baseFilter, 'createdAt');
@@ -830,7 +836,13 @@ const positionHistory = asyncHandler(async (req, res) => {
 
 // POSITIONS
 const listPositions = asyncHandler(async (req, res) => {
-  const positions = await Position.find({ userId: req.userId, status: POSITION_STATUS.OPEN }).lean();
+  // Optional per-account scope: the Trade page passes ?accountId=<id> so
+  // switching accounts shows ONLY that account's open positions. Omitting it
+  // keeps the legacy user-wide behaviour. The userId clause still guarantees
+  // a user can never read another user's rows via a foreign accountId.
+  const posFilter = { userId: req.userId, status: POSITION_STATUS.OPEN };
+  if (req.query.accountId) posFilter.accountId = req.query.accountId;
+  const positions = await Position.find(posFilter).lean();
   if (!positions.length) return sendSuccess(res, []);
 
   // Batch-fetch all unique instruments at once (avoids N+1 queries)
