@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
@@ -6,6 +6,7 @@ import { wsClient } from '../services/ws';
 import { fmtNum, fmtMoney, fmtMoneyDual, fmtMoneyBoth, fmtDate, currencySymbol } from '../utils/format';
 import { useFxRate } from '../hooks/useFxRate';
 import PageHero from '../components/PageHero';
+import TransactionHistory from '../components/TransactionHistory';
 import { useAuthStore } from '../store/auth';
 
 export default function Wallet() {
@@ -31,6 +32,29 @@ export default function Wallet() {
   const [showDemo, setShowDemo] = useState(false);
   const fxRate = useFxRate();
   const [searchParams, setSearchParams] = useSearchParams();
+
+  // ── Sticky-sidebar anchor ────────────────────────────────────────────
+  // The global header (nav bar + instrument strip) is `sticky top-0`, and
+  // its height varies by breakpoint (the strip is hidden below `sm`). The
+  // left nav is `sticky` too — but for it to sit perfectly still on scroll
+  // (no upward drift, no tucking under the header) its `top` must equal its
+  // natural resting position: header height + the page's 24px top padding
+  // (`py-6`). We measure the header at runtime instead of hardcoding a
+  // fragile pixel value, and re-measure on resize.
+  const [stickyTop, setStickyTop] = useState(136);
+  useLayoutEffect(() => {
+    const measure = () => {
+      const header = document.querySelector('header');
+      const h = header ? Math.round(header.getBoundingClientRect().height) : 112;
+      setStickyTop(h + 24); // + main content's py-6 top padding
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    // The instrument strip streams in async (live prices) and can change
+    // height once loaded — re-measure a beat later to catch that.
+    const t = setTimeout(measure, 600);
+    return () => { window.removeEventListener('resize', measure); clearTimeout(t); };
+  }, []);
 
   // Ref captures a pending deep-link target (e.g. "withdraw") so a later
   // effect that wires up `setView` can consume it once the view-state
@@ -271,7 +295,7 @@ export default function Wallet() {
   ];
 
   return (
-    <div className="max-w-[1600px] grid grid-cols-12 gap-3 lg:-ml-4 xl:-ml-6 overflow-x-hidden">
+    <div className="max-w-[1600px] grid grid-cols-12 gap-3 lg:-ml-4 xl:-ml-6 overflow-x-clip">
       {/* ── LEFT NAV — sticky so it stays visible as the main content
           (wizard, transactions, etc.) scrolls underneath. Layout's
           global header is sticky top-0 with h-16 nav (64 px) + the
@@ -281,7 +305,7 @@ export default function Wallet() {
           `self-start` is the magic that makes `sticky` actually work
           inside a grid column — without it the cell stretches and
           sticky becomes a no-op. */}
-      <aside className="col-span-12 lg:col-span-2 xl:col-span-2 flex flex-col gap-4 min-w-0 lg:sticky lg:top-28 lg:self-start">
+      <aside className="col-span-12 lg:col-span-2 xl:col-span-2 flex flex-col gap-4 min-w-0 lg:sticky lg:self-start" style={{ top: stickyTop }}>
         <nav className="bg-white border border-border-dark rounded-2xl p-2 flex flex-row lg:flex-col gap-1 lg:gap-0.5 overflow-x-auto lg:overflow-visible no-scrollbar">
           {NAV_ITEMS.map((n) => {
             const isActive = view === n.id;
@@ -360,7 +384,7 @@ export default function Wallet() {
         ) : view === 'transfer' ? (
           <TransferView accounts={accounts} balances={balances} onDone={load} />
         ) : view === 'history' ? (
-          <FullHistoryView deposits={deposits} withdrawals={withdrawals} ledger={ledger} loading={loading} tab={tab} setTab={setTab} />
+          <TransactionHistory deposits={deposits} withdrawals={withdrawals} ledger={ledger} accounts={accounts} loading={loading} />
         ) : view === 'details' ? (
           <AccountDetailsView user={user} accounts={accounts} balances={balances} fxRate={fxRate} onRefresh={load} setView={setView} />
         ) : (

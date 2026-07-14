@@ -315,7 +315,18 @@
       "Bash(grep -vE '^\\\\s*#|^\\\\s*$' .env)",
       "Bash(node -e \"require\\('./src/services/upstoxFnoMap.js'\\);console.log\\('upstoxFnoMap.js OK'\\)\")",
       "Bash(node -c scripts/map-upstox-fno.js)",
-      "Bash(node -e \"require\\('./src/services/upstoxFeed.js'\\);console.log\\('upstoxFeed.js OK'\\)\")"
+      "Bash(node -e \"require\\('./src/services/upstoxFeed.js'\\);console.log\\('upstoxFeed.js OK'\\)\")",
+      "Read(//c/Users/rijju/OneDrive/Desktop/trading-platform/client/**)",
+      "Read(//c/Users/rijju/OneDrive/Desktop/trading-platform/client/src/pages/**)",
+      "Read(//c/Users/rijju/OneDrive/Desktop/trading-platform/backend/src/services/**)",
+      "Read(//c/Users/rijju/OneDrive/Desktop/trading-platform/backend/src/controllers/**)",
+      "Read(//c/Users/rijju/OneDrive/Desktop/trading-platform/backend/src/models/**)",
+      "Read(//c/Users/rijju/OneDrive/Desktop/trading-platform/backend/src/routes/**)",
+      "Read(//c/Users/rijju/OneDrive/Desktop/trading-platform/backend/src/config/**)",
+      "Read(//c/Users/rijju/OneDrive/Desktop/trading-platform/client/src/**)",
+      "Read(//c/Users/rijju/OneDrive/Desktop/trading-platform/client/src/components/**)",
+      "Bash(npx vite *)",
+      "Bash(cd \"c:/Users/rijju/OneDrive/Desktop/trading-platform  last and/client/src\" && ls components/*ayout* pages/*ayout* 2>/dev/null; grep -rln \"sticky top-0\\\\|InstrumentStrip\\\\|<header\" components 2>/dev/null | head)"
     ],
     "additionalDirectories": [
       "c:\\Users\\rijju\\.claude\\projects\\c--Users-rijju-OneDrive-Desktop-trading-platform--last-and\\memory"
