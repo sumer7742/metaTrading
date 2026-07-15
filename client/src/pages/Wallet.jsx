@@ -7,6 +7,7 @@ import { fmtNum, fmtMoney, fmtMoneyDual, fmtMoneyBoth, fmtDate, currencySymbol }
 import { useFxRate } from '../hooks/useFxRate';
 import PageHero from '../components/PageHero';
 import TransactionHistory from '../components/TransactionHistory';
+import AccountOverview from '../components/AccountOverview';
 import { useAuthStore } from '../store/auth';
 
 export default function Wallet() {
@@ -378,7 +379,7 @@ export default function Wallet() {
             onCancel={() => setView('overview')}
           />
         ) : view === 'overview' ? (
-          <AccountOverviewView totals={totals} usd={usd} usdSub={usdSub} usdSubSigned={usdSubSigned} realBalances={realBalances} accounts={accounts} recentTx={recentTx} positions={openPositions} setView={setView} />
+          <AccountOverview accounts={accounts} balances={balances} deposits={deposits} withdrawals={withdrawals} positions={openPositions} priceMap={priceMap} totals={totals} usd={usd} usdSub={usdSub} fxRate={fxRate} setView={setView} />
         ) : view === 'withdraw' ? (
           <WithdrawView accounts={accounts} balances={balances} withdrawals={withdrawals} fxRate={fxRate} onDone={() => { load(); setView('overview'); }} onCancel={() => setView('overview')} />
         ) : view === 'transfer' ? (
@@ -388,9 +389,15 @@ export default function Wallet() {
         ) : view === 'details' ? (
           <AccountDetailsView user={user} accounts={accounts} balances={balances} fxRate={fxRate} onRefresh={load} setView={setView} />
         ) : (
-          <AccountOverviewView totals={totals} usd={usd} usdSub={usdSub} usdSubSigned={usdSubSigned} realBalances={realBalances} accounts={accounts} recentTx={recentTx} positions={openPositions} setView={setView} />
+          <AccountOverview accounts={accounts} balances={balances} deposits={deposits} withdrawals={withdrawals} positions={openPositions} priceMap={priceMap} totals={totals} usd={usd} usdSub={usdSub} fxRate={fxRate} setView={setView} />
         )}
 
+        {/* Overview now reuses the full Portfolio dashboard, which already
+            carries its own Recent Closed Trades + activity — so the wallet's
+            own Recent Transactions strip is hidden there to avoid a
+            duplicate. It still shows on every other view. */}
+        {view !== 'overview' && (
+        <>
         {/* Recent Transactions — always visible at the bottom (matches screenshot footer) */}
         <div className="bg-white border border-border-dark rounded-2xl overflow-hidden">
           <div className="flex items-center justify-between px-5 py-4 border-b border-border-subtle">
@@ -454,6 +461,8 @@ export default function Wallet() {
             <MailGlyph /> support@tradepro.com
           </a>
         </div>
+        </>
+        )}
       </main>
 
       {/* Deposit + Withdraw modals removed — both flows render inline

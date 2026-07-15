@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import toast from 'react-hot-toast';
 import { api } from '../services/api';
 import AssetIcon from '../components/AssetIcon';
 import { wsClient } from '../services/ws';
@@ -232,98 +233,73 @@ export default function Dashboard() {
         </div>
       </header>
 
-      {/* ── Premium Equity hero ──────────────────────────────────────
-          Single hero band: total equity on the left, three unique KPIs
-          on the right. Lifetime P&L moved out of here (it now lives in
-          the Performance stats block below) to avoid duplication. */}
+      {/* ── Premium Equity hero — 5-tile portfolio band ──────────────
+          Portfolio Value · Total P&L (Floating) · Today's P&L (Closed) ·
+          Open Positions · Win Rate — plus a Balance footer row. */}
       {(() => {
         const eq = fmtMoneyBoth(equity, primaryCur, fxRate);
         const bal = fmtMoneyBoth(liveBalance, primaryCur, fxRate);
-        const ur = fmtMoneyDual(unrealized, primaryCur, fxRate, true);
-        const pct = equity > 0 ? (unrealized / equity) * 100 : 0;
-        const pos = unrealized >= 0;
+        const floatPnl = fmtMoneyBoth(unrealized, primaryCur, fxRate, true);
+        const today = fmtMoneyBoth(todayPnl, primaryCur, fxRate, true);
+        const eqPct = equity > 0 ? (unrealized / equity) * 100 : 0;
+        const todayPct = equity > 0 ? (todayPnl / equity) * 100 : 0;
         return (
           <div
-            className="relative overflow-hidden rounded-3xl border border-border-dark shadow-sm p-6 sm:p-7"
-            style={{
-              background: 'linear-gradient(135deg, #FFFFFF 0%, #F8FAFF 60%, #EEF2FF 100%)',
-            }}
+            className="relative overflow-hidden rounded-3xl border border-border-dark shadow-sm p-4 sm:p-5"
+            style={{ background: '#F7F9FC' }}
           >
-            {/* Decorative glow + grid pattern */}
-            <span className="pointer-events-none absolute -top-20 -right-20 w-72 h-72 rounded-full opacity-60" style={{ background: 'radial-gradient(circle, rgba(59,130,246,0.16), transparent 70%)' }} />
-            <span className="pointer-events-none absolute -bottom-24 -left-12 w-56 h-56 rounded-full opacity-40" style={{ background: 'radial-gradient(circle, rgba(16,185,129,0.10), transparent 70%)' }} />
+            <div className="relative grid grid-cols-1 md:grid-cols-3 xl:grid-cols-5 gap-2 xl:gap-3 items-stretch">
+              <PnlTile
+                tint="#3B82F6"
+                icon={<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18" /><path d="M7 14l4-4 4 4 5-7" /></svg>}
+                label="Portfolio Value (Equity)"
+                value={eq.primary}
+                valueColor="#0F172A"
+                secondary={eq.secondary}
+                pct={eqPct}
+              />
+              <PnlTile
+                tint="#16A34A"
+                icon={<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 17l6-6 4 4 8-8" /><path d="M14 7h7v7" /></svg>}
+                label="Total P&L (Floating)"
+                value={floatPnl.primary}
+                valueColor={unrealized >= 0 ? '#16A34A' : '#DC2626'}
+                secondary={floatPnl.secondary}
+                pct={eqPct}
+              />
+              <PnlTile
+                tint={todayPnl >= 0 ? '#16A34A' : '#DC2626'}
+                icon={<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20" /><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></svg>}
+                label="Today's P&L"
+                badge="CLOSED"
+                value={today.primary}
+                valueColor={todayPnl >= 0 ? '#16A34A' : '#DC2626'}
+                secondary={today.secondary}
+                pct={todayPct}
+              />
+              <StatBox dotTint="#3B82F6" label="Open" value={positions.length} caption="Positions" />
+              <StatBox
+                dotTint={winRate == null ? '#94A3B8' : winRate >= 50 ? '#16A34A' : '#DC2626'}
+                label="Win Rate"
+                value={winRate == null ? '—' : `${winRate.toFixed(0)}%`}
+                caption="All time"
+              />
+            </div>
 
-            <div className="relative grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* ─ Left: Equity headline ─ */}
-              <div className="lg:col-span-7">
-                <div className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-[0.22em] font-extrabold text-text-muted">
-                  <span className="w-1 h-1 rounded-full bg-primary-500" />
-                  Total Equity
-                </div>
-                <div className="mt-1.5 flex items-baseline gap-3 flex-wrap">
-                  <div className="text-4xl sm:text-5xl font-extrabold font-mono tabular-nums text-text-primary leading-none tracking-tight">{eq.primary}</div>
-                  {Math.abs(unrealized) > 0.005 && (
-                    <span
-                      className="inline-flex items-center gap-1 text-sm font-bold font-mono px-2.5 py-1 rounded-full ring-1"
-                      style={{
-                        color: pos ? '#16A34A' : '#DC2626',
-                        background: pos ? 'rgba(22,163,74,0.10)' : 'rgba(220,38,38,0.10)',
-                        boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.04)',
-                      }}
-                    >
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
-                        {pos ? <path d="M6 15l6-6 6 6" /> : <path d="M6 9l6 6 6-6" />}
-                      </svg>
-                      {ur.primary}
-                      <span className="opacity-70 font-normal">({pct >= 0 ? '+' : ''}{pct.toFixed(2)}%)</span>
-                    </span>
-                  )}
-                </div>
-                {eq.secondary && (
-                  <div className="text-xs font-mono text-text-muted mt-2">{eq.secondary}</div>
-                )}
-
-                {/* Balance row */}
-                <div className="mt-5 flex items-center gap-3 flex-wrap text-[11px]">
-                  <span className="inline-flex items-center gap-1.5 text-text-muted">
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="6" width="20" height="14" rx="2" /><path d="M2 10h20" /></svg>
-                    Balance
-                  </span>
-                  <span className="font-mono font-bold text-text-primary">{bal.primary}</span>
-                  {bal.secondary && <span className="font-mono text-text-muted">({bal.secondary})</span>}
-                  {Object.entries(liveByCur).filter(([c]) => c !== primaryCur).map(([c, t]) => (
-                    <span key={c} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/80 border border-border-subtle font-mono text-text-secondary">
-                      <span className="text-text-muted">{c}</span>
-                      {currencySymbol(c)}{Math.round(Number(t.balance) || 0).toLocaleString()}
-                    </span>
-                  ))}
-                </div>
-              </div>
-
-              {/* ─ Right: 3 unique KPIs (de-duplicated) ─
-                  Lifetime P&L was here; it lives in the Performance
-                  block below now. We keep only the metrics that aren't
-                  shown elsewhere on this page. */}
-              <div className="lg:col-span-5 grid grid-cols-3 gap-3">
-                <HeroKpi
-                  label="Open"
-                  value={positions.length}
-                  caption="Positions"
-                  accent="primary"
-                />
-                <HeroKpi
-                  label="Today"
-                  value={fmtMoney(todayPnl, primaryCur)}
-                  caption={todayPnl >= 0 ? 'Realised gain' : 'Realised loss'}
-                  accent={todayPnl > 0 ? 'bull' : todayPnl < 0 ? 'bear' : 'neutral'}
-                />
-                <HeroKpi
-                  label="Win Rate"
-                  value={winRate == null ? '—' : `${winRate.toFixed(0)}%`}
-                  caption="All time"
-                  accent={winRate == null ? 'neutral' : winRate >= 50 ? 'bull' : 'bear'}
-                />
-              </div>
+            {/* Balance footer */}
+            <div className="relative mt-4 pt-3 border-t border-border-subtle flex items-center gap-2 text-[11px] text-text-muted flex-wrap">
+              <span className="inline-flex items-center gap-1.5">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="6" width="20" height="14" rx="2" /><path d="M2 10h20" /></svg>
+                Balance
+              </span>
+              <span className="font-mono font-bold text-text-primary">{bal.primary}</span>
+              {bal.secondary && <span className="font-mono">(= {bal.secondary.replace('≈ ', '')})</span>}
+              {Object.entries(liveByCur).filter(([c]) => c !== primaryCur).map(([c, t]) => (
+                <span key={c} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white/80 border border-border-subtle font-mono text-text-secondary">
+                  <span className="text-text-muted">{c}</span>
+                  {currencySymbol(c)}{Math.round(Number(t.balance) || 0).toLocaleString()}
+                </span>
+              ))}
             </div>
           </div>
         );
@@ -333,13 +309,16 @@ export default function Dashboard() {
       <PortfolioStats />
 
       {/* ── Monthly time-series chart ───────────────────────────────── */}
-      <PortfolioChart />
+      <PortfolioChart fxRate={fxRate} />
 
 
       {/* ── Main grid: positions table (left) + allocation + accounts (right) ── */}
       <div className="grid grid-cols-12 gap-5">
-        {/* ── Open positions — premium card grid ─────────────────── */}
-        <section className="col-span-12 lg:col-span-8 space-y-3">
+        {/* ── Left: Accounts table + Open positions ──────────────── */}
+        <section className="col-span-12 lg:col-span-8 space-y-5">
+          {/* Your Trading Accounts */}
+          <AccountsTable positions={livePositions} fxRate={fxRate} />
+
           {/* Section header */}
           <div className="flex items-end justify-between gap-2 px-1">
             <div>
@@ -390,144 +369,13 @@ export default function Dashboard() {
 
         {/* ── Right rail ─────────────────────────────────────────── */}
         <aside className="col-span-12 lg:col-span-4 space-y-5">
-          {/* Allocation breakdown */}
-          <div className="bg-white border border-border-dark rounded-2xl overflow-hidden shadow-sm">
-            <div className="px-5 py-3.5 border-b border-border-subtle">
-              <div className="text-[10px] uppercase tracking-[0.18em] font-extrabold text-text-muted">Exposure</div>
-              <h3 className="text-sm font-bold text-text-primary mt-0.5">Allocation</h3>
-              <p className="text-[11px] text-text-muted mt-0.5">By asset class</p>
-            </div>
-            <div className="p-5">
-              {allocation.total === 0 ? (
-                <div className="text-center py-6">
-                  <div className="text-xs text-text-muted">No exposure yet</div>
-                  <div className="text-[11px] text-text-muted mt-1">Open a position to see allocation breakdown.</div>
-                </div>
-              ) : (
-                <>
-                  {/* Stacked bar */}
-                  <div className="flex h-2.5 rounded-full overflow-hidden bg-bg-hover">
-                    {Object.entries(allocation.buckets).map(([cat, val]) => {
-                      if (val <= 0) return null;
-                      const pct = (val / allocation.total) * 100;
-                      return (
-                        <div
-                          key={cat}
-                          className="transition-all duration-500"
-                          style={{ width: `${pct}%`, background: CAT_COLORS[cat] || '#9CA3AF' }}
-                          title={`${cat} · ${pct.toFixed(1)}%`}
-                        />
-                      );
-                    })}
-                  </div>
-                  {/* Legend */}
-                  <div className="mt-4 space-y-2.5">
-                    {Object.entries(allocation.buckets)
-                      .filter(([, v]) => v > 0)
-                      .sort((a, b) => b[1] - a[1])
-                      .map(([cat, val]) => {
-                        const pct = (val / allocation.total) * 100;
-                        return (
-                          <div key={cat} className="flex items-center gap-2.5 text-xs">
-                            <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: CAT_COLORS[cat] || '#9CA3AF' }} />
-                            <span className="font-semibold text-text-primary capitalize flex-1">{cat.toLowerCase()}</span>
-                            <span className="font-mono tabular-nums font-bold text-text-primary">{pct.toFixed(1)}%</span>
-                          </div>
-                        );
-                      })}
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-
-          {/* Account split */}
-          <div className="bg-white border border-border-dark rounded-2xl overflow-hidden shadow-sm">
-            <div className="px-5 py-3.5 border-b border-border-subtle flex items-center justify-between">
-              <div>
-                <div className="text-[10px] uppercase tracking-[0.18em] font-extrabold text-text-muted">Wallet</div>
-                <h3 className="text-sm font-bold text-text-primary mt-0.5">Accounts</h3>
-              </div>
-              <Link to="/wallet" className="text-[11px] font-semibold text-primary-600 hover:underline">Manage →</Link>
-            </div>
-            <div className="grid grid-cols-2 divide-x divide-border-subtle">
-              <div className="px-5 py-4 text-center">
-                <div className="text-2xl font-bold font-mono tabular-nums text-text-primary">{data.accounts.live}</div>
-                <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted mt-1">Live</div>
-              </div>
-              <div className="px-5 py-4 text-center">
-                <div className="text-2xl font-bold font-mono tabular-nums text-text-primary">{data.accounts.demo}</div>
-                <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted mt-1">Demo</div>
-              </div>
-            </div>
-          </div>
-
-          {/* "Trades" breakdown card removed — its 4 rows (Winning /
-              Losing / Closed / Open) were exact duplicates of the
-              Lifetime stats block above. */}
+          {/* Asset Allocation — donut + account filter */}
+          <AssetAllocationCard positions={livePositions} fxRate={fxRate} />
         </aside>
       </div>
 
-      {/* ── Recent activity (full-width row) ──────────────────────── */}
-      <section className="bg-white border border-border-dark rounded-2xl overflow-hidden shadow-sm">
-        <div className="px-5 py-3.5 border-b border-border-subtle flex items-center justify-between">
-          <div>
-            <div className="text-[10px] uppercase tracking-[0.18em] font-extrabold text-text-muted">Live</div>
-            <div className="flex items-center gap-2 mt-0.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-bull animate-pulse" />
-              <h2 className="text-sm font-bold text-text-primary">Recent activity</h2>
-            </div>
-          </div>
-          <Link to="/reports" className="text-xs font-semibold text-primary-600 hover:underline">View all →</Link>
-        </div>
-        {recentActivity.length === 0 ? (
-          <div className="px-6 py-12 text-center">
-            <div className="w-14 h-14 mx-auto rounded-full bg-bg-hover flex items-center justify-center text-text-muted">
-              <ChartIcon />
-            </div>
-            <div className="mt-3 text-sm font-semibold text-text-primary">No trades yet</div>
-            <div className="mt-1 text-xs text-text-muted">Your trade history will appear here.</div>
-            <Link to="/trade" className="mt-4 inline-flex items-center gap-1.5 bg-primary-500 hover:bg-primary-600 active:scale-[0.98] text-white text-xs font-bold px-4 py-2 rounded-xl transition-all">
-              Start Trading
-            </Link>
-          </div>
-        ) : (
-          <div className="divide-y divide-border-subtle">
-            {recentActivity.slice(0, 8).map((t) => (
-              <div key={t.id} className="px-5 py-3 flex items-center justify-between hover:bg-bg-hover transition-colors">
-                <div className="flex items-center gap-3 min-w-0">
-                  <span
-                    className="w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold border"
-                    style={{
-                      background: t.side === 'BUY' ? 'rgba(22,163,74,0.10)' : 'rgba(220,38,38,0.10)',
-                      color: t.side === 'BUY' ? '#16A34A' : '#DC2626',
-                      borderColor: t.side === 'BUY' ? 'rgba(22,163,74,0.30)' : 'rgba(220,38,38,0.30)',
-                    }}
-                  >
-                    {t.side === 'BUY' ? '↑' : '↓'}
-                  </span>
-                  <AssetIcon symbol={t.symbol} size={26} round />
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold text-text-primary truncate">{t.symbol}</div>
-                    <div className="text-[11px] font-mono text-text-muted">
-                      {Number(t.quantity).toLocaleString('en-US', { maximumFractionDigits: 6 })} @ {Number(t.price).toFixed(2)}
-                    </div>
-                  </div>
-                </div>
-                <div className="text-right shrink-0">
-                  <div
-                    className="text-[10px] uppercase font-bold tracking-wider"
-                    style={{ color: t.side === 'BUY' ? '#16A34A' : '#DC2626' }}
-                  >
-                    {t.side}
-                  </div>
-                  <div className="text-[11px] text-text-muted">{timeAgo(t.executedAt)}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
+      {/* ── Recent Closed Trades (full-width row) ─────────────────── */}
+      <RecentClosedTrades fxRate={fxRate} />
     </div>
   );
 }
@@ -828,12 +676,27 @@ const TIMEFRAMES = [
   { id: 'all', label: 'ALL' },
 ];
 
-function PortfolioChart({ accountId }) {
+function PortfolioChart({ accountId, fxRate }) {
   const [buckets, setBuckets] = useState([]);
   const [tab, setTab] = useState('netProfit');
   const [range, setRange] = useState('1y');
   const [loading, setLoading] = useState(false);
   const [hoverIdx, setHoverIdx] = useState(null);
+  const [sumStats, setSumStats] = useState(null);   // /user/dashboard — win rate, profit factor, trades
+
+  // Trade summary for the inline Best Day / Worst Day / Win Rate /
+  // Profit Factor / Total Trades strip (account-scoped when a specific
+  // account is selected upstream).
+  useEffect(() => {
+    let dead = false;
+    api.get('/user/dashboard/lifetime-stats', { params: accountId ? { accountId } : {} })
+      .then((r) => { if (!dead) setSumStats((prev) => ({ ...(prev || {}), lifetime: r.data.data })); })
+      .catch(() => {});
+    api.get('/user/dashboard')
+      .then((r) => { if (!dead) setSumStats((prev) => ({ ...(prev || {}), dash: r.data.data })); })
+      .catch(() => {});
+    return () => { dead = true; };
+  }, [accountId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -934,6 +797,26 @@ function PortfolioChart({ accountId }) {
 
   const totalNonZero = buckets.length > 0 && buckets.some((b) => Number(b[tab] || 0) !== 0);
 
+  // ── Inline analytics stat strip figures ──────────────────────────
+  const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
+  const netVals = buckets.map((b) => Number(b.netProfit || 0));
+  const bestDay = (netVals.length ? Math.max(...netVals) : 0) * rate;
+  const worstDay = (netVals.length ? Math.min(...netVals) : 0) * rate;
+  const lifetime = sumStats?.lifetime;
+  const dash = sumStats?.dash;
+  const winRate = dash?.pnl?.winRate;
+  const pfProfit = Number(lifetime?.profit ?? dash?.pnl?.profit ?? 0);
+  const pfLoss = Math.abs(Number(lifetime?.loss ?? dash?.pnl?.loss ?? 0));
+  const profitFactor = pfLoss > 0 ? pfProfit / pfLoss : null;
+  const totalTrades = lifetime?.closedOrders ?? dash?.trades?.totalLive ?? dash?.trades?.closedLive ?? 0;
+  const STRIP = [
+    { label: 'Best Day', value: `+₹${fmtNum(Math.max(bestDay, 0), 2)}`, cls: 'text-bull' },
+    { label: 'Worst Day', value: `${worstDay < 0 ? '-' : ''}₹${fmtNum(Math.abs(worstDay), 2)}`, cls: 'text-bear' },
+    { label: 'Win Rate', value: winRate != null ? `${Number(winRate).toFixed(2)}%` : '—', cls: 'text-text-primary' },
+    { label: 'Profit Factor', value: profitFactor != null ? profitFactor.toFixed(2) : '—', cls: 'text-text-primary' },
+    { label: 'Total Trades', value: totalTrades, cls: 'text-text-primary' },
+  ];
+
   return (
     <section className="rounded-2xl border border-border-dark bg-white p-5 sm:p-6 shadow-sm">
       <style>{`
@@ -958,6 +841,16 @@ function PortfolioChart({ accountId }) {
               {fmtHeadline(headline)}
             </div>
             <div className="text-[11px] text-text-muted mt-0.5">{activeTab.label} · {TIMEFRAMES.find((t) => t.id === range)?.label || '—'}</div>
+          </div>
+
+          {/* Inline stat strip — Best Day / Worst Day / Win Rate / Profit Factor / Total Trades */}
+          <div className="flex items-stretch rounded-xl border border-border-subtle overflow-hidden order-last lg:order-none w-full lg:w-auto overflow-x-auto">
+            {STRIP.map((s, i) => (
+              <div key={s.label} className={`px-4 py-1.5 text-center shrink-0 ${i > 0 ? 'border-l border-border-subtle' : ''}`}>
+                <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted whitespace-nowrap">{s.label}</div>
+                <div className={`text-[13px] font-bold font-mono tabular-nums mt-0.5 whitespace-nowrap ${s.cls}`}>{s.value}</div>
+              </div>
+            ))}
           </div>
 
           {/* Timeframe pill row — Exness-style segmented */}
@@ -1332,6 +1225,52 @@ function fmtAxis(n) {
  * Bigger and more polished than the legacy MiniStat (which is now only
  * used by the older sections).
  */
+// PnlTile — one of the three money tiles in the hero band (Portfolio
+// Value / Total P&L / Today's P&L). Icon-circle + label (+ optional badge)
+// + big colored value + secondary USD figure + a ↑/↓ percent chip.
+function PnlTile({ tint, icon, label, badge, value, valueColor, secondary, pct }) {
+  const pos = (pct ?? 0) >= 0;
+  const hasPct = Number.isFinite(pct) && Math.abs(pct) > 0.005;
+  return (
+    <div className="rounded-2xl p-3.5 flex items-start gap-3 min-w-0">
+      <span className="w-11 h-11 rounded-full flex items-center justify-center shrink-0" style={{ background: `${tint}1A`, color: tint }}>{icon}</span>
+      <div className="min-w-0">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] font-semibold text-text-muted truncate">{label}</span>
+          {/* Colours set inline (not via .text-white / .bg-* classes) so the
+              global light-mode `.text-white → near-black !important` override
+              can't hit it — otherwise the label goes black-on-black. */}
+          {badge && <span className="text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full shrink-0" style={{ background: '#0F172A', color: '#FFFFFF' }}>{badge}</span>}
+        </div>
+        <div className="text-xl sm:text-2xl font-extrabold font-mono tabular-nums leading-tight mt-1 truncate" style={{ color: valueColor || '#0F172A' }}>{value}</div>
+        <div className="flex items-center gap-1.5 mt-1 min-w-0">
+          {secondary && <span className="text-[11px] font-mono text-text-muted truncate">{secondary}</span>}
+          {hasPct && (
+            <span className="inline-flex items-center gap-0.5 text-[10px] font-bold shrink-0" style={{ color: pos ? '#16A34A' : '#DC2626' }}>
+              <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round">{pos ? <path d="M6 15l6-6 6 6" /> : <path d="M6 9l6 6 6-6" />}</svg>
+              {pos ? '+' : ''}{pct.toFixed(2)}%
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// StatBox — the bordered Open / Win Rate cells on the right of the hero.
+function StatBox({ dotTint, label, value, caption }) {
+  return (
+    <div className="rounded-2xl border border-border-dark bg-white p-3.5 flex flex-col justify-center min-w-0">
+      <div className="flex items-center gap-1.5">
+        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dotTint }} />
+        <span className="text-[10px] uppercase tracking-wider font-bold text-text-muted truncate">{label}</span>
+      </div>
+      <div className="text-2xl font-extrabold text-text-primary mt-1 leading-none tabular-nums">{value}</div>
+      <div className="text-[11px] text-text-muted mt-1">{caption}</div>
+    </div>
+  );
+}
+
 function HeroKpi({ label, value, caption, accent }) {
   const palette = accent === 'bull' ? '#16A34A'
     : accent === 'bear' ? '#DC2626'
@@ -1411,6 +1350,494 @@ const CAT_COLORS = {
   INDEX:     '#8B5CF6',
   OTHER:     '#9CA3AF',
 };
+
+const CAT_NAME = { FOREX: 'Forex', INDEX: 'Indices', COMMODITY: 'Commodities', CRYPTO: 'Crypto', STOCK: 'Stocks', OTHER: 'Other' };
+
+const fmtCloseTime = (d) => d
+  ? new Date(d).toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true }).replace(/\b(am|pm)\b/i, (x) => x.toUpperCase())
+  : '-';
+
+// ─── Asset Allocation card — donut + account filter + legend ─────────
+// Image-matched palette (Forex blue · Indices green · Commodities amber ·
+// Crypto purple · Stocks cyan). Kept local so it doesn't disturb any
+// other consumer of CAT_COLORS.
+const ALLOC_COLORS = { FOREX: '#3B82F6', INDEX: '#22C55E', COMMODITY: '#F59E0B', CRYPTO: '#8B5CF6', STOCK: '#38BDF8', OTHER: '#9CA3AF' };
+const InfoIcon = () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M12 16v-4" /><path d="M12 8h.01" /></svg>;
+
+function AssetAllocationCard({ positions = [], fxRate }) {
+  const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
+  const [accounts, setAccounts] = useState([]);
+  const [sel, setSel] = useState('all');
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    let dead = false;
+    api.get('/user/accounts').then((r) => { if (!dead) setAccounts(r.data.data || []); }).catch(() => {});
+    return () => { dead = true; };
+  }, []);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [open]);
+
+  const isDemo = (t) => t === 'DEMO' || t === 'VIRTUAL';
+  const typeById = useMemo(() => {
+    const m = new Map();
+    for (const a of accounts) m.set(String(a._id), a.accountType);
+    return m;
+  }, [accounts]);
+
+  const filtered = positions.filter((p) => {
+    if (sel === 'all') return true;
+    const t = typeById.get(String(p.accountId));
+    if (sel === 'real') return !isDemo(t);
+    if (sel === 'demo') return isDemo(t);
+    return String(p.accountId) === sel;
+  });
+
+  const { entries, total } = useMemo(() => {
+    const b = {}; let tot = 0;
+    for (const p of filtered) {
+      const cat = (p.category || 'OTHER').toUpperCase();
+      const key = ALLOC_COLORS[cat] ? cat : 'OTHER';
+      const v = Math.abs(Number(p.notional) || 0);
+      b[key] = (b[key] || 0) + v; tot += v;
+    }
+    return { entries: Object.entries(b).filter(([, v]) => v > 0).sort((a, c) => c[1] - a[1]), total: tot };
+  }, [filtered]);
+
+  const options = [
+    { k: 'all', label: 'All Accounts' },
+    { k: 'real', label: 'All Real Accounts' },
+    { k: 'demo', label: 'All Demo Accounts' },
+    ...accounts.map((a) => ({ k: String(a._id), label: `${a.accountNumber || a._id.slice(-6)} (${isDemo(a.accountType) ? 'Demo' : 'Live'})` })),
+  ];
+  const selLabel = options.find((o) => o.k === sel)?.label || 'All Accounts';
+
+  const R = 58, SW = 22, C = 2 * Math.PI * R, cx = 80, cy = 80;
+  let off = 0;
+  const segs = entries.map(([cat, val]) => { const len = (val / total) * C; const s = { cat, len, off }; off += len; return s; });
+
+  return (
+    <div className="bg-white border border-border-dark rounded-2xl overflow-hidden shadow-sm">
+      <div className="px-5 pt-4 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5">
+          <h3 className="text-base font-bold text-text-primary">Asset Allocation</h3>
+          <span className="text-text-muted" title="Live exposure across your open positions"><InfoIcon /></span>
+        </div>
+        <div className="relative" ref={ref}>
+          <button onClick={() => setOpen((o) => !o)} className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-text-primary bg-white border border-border-dark rounded-lg px-2.5 py-1.5 hover:border-primary-500/40 transition-colors">
+            <span className="truncate max-w-[120px]">{selLabel}</span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`transition-transform ${open ? 'rotate-180' : ''}`}><path d="M6 9l6 6 6-6" /></svg>
+          </button>
+          {open && (
+            <div className="absolute right-0 z-30 mt-1.5 w-52 bg-white border border-border-dark rounded-xl shadow-elevated p-1.5 max-h-72 overflow-y-auto">
+              {options.map((o, i) => (
+                <div key={o.k}>
+                  {i === 3 && <div className="my-1 border-t border-border-subtle" />}
+                  <button onClick={() => { setSel(o.k); setOpen(false); }} className={`w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg text-left text-[12px] ${sel === o.k ? 'bg-primary-500/10 text-primary-600 font-semibold' : 'text-text-primary hover:bg-bg-hover'}`}>
+                    <span className="truncate">{o.label}</span>
+                    {sel === o.k && <span className="text-primary-600 shrink-0"><CheckIcon /></span>}
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="p-5">
+        {total === 0 ? (
+          <div className="text-center py-8 text-xs text-text-muted">No exposure yet — open a position to see allocation.</div>
+        ) : (
+          <>
+            <div className="flex justify-center">
+              <div className="relative">
+                <svg width="190" height="190" viewBox="0 0 160 160">
+                  <circle cx={cx} cy={cy} r={R} fill="none" stroke="#EEF2F6" strokeWidth={SW} />
+                  {segs.map((s) => (
+                    <circle key={s.cat} cx={cx} cy={cy} r={R} fill="none"
+                      stroke={ALLOC_COLORS[s.cat] || '#9CA3AF'} strokeWidth={SW}
+                      strokeDasharray={`${s.len} ${C - s.len}`} strokeDashoffset={-s.off}
+                      transform={`rotate(-90 ${cx} ${cy})`} />
+                  ))}
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <div className="text-[11px] text-text-muted">Total</div>
+                  <div className="text-xl font-extrabold font-mono tabular-nums text-text-primary">₹{fmtNum(total * rate, 0)}</div>
+                </div>
+              </div>
+            </div>
+            <div className="mt-5 space-y-3">
+              {entries.map(([cat, val]) => {
+                const pct = (val / total) * 100;
+                return (
+                  <div key={cat} className="flex items-center text-[13px]">
+                    <span className="w-2.5 h-2.5 rounded-full mr-2.5 shrink-0" style={{ background: ALLOC_COLORS[cat] || '#9CA3AF' }} />
+                    <span className="flex-1 font-semibold text-text-primary truncate">{CAT_NAME[cat] || cat}</span>
+                    <span className="w-28 text-right font-mono tabular-nums font-bold text-text-primary">₹{fmtNum(val * rate, 2)}</span>
+                    <span className="w-16 text-right font-mono tabular-nums text-text-muted">{pct.toFixed(2)}%</span>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="px-5 pb-4">
+        <Link to="/reports" className="block w-full text-center text-[12px] font-semibold text-primary-600 bg-bg-hover/60 rounded-xl py-2.5 hover:bg-primary-500/5 transition-colors">View Detailed Allocation →</Link>
+      </div>
+    </div>
+  );
+}
+
+// ─── Compact position card for the expanded account row ──────────────
+function MiniPositionCard({ p, cur, rate }) {
+  const buy = p.side === 'BUY';
+  const entry = Number(p.entryPrice);
+  const mark = Number(p.markPrice || entry);
+  const qty = Number(p.quantity);
+  const prec = Math.min(p._inst?.pricePrecision || 2, 5);
+  const pnlNative = Number(p.unrealizedPnl || 0);
+  const pnlInr = cur === 'USD' ? pnlNative * rate : pnlNative;
+  const movePct = entry > 0 ? ((mark - entry) / entry) * 100 * (buy ? 1 : -1) : 0;
+  const win = pnlInr >= 0;
+  const tone = win ? '#16A34A' : '#DC2626';
+  return (
+    <div className="bg-white border border-border-dark rounded-xl p-3 shadow-sm">
+      <div className="flex items-center gap-2">
+        <AssetIcon row={p._inst || { symbol: p.symbol, category: p.category }} size={26} round />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[12px] font-bold text-text-primary truncate">{p.symbol}</span>
+            <span className="text-[8px] font-bold uppercase px-1 py-0.5 rounded shrink-0" style={{ background: `${buy ? '#16A34A' : '#DC2626'}15`, color: buy ? '#15803D' : '#B91C1C' }}>{buy ? '▲ Long' : '▼ Short'}</span>
+          </div>
+          <div className="text-[9px] text-text-muted truncate">{p._inst?.name || (p.category ? p.category.charAt(0) + p.category.slice(1).toLowerCase() : 'Position')}</div>
+        </div>
+      </div>
+      <div className="mt-2.5">
+        <div className="text-[9px] uppercase tracking-wider font-bold text-text-muted">Unrealised P&L</div>
+        <div className="flex items-center gap-1.5 mt-0.5">
+          <span className="text-base font-bold font-mono tabular-nums" style={{ color: tone }}>{win ? '+' : '-'}₹{fmtNum(Math.abs(pnlInr), 2)}</span>
+          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded" style={{ color: tone, background: `${tone}15` }}>{movePct >= 0 ? '+' : ''}{movePct.toFixed(2)}%</span>
+        </div>
+      </div>
+      <div className="mt-2.5 pt-2 border-t border-border-subtle grid grid-cols-3 items-center text-[10px]">
+        <div className="min-w-0">
+          <div className="text-[8px] uppercase tracking-wider font-bold text-text-muted">Entry</div>
+          <div className="font-mono tabular-nums font-semibold text-text-secondary truncate">{fmtNum(entry, prec)}</div>
+        </div>
+        <div className="text-center text-[8px] font-bold font-mono" style={{ color: movePct >= 0 ? '#16A34A' : '#DC2626' }}>{movePct >= 0 ? '+' : ''}{movePct.toFixed(2)}%</div>
+        <div className="min-w-0 text-right">
+          <div className="text-[8px] uppercase tracking-wider font-bold text-text-muted">Mark</div>
+          <div className="font-mono tabular-nums font-bold text-text-primary truncate">{fmtNum(mark, prec)}</div>
+        </div>
+      </div>
+      <div className="mt-1.5 flex items-center justify-between text-[10px]">
+        <span className="font-mono text-text-muted">Qty {fmtNum(qty, 2)}</span>
+        <Link to={`/trade?symbol=${encodeURIComponent(p.symbol)}`} className="font-semibold text-primary-600 hover:text-primary-700">View Chart →</Link>
+      </div>
+    </div>
+  );
+}
+
+// ─── Your Trading Accounts table ─────────────────────────────────────
+function AccountsTable({ positions = [], fxRate }) {
+  const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
+  const toInr = (a, c) => { const n = Number(a) || 0; return c === 'USD' ? n * rate : n; };
+  const [accounts, setAccounts] = useState([]);
+  const [balances, setBalances] = useState([]);
+  const [todayByAcc, setTodayByAcc] = useState({});
+  const [sel, setSel] = useState('all');
+  const [open, setOpen] = useState(false);
+  const [expandedId, setExpandedId] = useState(null);
+  const [closing, setClosing] = useState(null);
+  const ref = useRef(null);
+
+  const closeAll = async (acc) => {
+    const label = acc.accountNumber || acc._id.slice(-6);
+    if (!window.confirm(`Close ALL open positions on ${label}?\n\nThis places market orders to exit every open position and cannot be undone.`)) return;
+    setClosing(acc._id);
+    try {
+      const { data } = await api.post('/trading/positions/close-all', { accountId: acc._id });
+      const d = data?.data || {};
+      if (d.failed?.length) toast.error(`Closed ${d.closed}/${d.total} — ${d.failed.length} failed`);
+      else toast.success(`Closed ${d.closed ?? 0} position${(d.closed ?? 0) === 1 ? '' : 's'}`);
+    } catch (e) {
+      toast.error(e?.response?.data?.message || 'Failed to close positions');
+    } finally {
+      setClosing(null);
+    }
+  };
+
+  useEffect(() => {
+    let dead = false;
+    api.get('/user/accounts').then((r) => { if (!dead) setAccounts(r.data.data || []); }).catch(() => {});
+    api.get('/wallet/balances').then((r) => { if (!dead) setBalances(r.data.data || []); }).catch(() => {});
+    const start = new Date(); start.setHours(0, 0, 0, 0);
+    api.get('/trading/positions/history', { params: { from: start.toISOString(), limit: 500 } })
+      .then((r) => {
+        if (dead) return;
+        const m = {};
+        for (const it of (r.data.data?.items || [])) { const k = String(it.accountId); m[k] = (m[k] || 0) + Number(it.realizedPnl || 0); }
+        setTodayByAcc(m);
+      }).catch(() => {});
+    return () => { dead = true; };
+  }, []);
+  useEffect(() => {
+    if (!open) return;
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', h);
+    return () => document.removeEventListener('mousedown', h);
+  }, [open]);
+
+  const isDemo = (t) => t === 'DEMO' || t === 'VIRTUAL';
+  const live = accounts.filter((a) => !isDemo(a.accountType)).length;
+  const demo = accounts.length - live;
+
+  const rows = accounts.filter((a) => {
+    if (sel === 'all') return true;
+    if (sel === 'real') return !isDemo(a.accountType);
+    if (sel === 'demo') return isDemo(a.accountType);
+    return String(a._id) === sel;
+  }).map((a) => {
+    const cur = a.baseCurrency || 'INR';
+    const bal = balances.filter((b) => String(b.accountId) === String(a._id)).reduce((s, b) => s + toInr(b.balance, b.currency), 0);
+    const accPos = positions.filter((p) => String(p.accountId) === String(a._id));
+    const flo = accPos.reduce((s, p) => s + toInr(p.unrealizedPnl, cur), 0);
+    const equity = bal + flo;
+    const pct = bal > 0 ? (flo / bal) * 100 : 0;
+    const today = toInr(todayByAcc[String(a._id)] || 0, cur);
+    return { a, cur, bal, flo, equity, pct, today, openN: accPos.length, accPos };
+  });
+
+  const options = [
+    { k: 'all', label: 'All Accounts' },
+    { k: 'real', label: 'All Real Accounts' },
+    { k: 'demo', label: 'All Demo Accounts' },
+    ...accounts.map((a) => ({ k: String(a._id), label: `${a.accountNumber || a._id.slice(-6)} (${isDemo(a.accountType) ? 'Demo' : 'Live'})` })),
+  ];
+  const selLabel = options.find((o) => o.k === sel)?.label || 'All Accounts';
+
+  const money = (n) => `₹${fmtNum(n, 2)}`;
+  const usdSmall = (n) => `≈ $${fmtNum(n / rate, 2)}`;
+  const Both = ({ n, colored }) => (
+    <div>
+      <div className={`font-mono tabular-nums font-bold ${colored ? (n >= 0 ? 'text-bull' : 'text-bear') : 'text-text-primary'}`}>{colored && n >= 0 ? '+' : ''}{money(n)}</div>
+      <div className="text-[10px] font-mono text-text-muted">{colored && n >= 0 ? '+' : ''}{usdSmall(n)}</div>
+    </div>
+  );
+
+  return (
+    <div className="bg-white border border-border-dark rounded-2xl overflow-hidden shadow-sm">
+      <div className="px-5 py-3.5 border-b border-border-subtle flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.18em] font-extrabold text-text-muted">Wallet</div>
+          <h3 className="text-sm font-bold text-text-primary mt-0.5">Accounts</h3>
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4">
+            <div className="text-center"><div className="text-lg font-bold font-mono tabular-nums text-text-primary leading-none">{live}</div><div className="text-[9px] uppercase font-bold text-text-muted mt-0.5">Live</div></div>
+            <div className="text-center"><div className="text-lg font-bold font-mono tabular-nums text-text-primary leading-none">{demo}</div><div className="text-[9px] uppercase font-bold text-text-muted mt-0.5">Demo</div></div>
+          </div>
+          <div className="relative" ref={ref}>
+            <button onClick={() => setOpen((o) => !o)} className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-text-primary bg-white border border-border-dark rounded-lg px-2.5 py-1.5 hover:border-primary-500/40 transition-colors">
+              <span className="truncate max-w-[110px]">{selLabel}</span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`transition-transform ${open ? 'rotate-180' : ''}`}><path d="M6 9l6 6 6-6" /></svg>
+            </button>
+            {open && (
+              <div className="absolute right-0 z-30 mt-1.5 w-52 bg-white border border-border-dark rounded-xl shadow-elevated p-1.5 max-h-72 overflow-y-auto">
+                {options.map((o, i) => (
+                  <div key={o.k}>
+                    {i === 3 && <div className="my-1 border-t border-border-subtle" />}
+                    <button onClick={() => { setSel(o.k); setOpen(false); }} className={`w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg text-left text-[12px] ${sel === o.k ? 'bg-primary-500/10 text-primary-600 font-semibold' : 'text-text-primary hover:bg-bg-hover'}`}>
+                      <span className="truncate">{o.label}</span>
+                      {sel === o.k && <span className="text-primary-600 shrink-0"><CheckIcon /></span>}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[900px]">
+          <thead className="text-[10px] text-text-muted uppercase tracking-wider font-bold bg-bg-hover">
+            <tr>
+              <th className="text-left px-4 py-2.5">Account</th>
+              <th className="text-left px-4 py-2.5">Account Type</th>
+              <th className="text-right px-4 py-2.5">Balance</th>
+              <th className="text-right px-4 py-2.5">Equity</th>
+              <th className="text-right px-4 py-2.5">P&L (Floating)</th>
+              <th className="text-right px-4 py-2.5">P&L %</th>
+              <th className="text-right px-4 py-2.5">Today's P&L</th>
+              <th className="text-center px-4 py-2.5">Open</th>
+              <th className="text-center px-4 py-2.5">Action</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border-subtle">
+            {rows.length === 0 ? (
+              <tr><td colSpan={9} className="py-8 text-center text-text-muted text-xs">No accounts</td></tr>
+            ) : rows.map(({ a, cur, bal, flo, equity, pct, today, openN, accPos }) => {
+              const dem = isDemo(a.accountType);
+              const isOpen = expandedId === a._id;
+              return (
+                <Fragment key={a._id}>
+                  <tr className={`transition-colors align-top ${isOpen ? 'bg-bg-hover' : 'hover:bg-bg-hover'}`}>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2.5">
+                        <span className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 text-[11px] font-bold" style={{ background: '#1D4ED815', color: '#1D4ED8' }}>{(a.accountNumber || 'AC').slice(-2)}</span>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[12px] font-bold text-text-primary truncate">{a.accountNumber || a._id.slice(-6)}</span>
+                            <span className="text-[8px] font-bold uppercase px-1 py-0.5 rounded" style={{ background: dem ? '#D9770615' : '#16A34A15', color: dem ? '#B45309' : '#15803D' }}>{dem ? 'Demo' : 'Live'}</span>
+                          </div>
+                          <div className="text-[10px] text-text-muted truncate">{a.nickname || 'Trading Account'}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-[12px] text-text-secondary">{a.customTypeName || a.nickname || a.accountType}</td>
+                    <td className="px-4 py-3 text-right"><Both n={bal} /></td>
+                    <td className="px-4 py-3 text-right"><Both n={equity} /></td>
+                    <td className="px-4 py-3 text-right"><Both n={flo} colored /></td>
+                    <td className={`px-4 py-3 text-right font-mono tabular-nums font-bold ${pct >= 0 ? 'text-bull' : 'text-bear'}`}>{pct >= 0 ? '+' : ''}{pct.toFixed(2)}%</td>
+                    <td className="px-4 py-3 text-right"><Both n={today} colored /></td>
+                    <td className="px-4 py-3 text-center font-mono tabular-nums text-text-primary">{openN}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-center gap-1.5">
+                        <Link to="/wallet" className="text-[11px] font-semibold text-primary-600 hover:text-primary-700 px-2 py-1 rounded-lg border border-border-dark">View</Link>
+                        <button
+                          type="button"
+                          title={isOpen ? 'Hide positions' : 'Show open positions'}
+                          onClick={() => setExpandedId(isOpen ? null : a._id)}
+                          disabled={openN === 0}
+                          className={`w-7 h-7 inline-flex items-center justify-center rounded-lg border border-border-dark transition-colors ${openN === 0 ? 'opacity-40 cursor-not-allowed' : 'hover:bg-bg-hover text-text-secondary'}`}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={`transition-transform ${isOpen ? 'rotate-180' : ''}`}><path d="M6 9l6 6 6-6" /></svg>
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  {isOpen && (
+                    <tr>
+                      <td colSpan={9} className="p-0 bg-bg-hover/40 border-b border-border-subtle">
+                        <div className="p-4">
+                          <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+                            <div className="flex items-center gap-2 text-[13px]">
+                              <span className="w-1 h-4 rounded bg-primary-600" />
+                              <span className="font-bold text-text-primary">{a.accountNumber || a._id.slice(-6)} - {a.nickname || 'Trading Account'}</span>
+                              <span className="text-text-muted">·</span>
+                              <span className="font-bold text-text-primary">Open Positions ({openN})</span>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <span className="text-[12px] text-text-muted">Total Floating P&L</span>
+                              <span className={`text-[13px] font-bold font-mono tabular-nums ${flo >= 0 ? 'text-bull' : 'text-bear'}`}>{flo >= 0 ? '+' : ''}₹{fmtNum(Math.abs(flo), 2)} ({pct >= 0 ? '+' : ''}{pct.toFixed(2)}%)</span>
+                              <button
+                                type="button"
+                                disabled={closing === a._id || openN === 0}
+                                onClick={() => closeAll(a)}
+                                className="text-[11px] font-semibold text-bear bg-white border border-bear/40 rounded-lg px-3 py-1.5 hover:bg-bear/5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              >
+                                {closing === a._id ? 'Closing…' : 'Close All Positions'}
+                              </button>
+                            </div>
+                          </div>
+                          {accPos.length === 0 ? (
+                            <div className="py-6 text-center text-xs text-text-muted">No open positions on this account</div>
+                          ) : (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
+                              {accPos.map((p) => <MiniPositionCard key={p._id || `${p.symbol}-${p.entryPrice}`} p={p} cur={cur} rate={rate} />)}
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── Recent Closed Trades table ──────────────────────────────────────
+function RecentClosedTrades({ fxRate }) {
+  const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let dead = false;
+    api.get('/trading/positions/history', { params: { limit: 6 } })
+      .then((r) => { if (!dead) setRows(r.data.data?.items || []); })
+      .catch(() => {})
+      .finally(() => { if (!dead) setLoading(false); });
+    return () => { dead = true; };
+  }, []);
+  return (
+    <section className="bg-white border border-border-dark rounded-2xl overflow-hidden shadow-sm">
+      <div className="px-5 py-3.5 border-b border-border-subtle flex items-center justify-between">
+        <h2 className="text-sm font-bold text-text-primary">Recent Closed Trades</h2>
+        <Link to="/reports" className="text-xs font-semibold text-primary-600 hover:underline">View All Closed Trades →</Link>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm min-w-[860px]">
+          <thead className="text-[10px] text-text-muted uppercase tracking-wider font-bold bg-bg-hover">
+            <tr>
+              <th className="text-left px-4 py-2.5">Symbol</th>
+              <th className="text-left px-4 py-2.5">Type</th>
+              <th className="text-left px-4 py-2.5">Account</th>
+              <th className="text-right px-4 py-2.5">Lot Size</th>
+              <th className="text-right px-4 py-2.5">Open Price</th>
+              <th className="text-right px-4 py-2.5">Close Price</th>
+              <th className="text-right px-4 py-2.5">P&L (₹)</th>
+              <th className="text-right px-4 py-2.5">P&L (USD)</th>
+              <th className="text-left px-4 py-2.5">Close Time</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border-subtle">
+            {loading ? (
+              <tr><td colSpan={9} className="py-8 text-center text-text-muted text-xs">Loading…</td></tr>
+            ) : rows.length === 0 ? (
+              <tr><td colSpan={9} className="py-8 text-center text-text-muted text-xs">No closed trades yet</td></tr>
+            ) : rows.map((t) => {
+              const pnl = Number(t.realizedPnl || 0);
+              const buy = String(t.side).toUpperCase() === 'BUY';
+              return (
+                <tr key={t._id || `${t.symbol}-${t.closedAt}`} className="hover:bg-bg-hover transition-colors">
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-2">
+                      <AssetIcon symbol={t.symbol} size={22} round />
+                      <span className="font-semibold text-text-primary">{t.symbol}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <span className="text-[10px] font-bold uppercase px-2 py-0.5 rounded" style={{ background: buy ? '#16A34A15' : '#DC262615', color: buy ? '#15803D' : '#B91C1C' }}>{buy ? 'Buy' : 'Sell'}</span>
+                  </td>
+                  <td className="px-4 py-3 text-[12px] text-text-secondary">{t.accountNumber || String(t.accountId || '').slice(-6) || '—'}</td>
+                  <td className="px-4 py-3 text-right font-mono tabular-nums text-text-secondary">{fmtNum(t.quantity, 2)}</td>
+                  <td className="px-4 py-3 text-right font-mono tabular-nums text-text-secondary">{fmtNum(t.entryPrice, 4)}</td>
+                  <td className="px-4 py-3 text-right font-mono tabular-nums text-text-secondary">{t.closePrice != null ? fmtNum(t.closePrice, 4) : '—'}</td>
+                  <td className={`px-4 py-3 text-right font-mono tabular-nums font-bold ${pnl >= 0 ? 'text-bull' : 'text-bear'}`}>{pnl >= 0 ? '+' : '-'}₹{fmtNum(Math.abs(pnl) * rate, 2)}</td>
+                  <td className={`px-4 py-3 text-right font-mono tabular-nums ${pnl >= 0 ? 'text-bull' : 'text-bear'}`}>{pnl >= 0 ? '+' : '-'}${fmtNum(Math.abs(pnl), 2)}</td>
+                  <td className="px-4 py-3 text-[12px] text-text-muted whitespace-nowrap">{fmtCloseTime(t.closedAt)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
 
 // ─── Time-ago helper ─────────────────────────────────────────────────
 // Skeleton placeholder used while the dashboard is loading. Mirrors the
