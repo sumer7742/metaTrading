@@ -389,7 +389,35 @@ function BuiltForEveryTrader() {
 }
 
 /* ─────────────────────── Trade every market ─────────────────────── */
-const MKT_TINT = { crypto: '#F7931A', fx: '#3B82F6', stock: '#10B981', oil: '#F59E0B', index: '#8B5CF6' };
+function Chip({ bg, children }) {
+  return (
+    <span className="keep-white w-10 h-10 rounded-full flex items-center justify-center text-[15px] font-extrabold border-2 border-white shadow-sm" style={{ background: bg, color: '#fff' }}>{children}</span>
+  );
+}
+const AppleGlyph = () => <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M16.5 1.6c0 1.2-.5 2.3-1.3 3.1-.9.9-2 1.5-3.1 1.4-.1-1.2.5-2.4 1.2-3.1.9-.9 2.2-1.5 3.2-1.4zM20 17.1c-.5 1.2-.8 1.7-1.4 2.7-.9 1.4-2.2 3.1-3.8 3.1-1.4 0-1.8-.9-3.7-.9s-2.3.9-3.7.9c-1.6 0-2.8-1.6-3.7-2.9C1.3 17.1.9 12.4 2.5 9.9c1-1.6 2.7-2.6 4.2-2.6 1.6 0 2.6.9 3.9.9 1.3 0 2.1-.9 3.9-.9 1.4 0 2.8.7 3.8 2-3.3 1.8-2.8 6.6.7 7.8z" /></svg>;
+
+function MarketCluster({ name }) {
+  switch (name) {
+    case 'Crypto':
+      return <div className="flex -space-x-3 justify-center"><Chip bg="#F7931A">₿</Chip><Chip bg="#627EEA">Ξ</Chip><Chip bg="#26A17B">₮</Chip></div>;
+    case 'Forex':
+      return <div className="flex -space-x-3 justify-center"><Chip bg="#16A34A">$</Chip><Chip bg="#2563EB">€</Chip><Chip bg="#7C3AED">£</Chip></div>;
+    case 'Stocks':
+      return <div className="flex -space-x-3 justify-center"><Chip bg="#111827"><AppleGlyph /></Chip><Chip bg="#E11D48">T</Chip><Chip bg="#F59E0B">a</Chip></div>;
+    case 'Commodities':
+      return <div className="flex -space-x-3 justify-center"><Chip bg="#D97706"><MarketIcon name="gold" /></Chip><Chip bg="#1F2937"><MarketIcon name="oil" /></Chip></div>;
+    case 'Indices':
+    default:
+      return (
+        <span className="inline-flex items-end justify-center gap-[3px] w-16 h-10 rounded-lg px-2.5 py-1.5 border border-border-subtle bg-white shadow-sm">
+          {[[8, '#22C55E'], [13, '#3B82F6'], [7, '#F59E0B'], [16, '#8B5CF6'], [10, '#22C55E']].map(([h, c], i) => (
+            <span key={i} className="w-1.5 rounded-t" style={{ height: h, background: c }} />
+          ))}
+        </span>
+      );
+  }
+}
+
 function Markets() {
   const grad = { background: 'linear-gradient(90deg,#1D4ED8,#3B82F6)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' };
   return (
@@ -398,7 +426,7 @@ function Markets() {
       <div className="mt-8 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         {MARKETS.map((m) => (
           <div key={m.name} className="card p-4 text-center hover:border-primary-500/40 hover:shadow-elevated transition-all">
-            <span className="w-11 h-11 rounded-xl flex items-center justify-center mx-auto mb-3" style={{ background: `${MKT_TINT[m.icon]}18`, color: MKT_TINT[m.icon] }}><MarketIcon name={m.icon} /></span>
+            <div className="h-12 flex items-center justify-center mb-3"><MarketCluster name={m.name} /></div>
             <div className="font-bold text-sm">{m.name}</div>
             <div className="text-[11px] text-text-muted truncate">{m.desc}</div>
             <div className={`text-xs font-bold mt-1 ${m.c >= 0 ? 'text-bull' : 'text-bear'}`}>{m.c >= 0 ? '+' : ''}{m.c.toFixed(2)}%</div>
