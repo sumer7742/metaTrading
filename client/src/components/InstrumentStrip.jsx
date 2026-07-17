@@ -12,7 +12,7 @@ import SearchModal from './SearchModal';
  * InstrumentStrip — Groww-style horizontal pill rail of every tradable
  * instrument on the platform. Real data: pulls `/instruments` once on mount
  * and subscribes to a `ticker:<symbol>` channel per visible row so each pill
- * ticks live. Clicking a pill routes to /trade?symbol=SYM which the Trade
+ * ticks live. Clicking a pill routes to /stock/SYM which the Trade
  * page already consumes to drive the chart, order form and order book.
  *
  * Inputs intentionally minimal — the active symbol is read off the URL
@@ -113,7 +113,7 @@ export default function InstrumentStrip() {
 
   // ── Click → navigate to Trade with the selected symbol ────────────────
   const onSelect = (sym) => {
-    navigate(`/trade?symbol=${encodeURIComponent(sym)}`);
+    navigate(`/stock/${encodeURIComponent(sym)}`);
   };
 
   return (

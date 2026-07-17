@@ -22,6 +22,7 @@ import VerifyEmail from './pages/VerifyEmail';
 // (~80KB) and we don't want to ship that to users who only check the dashboard.
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Trade = lazy(() => import('./pages/Trade'));
+const StockDetail = lazy(() => import('./pages/StockDetail'));
 const Wallet = lazy(() => import('./pages/Wallet'));
 const NewAccountTiers = lazy(() => import('./pages/NewAccountTiers'));
 const NewAccountConfigure = lazy(() => import('./pages/NewAccountConfigure'));
@@ -117,6 +118,7 @@ export default function App() {
         <Route path="/favorites" element={<Navigate to="/watchlist" replace />} />
         <Route path="/preview/order-modal" element={<Page><OrderModalPreview /></Page>} />
         <Route path="/trade" element={<Page><Trade /></Page>} />
+        <Route path="/stock/:symbol" element={<Page><StockDetail /></Page>} />
         <Route path="/orders" element={<Page><Orders /></Page>} />
         <Route path="/reports" element={<Page><Reports /></Page>} />
         <Route path="/alerts" element={<Page><PriceAlerts /></Page>} />

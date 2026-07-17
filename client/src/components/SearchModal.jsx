@@ -10,7 +10,7 @@ import WatchlistButton from './WatchlistButton';
  * SearchModal — Groww-style search sheet. Opens from the header search bar
  * and houses BOTH the search input AND the category filter (which used to
  * live inline on the InstrumentStrip). Clicking a result navigates to
- * /trade?symbol=… exactly like the strip's pills do, so the symbol resolves
+ * /stock/… exactly like the strip's pills do, so the symbol resolves
  * through the existing Trade page.
  */
 
@@ -144,7 +144,7 @@ export default function SearchModal({ open, onClose }) {
 
   const handlePick = (sym) => {
     onClose?.();
-    navigate(`/trade?symbol=${encodeURIComponent(sym)}`);
+    navigate(`/stock/${encodeURIComponent(sym)}`);
   };
 
   if (!open) return null;

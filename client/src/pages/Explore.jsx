@@ -15,7 +15,7 @@ import { useConfirm } from '../components/ConfirmProvider';
 /**
  * Explore — Groww-style discovery page. Most sections pull from the live
  * /instruments catalog and subscribe to ticker:* WebSocket channels so prices
- * tick in real time. Every clickable surface routes to /trade?symbol=…,
+ * tick in real time. Every clickable surface routes to /stock/…,
  * which the Trade page already consumes to drive the chart, order form and
  * order book.
  */
@@ -561,7 +561,7 @@ export default function Explore() {
     return [...pool].sort(sortFns[moverTab] || sortFns.Gainers).slice(0, 8);
   }, [lived, moverTab, selectedSector, moverCategories]);
 
-  const openTrade = (sym) => navigate(`/trade?symbol=${encodeURIComponent(sym)}`);
+  const openTrade = (sym) => navigate(`/stock/${encodeURIComponent(sym)}`);
 
   return (
     <div className="space-y-8 overflow-x-clip">
@@ -984,7 +984,7 @@ export default function Explore() {
                             className="group flex items-center gap-3 px-4 py-3 hover:bg-bg-hover transition-colors"
                           >
                             <Link
-                              to={`/trade?symbol=${encodeURIComponent(p.symbol)}`}
+                              to={`/stock/${encodeURIComponent(p.symbol)}`}
                               className="flex items-center gap-3 min-w-0 flex-1"
                             >
                               <AssetIcon row={inst || { symbol: p.symbol, category: p.category }} size={28} round />
@@ -1086,7 +1086,7 @@ export default function Explore() {
                             className="group flex items-center gap-3 px-4 py-3 hover:bg-bg-hover transition-colors"
                           >
                             <Link
-                              to={`/trade?symbol=${encodeURIComponent(o.symbol)}`}
+                              to={`/stock/${encodeURIComponent(o.symbol)}`}
                               className="flex items-center gap-3 min-w-0 flex-1"
                             >
                               <AssetIcon row={inst || { symbol: o.symbol, category: o.category }} size={28} round />

@@ -233,7 +233,7 @@ export default function MarketList() {
               <button
                 key={r.symbol}
                 type="button"
-                onClick={() => navigate(`/trade?symbol=${encodeURIComponent(r.symbol)}`)}
+                onClick={() => navigate(`/stock/${encodeURIComponent(r.symbol)}`)}
                 className="group w-full grid grid-cols-12 gap-4 items-center px-6 py-4 text-left border-b border-border-subtle last:border-b-0 hover:bg-bg-hover transition-colors"
               >
                 <div className="col-span-5 flex items-center gap-3 min-w-0">
@@ -348,7 +348,7 @@ function SectorsListView({ instruments, loading }) {
                 type="button"
                 onClick={() => {
                   if (s.top?.symbol) {
-                    navigate(`/trade?symbol=${encodeURIComponent(s.top.symbol)}`);
+                    navigate(`/stock/${encodeURIComponent(s.top.symbol)}`);
                   }
                 }}
                 className="w-full grid grid-cols-12 gap-4 items-center px-6 py-4 text-left border-b border-border-subtle last:border-b-0 hover:bg-bg-hover transition-colors"
@@ -590,7 +590,7 @@ function TopMoversCard({ lived }) {
           return (
             <Link
               key={r.symbol}
-              to={`/trade?symbol=${encodeURIComponent(r.symbol)}`}
+              to={`/stock/${encodeURIComponent(r.symbol)}`}
               className="group flex items-center gap-3 -mx-2 px-2 py-2 rounded-lg hover:bg-bg-hover transition-colors"
             >
               <AssetGlyph sym={r.symbol} row={r} size={28} />

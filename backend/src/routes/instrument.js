@@ -14,6 +14,8 @@ router.get('/:symbol', c.getOne);
 router.get('/:symbol/volume-usage', c.volumeUsage);
 router.get('/:symbol/candles', c.candles);
 router.get('/:symbol/orderbook', c.orderbook);
+router.get('/:symbol/fundamentals', c.fundamentals);
+router.get('/:symbol/news', c.news);
 
 // Admin only
 router.post('/', authenticate, requireAdmin, c.create);

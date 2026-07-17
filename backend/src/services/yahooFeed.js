@@ -205,4 +205,130 @@ const start = () => {
 
 const stop = () => { active = false; if (_timer) { clearTimeout(_timer); _timer = null; } };
 
-module.exports = { start, stop, setBroadcaster, isActive: () => active, _enabled, spotSymbol, priceFor };
+// ─── Fundamentals (real, on-demand) ──────────────────────────────────
+// Two sources, both free:
+//   1. v8 chart `meta` — reliable, no auth: 52-week hi/lo, prev close,
+//      day hi/lo, volume, currency.
+//   2. v10 quoteSummary — needs a cookie+crumb: market cap, P/E, EPS,
+//      P/B, book value, ROE, dividend yield. Best-effort; if Yahoo blocks
+//      the crumb the caller still gets the reliable chart fields.
+const _num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+let _crumbCache = { cookie: null, crumb: null, at: 0 };
+
+function _yahooSymbol(inst) {
+  if (!inst) return null;
+  if (inst.segment === 'EQ') return `${inst.symbol}${inst.exchange === 'BSE' ? '.BO' : '.NS'}`;
+  return spotSymbol(inst) || null;
+}
+
+async function _fetchJson(url, headers = {}) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { headers: { 'User-Agent': UA, Accept: 'application/json', ...headers }, signal: ctl.signal });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (_) { return null; } finally { clearTimeout(t); }
+}
+
+async function _getCrumb() {
+  // Cache the cookie+crumb for 10 min — it's valid across symbols.
+  if (_crumbCache.crumb && (Date.now() - _crumbCache.at) < 10 * 60 * 1000) return _crumbCache;
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), TIMEOUT_MS);
+  try {
+    const c = await fetch('https://fc.yahoo.com/', { headers: { 'User-Agent': UA }, signal: ctl.signal }).catch(() => null);
+    const cookie = c && c.headers.get('set-cookie');
+    if (!cookie) return { cookie: null, crumb: null };
+    const cookieVal = cookie.split(';')[0];
+    const r = await fetch('https://query2.finance.yahoo.com/v1/test/getcrumb', { headers: { 'User-Agent': UA, Cookie: cookieVal }, signal: ctl.signal }).catch(() => null);
+    const crumb = r && r.ok ? (await r.text()).trim() : null;
+    if (crumb && crumb.length && !crumb.includes('<')) {
+      _crumbCache = { cookie: cookieVal, crumb, at: Date.now() };
+      return _crumbCache;
+    }
+    return { cookie: cookieVal, crumb: null };
+  } catch (_) { return { cookie: null, crumb: null }; } finally { clearTimeout(t); }
+}
+
+async function getFundamentals(inst) {
+  const ySym = _yahooSymbol(inst);
+  if (!ySym) return null;
+  const out = { yahooSymbol: ySym };
+
+  // 1) Reliable chart meta (no auth).
+  const chart = await _fetchJson(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ySym)}?interval=1d&range=1y`);
+  const m = chart && chart.chart && chart.chart.result && chart.chart.result[0] && chart.chart.result[0].meta;
+  if (m) {
+    out.currency = m.currency || null;
+    out.lastPrice = _num(m.regularMarketPrice);
+    out.prevClose = _num(m.chartPreviousClose != null ? m.chartPreviousClose : m.previousClose);
+    out.dayHigh = _num(m.regularMarketDayHigh);
+    out.dayLow = _num(m.regularMarketDayLow);
+    out.week52High = _num(m.fiftyTwoWeekHigh);
+    out.week52Low = _num(m.fiftyTwoWeekLow);
+    out.volume = _num(m.regularMarketVolume);
+  }
+
+  // 2) Best-effort quoteSummary (cookie+crumb) for the fundamentals card.
+  try {
+    const { cookie, crumb } = await _getCrumb();
+    if (crumb && cookie) {
+      const mods = 'summaryDetail,defaultKeyStatistics,financialData,price,earnings,calendarEvents';
+      const j = await _fetchJson(
+        `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(ySym)}?modules=${mods}&crumb=${encodeURIComponent(crumb)}`,
+        { Cookie: cookie }
+      );
+      const r = j && j.quoteSummary && j.quoteSummary.result && j.quoteSummary.result[0];
+      if (r) {
+        const sd = r.summaryDetail || {}, ks = r.defaultKeyStatistics || {}, fd = r.financialData || {}, pr = r.price || {};
+        const raw = (o, k) => (o && o[k] && typeof o[k] === 'object' ? o[k].raw : o && o[k]);
+        out.marketCap = _num(raw(pr, 'marketCap') ?? raw(sd, 'marketCap'));
+        out.peRatio = _num(raw(sd, 'trailingPE') ?? raw(ks, 'trailingPE'));
+        out.eps = _num(raw(ks, 'trailingEps'));
+        out.pbRatio = _num(raw(ks, 'priceToBook'));
+        out.bookValue = _num(raw(ks, 'bookValue'));
+        out.roe = _num(raw(fd, 'returnOnEquity'));
+        out.debtToEquity = _num(raw(fd, 'debtToEquity'));
+        out.dividendYield = _num(raw(sd, 'dividendYield') ?? raw(sd, 'trailingAnnualDividendYield'));
+        out.revenueGrowth = _num(raw(fd, 'revenueGrowth'));
+        out.earningsGrowth = _num(raw(fd, 'earningsGrowth'));
+        // Quarterly + yearly revenue/profit for the financials chart.
+        const er = r.earnings || {};
+        const fc = er.financialsChart || {};
+        const mapFC = (arr) => (Array.isArray(arr) ? arr : []).map((q) => ({
+          label: q && q.date != null ? String(q.date) : '',
+          revenue: _num(raw(q, 'revenue')),
+          profit: _num(raw(q, 'earnings')),
+        })).filter((q) => q.revenue != null || q.profit != null);
+        out.finQuarterly = mapFC(fc.quarterly);
+        out.finYearly = mapFC(fc.yearly);
+        // Upcoming events (earnings / dividend). Yahoo timestamps = seconds.
+        const ce = r.calendarEvents || {};
+        const ts = (v) => (v != null ? new Date(_num(v) * 1000).toISOString() : null);
+        out.earningsDate = ts(ce.earnings && ce.earnings.earningsDate && ce.earnings.earningsDate[0] && raw(ce.earnings.earningsDate[0], 'raw'));
+        out.exDividendDate = ts(raw(ce, 'exDividendDate'));
+        out.dividendDate = ts(raw(ce, 'dividendDate'));
+      }
+    }
+  } catch (_) { /* keep chart fields */ }
+
+  return out;
+}
+
+// Real stock news via Yahoo's public search endpoint (no crumb needed).
+async function getNews(inst) {
+  const ySym = _yahooSymbol(inst) || (inst && inst.symbol);
+  if (!ySym) return [];
+  const j = await _fetchJson(`https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(ySym)}&newsCount=10&quotesCount=0&enableFuzzyQuery=false`);
+  const news = (j && Array.isArray(j.news)) ? j.news : [];
+  return news.map((n) => ({
+    title: n.title,
+    publisher: n.publisher,
+    link: n.link,
+    publishedAt: n.providerPublishTime ? new Date(n.providerPublishTime * 1000).toISOString() : null,
+    thumbnail: (n.thumbnail && n.thumbnail.resolutions && n.thumbnail.resolutions[0] && n.thumbnail.resolutions[0].url) || null,
+  })).filter((n) => n.title && n.link);
+}
+
+module.exports = { start, stop, setBroadcaster, isActive: () => active, _enabled, spotSymbol, priceFor, getFundamentals, getNews };

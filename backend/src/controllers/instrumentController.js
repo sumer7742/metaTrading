@@ -260,6 +260,45 @@ const orderbook = asyncHandler(async (req, res) => {
   sendSuccess(res, snap);
 });
 
+// Real fundamentals (market cap, P/E, EPS, 52-week range, etc.) via the
+// free Yahoo Finance feed. Cached in-memory for 5 min per symbol so a page
+// load doesn't hammer Yahoo. Returns whatever Yahoo yields — fields Yahoo
+// can't provide come back null (the client shows "—" rather than a fake).
+const _fundCache = new Map(); // symbol → { at, data }
+const fundamentals = asyncHandler(async (req, res) => {
+  const sym = req.params.symbol.toUpperCase();
+  const cached = _fundCache.get(sym);
+  if (cached && (Date.now() - cached.at) < 5 * 60 * 1000) {
+    return sendSuccess(res, cached.data);
+  }
+  const inst = await Instrument.findOne({ symbol: sym }).lean();
+  if (!inst) throw new AppError('Instrument not found', 404);
+  let data = { yahooSymbol: null };
+  try {
+    const yahooFeed = require('../services/yahooFeed');
+    data = (await yahooFeed.getFundamentals(inst)) || data;
+  } catch (_) { /* return whatever we have */ }
+  _fundCache.set(sym, { at: Date.now(), data });
+  sendSuccess(res, data);
+});
+
+// Real stock news via Yahoo Finance search. Cached 5 min per symbol.
+const _newsCache = new Map();
+const news = asyncHandler(async (req, res) => {
+  const sym = req.params.symbol.toUpperCase();
+  const cached = _newsCache.get(sym);
+  if (cached && (Date.now() - cached.at) < 5 * 60 * 1000) return sendSuccess(res, cached.data);
+  const inst = await Instrument.findOne({ symbol: sym }).lean();
+  if (!inst) throw new AppError('Instrument not found', 404);
+  let data = [];
+  try {
+    const yahooFeed = require('../services/yahooFeed');
+    data = (await yahooFeed.getNews(inst)) || [];
+  } catch (_) { /* empty */ }
+  _newsCache.set(sym, { at: Date.now(), data });
+  sendSuccess(res, data);
+});
+
 // Admin CRUD
 const validateBBook = (data) => {
   // CRITICAL: doc requirement (§4.1) - B-book MUST be disabled in Internal-Only mode
@@ -464,4 +503,4 @@ const optionChain = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { list, watchlist, getOne, search, volumeUsage, candles, orderbook, create, update, remove, bulkRouting, optionChain, syncIndian };
+module.exports = { list, watchlist, getOne, search, volumeUsage, candles, orderbook, fundamentals, news, create, update, remove, bulkRouting, optionChain, syncIndian };
