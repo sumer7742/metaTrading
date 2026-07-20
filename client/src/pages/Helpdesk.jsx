@@ -85,10 +85,30 @@ export default function Helpdesk() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState(() => searchParams.get('q') || '');
   const [chatUnread, setChatUnread] = useState(0);
+  // Admin-managed KB articles (fetched once) — merged with the built-in defaults.
+  const [adminKb, setAdminKb] = useState([]);
+  useEffect(() => {
+    let on = true;
+    api.get('/cms/knowledge-base')
+      .then((r) => { if (on) setAdminKb(Array.isArray(r.data?.data?.articles) ? r.data.data.articles : []); })
+      .catch(() => { /* keep defaults only */ });
+    return () => { on = false; };
+  }, []);
 
   const [subject, setSubject] = useState('');
   const [message, setMessage] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [attachment, setAttachment] = useState(null); // { name, dataUrl } | null
+  const onAttachFile = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // let the user re-pick the same file
+    if (!file) return;
+    if (!/^(image\/|application\/pdf)/.test(file.type)) { toast.error('Attach an image or a PDF'); return; }
+    if (file.size > 3 * 1024 * 1024) { toast.error('File too large — max 3 MB'); return; }
+    const reader = new FileReader();
+    reader.onload = () => setAttachment({ name: file.name, dataUrl: String(reader.result) });
+    reader.readAsDataURL(file);
+  };
 
   const load = async () => {
     try {
@@ -101,6 +121,23 @@ export default function Helpdesk() {
   };
 
   useEffect(() => { load(); }, []);
+
+  // Live: an admin reply / status change pushes on `user:tickets` → merge it
+  // into the matching ticket so "My Tickets" updates without a manual refresh.
+  useEffect(() => {
+    const unsub = wsClient.subscribe('user:tickets', (d) => {
+      const t = d?.ticket;
+      if (!t?._id) return;
+      setTickets((prev) => {
+        const i = prev.findIndex((x) => x._id === t._id);
+        if (i === -1) return t.category === 'SUPPORT' ? [t, ...prev] : prev;
+        const next = prev.slice();
+        next[i] = { ...next[i], ...t };
+        return next;
+      });
+    });
+    return () => unsub && unsub();
+  }, []);
 
   // Persist tab + search in the URL (replace, so we don't spam history).
   // Rehydrated above on mount → exact Helpdesk state survives a refresh.
@@ -125,13 +162,15 @@ export default function Helpdesk() {
     return () => unsub && unsub();
   }, []);
 
+  // Built-in defaults + admin-managed articles (admin ones appended).
+  const allKb = useMemo(() => [...KB_ARTICLES, ...adminKb], [adminKb]);
   const filteredKb = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return KB_ARTICLES;
-    return KB_ARTICLES.filter(
-      (a) => a.q.toLowerCase().includes(q) || a.a.toLowerCase().includes(q) || a.tag.toLowerCase().includes(q)
+    if (!q) return allKb;
+    return allKb.filter(
+      (a) => (a.q || '').toLowerCase().includes(q) || (a.a || '').toLowerCase().includes(q) || (a.tag || '').toLowerCase().includes(q)
     );
-  }, [search]);
+  }, [search, allKb]);
 
   const submitTicket = async (e) => {
     e.preventDefault();
@@ -144,10 +183,13 @@ export default function Helpdesk() {
         subject,
         message,
         context: { page: '/helpdesk' },
+        attachment: attachment?.dataUrl,
+        attachmentName: attachment?.name,
       });
       toast.success("Ticket opened — we'll respond shortly");
       setSubject('');
       setMessage('');
+      setAttachment(null);
       setTab('tickets');
       await load();
     } catch (err) {
@@ -170,7 +212,7 @@ export default function Helpdesk() {
       <div className="flex items-center border-b border-border-dark px-2 gap-1">
         {[
           { k: 'chat', label: 'Live Chat', count: chatUnread || null },
-          { k: 'faq', label: 'Knowledge Base', count: KB_ARTICLES.length },
+          { k: 'faq', label: 'Knowledge Base', count: allKb.length },
           { k: 'tickets', label: 'My Tickets', count: tickets.length },
           { k: 'new', label: 'New Ticket', count: null },
         ].map((t) => (
@@ -265,10 +307,12 @@ export default function Helpdesk() {
                       {t.status.replace('_', ' ')}
                     </span>
                   </div>
-                  {t.adminNote && (
+                  {t.adminReply && (
                     <div className="mt-3 text-xs text-text-secondary border-l-2 border-primary-500/40 pl-3 bg-primary-500/5 py-2 rounded-r">
-                      <span className="text-primary-500 font-semibold text-[10px] uppercase tracking-wider">Support Reply</span>
-                      <div className="mt-1">{t.adminNote}</div>
+                      <span className="text-primary-500 font-semibold text-[10px] uppercase tracking-wider">
+                        Support Reply{t.repliedAt ? ` · ${fmtDate(t.repliedAt)}` : ''}
+                      </span>
+                      <div className="mt-1 whitespace-pre-wrap">{t.adminReply}</div>
                     </div>
                   )}
                 </div>
@@ -317,6 +361,27 @@ export default function Helpdesk() {
             </div>
           </div>
 
+          <div>
+            <label className="label">Attach a file <span className="font-normal text-text-muted">(optional — image or PDF, ≤ 3 MB)</span></label>
+            {attachment ? (
+              <div className="flex items-center gap-3 rounded-lg border border-border-dark bg-bg-card px-3 py-2">
+                {/^data:image\//.test(attachment.dataUrl) ? (
+                  <img src={attachment.dataUrl} alt="attachment preview" className="w-10 h-10 rounded object-cover shrink-0 border border-border-subtle" />
+                ) : (
+                  <span className="w-10 h-10 rounded bg-bg-hover flex items-center justify-center text-[10px] font-bold text-text-muted shrink-0">PDF</span>
+                )}
+                <span className="text-xs text-text-secondary truncate flex-1 min-w-0">{attachment.name}</span>
+                <button type="button" onClick={() => setAttachment(null)} className="text-xs text-bear hover:underline shrink-0">Remove</button>
+              </div>
+            ) : (
+              <label className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-dashed border-border-dark text-xs text-text-secondary hover:border-primary-500 hover:text-primary-600 cursor-pointer transition-colors">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" /></svg>
+                Attach image or PDF
+                <input type="file" accept="image/*,application/pdf" className="hidden" onChange={onAttachFile} />
+              </label>
+            )}
+          </div>
+
           <div className="bg-info/5 border border-info/30 rounded-lg p-3 text-xs text-text-secondary flex gap-2">
             <span className="text-info shrink-0 mt-0.5"><InfoIcon /></span>
             <div>
@@ -336,6 +401,58 @@ export default function Helpdesk() {
         </form>
       )}
     </div>
+  );
+}
+
+// Convert a YouTube / Vimeo watch URL to an embeddable iframe src; null when we
+// can't embed (caller then shows a direct <video> or a plain link).
+function toEmbedUrl(url) {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, '');
+    if (host === 'youtu.be') return `https://www.youtube.com/embed/${u.pathname.slice(1)}`;
+    if (host.endsWith('youtube.com')) {
+      const id = u.searchParams.get('v') || (u.pathname.startsWith('/embed/') ? u.pathname.slice(7) : '');
+      return id ? `https://www.youtube.com/embed/${id}` : null;
+    }
+    if (host.endsWith('vimeo.com')) {
+      const id = u.pathname.split('/').filter(Boolean).pop();
+      return /^\d+$/.test(id) ? `https://player.vimeo.com/video/${id}` : null;
+    }
+  } catch { /* not a URL */ }
+  return null;
+}
+
+function KbVideo({ url, title }) {
+  const embed = toEmbedUrl(url);
+  if (embed) {
+    return (
+      <div className="mt-3 aspect-video w-full overflow-hidden rounded-lg border border-border-subtle" onClick={(e) => e.stopPropagation()}>
+        <iframe
+          src={embed}
+          title={title}
+          className="w-full h-full"
+          loading="lazy"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+          allowFullScreen
+        />
+      </div>
+    );
+  }
+  if (/\.(mp4|webm|ogg)(\?|$)/i.test(url)) {
+    return <video src={url} controls className="mt-3 w-full rounded-lg border border-border-subtle" onClick={(e) => e.stopPropagation()} />;
+  }
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={(e) => e.stopPropagation()}
+      className="inline-flex items-center gap-1 mt-2 text-xs text-primary-500 hover:underline"
+    >
+      ▶ Watch video
+    </a>
   );
 }
 
@@ -361,7 +478,8 @@ function KbCard({ article }) {
       </div>
       {open && (
         <div className="mt-3 pt-3 border-t border-border-subtle">
-          <div className="text-xs text-text-secondary leading-relaxed">{article.a}</div>
+          <div className="text-xs text-text-secondary leading-relaxed whitespace-pre-line">{article.a}</div>
+          {article.videoUrl && <KbVideo url={article.videoUrl} title={article.q} />}
           {article.link && (
             <Link
               to={article.link}

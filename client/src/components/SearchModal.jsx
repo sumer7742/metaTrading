@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useInstruments } from '../hooks/useInstruments';
+import { useInstruments, refreshInstruments } from '../hooks/useInstruments';
 import { useRecommendedMarkets } from '../hooks/useRecommendedMarkets';
 import { api } from '../services/api';
 import AssetIcon from './AssetIcon';
@@ -79,6 +79,9 @@ export default function SearchModal({ open, onClose }) {
     if (!open) return;
     setQuery('');
     setCategory(recommended.length ? 'RECOMMENDED' : 'ALL');
+    // Pull the latest catalog so admin edits (logo, name, new symbols) show
+    // promptly instead of a session-stale cached row.
+    refreshInstruments();
     // Slight delay so the input is mounted + paint-stable before focus.
     const id = setTimeout(() => inputRef.current?.focus(), 30);
     return () => clearTimeout(id);

@@ -4,16 +4,26 @@ import { api, errorMessage } from '../services/api';
 import { fmtDate } from '../utils/format';
 import PageHero from '../components/PageHero';
 
+// Which wallet the withdrawal was requested from (Withdrawal.source).
+const SOURCE_LABEL = {
+  TRADING: 'Trading Account',
+  SUBSCRIPTION: 'Main Wallet',
+  BONUS: 'Bonus Wallet',
+};
+
 export default function Withdrawals() {
   const [items, setItems] = useState([]);
   const [filter, setFilter] = useState('PENDING');
+  const [mode, setMode] = useState('');   // '' = all accounts, 'real', 'demo'
   const [viewing, setViewing] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
 
   const load = async () => {
     setRefreshing(true);
     try {
-      const { data } = await api.get('/admin/withdrawals', { params: filter ? { status: filter } : {} });
+      const { data } = await api.get('/admin/withdrawals', {
+        params: { ...(filter ? { status: filter } : {}), ...(mode ? { mode } : {}) },
+      });
       setItems(data.data);
     } finally {
       setRefreshing(false);
@@ -28,7 +38,7 @@ export default function Withdrawals() {
     window.addEventListener('focus', onFocus);
     return () => { clearInterval(id); window.removeEventListener('focus', onFocus); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter]);
+  }, [filter, mode]);
 
   const approve = async (id, payoutData) => {
     try {
@@ -77,6 +87,17 @@ export default function Withdrawals() {
             {s || 'All'}
           </button>
         ))}
+        <span className="w-px h-5 bg-border-dark mx-1" />
+        <select
+          value={mode}
+          onChange={(e) => setMode(e.target.value)}
+          className="text-xs px-3 py-1.5 rounded bg-bg-card text-gray-300 border border-border-dark hover:bg-bg-hover focus:outline-none"
+          title="Filter by account type"
+        >
+          <option value="">All accounts</option>
+          <option value="real">Real accounts</option>
+          <option value="demo">Demo accounts</option>
+        </select>
         <span className="flex-1" />
         <span className="text-[11px] text-gray-500 flex items-center gap-1.5">
           <span className={`w-1.5 h-1.5 rounded-full ${refreshing ? 'bg-bull animate-pulse' : 'bg-gray-600'}`} />
@@ -108,6 +129,7 @@ export default function Withdrawals() {
                   {w.user?.userUid
                     ? <span className="font-mono font-bold text-primary-500">{w.user.userUid}</span>
                     : <span className="font-mono text-gray-400">{w.userId?.toString().slice(-6)}</span>}
+                  {w.isDemo && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-500/20 text-purple-300 align-middle">DEMO</span>}
                   {w.user?.name && <div className="text-[10px] text-gray-500 truncate max-w-[160px]">{w.user.name}</div>}
                 </td>
                 <td className="p-3">
@@ -225,6 +247,21 @@ function WithdrawalDetailModal({ withdrawal: w, onClose, onApprove, onReject }) 
               <div className="text-xs text-gray-500 uppercase mb-1">Submitted</div>
               <div className="text-white text-sm">{new Date(w.createdAt).toLocaleString('en-IN')}</div>
             </div>
+          </div>
+
+          {/* Source wallet — which wallet + account this withdrawal came from */}
+          <div>
+            <div className="text-xs text-gray-500 uppercase mb-1">Source Wallet</div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-white text-sm font-semibold">{SOURCE_LABEL[w.source] || w.source || 'Trading Account'}</span>
+              {w.accountNickname && <span className="text-gray-400 text-sm">· {w.accountNickname}</span>}
+              {w.source === 'TRADING' && (
+                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${w.isDemo ? 'bg-amber-500/20 text-amber-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
+                  {w.isDemo ? 'DEMO' : 'REAL'}
+                </span>
+              )}
+            </div>
+            {w.accountNumber && <div className="text-[11px] text-gray-500 font-mono mt-0.5">{w.accountNumber}</div>}
           </div>
 
           {/* Destination details — different per method */}

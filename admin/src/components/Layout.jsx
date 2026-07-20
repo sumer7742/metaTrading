@@ -25,6 +25,7 @@ const I = {
   logout: <Icon d={['M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4', 'M16 17l5-5-5-5', 'M21 12H9']} />,
   bell: <Icon d={['M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9', 'M13.73 21a2 2 0 0 1-3.46 0']} />,
   star: <Icon d={['M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14l-5-4.87 6.91-1.01L12 2z']} />,
+  inbox: <Icon d={['M22 12h-6l-2 3h-4l-2-3H2', 'M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z']} />,
 };
 
 // Sectioned nav — matches the client's premium sidebar pattern. TRADE
@@ -79,6 +80,7 @@ const NAV_SECTIONS = [
     title: 'Support',
     items: [
       { to: '/support-chats', icon: I.users, label: 'Support Chats' },
+      { to: '/support-tickets', icon: I.inbox, label: 'Support Tickets' },
     ],
   },
   {
@@ -95,6 +97,8 @@ const NAV_SECTIONS = [
     items: [
       { to: '/cms-pages', icon: I.audit, label: 'CMS Pages' },
       { to: '/cms-news', icon: I.reports, label: 'News' },
+      { to: '/economic-calendar', icon: I.reports, label: 'Economic Calendar' },
+      { to: '/knowledge-base', icon: I.audit, label: 'Knowledge Base' },
       { to: '/global-alerts', icon: I.bell, label: 'Global Alerts' },
     ],
   },

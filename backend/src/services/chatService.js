@@ -86,9 +86,16 @@ function partyIds(conv) {
 
 // Emit a chat event to every party of the conversation.
 function emit(conv, event, payload) {
+  const data = { event, conversationId: String(conv._id), ...payload };
   for (const id of partyIds(conv)) {
-    broadcaster.notifyUser(id, 'chat', { event, conversationId: String(conv._id), ...payload });
+    broadcaster.notifyUser(id, 'chat', data);
   }
+  // Fan out to the shared admin channel too. notifyUser only reaches the user
+  // and the assigned manager — a SUPER_ADMIN watching a conversation they
+  // aren't the manager of (Support Chats lists ALL conversations for them)
+  // would otherwise only see new messages on refresh. Super-admins subscribe
+  // to 'admin:chat'; they're never a party, so there's no double delivery.
+  broadcaster.publish('admin:chat', data);
 }
 
 // ── conversation lifecycle ───────────────────────────────────────────

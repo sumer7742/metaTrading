@@ -16,6 +16,10 @@ const feedbackSchema = new mongoose.Schema(
     },
     subject: { type: String, required: true, maxlength: 200 },
     message: { type: String, required: true, maxlength: 4000 },
+    // Optional single attachment (screenshot / doc) — stored as a base64
+    // `data:` URI (image or PDF). Null when the user didn't attach anything.
+    attachment: { type: String, default: null },
+    attachmentName: { type: String, default: null },
     // 1-5; null when the user skipped the rating step.
     rating: { type: Number, min: 1, max: 5, default: null },
     // Free-form context the client snapshots so admins can reproduce: page
@@ -31,9 +35,13 @@ const feedbackSchema = new mongoose.Schema(
       default: 'OPEN',
       index: true,
     },
-    // Admin-side notes — kept in the same doc so the audit trail is
-    // self-contained without a join.
+    // Admin-side INTERNAL notes — triage / resolution scratchpad. Never
+    // surfaced to the user (stripped from the user-facing feedback list).
     adminNote: String,
+    // Admin's REPLY to the user — this IS shown back to the user in their
+    // "My Tickets" view (and best-effort emailed). Distinct from adminNote.
+    adminReply: { type: String, default: null },
+    repliedAt: { type: Date, default: null },
     resolvedAt: Date,
   },
   { timestamps: true }

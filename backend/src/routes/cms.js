@@ -11,6 +11,8 @@ const router = express.Router();
 
 // Footer links + pages.
 router.get('/footer-links', pages.footerLinks);
+router.get('/economic-calendar', pages.economicCalendar);
+router.get('/knowledge-base', pages.knowledgeBase);
 router.get('/pages/:slug', optionalAuthenticate, pages.getPublicBySlug);
 
 // News (Daily News Updates).

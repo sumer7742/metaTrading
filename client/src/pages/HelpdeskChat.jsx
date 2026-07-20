@@ -14,6 +14,8 @@ export default function HelpdeskChat({ embedded = false }) {
   const [counterpart, setCounterpart] = useState(null);
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(false);      // older messages may exist
+  const [loadingMore, setLoadingMore] = useState(false);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [theyTyping, setTheyTyping] = useState(false);
@@ -67,7 +69,9 @@ export default function HelpdeskChat({ embedded = false }) {
       const { data } = await api.get('/chat/conversation');
       setConv(data.data.conversation);
       setCounterpart(data.data.counterpart);
-      setMessages(data.data.messages || []);
+      const msgs = data.data.messages || [];
+      setMessages(msgs);
+      setHasMore(msgs.length >= 50);   // a full page back → probably more history
       if (data.data.conversation?._id) markSeen(data.data.conversation._id);
       scrollToBottom();
     } catch (e) { toast.error(errorMessage(e)); }
@@ -75,6 +79,33 @@ export default function HelpdeskChat({ embedded = false }) {
   }, [markSeen]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Load OLDER messages (pagination) — fetch the page before the oldest message
+  // and prepend, preserving the scroll position so the view doesn't jump.
+  const loadOlder = useCallback(async () => {
+    const cur = messagesRef.current;
+    if (loadingMore || !hasMore || !conv?._id || !cur.length) return;
+    setLoadingMore(true);
+    const el = scrollRef.current;
+    const prevHeight = el ? el.scrollHeight : 0;
+    const prevTop = el ? el.scrollTop : 0;
+    try {
+      const { data } = await api.get(`/chat/conversations/${conv._id}/messages`, { params: { before: cur[0].createdAt, limit: 50 } });
+      const older = data.data || [];
+      if (older.length < 50) setHasMore(false);
+      if (older.length) {
+        setMessages((prev) => {
+          const seen = new Set(prev.map((m) => m._id));
+          const merged = [...older.filter((m) => !seen.has(m._id)), ...prev];
+          merged.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+          return merged;
+        });
+        // Keep the same message under the viewport after prepending.
+        requestAnimationFrame(() => { const e2 = scrollRef.current; if (e2) e2.scrollTop = e2.scrollHeight - prevHeight + prevTop; });
+      }
+    } catch (e) { toast.error(errorMessage(e)); }
+    finally { setLoadingMore(false); }
+  }, [conv?._id, hasMore, loadingMore]);
 
   // Realtime — subscribe to the user's chat channel.
   useEffect(() => {
@@ -219,8 +250,18 @@ export default function HelpdeskChat({ embedded = false }) {
 
       {/* Thread */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-2 bg-bg-dark">
+        {hasMore && (
+          <div className="flex justify-center pb-1">
+            <button
+              type="button" onClick={loadOlder} disabled={loadingMore}
+              className="text-[11px] font-semibold text-primary-600 hover:text-primary-700 disabled:opacity-50 rounded-full border border-border-subtle bg-bg-card px-3 py-1 transition-colors"
+            >
+              {loadingMore ? 'Loading…' : 'Load older messages'}
+            </button>
+          </div>
+        )}
         {messages.length === 0 && <div className="text-center text-xs text-text-muted py-8">Say hello to your support manager 👋</div>}
-        {messages.map((m) => <Bubble key={m._id} m={m} mine={m.senderRole === 'USER'} />)}
+        {renderThread(messages)}
         {theyTyping && <div className="text-[11px] text-text-muted px-2">{counterpart.name} is typing…</div>}
       </div>
 
@@ -281,6 +322,39 @@ export default function HelpdeskChat({ embedded = false }) {
       {body}
     </div>
   );
+}
+
+// A centered day chip ("Today" / "Yesterday" / "12 Jun") shown between
+// messages whenever the calendar day changes.
+function DateDivider({ date }) {
+  const d = new Date(date);
+  const dd = new Date(d); dd.setHours(0, 0, 0, 0);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const yest = new Date(today); yest.setDate(yest.getDate() - 1);
+  let label;
+  if (dd.getTime() === today.getTime()) label = 'Today';
+  else if (dd.getTime() === yest.getTime()) label = 'Yesterday';
+  else label = d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', ...(d.getFullYear() !== today.getFullYear() ? { year: 'numeric' } : {}) });
+  return (
+    <div className="flex items-center justify-center my-1">
+      <span className="text-[10px] font-semibold text-text-muted bg-bg-card border border-border-subtle rounded-full px-2.5 py-0.5">{label}</span>
+    </div>
+  );
+}
+
+// Flatten the message list into bubbles interleaved with day dividers.
+function renderThread(messages) {
+  const out = [];
+  let lastDay = null;
+  for (const m of messages) {
+    const day = new Date(m.createdAt).toDateString();
+    if (day !== lastDay) {
+      out.push(<DateDivider key={`day-${day}`} date={m.createdAt} />);
+      lastDay = day;
+    }
+    out.push(<Bubble key={m._id} m={m} mine={m.senderRole === 'USER'} />);
+  }
+  return out;
 }
 
 function Bubble({ m, mine }) {

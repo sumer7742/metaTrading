@@ -258,6 +258,16 @@ export default function Wallet() {
   // of all their balances / positions / activity before they pick an
   // action (deposit, withdraw, transfer, etc).
   const [view, setView] = useState('overview');
+  // When the active view changes (e.g. "View All" → Transaction History), jump
+  // to the top. The Recent Transactions strip sits at the page bottom, so
+  // without this the view switches above the fold and it looks like the button
+  // did nothing. Skip the initial mount so we don't fight the browser's own
+  // scroll restoration.
+  const didViewMount = useRef(false);
+  useEffect(() => {
+    if (!didViewMount.current) { didViewMount.current = true; return; }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [view]);
   // Pick up any deep-link the earlier effect parked in the ref.
   useEffect(() => {
     if (pendingDeepLinkRef.current) {
@@ -283,6 +293,7 @@ export default function Wallet() {
   const stepIdx = method ? 1 : 0;
 
   const NAV_ITEMS = [
+    { id: 'details',  label: 'Account Details',   icon: <NIDetails /> },
     { id: 'overview', label: 'Account Overview', icon: <NIOverview /> },
     { id: 'grow',     label: 'Deposit Funds',     icon: <NIDeposit />, active: true },
     { id: 'withdraw', label: 'Withdraw Funds',    icon: <NIWithdraw /> },
@@ -292,7 +303,6 @@ export default function Wallet() {
     { id: 'subscription', label: 'Main Wallet', icon: <NISubscription />, to: '/subscription-wallet' },
     { id: 'bonus', label: 'Bonus Wallet', icon: <NIBonus />, to: '/bonus-wallet' },
     { id: 'history',  label: 'Transaction History', icon: <NIHistory /> },
-    { id: 'details',  label: 'Account Details',   icon: <NIDetails /> },
   ];
 
   return (
@@ -402,9 +412,13 @@ export default function Wallet() {
         <div className="bg-white border border-border-dark rounded-2xl overflow-hidden">
           <div className="flex items-center justify-between px-5 py-4 border-b border-border-subtle">
             <div className="text-sm font-bold text-text-primary">Recent Transactions</div>
-            <button type="button" onClick={() => setView('history')} className="text-xs font-semibold text-primary-600 hover:text-primary-700 px-3 py-1.5 rounded-lg border border-border-dark hover:border-primary-500/40 transition-colors">
-              View All
-            </button>
+            {/* On the Transaction History page the full list is already shown, so
+                "View All" would just point back here — hide it there. */}
+            {view !== 'history' && (
+              <button type="button" onClick={() => setView('history')} className="text-xs font-semibold text-primary-600 hover:text-primary-700 px-3 py-1.5 rounded-lg border border-border-dark hover:border-primary-500/40 transition-colors">
+                View All
+              </button>
+            )}
           </div>
           <div className="overflow-x-auto">
             {recentTx.length === 0 ? (

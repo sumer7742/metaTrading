@@ -7,6 +7,7 @@ import {
   formatDateLong,
 } from '../utils/economicCalendar';
 import CountryFlag from './CountryFlag';
+import { api } from '../services/api';
 
 const IMPACT = {
   high:   { color: '#DC2626', label: 'High' },
@@ -32,6 +33,80 @@ function actualColor(actual, consensus, indicator) {
   return beat ? '#16A34A' : '#DC2626';
 }
 
+// ── Admin-managed config (show/hide toggle + custom events) ─────────────────
+// Fetched once from /cms/economic-calendar, shared across every calendar view,
+// revalidated every 5 min. Admin events are MERGED into the generated global
+// schedule so both show together; enabled=false hides the whole calendar.
+let _cfg = { enabled: true, events: [] };
+let _cfgLoaded = false;
+let _cfgInflight = null;
+const _cfgListeners = new Set();
+function _loadEconCfg() {
+  if (_cfgInflight) return _cfgInflight;
+  _cfgInflight = api.get('/cms/economic-calendar')
+    .then((r) => {
+      const d = r.data?.data || {};
+      _cfg = { enabled: d.enabled !== false, events: Array.isArray(d.events) ? d.events : [] };
+    })
+    .catch(() => { /* keep defaults (enabled + no admin events) */ })
+    .finally(() => { _cfgLoaded = true; _cfgInflight = null; _cfgListeners.forEach((fn) => fn(_cfg)); });
+  return _cfgInflight;
+}
+function useEconConfig() {
+  const [cfg, setCfg] = useState(_cfg);
+  useEffect(() => {
+    const on = (next) => setCfg(next);
+    _cfgListeners.add(on);
+    if (!_cfgLoaded) _loadEconCfg(); else setCfg(_cfg);
+    const id = setInterval(_loadEconCfg, 5 * 60_000);
+    return () => { _cfgListeners.delete(on); clearInterval(id); };
+  }, []);
+  return cfg;
+}
+
+// Label an admin-entered number (append the unit when present).
+const _fmtAdmin = (v, unit) => {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  const s = Number.isFinite(n) ? (Math.abs(n) >= 1000 ? n.toLocaleString('en-US') : String(n)) : String(v);
+  return unit ? `${s}${unit}` : s;
+};
+function _normAdminEvent(e) {
+  const date = new Date(e.date);
+  if (Number.isNaN(date.getTime())) return null;
+  return {
+    id: e.id || `adm-${e.date}-${e.event}`,
+    date,
+    country: e.country || '',
+    currency: e.currency || '',
+    impact: ['high', 'medium', 'low'].includes(e.impact) ? e.impact : 'medium',
+    event: e.event || '',
+    period: '',
+    unit: e.unit || '',
+    previous: e.previous, consensus: e.consensus, forecast: e.forecast, actual: e.actual,
+    previousLabel:  _fmtAdmin(e.previous, e.unit),
+    consensusLabel: _fmtAdmin(e.consensus, e.unit),
+    forecastLabel:  _fmtAdmin(e.forecast, e.unit),
+    actualLabel:    _fmtAdmin(e.actual, e.unit),
+    __admin: true,
+  };
+}
+// Merge admin events into the generated set, anchor around "now" (today/future
+// first, past newest-first), and cap to `max` — same ordering getCalendarEvents uses.
+function _mergeEvents(generated, adminEvents, now, max) {
+  const admin = (adminEvents || []).map(_normAdminEvent).filter(Boolean);
+  if (!admin.length) return generated;
+  const startOfToday = new Date(now); startOfToday.setUTCHours(0, 0, 0, 0);
+  const startMs = startOfToday.getTime();
+  return [...generated, ...admin]
+    .sort((a, b) => {
+      const aPast = a.date.getTime() < startMs, bPast = b.date.getTime() < startMs;
+      if (aPast !== bPast) return aPast ? 1 : -1;
+      return aPast ? b.date - a.date : a.date - b.date;
+    })
+    .slice(0, max);
+}
+
 function useTickingCalendar(opts) {
   // Recompute once per minute so "next event" updates as time passes.
   const [tick, setTick] = useState(0);
@@ -39,7 +114,13 @@ function useTickingCalendar(opts) {
     const id = setInterval(() => setTick((t) => t + 1), 60_000);
     return () => clearInterval(id);
   }, []);
-  return useMemo(() => getCalendarEvents(opts), [tick]); // eslint-disable-line react-hooks/exhaustive-deps
+  const cfg = useEconConfig();
+  return useMemo(() => {
+    const now = new Date();
+    const generated = getCalendarEvents({ ...opts, now });
+    return _mergeEvents(generated, cfg.events, now, opts?.max || 60);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tick, cfg]);
 }
 
 /** Compact card variant — drops into the right sidebar where News used to be. */
@@ -49,8 +130,16 @@ export function EconomicCalendarCard({ max = 4 }) {
     const id = setInterval(() => setTick((t) => t + 1), 60_000);
     return () => clearInterval(id);
   }, []);
-  const events = useMemo(() => getUpcomingEvents(new Date(), max), [tick, max]);
+  const cfg = useEconConfig();
+  const events = useMemo(() => {
+    const now = new Date();
+    const generated = getUpcomingEvents(now, max * 3);
+    return _mergeEvents(generated, cfg.events, now, max * 5)
+      .filter((e) => e.date.getTime() >= now.getTime())
+      .slice(0, max);
+  }, [tick, cfg, max]);
 
+  if (!cfg.enabled) return null; // admin turned the calendar off
   return (
     <div className="bg-white border border-border-dark rounded-2xl p-5">
       <h3 className="text-sm font-semibold text-text-primary">Economic Calendar</h3>
@@ -99,6 +188,7 @@ export function EconomicCalendarCard({ max = 4 }) {
  * Previous, Consensus, Forecast, Alert).
  */
 export function EconomicCalendarSection({ max = 40 }) {
+  const cfg = useEconConfig();
   const events = useTickingCalendar({ lookbackDays: 3, lookaheadDays: 14, max });
 
   // Group by UTC date (YYYY-MM-DD).
@@ -112,6 +202,7 @@ export function EconomicCalendarSection({ max = 40 }) {
     return [...map.entries()];
   }, [events]);
 
+  if (!cfg.enabled) return null; // admin turned the calendar off
   return (
     <section>
       <div className="flex items-end justify-between mb-4">

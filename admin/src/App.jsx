@@ -15,6 +15,8 @@ import MarketExposure from './pages/MarketExposure';
 import Orders from './pages/Orders';
 import CmsPages from './pages/CmsPages';
 import CmsNews from './pages/CmsNews';
+import EconomicCalendar from './pages/EconomicCalendar';
+import KnowledgeBase from './pages/KnowledgeBase';
 import GlobalAlerts from './pages/GlobalAlerts';
 import GlobalAlertPopup from './components/GlobalAlertPopup';
 import Withdrawals from './pages/Withdrawals';
@@ -41,6 +43,7 @@ import Assignments from './pages/Assignments';
 import ManagerDashboard from './pages/ManagerDashboard';
 import HierarchyTree from './pages/HierarchyTree';
 import ManagerChats from './pages/ManagerChats';
+import SupportTickets from './pages/SupportTickets';
 
 // Centralized, path-driven role gate. Looks up the current route's allow-list
 // from the single source of truth (config/roles) and bounces a disallowed
@@ -109,6 +112,8 @@ export default function App() {
       <Route path="/orders" element={wrap(<Orders />)} />
       <Route path="/cms-pages" element={wrap(<CmsPages />)} />
       <Route path="/cms-news" element={wrap(<CmsNews />)} />
+      <Route path="/economic-calendar" element={wrap(<EconomicCalendar />)} />
+      <Route path="/knowledge-base" element={wrap(<KnowledgeBase />)} />
       <Route path="/global-alerts" element={wrap(<GlobalAlerts />)} />
       <Route path="/withdrawals" element={wrap(<Withdrawals />)} />
       <Route path="/deposits" element={wrap(<Deposits />)} />
@@ -134,6 +139,7 @@ export default function App() {
       <Route path="/admin-access" element={wrap(<AdminAccess />)} />
       <Route path="/my-users" element={wrap(<ManagerDashboard />)} />
       <Route path="/support-chats" element={wrap(<ManagerChats />)} />
+      <Route path="/support-tickets" element={wrap(<SupportTickets />)} />
 
       <Route path="/settings" element={wrap(<Settings />)} />
       <Route path="/security" element={wrap(<Security />)} />

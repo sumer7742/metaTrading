@@ -8,6 +8,10 @@ const instrumentSchema = new mongoose.Schema(
     baseCurrency: { type: String, required: true },
     quoteCurrency: { type: String, required: true },
     category: { type: String, enum: ['CRYPTO', 'FOREX', 'STOCK', 'INDEX', 'COMMODITY'], required: true },
+    // Optional custom logo set by an admin — either an image URL or a `data:` URI
+    // (small base64 PNG/SVG). When present the client renders THIS image instead
+    // of the auto-generated category/symbol icon. Null = use the generated icon.
+    logoUrl: { type: String, default: null },
 
     // ── Exchange-bound market fields (Phase 1: Indian NSE/BSE cash) ──
     // `exchange` drives session gating (services/marketHours.js) + charges.

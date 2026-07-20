@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { orderToast } from '../utils/toast';
@@ -13,6 +14,9 @@ import OrderForm from '../components/OrderForm';
 import SidebarOptionChain from '../components/SidebarOptionChain';
 import NotificationCenter from '../components/NotificationCenter';
 import MarketWatch from '../components/MarketWatch';
+import DraggableList from '../components/DraggableList';
+import PendingOrderModifyModal from '../components/PendingOrderModifyModal';
+import PositionSlTpModal from '../components/PositionSlTpModal';
 import { fmtNum, fmtPnlSimple, fmtMoney, fmtPriceDual, fmtMoneyDual, currencySymbol, fmtDate } from '../utils/format';
 import WatchlistButton from '../components/WatchlistButton';
 import { useWatchlistModal } from '../components/watchlistModalContext';
@@ -75,28 +79,53 @@ export default function Trade() {
   // shared MultiChartToolbar drives the ACTIVE pane via these. Persisted to the
   // same keys PriceChart used, so single-chart behaviour is unchanged.
   const ACTIVE_CT_KEY = 'tradepro:chart-type';
-  // Per-INSTRUMENT indicators — each symbol remembers its OWN indicator set, so
-  // switching instruments no longer shows the same indicators everywhere.
+  // Per-INSTRUMENT chart settings — each symbol remembers its OWN chart type,
+  // timeframe and indicator set, so switching instruments restores that
+  // instrument's own view instead of carrying one global setting everywhere.
   const IND_BY_SYMBOL_KEY = 'tradepro:chart-ind-by-symbol:v1';
-  const readIndBySymbol = () => { try { return JSON.parse(localStorage.getItem(IND_BY_SYMBOL_KEY) || '{}') || {}; } catch { return {}; } };
-  const indBySymbolRef = useRef(readIndBySymbol());
-  const indSymbolRef = useRef(null); // which symbol activeIndicators currently belongs to
+  const CT_BY_SYMBOL_KEY  = 'tradepro:chart-type-by-symbol:v1';
+  const TF_BY_SYMBOL_KEY  = 'tradepro:chart-tf-by-symbol:v1';
+  const readJsonMap = (key) => { try { return JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch { return {}; } };
+  const indBySymbolRef = useRef(readJsonMap(IND_BY_SYMBOL_KEY));
+  const ctBySymbolRef  = useRef(readJsonMap(CT_BY_SYMBOL_KEY));
+  const tfBySymbolRef  = useRef(readJsonMap(TF_BY_SYMBOL_KEY));
+  const indSymbolRef = useRef(null); // which symbol the active chart settings currently belong to
   const [activeChartType, setActiveChartTypeState] = useState(() => readChartType());
   const [activeIndicators, setActiveIndicatorsState] = useState(() => readIndicators());
   useEffect(() => { try { localStorage.setItem(ACTIVE_CT_KEY, activeChartType); } catch { /* */ } }, [activeChartType]);
 
-  // Load THIS instrument's own indicators whenever the active symbol changes.
+  // Load THIS instrument's own chart type / timeframe / indicators whenever the
+  // active symbol changes. Each is stashed for the OUTGOING symbol first, then
+  // the incoming symbol's saved view is restored — falling back to the legacy
+  // global on the very first run, or a clean default for a never-seen symbol.
   useEffect(() => {
     if (!symbol || indSymbolRef.current === symbol) return;
-    // Stash the OUTGOING symbol's set before switching away.
-    if (indSymbolRef.current) indBySymbolRef.current[indSymbolRef.current] = activeIndicators;
+    // Stash the OUTGOING symbol's settings before switching away.
+    if (indSymbolRef.current) {
+      indBySymbolRef.current[indSymbolRef.current] = activeIndicators;
+      ctBySymbolRef.current[indSymbolRef.current]  = activeChartType;
+      tfBySymbolRef.current[indSymbolRef.current]  = timeframe;
+    }
     indSymbolRef.current = symbol;
-    const saved = indBySymbolRef.current[symbol];
-    let next;
-    if (saved !== undefined) next = saved;                                      // this instrument's saved set
-    else if (Object.keys(indBySymbolRef.current).length === 0) next = readIndicators() || {}; // first run → migrate legacy global
-    else next = {};                                                              // a different instrument with none set → start clean
-    setActiveIndicatorsState(next);
+
+    // Indicators
+    const savedInd = indBySymbolRef.current[symbol];
+    let nextInd;
+    if (savedInd !== undefined) nextInd = savedInd;                              // this instrument's saved set
+    else if (Object.keys(indBySymbolRef.current).length === 0) nextInd = readIndicators() || {}; // first run → migrate legacy global
+    else nextInd = {};                                                           // never-seen instrument → start clean
+    setActiveIndicatorsState(nextInd);
+
+    // Chart type
+    const savedCt = ctBySymbolRef.current[symbol];
+    if (savedCt !== undefined) setActiveChartTypeState(savedCt);
+    else if (Object.keys(ctBySymbolRef.current).length === 0) setActiveChartTypeState(readChartType()); // first run → migrate legacy global
+    else setActiveChartTypeState('candles');                                     // never-seen instrument → default
+
+    // Timeframe
+    const savedTf = tfBySymbolRef.current[symbol];
+    if (savedTf !== undefined) setTimeframe(savedTf);
+    else if (Object.keys(tfBySymbolRef.current).length !== 0) setTimeframe('1m'); // never-seen instrument → default (first run keeps legacy global already in state)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol]);
 
@@ -108,6 +137,22 @@ export default function Trade() {
     try { localStorage.setItem(IND_BY_SYMBOL_KEY, JSON.stringify(indBySymbolRef.current)); } catch { /* */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeIndicators]);
+  // Persist the active chart type under the CURRENT symbol (per-instrument).
+  useEffect(() => {
+    const s = indSymbolRef.current || symbol;
+    if (!s) return;
+    ctBySymbolRef.current[s] = activeChartType;
+    try { localStorage.setItem(CT_BY_SYMBOL_KEY, JSON.stringify(ctBySymbolRef.current)); } catch { /* */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeChartType]);
+  // Persist the active timeframe under the CURRENT symbol (per-instrument).
+  useEffect(() => {
+    const s = indSymbolRef.current || symbol;
+    if (!s) return;
+    tfBySymbolRef.current[s] = timeframe;
+    try { localStorage.setItem(TF_BY_SYMBOL_KEY, JSON.stringify(tfBySymbolRef.current)); } catch { /* */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timeframe]);
   useEffect(() => { try { localStorage.setItem(LAYOUT_KEY, layoutId); } catch { /* */ } }, [layoutId]);
   useEffect(() => { try { localStorage.setItem(SYNC_KEY, JSON.stringify(sync)); } catch { /* */ } }, [sync]);
   useEffect(() => { try { localStorage.setItem(PANES_KEY, JSON.stringify(panes)); } catch { /* */ } }, [panes]);
@@ -535,26 +580,10 @@ export default function Trade() {
     });
   };
 
-  // ── Drag-to-reorder open tabs (native HTML5 DnD; no library) ─────────
-  // Pick a tab and drop it on another to change its position. The new order
-  // persists automatically (tabs → localStorage effect above).
-  const dragTabRef = useRef(null);                     // symbol currently dragged
-  const [dragOverTab, setDragOverTab] = useState(null); // symbol under the cursor
-  const reorderTabs = (toSym) => {
-    const fromSym = dragTabRef.current;
-    dragTabRef.current = null;
-    setDragOverTab(null);
-    if (!fromSym || fromSym === toSym) return;
-    setTabs((prev) => {
-      const from = prev.indexOf(fromSym);
-      const to = prev.indexOf(toSym);
-      if (from === -1 || to === -1) return prev;
-      const next = [...prev];
-      next.splice(from, 1);
-      next.splice(to, 0, fromSym);
-      return next;
-    });
-  };
+  // ── Drag-to-reorder open tabs ───────────────────────────────────────
+  // Live reorder (placeholder + FLIP) via <DraggableList axis="horizontal">.
+  // The new order persists automatically (tabs → localStorage effect above).
+  const reorderTabs = (orderedSyms) => setTabs(orderedSyms);
 
   // If the symbol isn't in the bulk list (e.g. an option), fetch it singly.
   useEffect(() => {
@@ -1602,62 +1631,60 @@ export default function Trade() {
           </span>
         </Link>
 
-        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar flex-1 min-w-0">
-          {tabs.map((sym) => {
-            const inst = instrumentsBySymbol[sym] || { symbol: sym };
-            const active = sym === symbol;
-            const change = Number(inst.change24h);
-            const positive = Number.isFinite(change) ? change >= 0 : null;
-            const canClose = tabs.length > 1;
-            return (
-              <div
-                key={sym}
-                role="button"
-                tabIndex={0}
-                draggable
-                onDragStart={(e) => { dragTabRef.current = sym; try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', sym); } catch (_) {} }}
-                onDragOver={(e) => { e.preventDefault(); if (dragOverTab !== sym) setDragOverTab(sym); }}
-                onDragLeave={() => setDragOverTab((p) => (p === sym ? null : p))}
-                onDrop={(e) => { e.preventDefault(); reorderTabs(sym); }}
-                onDragEnd={() => { dragTabRef.current = null; setDragOverTab(null); }}
-                onClick={() => setParams({ symbol: sym })}
-                onKeyDown={(e) => { if (e.key === 'Enter') setParams({ symbol: sym }); }}
-                title="Drag to reorder"
-                className={`group shrink-0 inline-flex items-center gap-2 pl-2.5 pr-1 py-1.5 rounded-lg text-sm transition-all border cursor-grab active:cursor-grabbing ${
-                  active
-                    ? 'border-primary-500 bg-primary-500/5 text-text-primary font-semibold'
-                    : 'border-transparent text-text-secondary hover:text-text-primary hover:bg-bg-hover'
-                } ${dragOverTab === sym ? 'ring-2 ring-primary-500/50 ring-offset-1 ring-offset-white' : ''}`}
-              >
-                <AssetIcon row={inst} size={20} round />
-                <span className="font-medium">{sym}</span>
-                {Number.isFinite(change) && (
-                  <span
-                    className="text-[10px] font-semibold"
-                    style={{ color: positive ? '#16A34A' : '#DC2626' }}
-                  >
-                    {positive ? '+' : ''}{change.toFixed(2)}%
-                  </span>
-                )}
-                {canClose && (
-                  <button
-                    type="button"
-                    onClick={(e) => closeTab(sym, e)}
-                    title={`Close ${sym}`}
-                    className={`shrink-0 p-1 rounded-md transition-colors ${
-                      active
-                        ? 'text-text-secondary hover:text-text-primary hover:bg-bg-hover'
-                        : 'text-text-muted opacity-0 group-hover:opacity-100 hover:text-text-primary hover:bg-bg-hover'
-                    }`}
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
-                  </button>
-                )}
-              </div>
-            );
-          })}
-          {/* Add-tab "+" — opens the instrument picker (same modal as clicking
-              a chart's symbol legend) so the user can search & pick a symbol. */}
+        <div className="flex items-center gap-1.5 flex-1 min-w-0">
+          <DraggableList
+            axis="horizontal"
+            items={tabs}
+            getId={(s) => s}
+            onReorder={reorderTabs}
+            gap={6}
+            className="flex-1 min-w-0 overflow-x-auto no-scrollbar"
+            renderItem={(sym, { rowDragProps, isOverlay }) => {
+              const inst = instrumentsBySymbol[sym] || { symbol: sym };
+              const active = sym === symbol;
+              const change = Number(inst.change24h);
+              const positive = Number.isFinite(change) ? change >= 0 : null;
+              const canClose = tabs.length > 1;
+              return (
+                <div
+                  {...rowDragProps}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setParams({ symbol: sym })}
+                  onKeyDown={(e) => { if (e.key === 'Enter') setParams({ symbol: sym }); }}
+                  title="Drag to reorder"
+                  className={`group shrink-0 inline-flex items-center gap-2 pl-2.5 pr-1 py-1.5 rounded-lg text-sm border select-none transition-[background-color,border-color,color] duration-150 ${isOverlay ? '' : 'cursor-grab active:cursor-grabbing'} ${
+                    active
+                      ? 'border-primary-500 bg-primary-500/5 text-text-primary font-semibold'
+                      : 'border-transparent text-text-secondary hover:text-text-primary hover:bg-bg-hover'
+                  }`}
+                >
+                  <AssetIcon row={inst} size={20} round />
+                  <span className="font-medium">{sym}</span>
+                  {Number.isFinite(change) && (
+                    <span className="text-[10px] font-semibold" style={{ color: positive ? '#16A34A' : '#DC2626' }}>
+                      {positive ? '+' : ''}{change.toFixed(2)}%
+                    </span>
+                  )}
+                  {canClose && (
+                    <button
+                      type="button"
+                      onClick={(e) => closeTab(sym, e)}
+                      title={`Close ${sym}`}
+                      className={`shrink-0 p-1 rounded-full transition-colors group-hover:text-bear group-hover:bg-bear/10 hover:!bg-bear/20 ${
+                        active
+                          ? 'text-text-secondary'
+                          : 'text-text-muted opacity-0 group-hover:opacity-100'
+                      }`}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
+                    </button>
+                  )}
+                </div>
+              );
+            }}
+          />
+          {/* Add-tab "+" — pinned after the rail so it's always reachable. */}
           <button
             type="button"
             onClick={() => setSearchOpen(true)}
@@ -3432,6 +3459,7 @@ export default function Trade() {
           position={slTpModalPosition}
           kind={slTpModalKind}
           instrument={instrumentsBySymbol?.[slTpModalPosition.symbol]}
+          free={equityNums.free}
           onClose={closeSlTpModal}
           onSubmit={(payload) => submitSlTpModify(slTpModalPosition._id, payload)}
           onPartialClose={async (closeQty) => {
@@ -3995,80 +4023,6 @@ function SidebarPendingOrders({ orders, activeSymbol, onSelect, onCancel, onCanc
 // PendingOrderModifyModal — edit a pending LIMIT/STOP order (price / qty / SL /
 // TP) or cancel it. Opens when a pending-order card is clicked. Saves via the
 // parent (PUT /trading/orders/:id → modifyOrder controller).
-function PendingOrderModifyModal({ order, instrument, onClose, onSave, onCancelOrder }) {
-  const isStop = order.type === 'STOP';
-  const isBuy = order.side === 'BUY';
-  const [price, setPrice] = useState(String(isStop ? (order.stopPrice ?? '') : (order.price ?? '')));
-  const [qty, setQty]     = useState(String(order.quantity ?? ''));
-  const [sl, setSl]       = useState(order.stopLoss != null ? String(order.stopLoss) : '');
-  const [tp, setTp]       = useState(order.takeProfit != null ? String(order.takeProfit) : '');
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
-
-  const submit = async (e) => {
-    e.preventDefault();
-    const fields = {};
-    if (isStop) fields.stopPrice = price; else fields.price = price;
-    fields.quantity = qty;
-    fields.stopLoss = sl === '' ? null : sl;
-    fields.takeProfit = tp === '' ? null : tp;
-    setSaving(true);
-    await onSave(order, fields);
-    setSaving(false);
-  };
-
-  return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-label="Modify order">
-      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative w-full max-w-sm bg-white rounded-2xl border border-border-dark shadow-elevated overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-border-subtle">
-          <div className="flex items-center gap-1.5 min-w-0">
-            <span className={`text-[9px] font-extrabold px-1.5 py-0.5 rounded tracking-wide ${isBuy ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white'}`}>{isBuy ? '↑ BUY' : '↓ SELL'}</span>
-            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 tracking-wide">{order.type}</span>
-            <span className="text-sm font-extrabold text-text-primary truncate">{order.symbol}</span>
-          </div>
-          <button type="button" onClick={onClose} aria-label="Close" className="p-1 rounded text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
-          </button>
-        </div>
-        <form onSubmit={submit} className="p-4 space-y-3">
-          <div>
-            <label className="label">{isStop ? 'Trigger price' : 'Limit price'}</label>
-            <input className="input font-mono" type="number" step="any" inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} autoFocus />
-          </div>
-          <div>
-            <label className="label">Quantity</label>
-            <input className="input font-mono" type="number" step="any" inputMode="decimal" value={qty} onChange={(e) => setQty(e.target.value)} />
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="label">Stop loss</label>
-              <input className="input font-mono" type="number" step="any" inputMode="decimal" value={sl} onChange={(e) => setSl(e.target.value)} placeholder="—" />
-            </div>
-            <div>
-              <label className="label">Take profit</label>
-              <input className="input font-mono" type="number" step="any" inputMode="decimal" value={tp} onChange={(e) => setTp(e.target.value)} placeholder="—" />
-            </div>
-          </div>
-          <div className="flex items-center gap-2 pt-1">
-            <button type="button" onClick={() => onCancelOrder(order)} className="px-3 py-2 rounded-xl text-sm font-bold text-bear border border-bear/30 hover:bg-bear/10 transition-colors">
-              Cancel order
-            </button>
-            <button type="submit" disabled={saving} className="btn-primary flex-1 disabled:opacity-50 disabled:cursor-not-allowed">
-              {saving ? 'Saving…' : 'Save changes'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
-
 // SidebarPerformance — pulls 48 × 1h candles for the active instrument so
 // the panel renders real numbers (change %, high, low, sparkline) even when
 // the instrument document's snapshot fields (change24h, dayHigh, dayLow)
@@ -4821,286 +4775,3 @@ function closeReasonLabel(reason) {
   return r ? <span className={r.c}>{r.t}</span> : <span className="text-text-muted">Manual</span>;
 }
 
-// ─── Position SL/TP / partial-close modal ──────────────────────────────
-//
-// Triggered by the "SL/TP" button on each open position. Three tabs:
-//   • Modify       — edit Take Profit / Stop Loss with numeric ± steppers
-//   • Partial close — close a fraction of the position by lots
-//   • Close by     — full close at market
-//
-// Pip math: pipSize = 10^-precision. So for BTC with precision=2 the pip
-// is 0.01. The pip / USD / % readout below each price field shows the
-// delta between the entered price and the position's entry, which is
-// how MT5 / cTrader render this control.
-function PositionSlTpModal({ position, kind = 'position', instrument, onClose, onSubmit, onPartialClose }) {
-  const isOrder = kind === 'order';
-  const [tab, setTab] = useState('modify');
-  const [tp, setTp] = useState(position.takeProfit ? String(position.takeProfit) : '');
-  const [sl, setSl] = useState(position.stopLoss ? String(position.stopLoss) : '');
-  const [partialQty, setPartialQty] = useState(String((Number(position.quantity) || 0) / 2));
-  const [saving, setSaving] = useState(false);
-
-  const precision = Math.max(0, Math.min(8, Number(instrument?.pricePrecision) || 2));
-  const pipSize = Math.pow(10, -precision);
-  const entry = Number(position.entryPrice) || 0;
-  const lastPx = Number(instrument?.lastPrice) || 0;
-  const qty = Number(position.quantity) || 0;
-  const isBuy = position.side === 'BUY';
-
-  const livePnl = (isBuy ? (lastPx - entry) : (entry - lastPx)) * qty;
-  const livePnlClass = livePnl >= 0 ? 'text-emerald-400' : 'text-rose-400';
-
-  const delta = (priceStr) => {
-    const p = Number(priceStr);
-    if (!Number.isFinite(p) || !entry) return { pips: 0, usd: 0, pct: 0 };
-    const raw = isBuy ? (p - entry) : (entry - p);
-    return {
-      pips: raw / pipSize,
-      usd:  raw * qty,
-      pct:  (raw / entry) * 100,
-    };
-  };
-  const tpDelta = delta(tp);
-  const slDelta = delta(sl);
-
-  const fmt = (n, d = 2) =>
-    Number(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
-  const stepFmt = (n) => Number(n).toFixed(precision);
-  const stepPrice = (curr, dir) => {
-    const base = Number(curr) || entry || lastPx || 0;
-    return stepFmt(base + dir * pipSize);
-  };
-
-  const submitModify = async () => {
-    setSaving(true);
-    try {
-      await onSubmit({
-        takeProfit: tp.trim() === '' ? null : Number(tp),
-        stopLoss:   sl.trim() === '' ? null : Number(sl),
-      });
-    } finally { setSaving(false); }
-  };
-  const submitPartialClose = async () => {
-    setSaving(true);
-    try { await onPartialClose(Number(partialQty)); }
-    finally { setSaving(false); }
-  };
-  const submitFullClose = async () => {
-    setSaving(true);
-    try { await onPartialClose(qty); }
-    finally { setSaving(false); }
-  };
-
-  return (
-    <div
-      className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
-      onClick={onClose}
-    >
-      <div
-        className="card max-w-md w-full overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header — symbol, side, qty, P&L, close × */}
-        <div className="px-5 py-4 border-b border-border-subtle">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                {instrument?.icon && <span className="text-lg">{instrument.icon}</span>}
-                <span className="font-bold text-base text-text-primary">{position.symbol}</span>
-                <span className="text-sm text-text-muted tabular-nums">{fmt(qty, 2)} lots</span>
-              </div>
-              <div className="mt-1 text-[13px] tabular-nums">
-                <span className={isBuy ? 'text-primary-600 font-semibold' : 'text-bear font-semibold'}>
-                  {isBuy ? 'Buy' : 'Sell'}
-                </span>{' '}
-                <span className="text-text-muted">at</span>{' '}
-                <span className="text-text-primary font-mono">{stepFmt(entry)}</span>
-              </div>
-            </div>
-            <div className="text-right">
-              <button onClick={onClose} className="text-text-muted hover:text-text-primary text-xl leading-none">×</button>
-              <div className={`mt-1 text-[13px] font-mono font-bold tabular-nums ${livePnl >= 0 ? 'text-bull' : 'text-bear'}`}>
-                {livePnl >= 0 ? '+' : ''}{fmt(livePnl)} USD
-              </div>
-              <div className="text-[11px] text-text-muted font-mono">{stepFmt(lastPx)}</div>
-            </div>
-          </div>
-
-          {/* Tab strip — for pending orders we only show "Modify" since
-              partial-close / close-by are position-only operations. */}
-          <div className={`mt-4 grid bg-bg-hover rounded-lg p-1 ${isOrder ? 'grid-cols-1' : 'grid-cols-3'}`}>
-            {(isOrder
-              ? [{ id: 'modify', label: 'Modify order' }]
-              : [
-                  { id: 'modify',  label: 'Modify' },
-                  { id: 'partial', label: 'Partial close' },
-                  { id: 'closeby', label: 'Close by' },
-                ]
-            ).map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => setTab(t.id)}
-                className={`text-[13px] font-semibold py-2 rounded-md transition-all ${
-                  tab === t.id
-                    ? 'bg-white text-text-primary shadow-sm'
-                    : 'text-text-muted hover:text-text-secondary'
-                }`}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Body */}
-        <div className="p-5 space-y-5">
-          {tab === 'modify' && (
-            <>
-              <PriceField
-                label="Take Profit"
-                value={tp}
-                placeholder="Not set"
-                onChange={setTp}
-                onClear={() => setTp('')}
-                onStep={(dir) => setTp(stepPrice(tp || entry || lastPx, dir))}
-                delta={tpDelta}
-                deltaTone="bull"
-              />
-              <PriceField
-                label="Stop Loss"
-                value={sl}
-                placeholder="Not set"
-                onChange={setSl}
-                onClear={() => setSl('')}
-                onStep={(dir) => setSl(stepPrice(sl || entry || lastPx, dir))}
-                delta={slDelta}
-                deltaTone="bear"
-              />
-              <button
-                onClick={submitModify}
-                disabled={saving}
-                className="btn-primary w-full py-3 text-sm disabled:opacity-50"
-              >
-                {saving ? 'Saving…' : (isOrder ? 'Modify order' : 'Modify position')}
-              </button>
-            </>
-          )}
-
-          {tab === 'partial' && (
-            <>
-              <div>
-                <label className="block text-[12px] font-semibold text-text-secondary mb-1.5">Quantity to close</label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    max={qty}
-                    value={partialQty}
-                    onChange={(e) => setPartialQty(e.target.value)}
-                    className="flex-1 px-3 py-2.5 rounded-lg border border-border-dark bg-white text-base font-mono text-text-primary focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/15"
-                  />
-                  <span className="text-xs text-text-muted whitespace-nowrap">/ {fmt(qty, 2)} lots</span>
-                </div>
-                <div className="flex gap-1.5 mt-2">
-                  {[0.25, 0.5, 0.75, 1].map((f) => (
-                    <button
-                      key={f}
-                      type="button"
-                      onClick={() => setPartialQty(String((qty * f).toFixed(2)))}
-                      className="text-[11px] font-bold px-2.5 py-1 rounded border border-border-dark text-text-secondary hover:border-primary-500 hover:text-primary-600 transition-colors"
-                    >
-                      {(f * 100).toFixed(0)}%
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <button
-                onClick={submitPartialClose}
-                disabled={saving || !Number(partialQty)}
-                className="btn-primary w-full py-3 text-sm disabled:opacity-50"
-              >
-                {saving ? 'Closing…' : `Close ${fmt(Number(partialQty) || 0, 2)} lots`}
-              </button>
-            </>
-          )}
-
-          {tab === 'closeby' && (
-            <>
-              <div className="rounded-lg bg-bg-hover/50 border border-border-subtle px-3 py-2.5 text-[12px] text-text-secondary leading-snug">
-                Close the entire <span className="font-bold text-text-primary">{fmt(qty, 2)} lot</span> {isBuy ? 'long' : 'short'} position at market. Realized P&L will settle to your trading wallet.
-              </div>
-              <button
-                onClick={submitFullClose}
-                disabled={saving}
-                className="btn-primary w-full py-3 text-sm disabled:opacity-50"
-              >
-                {saving ? 'Closing…' : `Close ${fmt(qty, 2)} lots at market`}
-              </button>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PriceField({ label, value, placeholder, onChange, onClear, onStep, delta, deltaTone }) {
-  const has = value && String(value).trim() !== '';
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-1.5">
-        <label className="text-[13px] font-semibold text-text-secondary">{label}</label>
-        <span
-          className="w-4 h-4 rounded-full border border-border-dark text-text-muted text-[10px] flex items-center justify-center"
-          title="Price triggers a market close at this level"
-        >?</span>
-      </div>
-      <div className="flex items-center bg-white border border-border-dark rounded-lg overflow-hidden focus-within:border-primary-500 focus-within:ring-2 focus-within:ring-primary-500/15 transition-all">
-        <input
-          type="number"
-          step="any"
-          value={value}
-          placeholder={placeholder}
-          onChange={(e) => onChange(e.target.value)}
-          className="flex-1 bg-transparent px-3 py-2.5 text-base font-mono text-text-primary placeholder-text-muted focus:outline-none"
-        />
-        {has && (
-          <button
-            type="button"
-            onClick={onClear}
-            className="text-text-muted hover:text-text-primary px-2 transition-colors"
-            title="Clear"
-          >×</button>
-        )}
-        <span className="text-[11px] text-text-muted px-2 select-none flex items-center gap-0.5 border-l border-border-subtle">
-          Price <span className="text-[10px]">▾</span>
-        </span>
-        <button
-          type="button"
-          onClick={() => onStep(-1)}
-          className="w-9 h-10 border-l border-border-subtle text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors text-base font-bold"
-          title="−1 pip"
-        >−</button>
-        <button
-          type="button"
-          onClick={() => onStep(1)}
-          className="w-9 h-10 border-l border-border-subtle text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors text-base font-bold"
-          title="+1 pip"
-        >+</button>
-      </div>
-      {has && (
-        <div className="mt-1.5 flex items-center gap-2 text-[11px] tabular-nums">
-          <span className={deltaTone === 'bull' ? 'text-bull font-semibold' : 'text-bear font-semibold'}>
-            {delta.pips >= 0 ? '+' : ''}{delta.pips.toFixed(1)} pips
-          </span>
-          <span className="text-text-muted">·</span>
-          <span className="text-text-secondary">{delta.usd.toFixed(2)} USD</span>
-          <span className="text-text-muted">·</span>
-          <span className="text-text-secondary">{delta.pct.toFixed(2)} %</span>
-        </div>
-      )}
-    </div>
-  );
-}

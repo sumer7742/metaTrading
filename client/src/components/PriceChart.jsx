@@ -837,6 +837,9 @@ export const DEFAULT_CHART_PREFS = {
   upColor: '#26A69A', downColor: '#EF5350',
   // order-line / pill colours (TP / SL / entry) — client-customisable
   tpColor: '#10b981', slColor: '#ef4444', entryColor: '#EAB308',
+  // Order-PREVIEW pill + line are coloured BY SIDE so a draft BUY reads green
+  // and a draft SELL reads red. Both customisable in Chart Settings.
+  buyColor: '#22C55E', sellColor: '#EF4444',
 };
 const readChartPrefs = () => {
   try { return { ...DEFAULT_CHART_PREFS, ...JSON.parse(localStorage.getItem(CHART_PREFS_KEY) || '{}') }; }
@@ -2712,7 +2715,7 @@ export default function PriceChart({
       if (orderPreview.entry && Number(orderPreview.entry) > 0) {
         desired.set('preview:entry', {
           price: Number(orderPreview.entry),
-          color: chartPrefs.entryColor,
+          color: orderPreview.side === 'SELL' ? chartPrefs.sellColor : chartPrefs.buyColor,
           lineWidth: 1,
           lineStyle: 2, // dotted — clearly a draft
           axisLabelVisible: false,
@@ -3625,7 +3628,7 @@ export default function PriceChart({
 
         {/* Chart settings dialog (Symbol / Status line / Scales / Canvas) */}
         {settingsOpen && (
-          <ChartSettings prefs={chartPrefs} onChange={setPref} onReset={() => setPref(DEFAULT_CHART_PREFS)} onClose={() => setSettingsOpen(false)} theme={theme} />
+          <ChartSettings prefs={chartPrefs} onChange={setPref} onReset={() => setPref(DEFAULT_CHART_PREFS)} defaults={DEFAULT_CHART_PREFS} onClose={() => setSettingsOpen(false)} theme={theme} />
         )}
 
         {/* ── Position pills overlay ─────────────────────────────────
@@ -3645,10 +3648,18 @@ export default function PriceChart({
               // For the entry pill, hide the inline +TP/+SL quick-add
               // handle once the level already exists (its real pill is
               // rendered separately below). Keeps the entry pill compact
-              // and avoids two ways to drag the same level.
-              const showQuickTp = p.kind === 'entry' && !p.position.takeProfit;
-              const showQuickSl = p.kind === 'entry' && !p.position.stopLoss;
+              // and avoids two ways to drag the same level. Also gated by the
+              // "TP / SL on positions" Show-on-Chart toggle — when it's off the
+              // user doesn't want any TP/SL controls, so hide the +TP/+SL adds.
+              const showQuickTp = showTpSl && p.kind === 'entry' && !p.position.takeProfit;
+              const showQuickSl = showTpSl && p.kind === 'entry' && !p.position.stopLoss;
               const isOrder = p.target === 'order';
+              // The order-PREVIEW entry pill is coloured by side (BUY → buyColor,
+              // SELL → sellColor); real order/position entries keep the neutral
+              // entry colour.
+              const entryPillColor = p.position.__preview && p.kind === 'entry'
+                ? (p.position.side === 'SELL' ? chartPrefs.sellColor : chartPrefs.buyColor)
+                : chartPrefs.entryColor;
               return (
                 <PositionPill
                   key={p.key}
@@ -3660,7 +3671,7 @@ export default function PriceChart({
                   isDragging={!!drag}
                   snapped={!!(drag && drag.snapped)}
                   overridePrice={overridePrice}
-                  colors={{ tp: chartPrefs.tpColor, sl: chartPrefs.slColor, entry: chartPrefs.entryColor }}
+                  colors={{ tp: chartPrefs.tpColor, sl: chartPrefs.slColor, entry: entryPillColor }}
                   showQuickTp={showQuickTp}
                   showQuickSl={showQuickSl}
                   onClose={() => {
@@ -4342,7 +4353,7 @@ function PositionPill({
           // into place on the next frame. Live drags suppress the spring
           // so the pill tracks the cursor 1:1.
           transform: `translateX(-50%) translateY(${mounted ? 0 : -4}px) ${active ? 'scale(1.02)' : 'scale(1)'}`,
-          opacity: mounted ? (isPreview ? 0.72 : 1) : 0,
+          opacity: mounted ? 1 : 0,
           transformOrigin: 'center center',
           transition: isDragging
             ? 'none'

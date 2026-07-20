@@ -6,6 +6,7 @@ const TradingAccount = require('../models/TradingAccount');
 const Instrument = require('../models/Instrument');
 const { Wallet } = require('../models/Wallet');
 const { Deposit, Withdrawal, AuditLog } = require('../models/index');
+const Feedback = require('../models/Feedback');
 const walletService = require('../services/walletService');
 const { sendSuccess, asyncHandler, AppError } = require('../utils/errors');
 const { KYC_STATUS, WALLET_TX_TYPE, BOOK_TYPE, LP_PROVIDER, EXECUTION_MODE, ROUTING_RESULT, ROUTING } = require('../config/constants');
@@ -698,17 +699,46 @@ function applyUserScope(filter, scope) {
   return true;
 }
 
+// Demo vs real = the linked trading account's type (DEMO/VIRTUAL = demo).
+// Loads the demo-account ids, applies a demo|real filter to `filter.accountId`,
+// and returns the id-set so callers can tag each row's `isDemo`. A row with no
+// accountId (e.g. a subscription/bonus-wallet movement) counts as real.
+const _accountModeFilter = async (filter, mode) => {
+  const demoAccts = await TradingAccount.find({ accountType: { $in: ['DEMO', 'VIRTUAL'] } }).select('_id').lean();
+  const demoIds = demoAccts.map((a) => a._id);
+  if (mode === 'demo') filter.accountId = { $in: demoIds };
+  else if (mode === 'real') filter.accountId = { $nin: demoIds };
+  return new Set(demoIds.map(String));
+};
+
 const listWithdrawals = asyncHandler(async (req, res) => {
-  const { status, userId } = req.query;
+  const { status, userId, mode } = req.query;
   const filter = {};
   if (status) filter.status = status;
   if (userId) filter.userId = userId;   // per-user history (User Mgmt modal)
   const scope = await adminScopeUserIds(req);
   if (!applyUserScope(filter, scope)) return sendSuccess(res, []);
+  const demoIdSet = await _accountModeFilter(filter, mode);
   const items = await Withdrawal.find(filter).sort({ createdAt: -1 }).limit(200).lean();
+  for (const w of items) w.isDemo = !!(w.accountId && demoIdSet.has(String(w.accountId)));
+  await attachSourceAccount(items);
   await attachUserBadge(items);
   sendSuccess(res, items);
 });
+
+// Attach the source trading-account number/nickname (TRADING-source rows) so
+// the admin can see which account a withdrawal was requested from.
+async function attachSourceAccount(items) {
+  const ids = [...new Set(items.map((w) => w.accountId && String(w.accountId)).filter(Boolean))];
+  if (!ids.length) return items;
+  const accts = await TradingAccount.find({ _id: { $in: ids } }).select('accountNumber nickname').lean();
+  const byId = new Map(accts.map((a) => [String(a._id), a]));
+  for (const w of items) {
+    const a = w.accountId ? byId.get(String(w.accountId)) : null;
+    if (a) { w.accountNumber = a.accountNumber || null; w.accountNickname = a.nickname || null; }
+  }
+  return items;
+}
 
 const approveWithdrawal = asyncHandler(async (req, res) => {
   const { payoutTxReference, payoutProof, payoutProofMimeType } = req.body || {};
@@ -866,13 +896,16 @@ const rejectWithdrawal = asyncHandler(async (req, res) => {
 
 // DEPOSITS
 const listDeposits = asyncHandler(async (req, res) => {
-  const { status, userId } = req.query;
+  const { status, userId, mode } = req.query;
   const filter = {};
   if (status) filter.status = status;
   if (userId) filter.userId = userId;   // per-user history (User Mgmt modal)
   const scope = await adminScopeUserIds(req);
   if (!applyUserScope(filter, scope)) return sendSuccess(res, []);
+  const demoIdSet = await _accountModeFilter(filter, mode);
   const items = await Deposit.find(filter).sort({ createdAt: -1 }).limit(200).lean();
+  for (const d of items) d.isDemo = !!(d.accountId && demoIdSet.has(String(d.accountId)));
+  await attachSourceAccount(items);
   await attachUserBadge(items);
   sendSuccess(res, items);
 });
@@ -978,9 +1011,164 @@ const rejectDeposit = asyncHandler(async (req, res) => {
 
 // AUDIT
 const listAuditLog = asyncHandler(async (req, res) => {
-  const { limit = 200 } = req.query;
-  const logs = await AuditLog.find().sort({ createdAt: -1 }).limit(Number(limit)).lean();
-  sendSuccess(res, logs);
+  const { q, from, to } = req.query;
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+  const filter = {};
+  // Date range (ISO strings from the client's presets / custom picker).
+  if (from || to) {
+    filter.createdAt = {};
+    if (from) filter.createdAt.$gte = new Date(from);
+    if (to)   filter.createdAt.$lte = new Date(to);
+  }
+  // Free-text search across action / target / role / IP, plus the ObjectId
+  // string forms of actor & target so a "last-6" id fragment still matches.
+  if (q && String(q).trim()) {
+    const esc = String(q).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const rx = new RegExp(esc, 'i');
+    filter.$or = [
+      { action: rx }, { targetType: rx }, { actorRole: rx }, { ip: rx },
+      { $expr: { $regexMatch: { input: { $toString: { $ifNull: ['$actorId', ''] } }, regex: esc, options: 'i' } } },
+      { $expr: { $regexMatch: { input: { $toString: { $ifNull: ['$targetId', ''] } }, regex: esc, options: 'i' } } },
+    ];
+  }
+  const [items, total] = await Promise.all([
+    AuditLog.find(filter).sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+    AuditLog.countDocuments(filter),
+  ]);
+  sendSuccess(res, { items, total, page, limit, pages: Math.max(1, Math.ceil(total / limit)) });
+});
+
+// ═══════════ Support Tickets (user Feedback inbox) ═══════════
+const FEEDBACK_STATUSES = ['OPEN', 'TRIAGED', 'IN_PROGRESS', 'RESOLVED', 'WONT_FIX'];
+const FEEDBACK_CATEGORIES = ['BUG', 'FEATURE', 'UX', 'SUPPORT', 'OTHER'];
+
+// Reject a ticket the caller (an ADMIN) isn't scoped to. No-op for SUPER_ADMIN.
+function assertTicketInScope(fb, scope) {
+  if (scope && !scope.some((id) => String(id) === String(fb.userId))) {
+    throw new AppError('Not allowed', 403, 'FORBIDDEN');
+  }
+}
+
+// Live push to the ticket's OWNER so their "My Tickets" list updates without a
+// refresh (reply appears / status badge changes instantly). Never ships the
+// internal adminNote or the heavy attachment. Best-effort.
+function pushUserTicket(fb, event) {
+  try {
+    require('../websocket/server').notifyUser(String(fb.userId), 'tickets', {
+      event,
+      ticket: {
+        _id: String(fb._id),
+        category: fb.category,
+        subject: fb.subject,
+        status: fb.status,
+        adminReply: fb.adminReply || null,
+        repliedAt: fb.repliedAt || null,
+        createdAt: fb.createdAt,
+      },
+    });
+  } catch (_) { /* ws optional */ }
+}
+
+// GET /admin/support-tickets — paginated inbox. ADMIN sees only their subtree's
+// tickets; SUPER_ADMIN sees all. The heavy base64 `attachment` is omitted from
+// the list (only a `hasAttachment` flag ships); the full doc is fetched on
+// demand via GET /:id. Also returns per-status counts for the filter tabs.
+const listFeedback = asyncHandler(async (req, res) => {
+  const { q, status, category, from, to } = req.query;
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 25));
+  const filter = {};
+  if (status && FEEDBACK_STATUSES.includes(status)) filter.status = status;
+  if (category && FEEDBACK_CATEGORIES.includes(category)) filter.category = category;
+  if (from || to) {
+    filter.createdAt = {};
+    if (from) filter.createdAt.$gte = new Date(from);
+    if (to) filter.createdAt.$lte = new Date(to);
+  }
+  if (q && String(q).trim()) {
+    const rx = new RegExp(String(q).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    filter.$or = [{ subject: rx }, { message: rx }, { adminReply: rx }];
+  }
+  const scope = await adminScopeUserIds(req);
+  if (!applyUserScope(filter, scope)) {
+    return sendSuccess(res, { items: [], total: 0, page, limit, pages: 1, counts: {} });
+  }
+  // Status breakdown for the tabs — same scope/date/search window but WITHOUT
+  // the status constraint so each tab reflects its own count.
+  const countFilter = { ...filter };
+  delete countFilter.status;
+  const [rows, total, byStatus] = await Promise.all([
+    Feedback.find(filter).select('-attachment').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+    Feedback.countDocuments(filter),
+    Feedback.aggregate([{ $match: countFilter }, { $group: { _id: '$status', n: { $sum: 1 } } }]),
+  ]);
+  for (const r of rows) r.hasAttachment = !!r.attachmentName;
+  await attachUserBadge(rows);
+  const counts = byStatus.reduce((m, x) => { m[x._id] = x.n; return m; }, {});
+  sendSuccess(res, { items: rows, total, page, limit, pages: Math.max(1, Math.ceil(total / limit)), counts });
+});
+
+// GET /admin/support-tickets/:id — full ticket incl. the attachment data URI.
+const getFeedback = asyncHandler(async (req, res) => {
+  const fb = await Feedback.findById(req.params.id).lean();
+  if (!fb) throw new AppError('Ticket not found', 404);
+  assertTicketInScope(fb, await adminScopeUserIds(req));
+  await attachUserBadge([fb]);
+  sendSuccess(res, fb);
+});
+
+// PUT /admin/support-tickets/:id — set status and/or the INTERNAL admin note.
+const updateFeedback = asyncHandler(async (req, res) => {
+  const { status, adminNote } = req.body || {};
+  const fb = await Feedback.findById(req.params.id);
+  if (!fb) throw new AppError('Ticket not found', 404);
+  assertTicketInScope(fb, await adminScopeUserIds(req));
+  if (status !== undefined) {
+    if (!FEEDBACK_STATUSES.includes(status)) throw new AppError(`Invalid status. Allowed: ${FEEDBACK_STATUSES.join(', ')}`, 400);
+    fb.status = status;
+    if (status === 'RESOLVED' || status === 'WONT_FIX') { if (!fb.resolvedAt) fb.resolvedAt = new Date(); }
+    else fb.resolvedAt = undefined;
+  }
+  if (adminNote !== undefined) fb.adminNote = String(adminNote || '').slice(0, 4000) || undefined;
+  await fb.save();
+  await logAction(req, 'FEEDBACK_UPDATE', { type: 'Feedback', id: fb._id }, { status: fb.status });
+  pushUserTicket(fb, 'status');
+  const out = fb.toObject(); delete out.attachment;
+  await attachUserBadge([out]);
+  sendSuccess(res, out);
+});
+
+// POST /admin/support-tickets/:id/reply — record + deliver a reply to the user.
+// Shown in their "My Tickets" view and best-effort emailed. Nudges an
+// OPEN/TRIAGED ticket to IN_PROGRESS (leaves resolved tickets as-is).
+const replyFeedback = asyncHandler(async (req, res) => {
+  const reply = String(req.body?.reply || '').trim();
+  if (reply.length < 2) throw new AppError('Reply message is required', 400);
+  const fb = await Feedback.findById(req.params.id);
+  if (!fb) throw new AppError('Ticket not found', 404);
+  assertTicketInScope(fb, await adminScopeUserIds(req));
+  fb.adminReply = reply.slice(0, 4000);
+  fb.repliedAt = new Date();
+  if (fb.status === 'OPEN' || fb.status === 'TRIAGED') fb.status = 'IN_PROGRESS';
+  await fb.save();
+  await logAction(req, 'FEEDBACK_REPLY', { type: 'Feedback', id: fb._id }, {});
+  pushUserTicket(fb, 'reply');
+  // Best-effort email — never blocks the response.
+  try {
+    const u = await User.findById(fb.userId).select('email firstName').lean();
+    if (u?.email) {
+      const esc = (s) => String(s).replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+      require('../services/emailService').send({
+        to: u.email,
+        subject: `Re: ${fb.subject}`,
+        html: `<p>Hi ${esc(u.firstName || 'there')},</p><p>Our support team replied to your ticket <strong>"${esc(fb.subject)}"</strong>:</p><blockquote style="border-left:3px solid #FCD535;padding-left:12px;margin:12px 0;color:#334155">${esc(reply)}</blockquote><p style="font-size:13px;color:#64748b">View it under Help &amp; Support → My Tickets in your account.</p>`,
+      }).catch(() => {});
+    }
+  } catch (_) { /* email optional */ }
+  const out = fb.toObject(); delete out.attachment;
+  await attachUserBadge([out]);
+  sendSuccess(res, out);
 });
 
 // REPORTS
@@ -2647,6 +2835,10 @@ module.exports = {
   confirmDeposit,
   rejectDeposit,
   listAuditLog,
+  listFeedback,
+  getFeedback,
+  updateFeedback,
+  replyFeedback,
   tradesReport,
   updateAccountExecutionConfig,
   updateUserRiskControls,

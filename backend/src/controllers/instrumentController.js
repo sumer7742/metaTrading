@@ -88,11 +88,13 @@ const watchlist = asyncHandler(async (req, res) => {
     timeframe: '1d',
   })
     .sort({ openTime: -1 })
-    .limit(symbols.length * 2) // tolerate a few duplicates from boundary buckets
+    .limit(symbols.length * 3) // enough to capture the latest TWO sessions per symbol
     .lean();
-  const dayBySymbol = new Map();
+  const dayBySymbol = new Map();      // latest 1d candle (current / most-recent session)
+  const prevDayBySymbol = new Map();  // the session BEFORE it — baseline for daily % change
   for (const c of dayCandles) {
     if (!dayBySymbol.has(c.symbol)) dayBySymbol.set(c.symbol, c);
+    else if (!prevDayBySymbol.has(c.symbol)) prevDayBySymbol.set(c.symbol, c);
   }
 
   // For 24h % change: latest 1h close vs the 1h candle ~24h prior.
@@ -167,6 +169,19 @@ const watchlist = asyncHandler(async (req, res) => {
         change24h = ((Number(inst.lastPrice) - Number(baseline.close)) / Number(baseline.close)) * 100;
       }
     }
+    // Final fallback for non-crypto (forex / stocks / indices / commodities):
+    // derive a REAL daily % from the 1d candles already loaded — last price vs
+    // the PREVIOUS session's close (the standard daily change), or today's open
+    // when only one session exists. No external call; uses in-hand data. Only
+    // fills the cases the branches above left null, so crypto/hourly are intact.
+    if (change24h == null && Number(inst.lastPrice) > 0) {
+      const prevDay = prevDayBySymbol.get(inst.symbol);
+      const today = dayBySymbol.get(inst.symbol);
+      let base = 0;
+      if (prevDay && Number(prevDay.close) > 0) base = Number(prevDay.close);
+      else if (today && Number(today.open) > 0) base = Number(today.open);
+      if (base > 0) change24h = ((Number(inst.lastPrice) - base) / base) * 100;
+    }
 
     const volume24h = extTicker && Number.isFinite(extTicker.volume24h)
       ? String(extTicker.volume24h)
@@ -176,6 +191,7 @@ const watchlist = asyncHandler(async (req, res) => {
       symbol: inst.symbol,
       name: inst.name,
       category: inst.category,
+      logoUrl: inst.logoUrl || null,
       // exchange drives NSE/BSE session gating + ₹ display on the client.
       exchange: inst.exchange || null,
       segment: inst.segment || null,
@@ -215,7 +231,7 @@ const search = asyncHandler(async (req, res) => {
   if (!q) return sendSuccess(res, []);
   const limit = Math.min(Number(req.query.limit) || 25, 50);
   const rx = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-  const sel = 'symbol name category exchange segment lastPrice quoteCurrency lotSize underlying expiryDate strike optionType';
+  const sel = 'symbol name category exchange segment lastPrice quoteCurrency lotSize underlying expiryDate strike optionType logoUrl';
 
   const base = await Instrument.find({ isActive: true, segment: { $ne: 'OPT' }, $or: [{ symbol: rx }, { name: rx }] })
     .select(sel).limit(limit).lean();

@@ -268,6 +268,11 @@ const STATUS_COLOR = {
   COMPLETED: '#16A34A', CONFIRMED: '#16A34A', APPROVED: '#16A34A', DONE: '#16A34A',
   PROCESSING: '#2563EB', PENDING: '#D97706', REJECTED: '#DC2626', CANCELLED: '#94A3B8',
 };
+// Every status a deposit / withdrawal / ledger row can carry — so the Status
+// filter always offers the full set, even when the current history has none of
+// a given status yet. (Deposit: PENDING/CONFIRMED/REJECTED/CANCELLED,
+// Withdrawal: PENDING/APPROVED/PROCESSING/COMPLETED/REJECTED/CANCELLED.)
+const ALL_STATUSES = ['PENDING', 'PROCESSING', 'CONFIRMED', 'APPROVED', 'COMPLETED', 'REJECTED', 'CANCELLED'];
 const statusDot = (status) => (
   <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: STATUS_COLOR[String(status).toUpperCase()] || '#94A3B8' }} />
 );
@@ -442,8 +447,12 @@ const WalletIcon = () => <svg width="15" height="15" viewBox="0 0 24 24" fill="n
 function AccountSelect({ accounts, value, onChange }) {
   const { open, setOpen, ref } = useDropdown();
   const opts = [
-    { id: 'all', name: 'All Accounts' },
-    ...accounts.map((a) => ({ id: String(a._id), name: a.nickname || a.accountNumber || a.accountType || 'Account' })),
+    { id: 'all', name: 'All Accounts', sub: '' },
+    ...accounts.map((a) => {
+      const name = a.nickname || a.accountNumber || a.accountType || 'Account';
+      // Show the account number as a subline — unless the name already IS it.
+      return { id: String(a._id), name, sub: a.accountNumber && a.accountNumber !== name ? a.accountNumber : '' };
+    }),
   ];
   const cur = opts.find((o) => o.id === value) || opts[0];
   return (
@@ -463,7 +472,10 @@ function AccountSelect({ accounts, value, onChange }) {
                   className="w-full flex items-center gap-2.5 px-2 py-2 rounded-lg text-left hover:bg-bg-hover transition-colors"
                 >
                   <span className="text-text-muted shrink-0"><WalletIcon /></span>
-                  <span className="text-[13px] text-text-primary flex-1 truncate">{o.name}</span>
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-[13px] text-text-primary truncate">{o.name}</span>
+                    {o.sub && <span className="block text-[11px] font-mono text-text-muted truncate">{o.sub}</span>}
+                  </span>
                   <span className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${active ? 'border-primary-600' : 'border-gray-300'}`}>
                     {active && <span className="w-2 h-2 rounded-full bg-primary-600" />}
                   </span>
@@ -581,7 +593,13 @@ export default function TransactionHistory({ deposits = [], withdrawals = [], le
   }, [deposits, withdrawals, ledger]);
 
   const typeOptions = TYPE_CATEGORIES;
-  const statusOptions = useMemo(() => [...new Set(allRows.map((r) => r.status))].sort(), [allRows]);
+  // Always offer every possible status (not just those present in the current
+  // history), plus any unexpected value that shows up in the data.
+  const statusOptions = useMemo(() => {
+    const present = new Set(allRows.map((r) => r.status).filter(Boolean));
+    const extra = [...present].filter((s) => !ALL_STATUSES.includes(s)).sort();
+    return [...ALL_STATUSES, ...extra];
+  }, [allRows]);
 
   // Default the multiselects to "all" once options are known.
   const effTypeSel = typeSel === null ? typeOptions : typeSel;

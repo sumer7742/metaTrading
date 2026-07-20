@@ -107,6 +107,7 @@ const register = asyncHandler(async (req, res) => {
     firstName,
     lastName,
     phone: normalizedPhone,
+    country: country ? String(country).trim().toUpperCase().slice(0, 2) : null,
     referralCode: myReferralCode,
     referredBy,
     emailVerificationToken: verifyToken,
@@ -131,23 +132,22 @@ const register = asyncHandler(async (req, res) => {
     console.warn('[REGISTER] hierarchy auto-assign failed:', e.message);
   }
 
-  // Default account on signup: a DEMO/practice account (₹1,00,000 virtual seed,
-  // instant top-up, no KYC, virtual funds NOT withdrawable) so the user can try
-  // the platform before depositing real money. It's TYPED DEMO for those safety
-  // behaviours but LABELLED "Standard" — DEMO already maps to the STANDARD tier's
-  // fees/leverage (config/accountTypes.getAccountTypeDef). To open a real live
-  // account they use the /accounts/new tier picker after login.
+  // Default account on signup: a REAL STANDARD account with ZERO balance.
+  // No virtual seed — this is a LIVE account, so the user must deposit real
+  // money before trading (Standard tier minDeposit gate) and all volume / PnL
+  // counts for real (including referral commission). Additional tiers can be
+  // opened later via the /accounts/new tier picker after login.
   const practiceAccountNumber = 'TA' + Date.now().toString().slice(-9);
   const practiceAccount = await TradingAccount.create({
     userId: user._id,
     accountNumber: practiceAccountNumber,
-    accountType: ACCOUNT_TYPES.DEMO,
+    accountType: ACCOUNT_TYPES.STANDARD,
     baseCurrency: 'INR',
     leverage: 100,
     mode: TRADING_MODE.HYBRID,
     nickname: 'Standard Account',
   });
-  await Wallet.create({ userId: user._id, accountId: practiceAccount._id, currency: 'INR', balance: '100000' });
+  await Wallet.create({ userId: user._id, accountId: practiceAccount._id, currency: 'INR', balance: '0' });
 
   // Issue real tokens. Push the refresh token via atomic $push so a
   // concurrent login doesn't blow away the array.
@@ -278,20 +278,36 @@ const login = asyncHandler(async (req, res) => {
 
   console.log('[LOGIN] before refresh token update');
 
+  // ── Concurrent-device limit (plan-gated, HARD block) ───────────────────
+  // Each distinct device (user-agent) is one session. A NEW device is rejected
+  // once the user is already at their plan's maxDevices; an EXISTING device
+  // just refreshes its own session. maxDevices null/absent = unlimited, and a
+  // plan-lookup failure never blocks login (fails open).
+  const existingTokens = user.refreshTokens || [];
+  const deviceKey = (t) => t.deviceInfo || 'Unknown device';
+  const existingDevices = new Set(existingTokens.map(deviceKey));
+  let maxDevices = null;
+  try {
+    const plan = await require('../services/subscriptionService').getEffectivePlan(user._id);
+    maxDevices = plan?.limits?.maxDevices;
+  } catch (_) { /* fail open — never lock a user out over an infra hiccup */ }
+  if (Number.isFinite(maxDevices) && maxDevices > 0 && !existingDevices.has(incomingUA) && existingDevices.size >= maxDevices) {
+    throw new AppError(
+      `Device limit reached — your plan allows ${maxDevices} logged-in device${maxDevices > 1 ? 's' : ''}. Log out from another device (Profile → Devices) and try again.`,
+      403,
+      'DEVICE_LIMIT_REACHED',
+    );
+  }
+
+  // Keep exactly ONE session per device: drop this device's prior token (if any)
+  // then add the fresh one, so the stored count equals the distinct-device count.
+  const nextTokens = [
+    ...existingTokens.filter((t) => deviceKey(t) !== incomingUA),
+    { token: refreshToken, deviceInfo: incomingUA },
+  ];
   await User.updateOne(
     { _id: user._id },
-    {
-      $push: {
-        refreshTokens: {
-          $each: [{ token: refreshToken, deviceInfo: incomingUA }],
-          $slice: -5,
-        },
-      },
-      $set: {
-        lastLoginAt: new Date(),
-        lastLoginIp: req.ip,
-      },
-    }
+    { $set: { refreshTokens: nextTokens, lastLoginAt: new Date(), lastLoginIp: req.ip } },
   ).maxTimeMS(10000);
 
   console.log('[LOGIN] after refresh token update', {

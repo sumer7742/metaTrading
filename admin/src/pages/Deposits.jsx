@@ -5,17 +5,27 @@ import { fmtNum, fmtDate } from '../utils/format';
 import PageHero from '../components/PageHero';
 import { useConfirm } from '../components/ConfirmProvider';
 
+// Which wallet the deposit is credited to (Deposit.targetWallet).
+const TARGET_WALLET_LABEL = {
+  trading: 'Trading Account',
+  subscription: 'Main Wallet',
+  bonus: 'Bonus Wallet',
+};
+
 export default function Deposits() {
   const askConfirm = useConfirm();
   const [items, setItems] = useState([]);
   const [filter, setFilter] = useState('PENDING');
+  const [mode, setMode] = useState('');   // '' = all accounts, 'real', 'demo'
   const [viewing, setViewing] = useState(null); // deposit being viewed in detail modal
   const [refreshing, setRefreshing] = useState(false);
 
   const load = async () => {
     setRefreshing(true);
     try {
-      const { data } = await api.get('/admin/deposits', { params: filter ? { status: filter } : {} });
+      const { data } = await api.get('/admin/deposits', {
+        params: { ...(filter ? { status: filter } : {}), ...(mode ? { mode } : {}) },
+      });
       setItems(data.data);
     } finally {
       setRefreshing(false);
@@ -31,7 +41,7 @@ export default function Deposits() {
     window.addEventListener('focus', onFocus);
     return () => { clearInterval(id); window.removeEventListener('focus', onFocus); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter]);
+  }, [filter, mode]);
 
   const confirm = async (id) => {
     if (!(await askConfirm('Confirm this deposit? This will credit the user wallet immediately.'))) return;
@@ -82,6 +92,17 @@ export default function Deposits() {
             )}
           </button>
         ))}
+        <span className="w-px h-5 bg-border-dark mx-1" />
+        <select
+          value={mode}
+          onChange={(e) => setMode(e.target.value)}
+          className="text-xs px-3 py-1.5 rounded bg-bg-card text-gray-300 border border-border-dark hover:bg-bg-hover focus:outline-none"
+          title="Filter by account type"
+        >
+          <option value="">All accounts</option>
+          <option value="real">Real accounts</option>
+          <option value="demo">Demo accounts</option>
+        </select>
         <span className="flex-1" />
         <span className="text-[11px] text-gray-500 flex items-center gap-1.5">
           <span className={`w-1.5 h-1.5 rounded-full ${refreshing ? 'bg-bull animate-pulse' : 'bg-gray-600'}`} />
@@ -115,6 +136,7 @@ export default function Deposits() {
                   {d.user?.userUid
                     ? <span className="font-mono font-bold text-primary-500">{d.user.userUid}</span>
                     : <span className="font-mono text-gray-400">{d.userId?.toString().slice(-6)}</span>}
+                  {d.isDemo && <span className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-500/20 text-purple-300 align-middle">DEMO</span>}
                   {d.user?.name && <div className="text-[10px] text-gray-500 truncate max-w-[160px]">{d.user.name}</div>}
                 </td>
                 <td className="p-3 text-xs">
@@ -194,6 +216,21 @@ function DepositDetailModal({ deposit, onClose, onConfirm, onReject }) {
               <div className="text-3xl font-bold text-primary-500 font-mono">
                 {symbol(deposit.currency)}{Number(deposit.amount).toLocaleString('en-IN', {minimumFractionDigits: 2})}
               </div>
+            </div>
+
+            {/* Destination wallet — which wallet + account this deposit credits */}
+            <div>
+              <div className="text-xs text-gray-500 uppercase mb-1">Destination Wallet</div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-white text-sm font-semibold">{TARGET_WALLET_LABEL[deposit.targetWallet] || deposit.targetWallet || 'Trading Account'}</span>
+                {deposit.accountNickname && <span className="text-gray-400 text-sm">· {deposit.accountNickname}</span>}
+                {(deposit.targetWallet || 'trading') === 'trading' && (
+                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${deposit.isDemo ? 'bg-amber-500/20 text-amber-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
+                    {deposit.isDemo ? 'DEMO' : 'REAL'}
+                  </span>
+                )}
+              </div>
+              {deposit.accountNumber && <div className="text-[11px] text-gray-500 font-mono mt-0.5">{deposit.accountNumber}</div>}
             </div>
 
             <div>

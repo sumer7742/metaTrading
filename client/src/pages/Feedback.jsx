@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
+import { wsClient } from '../services/ws';
 import { fmtDate } from '../utils/format';
 
 /**
@@ -52,6 +53,23 @@ export default function Feedback() {
 
   useEffect(() => {
     load();
+  }, []);
+
+  // Live: admin reply / status change pushes on `user:tickets` → merge it into
+  // the matching row (or prepend) so the history updates without a refresh.
+  useEffect(() => {
+    const unsub = wsClient.subscribe('user:tickets', (d) => {
+      const t = d?.ticket;
+      if (!t?._id) return;
+      setItems((prev) => {
+        const i = prev.findIndex((x) => x._id === t._id);
+        if (i === -1) return [t, ...prev];
+        const next = prev.slice();
+        next[i] = { ...next[i], ...t };
+        return next;
+      });
+    });
+    return () => unsub && unsub();
   }, []);
 
   const submit = async (e) => {
@@ -210,10 +228,10 @@ export default function Feedback() {
                       {it.status.replace('_', ' ')}
                     </span>
                   </div>
-                  {it.adminNote && (
-                    <div className="mt-2 text-[11px] text-text-secondary border-l-2 border-primary-500/40 pl-3">
+                  {it.adminReply && (
+                    <div className="mt-2 text-[11px] text-text-secondary border-l-2 border-primary-500/40 pl-3 whitespace-pre-wrap">
                       <span className="text-primary-500 font-semibold">Team: </span>
-                      {it.adminNote}
+                      {it.adminReply}
                     </div>
                   )}
                 </div>

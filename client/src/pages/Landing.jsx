@@ -1,16 +1,22 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import CmsFooter from '../components/CmsFooter';
 import LandingHeader from '../components/LandingHeader';
+import { api } from '../services/api';
+import { fmtNum } from '../utils/format';
 
 /**
- * Pre-login marketing landing page. Fully public, self-contained (no API /
- * auth dependency so it always renders), built on the app's light design
- * system (#1D4ED8 primary, bull/bear accents). Reuses the CMS footer.
+ * Pre-login marketing landing page. Fully public — the only network call is the
+ * public /instruments/watchlist feed that powers the live price ticker, and it
+ * falls back to a static showcase list if that's unreachable, so the page always
+ * renders. Built on the app's light design system (#1D4ED8 primary, bull/bear
+ * accents). Reuses the CMS footer.
  *
  * Section order mirrors the reference marketing layout: Hero → Ticker →
  * Trust badges → Why Choose → Everything you need → Built for Every Trader
- * → Markets → Platform → Protected banner → How It Works → Testimonials →
- * Pillars → App download → Final CTA.
+ * → Markets → Platform → Protected banner → How It Works →
+ * Why Traders Love TradePro (testimonials + merged benefit badges) →
+ * App download → Final CTA.
  */
 
 const TICKER = [
@@ -96,12 +102,23 @@ const BUILT = [
 ];
 
 const MARKETS = [
-  { name: 'Crypto', desc: 'BTC, ETH & 100+ coins', c: +0.42, icon: 'crypto' },
-  { name: 'Forex', desc: '60+ currency pairs', c: -0.32, icon: 'fx' },
-  { name: 'Stocks', desc: 'Global equities', c: +0.62, icon: 'stock' },
-  { name: 'Commodities', desc: 'Oil, gas & metals', c: +0.42, icon: 'oil' },
-  { name: 'Indices', desc: 'NAS100, SPX, DJI', c: +0.42, icon: 'index' },
+  { name: 'Crypto', desc: '500+ Assets', c: +0.42, icon: 'crypto' },
+  { name: 'Forex', desc: 'Major Pairs', c: -0.32, icon: 'fx' },
+  { name: 'Stocks', desc: 'Global Stocks', c: +0.62, icon: 'stock' },
+  { name: 'Commodities', desc: 'Gold, Oil & more', c: +0.42, icon: 'oil' },
+  { name: 'Indices', desc: 'Global Indices', c: +0.42, icon: 'index' },
 ];
+
+// Landing card name → Instrument.category enum. Drives the LIVE per-category
+// average % change pulled from the public watchlist feed (the `c` above is only
+// a static fallback used while loading / if the feed is unreachable).
+const MARKET_CATEGORY = {
+  Crypto: 'CRYPTO',
+  Forex: 'FOREX',
+  Stocks: 'STOCK',
+  Commodities: 'COMMODITY',
+  Indices: 'INDEX',
+};
 
 const STATS = [
   { v: '₹0', l: 'Free to start' },
@@ -140,7 +157,6 @@ export default function Landing() {
         <ProtectedBanner />
         <Steps />
         <Testimonials />
-        <Pillars />
         <AppDownload />
         <FinalCTA />
       </main>
@@ -283,7 +299,34 @@ function ChartSVG() {
 
 /* ───────────────────────────── Ticker ───────────────────────────── */
 function Ticker() {
-  const row = [...TICKER, ...TICKER];
+  // Live public price feed — pulls the same public `/instruments/watchlist`
+  // endpoint the in-app market rail uses (no auth required), refreshed every
+  // 10s. While it loads, or if the backend is unreachable, we fall back to the
+  // static TICKER showcase so the marquee is never empty for a first visitor.
+  const [live, setLive] = useState(null);
+  useEffect(() => {
+    let on = true;
+    const load = () => api.get('/instruments/watchlist')
+      .then((r) => {
+        if (!on) return;
+        const rows = (r.data?.data || [])
+          .filter((x) => Number(x.lastPrice) > 0)
+          .slice(0, 14)
+          .map((x) => ({
+            s: x.symbol,
+            p: fmtNum(Number(x.lastPrice), Math.min(x.pricePrecision || 2, 5)),
+            c: Number.isFinite(Number(x.change24h)) ? Number(x.change24h) : 0,
+          }));
+        if (rows.length) setLive(rows);
+      })
+      .catch(() => { /* keep the static fallback */ });
+    load();
+    const id = setInterval(load, 10000);
+    return () => { on = false; clearInterval(id); };
+  }, []);
+
+  const data = live && live.length ? live : TICKER;
+  const row = [...data, ...data];
   return (
     <div className="border-y border-border-subtle bg-bg-card/60 py-3 overflow-hidden">
       <div className="lnd-marquee flex gap-8 w-max">
@@ -389,49 +432,225 @@ function BuiltForEveryTrader() {
 }
 
 /* ─────────────────────── Trade every market ─────────────────────── */
-function Chip({ bg, children }) {
+// Coin-style token (crypto / forex) — gradient disc with a white rim + top
+// shine so it reads as a minted coin rather than a flat chip.
+function Coin({ from, to, ring = 'rgba(255,255,255,0.55)', children }) {
   return (
-    <span className="keep-white w-10 h-10 rounded-full flex items-center justify-center text-[15px] font-extrabold border-2 border-white shadow-sm" style={{ background: bg, color: '#fff' }}>{children}</span>
+    <span
+      className="keep-white relative w-12 h-12 rounded-full flex items-center justify-center text-[18px] font-black border-2 border-white"
+      style={{ background: `radial-gradient(120% 120% at 32% 22%, ${from} 0%, ${to} 82%)`, color: '#fff', boxShadow: '0 7px 16px rgba(15,23,42,0.30), inset 0 -3px 6px rgba(0,0,0,0.28), inset 0 2px 4px rgba(255,255,255,0.5)' }}
+    >
+      <span className="pointer-events-none absolute inset-[3px] rounded-full" style={{ border: `1.5px solid ${ring}` }} />
+      <span className="pointer-events-none absolute inset-0 rounded-full" style={{ background: 'radial-gradient(58% 42% at 32% 22%, rgba(255,255,255,0.55), transparent 72%)' }} />
+      <span className="relative leading-none">{children}</span>
+    </span>
   );
 }
-const AppleGlyph = () => <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M16.5 1.6c0 1.2-.5 2.3-1.3 3.1-.9.9-2 1.5-3.1 1.4-.1-1.2.5-2.4 1.2-3.1.9-.9 2.2-1.5 3.2-1.4zM20 17.1c-.5 1.2-.8 1.7-1.4 2.7-.9 1.4-2.2 3.1-3.8 3.1-1.4 0-1.8-.9-3.7-.9s-2.3.9-3.7.9c-1.6 0-2.8-1.6-3.7-2.9C1.3 17.1.9 12.4 2.5 9.9c1-1.6 2.7-2.6 4.2-2.6 1.6 0 2.6.9 3.9.9 1.3 0 2.1-.9 3.9-.9 1.4 0 2.8.7 3.8 2-3.3 1.8-2.8 6.6.7 7.8z" /></svg>;
+// White disc holding a brand logo (stocks) — subtle border + shadow so the
+// mark floats like a real app icon in both light and dark themes.
+function LogoDisc({ tint = '#111827', children }) {
+  return (
+    <span className="keep-white w-11 h-11 rounded-full bg-white flex items-center justify-center border border-border-subtle shadow-md" style={{ color: tint }}>
+      {children}
+    </span>
+  );
+}
+const AppleGlyph = () => <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M16.5 1.6c0 1.2-.5 2.3-1.3 3.1-.9.9-2 1.5-3.1 1.4-.1-1.2.5-2.4 1.2-3.1.9-.9 2.2-1.5 3.2-1.4zM20 17.1c-.5 1.2-.8 1.7-1.4 2.7-.9 1.4-2.2 3.1-3.8 3.1-1.4 0-1.8-.9-3.7-.9s-2.3.9-3.7.9c-1.6 0-2.8-1.6-3.7-2.9C1.3 17.1.9 12.4 2.5 9.9c1-1.6 2.7-2.6 4.2-2.6 1.6 0 2.6.9 3.9.9 1.3 0 2.1-.9 3.9-.9 1.4 0 2.8.7 3.8 2-3.3 1.8-2.8 6.6.7 7.8z" /></svg>;
+const TeslaGlyph = () => (
+  <svg width="19" height="19" viewBox="0 0 24 24" fill="currentColor">
+    <path d="M3.2 5.6C6 4.5 9 4 12 4s6 .5 8.8 1.6l-.9 1.9c-1.2-.4-2.5-.7-3.8-.9l-1.2 1.9c-.9-.13-1.9-.2-2.9-.2s-2 .07-2.9.2L7.9 6.6c-1.3.2-2.6.5-3.8.9L3.2 5.6z" />
+    <rect x="11" y="7.9" width="2" height="11.1" rx="0.5" />
+  </svg>
+);
+const AmazonGlyph = () => (
+  <span className="relative flex items-center justify-center font-black text-[19px] leading-none" style={{ color: '#111827' }}>
+    a
+    <svg className="absolute left-1/2 -translate-x-1/2 -bottom-1" width="24" height="9" viewBox="0 0 24 9" fill="none">
+      <path d="M2 2.4c5.2 3.4 14.8 3.4 20 0" stroke="#FF9900" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M20.4 1l2.4 1.3-2.6 1z" fill="#FF9900" />
+    </svg>
+  </span>
+);
+const GoldBars = () => (
+  <svg width="40" height="32" viewBox="0 0 40 32" aria-hidden="true">
+    <defs>
+      <linearGradient id="ldgoldF" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#FCD34D" /><stop offset="1" stopColor="#C2740A" /></linearGradient>
+    </defs>
+    <g stroke="#92400E" strokeWidth="0.6" strokeLinejoin="round">
+      {/* bottom-left bar — front face + lighter 3D top face */}
+      <path d="M3 30h13l-1.4-6H4.4z" fill="url(#ldgoldF)" />
+      <path d="M4.4 24h11.2l2.2-2.6H6.6z" fill="#FDE68A" />
+      {/* bottom-right bar */}
+      <path d="M21 30h13l-1.4-6H22.4z" fill="url(#ldgoldF)" />
+      <path d="M22.4 24h11.2l2.2-2.6H24.6z" fill="#FDE68A" />
+      {/* top bar */}
+      <path d="M12 22h13l-1.4-6H13.4z" fill="url(#ldgoldF)" />
+      <path d="M13.4 16h11.2l2.2-2.6H15.6z" fill="#FEF3C7" />
+    </g>
+  </svg>
+);
+const OilBarrel = () => (
+  <svg width="26" height="32" viewBox="0 0 26 32" aria-hidden="true">
+    <defs>
+      <linearGradient id="ldbarrel" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stopColor="#1E293B" /><stop offset="0.5" stopColor="#0B1220" /><stop offset="1" stopColor="#020617" /></linearGradient>
+    </defs>
+    <rect x="4" y="4" width="18" height="24" rx="3.4" fill="url(#ldbarrel)" />
+    <ellipse cx="13" cy="4.6" rx="9" ry="2.6" fill="#334155" />
+    <path d="M8.5 4.6v23" stroke="rgba(255,255,255,0.16)" strokeWidth="2" strokeLinecap="round" />
+    <rect x="4" y="10.4" width="18" height="1.9" rx="0.6" fill="#F59E0B" opacity="0.9" />
+    <rect x="4" y="19.4" width="18" height="1.9" rx="0.6" fill="#F59E0B" opacity="0.9" />
+    <path d="M13 13.4c1.8 2 2.9 3.5 2.9 4.9a2.9 2.9 0 0 1-5.8 0c0-1.4 1.1-2.9 2.9-4.9z" fill="#FBBF24" />
+  </svg>
+);
+const IndexChart = () => (
+  <svg width="46" height="32" viewBox="0 0 46 32" aria-hidden="true">
+    <defs>
+      <linearGradient id="ldbarG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#4ADE80" /><stop offset="1" stopColor="#15803D" /></linearGradient>
+      <linearGradient id="ldbarB" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#60A5FA" /><stop offset="1" stopColor="#1D4ED8" /></linearGradient>
+      <linearGradient id="ldbarV" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#C084FC" /><stop offset="1" stopColor="#7C3AED" /></linearGradient>
+    </defs>
+    <rect x="3"    y="18" width="5.5" height="11" rx="1.4" fill="url(#ldbarG)" />
+    <rect x="11.5" y="12" width="5.5" height="17" rx="1.4" fill="url(#ldbarB)" />
+    <rect x="20"   y="15" width="5.5" height="14" rx="1.4" fill="url(#ldbarV)" />
+    <rect x="28.5" y="8"  width="5.5" height="21" rx="1.4" fill="url(#ldbarB)" />
+    <rect x="37"   y="13" width="5.5" height="16" rx="1.4" fill="url(#ldbarG)" />
+    <path d="M5.7 16 L14.2 10 L22.7 13.5 L31.2 6.5 L39.7 11" fill="none" stroke="#64748B" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M37.6 9.2 L40.3 10.3 L38.7 12.6 Z" fill="#64748B" />
+  </svg>
+);
 
 function MarketCluster({ name }) {
   switch (name) {
     case 'Crypto':
-      return <div className="flex -space-x-3 justify-center"><Chip bg="#F7931A">₿</Chip><Chip bg="#627EEA">Ξ</Chip><Chip bg="#26A17B">₮</Chip></div>;
+      return (
+        <div className="flex -space-x-3 justify-center">
+          <Coin from="#FDB931" to="#F7931A">₿</Coin>
+          <Coin from="#8A92B2" to="#627EEA">Ξ</Coin>
+        </div>
+      );
     case 'Forex':
-      return <div className="flex -space-x-3 justify-center"><Chip bg="#16A34A">$</Chip><Chip bg="#2563EB">€</Chip><Chip bg="#7C3AED">£</Chip></div>;
+      return (
+        <div className="flex -space-x-3 justify-center">
+          <Coin from="#34D399" to="#059669">$</Coin>
+          <Coin from="#60A5FA" to="#2563EB">€</Coin>
+        </div>
+      );
     case 'Stocks':
-      return <div className="flex -space-x-3 justify-center"><Chip bg="#111827"><AppleGlyph /></Chip><Chip bg="#E11D48">T</Chip><Chip bg="#F59E0B">a</Chip></div>;
+      return (
+        <div className="flex -space-x-2.5 justify-center">
+          <LogoDisc tint="#111827"><AppleGlyph /></LogoDisc>
+          <LogoDisc tint="#E82127"><TeslaGlyph /></LogoDisc>
+          <LogoDisc><AmazonGlyph /></LogoDisc>
+        </div>
+      );
     case 'Commodities':
-      return <div className="flex -space-x-3 justify-center"><Chip bg="#D97706"><MarketIcon name="gold" /></Chip><Chip bg="#1F2937"><MarketIcon name="oil" /></Chip></div>;
+      return (
+        <div className="flex items-end justify-center gap-1.5">
+          <GoldBars />
+          <OilBarrel />
+        </div>
+      );
     case 'Indices':
     default:
-      return (
-        <span className="inline-flex items-end justify-center gap-[3px] w-16 h-10 rounded-lg px-2.5 py-1.5 border border-border-subtle bg-white shadow-sm">
-          {[[8, '#22C55E'], [13, '#3B82F6'], [7, '#F59E0B'], [16, '#8B5CF6'], [10, '#22C55E']].map(([h, c], i) => (
-            <span key={i} className="w-1.5 rounded-t" style={{ height: h, background: c }} />
-          ))}
-        </span>
-      );
+      return <IndexChart />;
   }
 }
 
 function Markets() {
   const grad = { background: 'linear-gradient(90deg,#1D4ED8,#3B82F6)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' };
+  // Live per-category average 24h change from the same public /instruments/watchlist
+  // feed the ticker uses. Each card's % becomes the mean change24h across that
+  // category's instruments, refreshed every 10s. A category with no live data
+  // (feed down, or no seeded change for that category) keeps its static fallback.
+  const [chg, setChg] = useState({}); // { CRYPTO: 0.83, FOREX: -0.12, … }
+  useEffect(() => {
+    let on = true;
+    const load = () => api.get('/instruments/watchlist')
+      .then((r) => {
+        if (!on) return;
+        const acc = {}; // category → { sum, n }
+        for (const x of (r.data?.data || [])) {
+          const cat = String(x.category || '').toUpperCase();
+          // change24h is null when the backend has no 24h baseline for that
+          // instrument — guard explicitly (Number(null) === 0 would otherwise
+          // pollute the average with fake zeros and block the static fallback).
+          if (!cat || x.change24h == null) continue;
+          const v = Number(x.change24h);
+          if (!Number.isFinite(v)) continue;
+          if (!acc[cat]) acc[cat] = { sum: 0, n: 0 };
+          acc[cat].sum += v; acc[cat].n += 1;
+        }
+        const out = {};
+        for (const [cat, a] of Object.entries(acc)) if (a.n) out[cat] = a.sum / a.n;
+        setChg(out);
+      })
+      .catch(() => { /* keep the static fallback */ });
+    load();
+    const id = setInterval(load, 10000);
+    return () => { on = false; clearInterval(id); };
+  }, []);
+
+  // ── Horizontal scroll rail with prev/next buttons ───────────────────
+  // The cards live in an overflow-x scroller; the arrows call scrollBy and
+  // fade out at each end (updated on scroll + resize).
+  const scrollerRef = useRef(null);
+  const [canL, setCanL] = useState(false);
+  const [canR, setCanR] = useState(false);
+  const updateArrows = useCallback(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    setCanL(el.scrollLeft > 4);
+    setCanR(el.scrollLeft < el.scrollWidth - el.clientWidth - 4);
+  }, []);
+  useEffect(() => {
+    updateArrows();
+    const el = scrollerRef.current;
+    if (!el) return;
+    el.addEventListener('scroll', updateArrows, { passive: true });
+    window.addEventListener('resize', updateArrows);
+    return () => { el.removeEventListener('scroll', updateArrows); window.removeEventListener('resize', updateArrows); };
+  }, [updateArrows]);
+  const scrollByDir = (dir) => {
+    const el = scrollerRef.current;
+    if (el) el.scrollBy({ left: dir * el.clientWidth * 0.8, behavior: 'smooth' });
+  };
+  const arrowBtn = 'keep-white absolute top-1/2 -translate-y-1/2 z-20 w-10 h-10 rounded-full bg-white border border-border-dark shadow-elevated flex items-center justify-center text-text-secondary transition-all duration-200';
+
   return (
     <section id="markets" className="max-w-[1200px] mx-auto px-4 sm:px-6 pt-16 pb-4">
       <h2 className="text-3xl sm:text-[34px] font-extrabold tracking-tight text-center">Trade <span style={grad}>Every Market</span></h2>
-      <div className="mt-8 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-        {MARKETS.map((m) => (
-          <div key={m.name} className="card p-4 text-center hover:border-primary-500/40 hover:shadow-elevated transition-all">
-            <div className="h-12 flex items-center justify-center mb-3"><MarketCluster name={m.name} /></div>
-            <div className="font-bold text-sm">{m.name}</div>
-            <div className="text-[11px] text-text-muted truncate">{m.desc}</div>
-            <div className={`text-xs font-bold mt-1 ${m.c >= 0 ? 'text-bull' : 'text-bear'}`}>{m.c >= 0 ? '+' : ''}{m.c.toFixed(2)}%</div>
-          </div>
-        ))}
+      <div className="relative mt-8">
+        {/* Prev */}
+        <button
+          type="button" onClick={() => scrollByDir(-1)} aria-label="Scroll left"
+          className={`${arrowBtn} left-0 sm:-left-3 ${canL ? 'opacity-100 hover:text-primary-600 hover:border-primary-500/50 hover:scale-105' : 'opacity-40 pointer-events-none'}`}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 6l-6 6 6 6" /></svg>
+        </button>
+        {/* Scroll rail */}
+        <div ref={scrollerRef} className="flex gap-3 overflow-x-auto no-scrollbar scroll-smooth pb-1">
+          {MARKETS.map((m) => {
+            const live = chg[MARKET_CATEGORY[m.name]];
+            const c = Number.isFinite(live) ? live : m.c;
+            return (
+              <div key={m.name} className="shrink-0 basis-[72%] sm:basis-[43%] md:basis-[30%] lg:basis-[21%] card p-4 text-center hover:border-primary-500/40 hover:shadow-elevated transition-all">
+                <div className="h-12 flex items-center justify-center mb-3"><MarketCluster name={m.name} /></div>
+                <div className="flex items-center justify-center gap-2 flex-wrap">
+                  <span className="font-bold text-sm">{m.name}</span>
+                  <span className={`text-xs font-bold ${c >= 0 ? 'text-bull' : 'text-bear'}`}>{c >= 0 ? '+' : ''}{c.toFixed(2)}%</span>
+                </div>
+                <div className="text-[11px] text-text-muted truncate mt-0.5">{m.desc}</div>
+              </div>
+            );
+          })}
+        </div>
+        {/* Next */}
+        <button
+          type="button" onClick={() => scrollByDir(1)} aria-label="Scroll right"
+          className={`${arrowBtn} right-0 sm:-right-3 ${canR ? 'opacity-100 hover:text-primary-600 hover:border-primary-500/50 hover:scale-105' : 'opacity-40 pointer-events-none'}`}
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6" /></svg>
+        </button>
       </div>
     </section>
   );
@@ -457,34 +676,75 @@ function Platform() {
         </div>
         <Link to="/register" className="btn-primary mt-8 inline-flex text-base px-7 py-3.5">Explore Platform →</Link>
       </div>
-      {/* Right — laptop + phone trading mockup */}
-      <div className="relative pb-10 pr-4">
-        <div className="rounded-t-xl border border-border-dark bg-white shadow-elevated overflow-hidden">
-          <div className="h-6 bg-bg-card border-b border-border-subtle flex items-center gap-1.5 px-3">
-            <span className="w-2 h-2 rounded-full bg-bear/60" /><span className="w-2 h-2 rounded-full bg-warn/60" /><span className="w-2 h-2 rounded-full bg-bull/60" />
+      {/* Right — dark trading terminal mockup (laptop + phone), matches the in-app dark theme */}
+      <div className="relative pb-12 pr-2 sm:pr-6">
+        {/* Laptop screen */}
+        <div className="keep-white rounded-xl border shadow-elevated overflow-hidden" style={{ borderColor: '#1E293B', background: '#0B1220' }}>
+          {/* window chrome */}
+          <div className="h-7 flex items-center gap-1.5 px-3 border-b" style={{ background: '#0E1626', borderColor: 'rgba(255,255,255,0.08)' }}>
+            <span className="w-2.5 h-2.5 rounded-full" style={{ background: '#FF5F57' }} />
+            <span className="w-2.5 h-2.5 rounded-full" style={{ background: '#FEBC2E' }} />
+            <span className="w-2.5 h-2.5 rounded-full" style={{ background: '#28C840' }} />
+            <span className="ml-2 text-[9px] font-semibold" style={{ color: '#64748B' }}>TradePro Terminal</span>
           </div>
-          <div className="p-3 bg-bg-card">
-            <div className="rounded-lg bg-white border border-border-subtle p-2">
-              <div className="flex items-center justify-between mb-1.5 px-1">
-                <span className="text-[11px] font-bold">BTC/USD <span className="text-bull">+1.84%</span></span>
-                <div className="flex gap-1">
-                  <span className="keep-white text-[8px] font-bold px-2 py-0.5 rounded" style={{ background: '#00C853', color: '#fff' }}>Buy</span>
-                  <span className="keep-white text-[8px] font-bold px-2 py-0.5 rounded" style={{ background: '#FF3B57', color: '#fff' }}>Sell</span>
+          {/* chart + order panel */}
+          <div className="p-2.5 grid grid-cols-[1fr_86px] gap-2">
+            <div className="rounded-lg border p-2" style={{ background: '#0E1626', borderColor: 'rgba(255,255,255,0.08)' }}>
+              <div className="flex items-center justify-between mb-1">
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-[11px] font-bold text-white">BTC/USD</span>
+                  <span className="text-[11px] font-bold" style={{ color: '#22C55E' }}>67,245.30</span>
+                  <span className="text-[9px] font-bold" style={{ color: '#22C55E' }}>+1.84%</span>
+                </div>
+                <div className="hidden sm:flex gap-1.5 text-[7px]" style={{ color: '#64748B' }}>
+                  <span>O 65,130</span><span>H 67,540</span><span>L 64,880</span>
                 </div>
               </div>
               <ChartSVG />
             </div>
+            {/* order panel */}
+            <div className="rounded-lg border p-1.5 flex flex-col gap-1" style={{ background: '#0E1626', borderColor: 'rgba(255,255,255,0.08)' }}>
+              <div className="grid grid-cols-2 gap-1">
+                <span className="text-center text-[8px] font-bold rounded py-1 text-white" style={{ background: '#16A34A' }}>Buy</span>
+                <span className="text-center text-[8px] font-bold rounded py-1" style={{ background: 'rgba(239,68,68,0.16)', color: '#F87171' }}>Sell</span>
+              </div>
+              {['Amount', 'Price', 'SL', 'TP'].map((l) => (
+                <div key={l} className="rounded px-1.5 py-1 flex items-center justify-between border" style={{ background: '#0B1220', borderColor: 'rgba(255,255,255,0.08)' }}>
+                  <span className="text-[6.5px]" style={{ color: '#64748B' }}>{l}</span>
+                  <span className="w-5 h-1 rounded" style={{ background: 'rgba(255,255,255,0.14)' }} />
+                </div>
+              ))}
+              <span className="mt-auto text-center text-[8px] font-bold rounded py-1.5 text-white" style={{ background: 'linear-gradient(90deg,#2563EB,#3B82F6)' }}>Place Order</span>
+            </div>
+          </div>
+          {/* positions table */}
+          <div className="px-2.5 pb-2.5">
+            <div className="rounded-lg border overflow-hidden" style={{ background: '#0E1626', borderColor: 'rgba(255,255,255,0.08)' }}>
+              <div className="px-2 py-1 text-[8px] font-bold text-white border-b" style={{ borderColor: 'rgba(255,255,255,0.08)' }}>Open Positions</div>
+              {[['ETH/USD', 'BUY', '#22C55E', '+2.31%'], ['SOL/USD', 'BUY', '#22C55E', '+4.12%'], ['XAU/USD', 'SELL', '#EF4444', '-0.80%']].map((r, i) => (
+                <div key={i} className="px-2 py-1 flex items-center justify-between border-b last:border-0" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
+                  <span className="text-[8px] font-semibold w-12" style={{ color: '#E2E8F0' }}>{r[0]}</span>
+                  <span className="text-[7px] font-bold px-1.5 py-px rounded" style={{ background: `${r[2]}22`, color: r[2] }}>{r[1]}</span>
+                  <span className="text-[7px]" style={{ color: '#64748B' }}>0.50</span>
+                  <span className="text-[8px] font-bold" style={{ color: r[2] }}>{r[3]}</span>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
-        <div className="h-2.5 bg-border-dark rounded-b-md mx-auto w-[78%]" />
-        <div className="h-1 bg-border-dark/60 rounded-b-lg mx-auto w-[36%]" />
+        {/* laptop base / hinge */}
+        <div className="h-2.5 rounded-b-md mx-auto w-[82%]" style={{ background: '#1E293B' }} />
+        <div className="h-1 rounded-b-lg mx-auto w-[34%]" style={{ background: 'rgba(30,41,59,0.7)' }} />
         {/* phone in front */}
-        <div className="absolute -bottom-1 right-0 w-24 rounded-[1.2rem] border-4 border-border-dark bg-white shadow-elevated overflow-hidden">
-          <div className="px-2 pt-1.5 pb-1 flex items-center justify-between"><span className="text-[8px] font-bold">BTC/USD</span><span className="text-[7px] text-bull font-bold">+1.8%</span></div>
-          <div className="px-1.5"><ChartSVG /></div>
+        <div className="keep-white absolute -bottom-2 right-0 sm:right-2 w-24 rounded-[1.3rem] border-4 shadow-elevated overflow-hidden" style={{ borderColor: '#1E293B', background: '#0B1220' }}>
+          <div className="px-2 pt-2 pb-1 flex items-center justify-between">
+            <span className="text-[8px] font-bold text-white">BTC/USD</span>
+            <span className="text-[7px] font-bold" style={{ color: '#22C55E' }}>+1.84%</span>
+          </div>
+          <div className="px-1"><ChartSVG /></div>
           <div className="p-1.5 grid grid-cols-2 gap-1">
-            <div className="keep-white rounded py-1 text-center text-[8px] font-bold" style={{ background: '#00C853', color: '#fff' }}>Buy</div>
-            <div className="keep-white rounded py-1 text-center text-[8px] font-bold" style={{ background: '#FF3B57', color: '#fff' }}>Sell</div>
+            <div className="rounded py-1 text-center text-[8px] font-bold text-white" style={{ background: '#16A34A' }}>Buy</div>
+            <div className="rounded py-1 text-center text-[8px] font-bold text-white" style={{ background: '#EF4444' }}>Sell</div>
           </div>
         </div>
       </div>
@@ -493,29 +753,62 @@ function Platform() {
 }
 
 /* ─────────────────── Protected around the clock ─────────────────── */
+// 3D-style glowing shield illustration (pure SVG — no image asset).
+function ShieldHero() {
+  return (
+    <div className="relative shrink-0 w-28 h-28 flex items-center justify-center">
+      <span className="absolute inset-0 rounded-full" style={{ background: 'radial-gradient(circle at 50% 58%, rgba(59,130,246,0.5), transparent 65%)' }} />
+      <svg width="96" height="104" viewBox="0 0 96 104" className="relative drop-shadow-[0_10px_20px_rgba(37,99,235,0.45)]">
+        <defs>
+          <linearGradient id="ldShield" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#60A5FA" /><stop offset="0.5" stopColor="#3B82F6" /><stop offset="1" stopColor="#1E3A8A" /></linearGradient>
+          <linearGradient id="ldShieldEdge" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stopColor="#BFDBFE" /><stop offset="1" stopColor="#2563EB" /></linearGradient>
+          <radialGradient id="ldShieldShine" cx="50%" cy="30%" r="60%"><stop offset="0" stopColor="rgba(191,219,254,0.85)" /><stop offset="1" stopColor="rgba(191,219,254,0)" /></radialGradient>
+        </defs>
+        <path d="M48 4 L86 18 V52 C86 78 68 92 48 100 C28 92 10 78 10 52 V18 Z" fill="url(#ldShieldEdge)" />
+        <path d="M48 11 L79 22 V52 C79 74 64 86 48 93 C32 86 17 74 17 52 V22 Z" fill="url(#ldShield)" />
+        <path d="M48 11 L79 22 V41 C70 31 58 27 48 27 Z" fill="url(#ldShieldShine)" opacity="0.55" />
+        <rect x="38" y="50" width="20" height="16" rx="3" fill="#EAF2FF" />
+        <path d="M41 50 v-4 a7 7 0 0 1 14 0 v4" fill="none" stroke="#EAF2FF" strokeWidth="3.4" />
+        <circle cx="48" cy="57" r="2.6" fill="#1E3A8A" />
+        <rect x="47" y="58.5" width="2" height="4.5" rx="1" fill="#1E3A8A" />
+      </svg>
+    </div>
+  );
+}
+function SecIcon({ name }) {
+  const p = { width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round' };
+  switch (name) {
+    case 'snow': return <svg {...p}><path d="M12 2v20M20.5 7L3.5 17M3.5 7l17 10" /><path d="M12 5.6l2.2-2M12 5.6l-2.2-2M12 18.4l2.2 2M12 18.4l-2.2 2" /></svg>;
+    case 'lock': return <svg {...p}><rect x="4" y="11" width="16" height="9" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>;
+    case 'shield': return <svg {...p}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="M9.5 12l2 2 3.5-3.5" /></svg>;
+    case 'audit': return <svg {...p}><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 8h6M9 12h4" /><path d="M14.5 16.5l1.4 1.4 2.6-3" /></svg>;
+    default: return <svg {...p}><circle cx="12" cy="12" r="9" /></svg>;
+  }
+}
 function ProtectedBanner() {
   const items = [
-    { icon: 'lock', title: 'Bank-Grade Security', sub: 'Encrypted end-to-end' },
-    { icon: 'shield', title: '256-bit Encryption', sub: 'Military-grade' },
-    { icon: 'coins', title: 'Segregated Funds', sub: 'Kept separate & safe' },
-    { icon: 'clock', title: '24/7 Monitoring', sub: 'Always watching' },
+    { icon: 'snow',   title: 'Cold Storage',    sub: 'Most funds stored offline' },
+    { icon: 'lock',   title: 'SSL Encryption',  sub: 'Bank-level 256-bit SSL' },
+    { icon: 'shield', title: 'Two-Factor Auth', sub: 'Extra layer on your account' },
+    { icon: 'audit',  title: 'Regular Audits',  sub: 'Continuous security checks' },
   ];
   return (
     <section className="max-w-[1200px] mx-auto px-4 sm:px-6 pb-16">
-      <div className="keep-white rounded-2xl p-6 sm:p-8 shadow-elevated relative overflow-hidden" style={{ background: 'linear-gradient(135deg,#0F172A 0%,#1E293B 100%)' }}>
-        <span className="pointer-events-none absolute -right-16 -bottom-16 w-64 h-64 rounded-full opacity-40" style={{ background: 'radial-gradient(circle, rgba(59,130,246,0.35), transparent 70%)' }} />
-        <div className="relative flex flex-col lg:flex-row items-center gap-6">
-          <span className="keep-white w-16 h-16 rounded-2xl flex items-center justify-center shrink-0" style={{ background: 'rgba(59,130,246,0.2)', color: '#60A5FA' }}><FeatureIcon name="shield" /></span>
+      <div className="keep-white rounded-2xl p-6 sm:p-10 shadow-elevated relative overflow-hidden" style={{ background: 'radial-gradient(120% 140% at 12% 18%, #16223B 0%, #0B1220 55%, #070C18 100%)' }}>
+        <span className="pointer-events-none absolute -left-10 top-1/2 -translate-y-1/2 w-72 h-72 rounded-full opacity-60" style={{ background: 'radial-gradient(circle, rgba(59,130,246,0.28), transparent 70%)' }} />
+        <span className="pointer-events-none absolute -right-16 -bottom-16 w-72 h-72 rounded-full opacity-40" style={{ background: 'radial-gradient(circle, rgba(37,99,235,0.30), transparent 70%)' }} />
+        <div className="relative flex flex-col lg:flex-row items-center gap-8">
+          <ShieldHero />
           <div className="flex-1 text-center lg:text-left">
-            <h3 className="text-xl font-bold" style={{ color: '#FFFFFF' }}>Your Assets, Protected Around The Clock</h3>
-            <p className="text-sm mt-1 max-w-lg" style={{ color: 'rgba(255,255,255,0.72)' }}>Bank-grade encryption, segregated funds and continuous monitoring keep your capital safe every second of every day.</p>
+            <h3 className="text-2xl sm:text-[28px] font-extrabold leading-tight" style={{ color: '#FFFFFF' }}>Your Assets.<br />Protected Around The Clock</h3>
+            <p className="text-sm mt-2 max-w-xl" style={{ color: 'rgba(255,255,255,0.68)' }}>We use industry-leading security measures — cold storage, SSL encryption and 2FA protection — to ensure your assets are always safe with us.</p>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-5 shrink-0">
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-2 xl:grid-cols-4 gap-x-6 gap-y-5 shrink-0">
             {items.map((it) => (
-              <div key={it.title} className="text-center">
-                <span className="keep-white w-10 h-10 rounded-xl flex items-center justify-center mx-auto mb-2" style={{ background: 'rgba(255,255,255,0.08)', color: '#60A5FA' }}><FeatureIcon name={it.icon} /></span>
-                <div className="text-[11px] font-bold leading-tight" style={{ color: '#FFFFFF' }}>{it.title}</div>
-                <div className="text-[9px] mt-0.5" style={{ color: 'rgba(255,255,255,0.55)' }}>{it.sub}</div>
+              <div key={it.title} className="flex flex-col items-center lg:items-start text-center lg:text-left">
+                <span className="w-10 h-10 rounded-xl flex items-center justify-center mb-2" style={{ background: 'rgba(59,130,246,0.14)', color: '#60A5FA', border: '1px solid rgba(96,165,250,0.25)' }}><SecIcon name={it.icon} /></span>
+                <div className="text-[12px] font-bold leading-tight" style={{ color: '#FFFFFF' }}>{it.title}</div>
+                <div className="text-[10px] mt-0.5 leading-snug" style={{ color: 'rgba(255,255,255,0.5)' }}>{it.sub}</div>
               </div>
             ))}
           </div>
@@ -526,20 +819,53 @@ function ProtectedBanner() {
 }
 
 /* ───────────────────────── How it works (4) ───────────────────────── */
+function StepIcon({ name }) {
+  const p = { width: 26, height: 26, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.9, strokeLinecap: 'round', strokeLinejoin: 'round' };
+  switch (name) {
+    case 'user':   return <svg {...p}><circle cx="12" cy="8" r="4" /><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7" /></svg>;
+    case 'verify': return <svg {...p}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="M9 12l2 2 4-4" /></svg>;
+    case 'wallet': return <svg {...p}><rect x="3" y="6" width="18" height="13" rx="2.5" /><path d="M3 10.5h18" /><circle cx="16.5" cy="14.5" r="1.3" fill="currentColor" stroke="none" /></svg>;
+    case 'trend':  return <svg {...p}><path d="M3 17l6-6 4 4 8-8" /><path d="M17 7h4v4" /></svg>;
+    default:       return <svg {...p}><circle cx="12" cy="12" r="9" /></svg>;
+  }
+}
 function Steps() {
+  // Each step gets its OWN vibrant gradient + matching accent so the row reads
+  // colorful and premium instead of one flat blue.
+  const STEP_STYLES = [
+    { icon: 'user',   g: 'linear-gradient(135deg,#818CF8,#6366F1)', sh: 'rgba(99,102,241,0.42)', accent: '#6366F1' },
+    { icon: 'verify', g: 'linear-gradient(135deg,#34D399,#10B981)', sh: 'rgba(16,185,129,0.42)', accent: '#059669' },
+    { icon: 'wallet', g: 'linear-gradient(135deg,#FBBF24,#F97316)', sh: 'rgba(249,115,22,0.42)', accent: '#EA580C' },
+    { icon: 'trend',  g: 'linear-gradient(135deg,#22D3EE,#3B82F6)', sh: 'rgba(37,99,235,0.42)',  accent: '#2563EB' },
+  ];
   return (
-    <section id="how" className="bg-bg-card/50 border-y border-border-subtle">
-      <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-16">
+    <section id="how" className="bg-bg-card/40 border-y border-border-subtle">
+      <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-12 sm:py-14">
         <SectionHead eyebrow="Get started" title="How It Works" sub="From sign-up to your first trade in minutes." />
-        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-10">
-          {STEPS.map((s) => (
-            <div key={s.n} className="card p-7 bg-white relative overflow-hidden">
-              <div className="absolute -right-3 -top-4 text-[80px] font-extrabold opacity-[0.06] select-none">{s.n}</div>
-              <div className="keep-white w-10 h-10 rounded-full font-bold flex items-center justify-center mb-4" style={{ background: 'linear-gradient(135deg,#3B82F6,#1D4ED8)', color: '#fff' }}>{s.n}</div>
-              <h3 className="font-bold">{s.title}</h3>
-              <p className="mt-1.5 text-sm text-text-secondary leading-relaxed">{s.body}</p>
-            </div>
-          ))}
+        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-5 mt-9">
+          {STEPS.map((s, i) => {
+            const st = STEP_STYLES[i];
+            return (
+              <div key={s.n} className="group relative card p-6 sm:p-7 transition-all duration-300 hover:-translate-y-1.5 hover:shadow-elevated hover:border-primary-500/40">
+                {/* colorful gradient icon badge + floating step number */}
+                <div className="relative w-14 h-14 mb-5">
+                  <div className="keep-white relative overflow-hidden w-14 h-14 rounded-2xl flex items-center justify-center text-white transition-transform duration-300 group-hover:scale-110" style={{ background: st.g, boxShadow: `0 10px 22px ${st.sh}` }}>
+                    <span className="pointer-events-none absolute inset-0" style={{ background: 'radial-gradient(120% 80% at 30% 12%, rgba(255,255,255,0.5), transparent 60%)' }} />
+                    <span className="relative"><StepIcon name={st.icon} /></span>
+                  </div>
+                  <span className="keep-white absolute -top-2 -right-2 w-6 h-6 rounded-full bg-white text-[11px] font-extrabold flex items-center justify-center border border-border-subtle shadow-card" style={{ color: st.accent }}>{s.n}</span>
+                </div>
+                <h3 className="text-base font-bold">{s.title}</h3>
+                <p className="mt-2 text-sm text-text-secondary leading-relaxed">{s.body}</p>
+                {/* connector chevron to the next step (desktop only) */}
+                {i < STEPS.length - 1 && (
+                  <div className="hidden lg:block absolute top-1/2 -translate-y-1/2 -right-[13px] z-10 text-text-muted/50">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 6l6 6-6 6" /></svg>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
     </section>
@@ -547,65 +873,73 @@ function Steps() {
 }
 
 /* ───────────────────────── Testimonials ───────────────────────── */
+// "Why Traders Love TradePro" — testimonial + benefit merged into ONE card each.
+// Top: avatar/name/role → stars → review; a separator; then a colorful benefit
+// badge pinned to the bottom. The review uses flex-1 so every badge lines up at
+// the same baseline → visually equal card heights across the row.
 function Testimonials() {
+  const BENEFITS = [
+    { icon: 'gift',   title: 'Free to Start',     body: 'No signup fees, no platform charges, and a free demo balance to practice risk-free.', g: 'linear-gradient(135deg,#F472B6 0%,#FB7185 45%,#F59E0B 100%)', sh: 'rgba(251,113,133,0.40)', tint: 'rgba(251,113,133,0.08)' },
+    { icon: 'clock',  title: '24/7 Access',       body: 'Markets, charts and live support available round the clock.', g: 'linear-gradient(135deg,#22D3EE 0%,#3B82F6 50%,#6366F1 100%)', sh: 'rgba(59,130,246,0.40)', tint: 'rgba(59,130,246,0.08)' },
+    { icon: 'shield', title: 'Forever Trustable', body: 'Bank-grade encryption, 2FA, segregated funds and 99.98% uptime.', g: 'linear-gradient(135deg,#34D399 0%,#10B981 50%,#059669 100%)', sh: 'rgba(16,185,129,0.40)', tint: 'rgba(16,185,129,0.08)' },
+  ];
   return (
-    <section className="max-w-[1200px] mx-auto px-4 sm:px-6 py-16">
-      <SectionHead eyebrow="Testimonials" title="What Our Traders Say" sub="Join thousands of traders who trust TradePro every day." />
-      <div className="grid md:grid-cols-3 gap-4 mt-10">
-        {TESTIMONIALS.map((t) => (
-          <div key={t.name} className="card p-6 hover:shadow-elevated transition-all">
-            {/* Person — photo + name/role on top */}
-            <div className="flex items-center gap-3">
-              <span className="relative w-11 h-11 rounded-full overflow-hidden shrink-0 bg-primary-500/10 text-primary-600 font-bold flex items-center justify-center text-sm">
-                {t.init}
-                <img src={t.img} alt={t.name} loading="lazy" className="absolute inset-0 w-full h-full object-cover" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
-              </span>
-              <div>
-                <div className="text-sm font-bold">{t.name}</div>
-                <div className="text-[11px] text-text-muted">{t.role}</div>
+    <section className="max-w-[1200px] mx-auto px-4 sm:px-6 py-16 sm:py-20">
+      {/* header — pill eyebrow + prominent title */}
+      <div className="text-center max-w-2xl mx-auto">
+        <div className="inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-bold mb-4" style={{ background: 'rgba(99,102,241,0.10)', color: '#4F46E5' }}>
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" /></svg>
+          Loved by thousands of traders
+        </div>
+        <h2 className="text-4xl sm:text-5xl font-extrabold tracking-tight">Why Traders Love TradePro</h2>
+        <p className="mt-3 text-text-secondary">Join thousands of traders who trust TradePro every day.</p>
+      </div>
+      {/* Responsive: 1 col (mobile) → 2 (tablet) → 3 (desktop). Cards stretch to equal height. */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 mt-12">
+        {TESTIMONIALS.map((t, i) => {
+          const b = BENEFITS[i];
+          return (
+            <div key={t.name} className="group card p-6 sm:p-7 flex flex-col h-full transition-all duration-300 hover:-translate-y-1.5 hover:shadow-elevated">
+              {/* Person — photo + name/role */}
+              <div className="flex items-center gap-3">
+                <span className="relative w-12 h-12 rounded-full overflow-hidden shrink-0 bg-primary-500/10 text-primary-600 font-bold flex items-center justify-center text-sm">
+                  {t.init}
+                  <img src={t.img} alt={t.name} loading="lazy" className="absolute inset-0 w-full h-full object-cover" onError={(e) => { e.currentTarget.style.display = 'none'; }} />
+                </span>
+                <div>
+                  <div className="text-[15px] font-bold">{t.name}</div>
+                  <div className="text-xs text-text-muted">{t.role}</div>
+                </div>
+              </div>
+              {/* Stars */}
+              <div className="flex gap-0.5 mt-4">
+                {[0, 1, 2, 3, 4].map((s) => (
+                  <svg key={s} width="16" height="16" viewBox="0 0 24 24" fill="#F59E0B" stroke="none"><path d="M12 2l2.9 6.3 6.9.7-5.2 4.6 1.5 6.8L12 17.8 5.9 21.2l1.5-6.8L2.2 9.7l6.9-.7z" /></svg>
+                ))}
+              </div>
+              {/* Review — flex-1 pins the badge to the bottom so all cards match height */}
+              <p className="mt-4 text-sm text-text-secondary leading-relaxed flex-1">"{t.quote}"</p>
+              {/* Separator + colorful benefit badge */}
+              <div className="mt-6 pt-5 border-t border-border-subtle">
+                <div className="flex items-start gap-3 rounded-xl p-3" style={{ background: b.tint }}>
+                  <span className="keep-white relative overflow-hidden w-11 h-11 rounded-xl flex items-center justify-center shrink-0 text-white transition-transform duration-300 group-hover:scale-110" style={{ background: b.g, boxShadow: `0 8px 18px ${b.sh}` }}>
+                    <span className="pointer-events-none absolute inset-0" style={{ background: 'radial-gradient(120% 80% at 30% 12%, rgba(255,255,255,0.45), transparent 60%)' }} />
+                    <span className="relative"><FeatureIcon name={b.icon} /></span>
+                  </span>
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold">{b.title}</div>
+                    <p className="text-[12px] text-text-secondary mt-0.5 leading-snug">{b.body}</p>
+                  </div>
+                </div>
               </div>
             </div>
-            {/* Stars */}
-            <div className="flex gap-0.5 mt-3">
-              {[0, 1, 2, 3, 4].map((i) => (
-                <svg key={i} width="15" height="15" viewBox="0 0 24 24" fill="#F59E0B" stroke="none"><path d="M12 2l2.9 6.3 6.9.7-5.2 4.6 1.5 6.8L12 17.8 5.9 21.2l1.5-6.8L2.2 9.7l6.9-.7z" /></svg>
-              ))}
-            </div>
-            {/* Quote */}
-            <p className="mt-3 text-sm text-text-secondary leading-relaxed">"{t.quote}"</p>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </section>
   );
 }
 
-/* ───────────────────────────── Pillars ───────────────────────────── */
-function Pillars() {
-  const items = [
-    { icon: 'gift',   title: 'Free to start',     body: 'No signup fees, no platform charges, and a free demo balance to practice risk-free. Keep more of what you make.', g: 'linear-gradient(135deg,#F472B6 0%,#FB7185 45%,#F59E0B 100%)', sh: 'rgba(251,113,133,0.45)' },
-    { icon: 'clock',  title: '24/7 access',       body: 'Markets, charts and live support available round the clock — trade crypto any hour and manage positions whenever you want.', g: 'linear-gradient(135deg,#22D3EE 0%,#3B82F6 50%,#6366F1 100%)', sh: 'rgba(59,130,246,0.45)' },
-    { icon: 'shield', title: 'Forever trustable', body: 'Bank-grade encryption, 2FA, segregated funds and 99.98% uptime. A platform built to stay reliable for the long run.', g: 'linear-gradient(135deg,#34D399 0%,#10B981 50%,#059669 100%)', sh: 'rgba(16,185,129,0.45)' },
-  ];
-  return (
-    <section className="bg-bg-card/50 border-y border-border-subtle">
-      <div className="max-w-[1200px] mx-auto px-4 sm:px-6 py-16">
-        <div className="grid md:grid-cols-3 gap-4">
-          {items.map((it) => (
-            <div key={it.title} className="card p-7 text-center bg-white hover:border-primary-500/40 hover:shadow-elevated transition-all">
-              <div className="keep-white relative overflow-hidden w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4" style={{ background: it.g, color: '#FFFFFF', boxShadow: `0 12px 26px ${it.sh}` }}>
-                <span className="pointer-events-none absolute inset-0" style={{ background: 'radial-gradient(120% 80% at 30% 12%, rgba(255,255,255,0.45), transparent 60%)' }} />
-                <span className="relative scale-125"><FeatureIcon name={it.icon} /></span>
-              </div>
-              <h3 className="text-lg font-bold">{it.title}</h3>
-              <p className="mt-2 text-sm text-text-secondary leading-relaxed">{it.body}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
 
 /* ───────────────────── Trade anytime, anywhere ───────────────────── */
 function MiniDonut() {
@@ -625,49 +959,123 @@ function MiniDonut() {
   );
 }
 
-function AppDownload() {
-  const teal = { background: 'linear-gradient(90deg,#06B6D4,#0EA5E9)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' };
+// Mini dashboard chart primitives for the app-download laptop/phone mockups.
+function DashArea({ color = '#8B5CF6', id = 'a' }) {
+  const gid = `ldDashArea_${id}`;
   return (
-    <section className="relative overflow-hidden">
+    <svg viewBox="0 0 200 90" className="w-full h-full" preserveAspectRatio="none">
+      <defs>
+        <linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor={color} stopOpacity="0.35" />
+          <stop offset="1" stopColor={color} stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
+      <path d="M0,70 C20,60 30,64 45,50 C60,38 70,54 90,44 C110,34 120,20 140,28 C160,36 175,18 200,14 L200,90 L0,90 Z" fill={`url(#${gid})`} />
+      <path d="M0,70 C20,60 30,64 45,50 C60,38 70,54 90,44 C110,34 120,20 140,28 C160,36 175,18 200,14" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+function DashBars() {
+  const bars = [[0, 30, '#8B5CF6'], [1, 52, '#3B82F6'], [2, 40, '#8B5CF6'], [3, 64, '#3B82F6'], [4, 48, '#8B5CF6'], [5, 72, '#3B82F6'], [6, 58, '#8B5CF6']];
+  return (
+    <svg viewBox="0 0 140 70" className="w-full h-full" preserveAspectRatio="none">
+      {bars.map(([i, h, c]) => (
+        <rect key={i} x={6 + i * 19} y={70 - h} width="11" height={h} rx="2" fill={c} opacity="0.85" />
+      ))}
+    </svg>
+  );
+}
+
+function AppDownload() {
+  const teal = { background: 'linear-gradient(90deg,#1D4ED8,#3B82F6)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' };
+  return (
+    <section className="relative z-10 overflow-hidden">
       <div className="pointer-events-none absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(59,130,246,0.05), transparent 60%)' }} />
       <div className="relative max-w-[1200px] mx-auto px-4 sm:px-6 pt-10 pb-8 grid lg:grid-cols-2 gap-12 items-center">
         {/* ── Device mockups (laptop + phone) ── */}
         <div className="relative pb-10 pr-6">
-          {/* Laptop */}
-          <div className="rounded-t-xl border border-border-dark bg-white shadow-elevated overflow-hidden">
-            <div className="h-6 bg-bg-card border-b border-border-subtle flex items-center gap-1.5 px-3">
-              <span className="w-2 h-2 rounded-full bg-bear/60" /><span className="w-2 h-2 rounded-full bg-warn/60" /><span className="w-2 h-2 rounded-full bg-bull/60" />
-            </div>
-            <div className="flex gap-2.5 p-3">
-              {/* sidebar */}
-              <div className="w-12 shrink-0 space-y-1.5">
-                {[0, 1, 2, 3, 4, 5].map((i) => <div key={i} className={`h-2 rounded ${i === 0 ? 'bg-primary-500/40' : 'bg-bg-hover'}`} />)}
+          {/* Laptop — realistic MacBook-style frame (silver lid + black bezel) wrapping the dashboard */}
+          <div className="keep-white relative z-10 rounded-[15px] p-[6px]" style={{ background: 'linear-gradient(180deg,#E7EBF1,#C0C8D4)', boxShadow: '0 24px 46px rgba(15,23,42,0.22)' }}>
+            <div className="rounded-[10px] p-[5px]" style={{ background: '#0B1220' }}>
+              <div className="rounded-[7px] overflow-hidden bg-white flex">
+              {/* dark sidebar */}
+              <div className="w-16 shrink-0 py-2.5 px-2 space-y-1.5" style={{ background: '#0F1B2E' }}>
+                <div className="flex items-center gap-1 mb-2">
+                  <span className="w-3 h-3 rounded" style={{ background: 'linear-gradient(135deg,#3B82F6,#6366F1)' }} />
+                  <span className="h-1.5 w-8 rounded" style={{ background: 'rgba(255,255,255,0.5)' }} />
+                </div>
+                {[0, 1, 2, 3, 4, 5, 6].map((i) => (
+                  <div key={i} className="flex items-center gap-1.5 rounded px-1 py-1" style={i === 0 ? { background: 'rgba(59,130,246,0.25)' } : undefined}>
+                    <span className="w-2 h-2 rounded-sm" style={{ background: i === 0 ? '#60A5FA' : 'rgba(255,255,255,0.35)' }} />
+                    <span className="h-1.5 rounded" style={{ width: 22, background: i === 0 ? 'rgba(147,197,253,0.85)' : 'rgba(255,255,255,0.22)' }} />
+                  </div>
+                ))}
               </div>
-              {/* main */}
-              <div className="flex-1 min-w-0 space-y-2">
-                <div className="grid grid-cols-3 gap-2">
-                  {[0, 1, 2].map((i) => <div key={i} className="h-9 rounded bg-bg-hover" />)}
+              {/* main panel */}
+              <div className="flex-1 min-w-0 p-2.5 space-y-2" style={{ background: '#F8FAFC' }}>
+                <div className="flex items-center justify-between">
+                  <span className="h-2 w-16 rounded bg-slate-300" />
+                  <span className="w-4 h-4 rounded-full bg-slate-300" />
                 </div>
-                <div className="grid grid-cols-3 gap-2 items-center">
-                  <div className="col-span-2 rounded bg-bg-card border border-border-subtle p-1.5"><ChartSVG /></div>
-                  <div className="flex justify-center items-center rounded bg-bg-card border border-border-subtle py-2"><MiniDonut /></div>
-                </div>
+                {/* stat cards */}
                 <div className="grid grid-cols-4 gap-1.5">
-                  {[0, 1, 2, 3].map((i) => <div key={i} className="h-4 rounded bg-bg-hover" />)}
+                  {['#3B82F6', '#22C55E', '#8B5CF6', '#F59E0B'].map((c, i) => (
+                    <div key={i} className="rounded-md bg-white border border-slate-200 p-1.5 space-y-1">
+                      <span className="block h-1 w-6 rounded bg-slate-200" />
+                      <span className="block h-2 w-9 rounded bg-slate-300" />
+                      <span className="block h-1 w-4 rounded" style={{ background: c }} />
+                    </div>
+                  ))}
                 </div>
+                {/* area chart + donut */}
+                <div className="grid grid-cols-3 gap-1.5">
+                  <div className="col-span-2 rounded-md bg-white border border-slate-200 p-1.5">
+                    <span className="block h-1 w-10 rounded bg-slate-200 mb-1" />
+                    <div className="h-[46px]"><DashArea id="lap" /></div>
+                  </div>
+                  <div className="rounded-md bg-white border border-slate-200 p-1.5 flex flex-col items-center justify-center gap-1">
+                    <MiniDonut />
+                    <span className="h-1 w-8 rounded bg-slate-200" />
+                  </div>
+                </div>
+                {/* bar chart + mini table */}
+                <div className="grid grid-cols-3 gap-1.5">
+                  <div className="col-span-1 rounded-md bg-white border border-slate-200 p-1.5">
+                    <div className="h-[40px]"><DashBars /></div>
+                  </div>
+                  <div className="col-span-2 rounded-md bg-white border border-slate-200 p-1.5 space-y-1.5">
+                    {[0, 1, 2].map((i) => (
+                      <div key={i} className="flex items-center gap-1.5">
+                        <span className="w-3 h-3 rounded-full bg-slate-200" />
+                        <span className="h-1.5 flex-1 rounded bg-slate-200" />
+                        <span className="h-1.5 w-6 rounded" style={{ background: i % 2 ? '#22C55E' : '#EF4444', opacity: 0.55 }} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
               </div>
             </div>
           </div>
-          {/* laptop base */}
-          <div className="h-2.5 bg-border-dark rounded-b-md mx-auto w-[78%]" />
-          <div className="h-1 bg-border-dark/60 rounded-b-lg mx-auto w-[36%]" />
-          {/* Phone overlapping in front */}
-          <div className="absolute -bottom-1 right-0 w-24 rounded-[1.2rem] border-4 border-border-dark bg-white shadow-elevated overflow-hidden">
-            <div className="px-2 pt-1.5 pb-1 flex items-center justify-between"><span className="text-[8px] font-bold">Portfolio</span><span className="text-[7px] text-bull font-bold">+1.6%</span></div>
-            <div className="px-1.5"><ChartSVG /></div>
-            <div className="p-1.5 grid grid-cols-2 gap-1">
-              <div className="keep-white rounded py-1 text-center text-[8px] font-bold" style={{ background: '#00C853', color: '#fff' }}>Buy</div>
-              <div className="keep-white rounded py-1 text-center text-[8px] font-bold" style={{ background: '#FF3B57', color: '#fff' }}>Sell</div>
+          {/* base / deck — realistic wide MacBook hinge with a center notch */}
+          <div className="relative z-10 mx-auto" style={{ width: '112%', marginLeft: '-6%', height: 15 }}>
+            <div className="absolute inset-x-0 top-0 h-[12px] rounded-b-[11px]" style={{ background: 'linear-gradient(180deg,#CBD2DC,#98A2B2)', boxShadow: '0 8px 12px rgba(15,23,42,0.18)' }} />
+            <div className="absolute left-1/2 -translate-x-1/2 top-0 w-24 h-[6px] rounded-b-[8px]" style={{ background: '#8A94A3' }} />
+          </div>
+          {/* Phone — realistic frame + mini dashboard, overlapping in front */}
+          <div className="keep-white absolute -bottom-3 right-1 z-20 w-24 rounded-[1.5rem] p-[3px] shadow-elevated" style={{ background: 'linear-gradient(160deg,#3A424F,#161C26)' }}>
+            <div className="relative rounded-[1.3rem] overflow-hidden bg-white">
+              <div className="absolute left-1/2 -translate-x-1/2 top-1 w-8 h-1.5 rounded-full z-10" style={{ background: '#161C26' }} />
+              <div className="px-2 pt-3 pb-1 flex items-center justify-between"><span className="text-[8px] font-bold">Dashboard</span><span className="w-2.5 h-2.5 rounded-full bg-slate-200" /></div>
+              <div className="px-1.5 pb-2 space-y-1">
+                <div className="grid grid-cols-2 gap-1">
+                  {[0, 1].map((i) => (
+                    <div key={i} className="rounded bg-bg-card border border-border-subtle p-1 space-y-0.5"><span className="block h-1 w-4 rounded bg-slate-200" /><span className="block h-1.5 w-6 rounded bg-slate-300" /></div>
+                  ))}
+                </div>
+                <div className="rounded bg-bg-card border border-border-subtle p-1"><div className="h-[30px]"><DashArea id="ph" color="#3B82F6" /></div></div>
+                <div className="flex justify-center py-0.5"><MiniDonut /></div>
+              </div>
             </div>
           </div>
         </div>
@@ -700,7 +1108,12 @@ function StoreBadge({ store }) {
         {apple ? (
           <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M16.5 1.6c0 1.2-.5 2.3-1.3 3.1-.9.9-2 1.5-3.1 1.4-.1-1.2.5-2.4 1.2-3.1.9-.9 2.2-1.5 3.2-1.4zM20 17.1c-.5 1.2-.8 1.7-1.4 2.7-.9 1.4-2.2 3.1-3.8 3.1-1.4 0-1.8-.9-3.7-.9s-2.3.9-3.7.9c-1.6 0-2.8-1.6-3.7-2.9C1.3 17.1.9 12.4 2.5 9.9c1-1.6 2.7-2.6 4.2-2.6 1.6 0 2.6.9 3.9.9 1.3 0 2.1-.9 3.9-.9 1.4 0 2.8.7 3.8 2-3.3 1.8-2.8 6.6.7 7.8z" /></svg>
         ) : (
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M3.6 2.3c-.2.2-.3.5-.3.9v17.6c0 .4.1.7.3.9l.1.1L13.4 12 3.7 2.2l-.1.1zM17 15.3l-3.2-3.3L17 8.7l3.9 2.2c1.1.6 1.1 1.6 0 2.3L17 15.3zm-.6.6L13.1 12.6l-9.5 9.5c.4.3.9.3 1.5 0l11.3-6.2zM4.9 2.1l11.5 6.3-3.3 3.3-9.4-9.5c.3-.2.8-.3 1.2-.1z" /></svg>
+          <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
+            <path d="M6 4 L6 16 L14 16 Z" fill="#00D971" />
+            <path d="M6 28 L6 16 L14 16 Z" fill="#00C3FF" />
+            <path d="M6 4 L14 16 L26 16 Z" fill="#FFCE00" />
+            <path d="M6 28 L14 16 L26 16 Z" fill="#FF3B44" />
+          </svg>
         )}
       </span>
       <span className="text-left" style={{ color: '#fff' }}>
@@ -731,26 +1144,23 @@ function QR() {
 /* ───────────────────────────── Final CTA ───────────────────────────── */
 function FinalCTA() {
   return (
-    <section className="max-w-[1200px] mx-auto px-4 sm:px-6 py-8">
+    <section className="relative z-0 lg:-mt-16 max-w-[1200px] mx-auto px-4 sm:px-6 py-8">
       <div
-        className="relative rounded-2xl overflow-hidden px-6 sm:px-12 py-10 text-center"
-        style={{
-          background: [
-            'radial-gradient(at 15% 18%, rgba(56,189,248,0.55) 0px, transparent 55%)',
-            'radial-gradient(at 85% 8%, rgba(139,92,246,0.55) 0px, transparent 50%)',
-            'radial-gradient(at 92% 88%, rgba(37,99,235,0.65) 0px, transparent 55%)',
-            'radial-gradient(at 8% 92%, rgba(20,184,166,0.40) 0px, transparent 50%)',
-            'linear-gradient(135deg, #1E3A8A 0%, #1D4ED8 50%, #4F46E5 100%)',
-          ].join(', '),
-        }}
+        className="keep-white relative rounded-2xl overflow-hidden px-6 sm:px-10 py-8 sm:py-9 flex flex-col md:flex-row items-center justify-between gap-6"
+        style={{ background: 'linear-gradient(90deg, #2563EB 0%, #3B82F6 45%, #10B981 100%)' }}
       >
-        <div className="pointer-events-none absolute inset-0 opacity-25" style={{ background: 'radial-gradient(120% 90% at 30% 8%, rgba(255,255,255,0.5), transparent 55%)' }} />
-        <h2 className="keep-white relative text-3xl sm:text-4xl font-extrabold" style={{ color: '#FFFFFF' }}>Ready to Start Your Trading Journey?</h2>
-        <p className="keep-white relative mt-3 max-w-xl mx-auto" style={{ color: 'rgba(255,255,255,0.9)' }}>Join thousands of traders on a platform built to be trusted. Free to start, open 24/7, demo balance included — set up in under two minutes.</p>
-        <div className="relative mt-8 flex flex-wrap justify-center gap-3">
-          <Link to="/register" className="keep-white bg-white font-bold rounded-lg px-8 py-3.5 text-base hover:shadow-elevated transition-shadow" style={{ color: '#1D4ED8' }}>Start Trading Now →</Link>
-          <Link to="/login" className="keep-white border font-bold rounded-lg px-8 py-3.5 text-base hover:bg-white/10 transition-colors" style={{ color: '#FFFFFF', borderColor: 'rgba(255,255,255,0.6)' }}>Sign in</Link>
+        <span className="pointer-events-none absolute inset-0 opacity-25" style={{ background: 'radial-gradient(120% 120% at 15% 10%, rgba(255,255,255,0.35), transparent 55%)' }} />
+        <div className="relative text-center md:text-left">
+          <h2 className="text-2xl sm:text-3xl font-extrabold" style={{ color: '#FFFFFF' }}>Ready To Start Your Trading Journey?</h2>
+          <p className="mt-2 text-sm sm:text-base font-medium" style={{ color: 'rgba(255,255,255,0.88)' }}>Trade Free. Trade Smart. Trade TradePro.</p>
         </div>
+        <Link
+          to="/register"
+          className="keep-white relative shrink-0 bg-white font-bold rounded-xl px-7 py-3.5 text-base hover:shadow-elevated transition-shadow inline-flex items-center gap-2"
+          style={{ color: '#0F172A' }}
+        >
+          Start Trading Free <span aria-hidden="true">→</span>
+        </Link>
       </div>
     </section>
   );

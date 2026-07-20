@@ -16,7 +16,7 @@ const TABS = [
   { id: 'canvas', label: 'Canvas', icon: 'canvas' },
 ];
 
-export default function ChartSettings({ prefs, onChange, onReset, onClose, theme }) {
+export default function ChartSettings({ prefs, onChange, onReset, onClose, theme, defaults }) {
   const dark = theme === 'dark';
   const [tab, setTab] = useState('scales');
   const snapshot = useRef(prefs);   // for Cancel revert
@@ -60,7 +60,7 @@ export default function ChartSettings({ prefs, onChange, onReset, onClose, theme
 
           {/* content */}
           <div className="flex-1 min-w-0 overflow-y-auto px-6 py-5">
-            {tab === 'symbol' && <SymbolTab prefs={prefs} onChange={onChange} c={c} />}
+            {tab === 'symbol' && <SymbolTab prefs={prefs} onChange={onChange} c={c} defaults={defaults} />}
             {tab === 'status' && <StatusTab prefs={prefs} onChange={onChange} c={c} />}
             {tab === 'scales' && <ScalesTab prefs={prefs} onChange={onChange} c={c} />}
             {tab === 'canvas' && <CanvasTab prefs={prefs} onChange={onChange} c={c} />}
@@ -82,18 +82,20 @@ export default function ChartSettings({ prefs, onChange, onReset, onClose, theme
 }
 
 /* ── tabs ── */
-function SymbolTab({ prefs, onChange, c }) {
+function SymbolTab({ prefs, onChange, c, defaults = {} }) {
   return (
     <>
       <Section title="Candles" c={c}>
-        <ColorRow label="Body / wick up" value={prefs.upColor} onChange={(v) => onChange({ upColor: v })} c={c} />
-        <ColorRow label="Body / wick down" value={prefs.downColor} onChange={(v) => onChange({ downColor: v })} c={c} />
+        <ColorRow label="Body / wick up" value={prefs.upColor} def={defaults.upColor} onChange={(v) => onChange({ upColor: v })} c={c} />
+        <ColorRow label="Body / wick down" value={prefs.downColor} def={defaults.downColor} onChange={(v) => onChange({ downColor: v })} c={c} />
         <Toggle label="Last value label" checked={prefs.lastValueVisible} onChange={(v) => onChange({ lastValueVisible: v })} c={c} />
       </Section>
       <Section title="Order lines (entry / TP / SL)" c={c}>
-        <ColorRow label="Entry / preview" value={prefs.entryColor} onChange={(v) => onChange({ entryColor: v })} c={c} />
-        <ColorRow label="Take Profit" value={prefs.tpColor} onChange={(v) => onChange({ tpColor: v })} c={c} />
-        <ColorRow label="Stop Loss" value={prefs.slColor} onChange={(v) => onChange({ slColor: v })} c={c} />
+        <ColorRow label="Order entry" value={prefs.entryColor} def={defaults.entryColor} onChange={(v) => onChange({ entryColor: v })} c={c} />
+        <ColorRow label="Preview — Buy" value={prefs.buyColor} def={defaults.buyColor} onChange={(v) => onChange({ buyColor: v })} c={c} />
+        <ColorRow label="Preview — Sell" value={prefs.sellColor} def={defaults.sellColor} onChange={(v) => onChange({ sellColor: v })} c={c} />
+        <ColorRow label="Take Profit" value={prefs.tpColor} def={defaults.tpColor} onChange={(v) => onChange({ tpColor: v })} c={c} />
+        <ColorRow label="Stop Loss" value={prefs.slColor} def={defaults.slColor} onChange={(v) => onChange({ slColor: v })} c={c} />
       </Section>
     </>
   );
@@ -176,11 +178,26 @@ function SelectRow({ label, value, onChange, options, c }) {
     </div>
   );
 }
-function ColorRow({ label, value, onChange, c }) {
+function ColorRow({ label, value, onChange, c, def }) {
+  // Show a per-row "reset to default" only when this colour has been changed
+  // away from its default (keeps the row clean when it's already default).
+  const canReset = def != null && String(value).toLowerCase() !== String(def).toLowerCase();
   return (
     <div className="flex items-center justify-between gap-3">
       <span className="text-sm" style={{ color: c.text }}>{label}</span>
       <span className="inline-flex items-center gap-2">
+        {canReset && (
+          <button
+            type="button"
+            onClick={() => onChange(def)}
+            title={`Reset to default (${def})`}
+            aria-label={`Reset ${label} to default`}
+            className="inline-flex items-center justify-center w-5 h-5 rounded hover:opacity-100 transition-opacity"
+            style={{ color: c.muted, opacity: 0.7 }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" /></svg>
+          </button>
+        )}
         <span className="font-mono text-xs" style={{ color: c.muted }}>{value}</span>
         <input type="color" value={value} onChange={(e) => onChange(e.target.value)} className="w-8 h-8 rounded cursor-pointer border-0 bg-transparent p-0" />
       </span>

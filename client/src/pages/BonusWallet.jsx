@@ -33,6 +33,13 @@ export default function BonusWallet() {
   const [effectivePlan, setEffectivePlan] = useState(null);
   const [savingAutoRenew, setSavingAutoRenew] = useState(false);
   const [withdrawOpen, setWithdrawOpen] = useState(false);
+  // ── Transaction-history filters ──
+  const [q, setQ] = useState('');
+  const [typeSel, setTypeSel] = useState('');      // '' = all
+  const [statusSel, setStatusSel] = useState('');
+  const [dirSel, setDirSel] = useState('');        // '' | 'CREDIT' | 'DEBIT'
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
 
   const refresh = async () => {
     try {
@@ -96,9 +103,6 @@ export default function BonusWallet() {
     { label: 'Total Bonus Rewards', value: wallet?.totalBonusRewards },
   ];
 
-  // Subscription billing now runs off the Bonus Wallet.
-  const isLow = wallet?.isLowBalance || Number(wallet?.balance || 0) <= Number(wallet?.lowBalanceThreshold || 0);
-  const lowThreshold = Number(wallet?.lowBalanceThreshold || 0);
   const countdown = (() => {
     if (!sub?.expiresAt) return null;
     const ms = new Date(sub.expiresAt) - new Date();
@@ -116,6 +120,27 @@ export default function BonusWallet() {
     FREE: { bg: '#6B728018', fg: '#6B7280', label: 'Free plan' },
     NONE: { bg: '#6B728018', fg: '#6B7280', label: 'No subscription' },
   }[status] || { bg: '#6B728018', fg: '#6B7280', label: status };
+
+  // Distinct types present in the history (label via REASON_LABEL, else raw).
+  const typeOptions = [...new Set(txns.map((t) => t.reason).filter(Boolean))]
+    .sort((a, b) => (REASON_LABEL[a] || a).localeCompare(REASON_LABEL[b] || b));
+  const statusOptions = ['SUCCESS', 'PENDING', 'FAILED'];
+  const hasFilter = !!(q.trim() || typeSel || statusSel || dirSel || fromDate || toDate);
+  const filteredTxns = txns.filter((t) => {
+    if (typeSel && t.reason !== typeSel) return false;
+    if (statusSel && (t.status || 'SUCCESS') !== statusSel) return false;
+    if (dirSel && t.transactionType !== dirSel) return false;
+    const ts = new Date(t.createdAt).getTime();
+    if (fromDate && ts < new Date(`${fromDate}T00:00:00`).getTime()) return false;
+    if (toDate && ts > new Date(`${toDate}T23:59:59`).getTime()) return false;
+    const query = q.trim().toLowerCase();
+    if (query) {
+      const hay = `${REASON_LABEL[t.reason] || t.reason || ''} ${t.note || ''} ${t._id || ''}`.toLowerCase();
+      if (!hay.includes(query)) return false;
+    }
+    return true;
+  });
+  const clearFilters = () => { setQ(''); setTypeSel(''); setStatusSel(''); setDirSel(''); setFromDate(''); setToDate(''); };
 
   return (
     <div className="max-w-[1600px] grid grid-cols-12 gap-3 lg:-ml-4 xl:-ml-6">
@@ -155,19 +180,6 @@ export default function BonusWallet() {
             </div>
           </div>
 
-          {/* Low-balance warning — plan renewals debit this wallet */}
-          {isLow && (
-            <div className="mt-5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 flex items-start gap-3">
-              <span className="w-8 h-8 rounded-lg bg-amber-100 flex items-center justify-center text-amber-700 shrink-0">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 9v4M12 17h.01" /><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /></svg>
-              </span>
-              <div className="text-sm">
-                <div className="font-bold text-amber-900">Low balance</div>
-                <div className="text-amber-800 text-[12px] mt-0.5">Your balance is at or below {sym}{fmt(lowThreshold)}. Top up to keep your subscription from being downgraded on renewal.</div>
-              </div>
-            </div>
-          )}
-
           {/* Stat tiles */}
           <div className="mt-6 grid grid-cols-2 lg:grid-cols-4 gap-3">
             {stats.map((s) => (
@@ -183,13 +195,47 @@ export default function BonusWallet() {
 
         {/* â”€â”€ Transaction history â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
         <div id="bonus-history" className="bg-white border border-border-dark rounded-2xl overflow-hidden shadow-sm">
-          <div className="px-5 py-4 border-b border-border-subtle flex items-center justify-between">
+          <div className="px-5 py-4 border-b border-border-subtle flex items-center justify-between gap-3 flex-wrap">
             <h3 className="text-base font-bold text-text-primary">Transaction History</h3>
-            <span className="text-xs text-text-muted">{txns.length} record{txns.length === 1 ? '' : 's'}</span>
+            <span className="text-xs text-text-muted">
+              {hasFilter ? `${filteredTxns.length} of ${txns.length}` : txns.length} record{(hasFilter ? filteredTxns.length : txns.length) === 1 ? '' : 's'}
+            </span>
           </div>
+
+          {/* Filters */}
+          {txns.length > 0 && (
+            <div className="px-5 py-3 border-b border-border-subtle flex flex-wrap items-center gap-2.5">
+              <div className="relative flex-1 min-w-[160px]">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
+                <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search description or ID..." className="w-full pl-9 pr-3 py-2 rounded-lg border border-border-dark bg-white text-sm text-text-primary placeholder:text-text-muted focus:border-primary-500 focus:outline-none" />
+              </div>
+              <select value={typeSel} onChange={(e) => setTypeSel(e.target.value)} className="text-sm px-2.5 py-2 rounded-lg border border-border-dark bg-white text-text-primary focus:border-primary-500 focus:outline-none">
+                <option value="">All types</option>
+                {typeOptions.map((r) => <option key={r} value={r}>{REASON_LABEL[r] || r}</option>)}
+              </select>
+              <select value={statusSel} onChange={(e) => setStatusSel(e.target.value)} className="text-sm px-2.5 py-2 rounded-lg border border-border-dark bg-white text-text-primary focus:border-primary-500 focus:outline-none">
+                <option value="">All statuses</option>
+                {statusOptions.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+              <select value={dirSel} onChange={(e) => setDirSel(e.target.value)} className="text-sm px-2.5 py-2 rounded-lg border border-border-dark bg-white text-text-primary focus:border-primary-500 focus:outline-none">
+                <option value="">All</option>
+                <option value="CREDIT">Credit (+)</option>
+                <option value="DEBIT">Debit (-)</option>
+              </select>
+              <input type="date" value={fromDate} max={toDate || undefined} onChange={(e) => setFromDate(e.target.value)} className="text-sm px-2.5 py-2 rounded-lg border border-border-dark bg-white text-text-primary focus:border-primary-500 focus:outline-none" />
+              <span className="text-text-muted text-xs">to</span>
+              <input type="date" value={toDate} min={fromDate || undefined} onChange={(e) => setToDate(e.target.value)} className="text-sm px-2.5 py-2 rounded-lg border border-border-dark bg-white text-text-primary focus:border-primary-500 focus:outline-none" />
+              {hasFilter && <button type="button" onClick={clearFilters} className="text-xs font-semibold text-text-muted hover:text-text-primary px-2 py-1.5">Clear</button>}
+            </div>
+          )}
+
           {txns.length === 0 ? (
             <div className="px-5 py-10 text-center text-sm text-text-muted">
               No transactions yet. Referral and partner earnings will appear here automatically.
+            </div>
+          ) : filteredTxns.length === 0 ? (
+            <div className="px-5 py-10 text-center text-sm text-text-muted">
+              No transactions match your filters. <button type="button" onClick={clearFilters} className="font-semibold text-primary-600 hover:underline">Clear filters</button>
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -206,7 +252,7 @@ export default function BonusWallet() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border-subtle">
-                  {txns.map((t) => {
+                  {filteredTxns.map((t) => {
                     const credit = t.transactionType === 'CREDIT';
                     return (
                       <tr key={t._id} className="hover:bg-bg-hover transition-colors">
@@ -216,9 +262,9 @@ export default function BonusWallet() {
                             {REASON_LABEL[t.reason] || t.reason}
                           </span>
                         </td>
-                        <td className="px-3 py-2.5 text-text-muted max-w-[220px] truncate">{t.note || 'â€”'}</td>
+                        <td className="px-3 py-2.5 text-text-muted max-w-[220px] truncate">{t.note || '—'}</td>
                         <td className="px-3 py-2.5 text-right font-mono tabular-nums font-bold" style={{ color: credit ? '#16A34A' : '#DC2626' }}>
-                          {credit ? '+' : 'âˆ’'}{sym}{fmt(t.amount)}
+                          {credit ? '+' : '-'}{sym}{fmt(t.amount)}
                         </td>
                         <td className="px-3 py-2.5 text-right font-mono tabular-nums text-text-secondary">{sym}{fmt(t.balanceAfter)}</td>
                         <td className="px-3 py-2.5">

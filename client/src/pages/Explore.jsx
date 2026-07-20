@@ -11,6 +11,7 @@ import { useSelectedAccount } from '../store/selectedAccount';
 import { fmtNum } from '../utils/format';
 import toast from 'react-hot-toast';
 import { useConfirm } from '../components/ConfirmProvider';
+import PositionSlTpModal from '../components/PositionSlTpModal';
 
 /**
  * Explore — Groww-style discovery page. Most sections pull from the live
@@ -372,15 +373,45 @@ export default function Explore() {
       wsClient.subscribe(`ticker:${sym}`, (data) => {
         const last = Number(data.lastPrice);
         if (!Number.isFinite(last) || last <= 0) return;
-        setPriceMap((prev) => (prev[sym] === String(last) ? prev : { ...prev, [sym]: String(last) }));
+        // Some feeds (crypto/Binance) also push a live 24h %; keep it when
+        // present so we use the exchange value instead of deriving one.
+        const change = Number(data.change24h);
+        setPriceMap((prev) => {
+          const cur = prev[sym];
+          const nextLast = String(last);
+          const nextChange = Number.isFinite(change) ? change : (cur ? cur.change : undefined);
+          if (cur && cur.last === nextLast && cur.change === nextChange) return prev;
+          return { ...prev, [sym]: { last: nextLast, change: nextChange } };
+        });
       })
     );
     return () => unsubs.forEach((u) => u && u());
   }, [symbolsKey]);
 
-  // Instruments with live price applied (everything downstream reads from this).
+  // Instruments with LIVE price + 24h % applied (everything downstream reads
+  // from this). Most feeds only push lastPrice, so the % — which drives the
+  // movers ranking and every card's badge — would otherwise stay frozen. We
+  // recompute it from the moving price using the baseline implied by the
+  // initial (change24h, lastPrice) snapshot, so forex / stocks / indices /
+  // commodities tick in real time too; an exchange-provided % (crypto) wins.
   const lived = useMemo(
-    () => instruments.map((r) => priceMap[r.symbol] ? { ...r, lastPrice: priceMap[r.symbol] } : r),
+    () => instruments.map((r) => {
+      const live = priceMap[r.symbol];
+      if (!live) return r;
+      const out = { ...r, lastPrice: live.last };
+      const liveLast = Number(live.last);
+      if (Number.isFinite(live.change)) {
+        out.change24h = live.change;
+      } else if (Number.isFinite(liveLast) && liveLast > 0) {
+        const ch0 = Number(r.change24h);
+        const last0 = Number(r.lastPrice);
+        if (Number.isFinite(ch0) && Number.isFinite(last0) && last0 > 0) {
+          const base = last0 / (1 + ch0 / 100); // implied 24h-ago / prev-close baseline
+          if (base > 0) out.change24h = ((liveLast - base) / base) * 100;
+        }
+      }
+      return out;
+    }),
     [instruments, priceMap]
   );
 
@@ -438,7 +469,7 @@ export default function Explore() {
     return () => { cancelled = true; unsubP && unsubP(); unsubO && unsubO(); };
   }, [selectedAccountId]);
   const livePositions = useMemo(() => positions.map((p) => {
-    const markPx = Number(priceMap[p.symbol] ?? p.markPrice ?? p.entryPrice);
+    const markPx = Number(priceMap[p.symbol]?.last ?? p.markPrice ?? p.entryPrice);
     const entry = Number(p.entryPrice);
     const qty = Number(p.quantity);
     if (!Number.isFinite(entry) || !Number.isFinite(qty) || !Number.isFinite(markPx)) {
@@ -470,25 +501,51 @@ export default function Explore() {
     } catch (err) { toast.error(errorMessage(err)); }
     finally { setBulkBusy(false); }
   };
+  // Optimistic: drop the row from the UI immediately, then hit the API. On
+  // failure, restore it (the `orders` WS refetch also reconciles).
   const cancelOrder = async (id) => {
+    const prev = pendingOrders;
+    setPendingOrders((list) => list.filter((o) => o._id !== id));
+    if (modifyOrder?._id === id) setModifyOrder(null);
     try {
       await api.delete(`/trading/orders/${id}`);
       toast.success('Order cancelled');
-    } catch (err) { toast.error(errorMessage(err)); }
+    } catch (err) {
+      setPendingOrders(prev);
+      toast.error(errorMessage(err));
+    }
   };
   const cancelAllOrders = async () => {
     if (!pendingOrders.length) return;
     if (!(await confirm(`Cancel all ${pendingOrders.length} pending order(s)?`))) return;
+    const prev = pendingOrders;
     setBulkBusy(true);
+    setPendingOrders([]);                 // clear instantly
     // No bulk endpoint exists — fan out single deletes and tally.
     const results = await Promise.allSettled(
-      pendingOrders.map((o) => api.delete(`/trading/orders/${o._id}`))
+      prev.map((o) => api.delete(`/trading/orders/${o._id}`))
     );
     const ok = results.filter((r) => r.status === 'fulfilled').length;
     const failed = results.length - ok;
-    if (failed) toast.error(`Cancelled ${ok}/${results.length}. ${failed} failed.`);
-    else toast.success(`Cancelled ${ok} order(s)`);
+    if (failed) {
+      // Put back only the ones that failed to cancel.
+      setPendingOrders(prev.filter((_, i) => results[i].status !== 'fulfilled'));
+      toast.error(`Cancelled ${ok}/${results.length}. ${failed} failed.`);
+    } else toast.success(`Cancelled ${ok} order(s)`);
     setBulkBusy(false);
+  };
+
+  // ── Edit a pending order (pencil) ─────────────────────────────────
+  const [modifyOrder, setModifyOrder] = useState(null);
+  const saveOrderModify = async (order, fields) => {
+    try {
+      const { data } = await api.put(`/trading/orders/${order._id}`, fields);
+      const updated = data?.data;
+      // Merge the change into the visible list immediately.
+      setPendingOrders((list) => list.map((o) => (o._id === order._id ? (updated || { ...o, ...fields }) : o)));
+      toast.success('Order updated');
+      setModifyOrder(null);
+    } catch (err) { toast.error(errorMessage(err)); }
   };
 
   // ── Recently viewed — localStorage-tracked list of symbols the user has
@@ -1103,7 +1160,7 @@ export default function Explore() {
                                     {sideBull ? 'Buy' : 'Sell'}
                                   </span>
                                   <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-bg-hover text-text-muted">
-                                    {o.orderType || 'LIMIT'}
+                                    {o.type || o.orderType || 'LIMIT'}
                                   </span>
                                 </div>
                                 <div className="text-[11px] text-text-muted font-mono mt-0.5 tabular-nums">
@@ -1112,19 +1169,31 @@ export default function Explore() {
                               </div>
                               <div className="text-right shrink-0">
                                 <div className="text-sm font-bold font-mono tabular-nums text-text-primary">
-                                  {fmtNum(priceMap[o.symbol] ?? inst?.lastPrice ?? trigger, prec)}
+                                  {fmtNum(priceMap[o.symbol]?.last ?? inst?.lastPrice ?? trigger, prec)}
                                 </div>
                                 <div className="text-[10px] text-text-muted font-mono mt-0.5">Mark</div>
                               </div>
                             </Link>
-                            <button
-                              type="button"
-                              onClick={() => cancelOrder(o._id)}
-                              title="Cancel order"
-                              className="opacity-0 group-hover:opacity-100 sm:opacity-100 text-[11px] font-bold px-2.5 py-1.5 rounded-md bg-bear/10 text-bear border border-bear/25 hover:bg-bear/20 hover:scale-[1.03] active:scale-95 transition-all shrink-0"
-                            >
-                              Cancel
-                            </button>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => setModifyOrder(o)}
+                                title="Edit order"
+                                aria-label="Edit order"
+                                className="opacity-0 group-hover:opacity-100 sm:opacity-100 p-1.5 rounded-lg text-text-muted hover:text-primary-600 hover:bg-primary-500/10 active:scale-95 transition-all"
+                              >
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => cancelOrder(o._id)}
+                                title="Cancel order"
+                                aria-label="Cancel order"
+                                className="opacity-0 group-hover:opacity-100 sm:opacity-100 p-1.5 rounded-lg text-text-muted hover:text-bear hover:bg-bear/10 active:scale-95 transition-all"
+                              >
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
+                              </button>
+                            </div>
                           </div>
                         );
                       })}
@@ -1195,6 +1264,24 @@ export default function Explore() {
       <EconomicCalendarSection max={8} />
 
       <div className="h-4" />
+
+      {/* Edit a pending order (pencil) — the same rich SL/TP modal the Trade
+          page uses (mode selectors + colored deltas). Order = SL/TP only. */}
+      {modifyOrder && (
+        <PositionSlTpModal
+          position={modifyOrder}
+          kind="order"
+          instrument={(() => {
+            const inst = instruments.find((i) => i.symbol === modifyOrder.symbol);
+            const live = priceMap[modifyOrder.symbol]?.last;
+            return live != null ? { ...(inst || { symbol: modifyOrder.symbol }), lastPrice: live } : inst;
+          })()}
+          free={0}
+          onClose={() => setModifyOrder(null)}
+          onSubmit={(payload) => saveOrderModify(modifyOrder, payload)}
+          onPartialClose={() => cancelOrder(modifyOrder._id)}
+        />
+      )}
     </div>
   );
 }

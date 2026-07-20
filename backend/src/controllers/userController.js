@@ -5,9 +5,11 @@ const { asyncHandler, sendSuccess, AppError } = require('../utils/errors');
 const { ACCOUNT_TYPES, TRADING_MODE, KYC_STATUS } = require('../config/constants');
 
 const updateProfile = asyncHandler(async (req, res) => {
-  const allowed = ['firstName', 'lastName', 'phone'];
+  const allowed = ['firstName', 'lastName', 'phone', 'country'];
   const updates = {};
   allowed.forEach((k) => k in req.body && (updates[k] = req.body[k]));
+  // Normalise the country to an uppercase ISO-2 code (or clear it).
+  if ('country' in updates) updates.country = String(updates.country || '').trim().toUpperCase().slice(0, 2) || null;
   const user = await User.findByIdAndUpdate(req.userId, updates, { new: true });
   sendSuccess(res, user.toSafeJSON());
 });
@@ -149,18 +151,47 @@ const submitFeedback = asyncHandler(async (req, res) => {
     parsedRating = n;
   }
 
+  // Optional attachment — a base64 data: URI (image or PDF), capped so the
+  // ticket doc stays lean.
+  let attachment = null;
+  let attachmentName = null;
+  if (req.body.attachment) {
+    const raw = String(req.body.attachment);
+    const m = /^data:([\w.+-]+\/[\w.+-]+);base64,(.+)$/.exec(raw);
+    if (!m) throw new AppError('Invalid attachment — expected a base64 data URI', 400);
+    const mime = m[1].toLowerCase();
+    if (!/^image\/(png|jpe?g|webp|gif)$|^application\/pdf$/.test(mime)) {
+      throw new AppError('Attachment must be an image (PNG/JPG/WEBP/GIF) or a PDF', 400);
+    }
+    if (Math.floor(m[2].length * 0.75) > 3 * 1024 * 1024) {
+      throw new AppError('Attachment too large — max 3 MB', 400);
+    }
+    attachment = raw;
+    attachmentName = String(req.body.attachmentName || 'attachment').trim().slice(0, 120);
+  }
+
   const fb = await Feedback.create({
     userId: req.userId,
     category: cat,
     subject: subject.trim().slice(0, 200),
     message: message.trim().slice(0, 4000),
     rating: parsedRating,
+    attachment,
+    attachmentName,
     context: {
       page: context?.page ? String(context.page).slice(0, 500) : undefined,
       userAgent: req.headers['user-agent']?.slice(0, 500),
       appVersion: context?.appVersion ? String(context.appVersion).slice(0, 50) : undefined,
     },
   });
+
+  // Realtime nudge to the admin Support Tickets inbox — best-effort, never
+  // blocks. Admins/super-admins subscribed to 'admin:tickets' refetch on this.
+  try {
+    require('../websocket/server').publish('admin:tickets', {
+      event: 'new', ticketId: String(fb._id), category: fb.category, subject: fb.subject,
+    });
+  } catch (_) { /* ws optional */ }
 
   // Best-effort email to ops — never blocks the response.
   try {
@@ -177,7 +208,10 @@ const submitFeedback = asyncHandler(async (req, res) => {
 });
 
 const listMyFeedback = asyncHandler(async (req, res) => {
+  // `-adminNote`: the admin's INTERNAL triage note must never reach the user.
+  // The user-facing `adminReply` / `status` / `repliedAt` are kept.
   const items = await Feedback.find({ userId: req.userId })
+    .select('-adminNote')
     .sort({ createdAt: -1 })
     .limit(50)
     .lean();

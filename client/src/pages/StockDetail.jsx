@@ -32,6 +32,25 @@ const TF_MAP = {
   'All': { timeframe: '1w', limit: 520 },
 };
 const TF_LIST = ['1D', '1W', '1M', '3M', '6M', '1Y', '3Y', '5Y', 'All'];
+
+// Some feeds prepend a run of flat carry-forward candles (volume 0, price
+// unchanged) before the first real tick of the session — the pre-open /
+// no-trade window on an intraday chart. That flat run sits at the day's base
+// and squashes the real price line into the right edge. Drop the LEADING
+// carry-forward run (keep one candle as a lead-in anchor) so the real data
+// spreads across the chart. No-op for daily/weekly candles (they carry volume).
+function trimLeadingFlat(candles) {
+  if (!Array.isArray(candles) || candles.length < 3) return candles || [];
+  const first = Number(candles[0]?.close);
+  let i = 0;
+  while (
+    i < candles.length - 2 &&
+    Number(candles[i].close) === first &&
+    Number(candles[i].volume || 0) === 0
+  ) i++;
+  const start = Math.max(0, i - 1);
+  return start > 0 ? candles.slice(start) : candles;
+}
 const TABS = ['Overview', 'Technicals', 'News', 'Events', 'F&O'];
 
 export default function StockDetail() {
@@ -76,7 +95,7 @@ export default function StockDetail() {
     let dead = false;
     const { timeframe, limit } = TF_MAP[tf];
     api.get(`/instruments/${encodeURIComponent(symbol)}/candles`, { params: { timeframe, limit } })
-      .then((r) => { if (!dead) setCandles(Array.isArray(r.data.data) ? r.data.data : []); })
+      .then((r) => { if (!dead) setCandles(trimLeadingFlat(Array.isArray(r.data.data) ? r.data.data : [])); })
       .catch(() => { if (!dead) setCandles([]); });
     return () => { dead = true; };
   }, [symbol, tf]);

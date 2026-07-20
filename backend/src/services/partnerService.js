@@ -124,20 +124,22 @@ const monthBounds = (now = new Date()) => ({
 const referralVolumeBetween = async (refIds, start, end) => {
   if (!refIds || !refIds.length) return 0;
   try {
-    const rows = await Trade.aggregate([
+    // One-side (opening) volume that CLOSED (earned commission) in the window.
+    // Each close-trade can have up to 3 Commission rows (L1/L2/L3) carrying the
+    // SAME `volume`, so we dedupe by sourceId (the closing trade) to count it
+    // once, then sum.
+    const rows = await Commission.aggregate([
       { $match: {
-          executedAt: { $gte: start, $lt: end },
-          $or: [{ buyUserId: { $in: refIds } }, { sellUserId: { $in: refIds } }],
+          refereeId: { $in: refIds },
+          sourceType: { $in: ['TRADE_FEE', 'SPREAD'] },
+          createdAt: { $gte: start, $lt: end },
+          sourceId: { $ne: null },
       } },
-      { $addFields: { vol: { $multiply: [{ $toDouble: '$price' }, { $toDouble: '$quantity' }] } } },
-      { $group: {
-          _id: null,
-          buyVol:  { $sum: { $cond: [{ $in: ['$buyUserId',  refIds] }, '$vol', 0] } },
-          sellVol: { $sum: { $cond: [{ $in: ['$sellUserId', refIds] }, '$vol', 0] } },
-      } },
+      { $addFields: { volNum: { $toDouble: { $ifNull: ['$volume', '0'] } } } },
+      { $group: { _id: { referee: '$refereeId', src: '$sourceId' }, vol: { $first: '$volNum' } } },
+      { $group: { _id: null, vol: { $sum: '$vol' } } },
     ]);
-    const r = rows[0] || { buyVol: 0, sellVol: 0 };
-    return (r.buyVol || 0) + (r.sellVol || 0);
+    return rows[0]?.vol || 0;
   } catch (e) {
     console.error('[partner] referralVolumeBetween failed:', e.message);
     return 0;
@@ -353,7 +355,7 @@ const handleFirstQualifyingDeposit = async ({ userId, deposit }) => {
 // Called from the matching engine (alongside affiliateService's L2/L3
 // chain). Computes the L1 percentage from the referrer's current tier
 // (not a fixed rate). Returns the created Commission row or null.
-const distributeRevenueShare = async ({ tradeId, refereeId, feeAmount, currency }) => {
+const distributeRevenueShare = async ({ tradeId, refereeId, feeAmount, currency, positionId = null, volume = '0' }) => {
   try {
     if (!feeAmount || !gt(feeAmount, '0')) return null;
     const settings = await getSettings();
@@ -380,6 +382,8 @@ const distributeRevenueShare = async ({ tradeId, refereeId, feeAmount, currency 
       level:      1,
       sourceType: 'TRADE_FEE',
       sourceId:   tradeId,
+      positionId,
+      volume,
       currency:   currency || 'USD',
       amount:     amount.toString(),
       rate:       pct.toString(),
@@ -600,51 +604,81 @@ const getVolumeDashboard = async (userId) => {
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
   const sinceMonth   = new Date(now.getFullYear(), now.getMonth() - 5, 1); // 6-month window
 
-  let totalVolume = 0;
-  let monthlyVolume = 0;
-  const volByUser  = new Map(); // userId -> { volume, monthly, trades, lastAt }
-  const volByMonth = new Map(); // 'YYYY-MM' -> volume
-  const commByUser = new Map(); // userId -> total commission
+  // ── One-side volume model (IB commission-on-close) ──────────────────
+  // Volume is counted ONCE per position (the opening side). A position's
+  // one-side volume splits into:
+  //   • Commissioned  — the closed portion (has earned commission), from the
+  //     Commission ledger's `volume` field (entryPrice × closedQty).
+  //   • Pending       — the still-open portion (entryPrice × open qty), from
+  //     the live Position collection; not yet commissioned.
+  let totalVolume = 0;          // total one-side volume = pending + commissioned
+  let pendingVolumeTot = 0;
+  let commissionedVolumeTot = 0;
+  let monthlyVolume = 0;        // commissioned volume this calendar month
+  const volByUser  = new Map(); // userId -> { volume, pending, commissioned, lastAt }
+  const volByMonth = new Map(); // 'YYYY-MM' -> commissioned volume
+  const commByUser = new Map(); // userId -> total commission amount
   const commByMonth = new Map();
 
   if (refIds.length) {
+    // Commissioned (closed) one-side volume + commission earned, per referee.
+    // For THIS partner each (referee, close-trade) produces exactly one row
+    // (their own level), so summing `volume` never double-counts.
     try {
-      const [buy, sell] = await Promise.all([
-        volumeForSide('buyUserId', refIds, startOfMonth, sinceMonth),
-        volumeForSide('sellUserId', refIds, startOfMonth, sinceMonth),
+      const rows = await Commission.aggregate([
+        { $match: { referrerId: oid(userId), refereeId: { $in: refIds }, sourceType: { $in: ['TRADE_FEE', 'SPREAD'] } } },
+        { $addFields: { volNum: { $toDouble: { $ifNull: ['$volume', '0'] } }, amtNum: { $toDouble: '$amount' } } },
+        { $facet: {
+          byUser:  [{ $group: { _id: '$refereeId', vol: { $sum: '$volNum' }, comm: { $sum: '$amtNum' }, lastAt: { $max: '$createdAt' } } }],
+          byMonth: [
+            { $match: { createdAt: { $gte: sinceMonth } } },
+            { $group: { _id: { y: { $year: '$createdAt' }, m: { $month: '$createdAt' } }, vol: { $sum: '$volNum' } } },
+          ],
+          monthVol: [
+            { $match: { createdAt: { $gte: startOfMonth } } },
+            { $group: { _id: null, vol: { $sum: '$volNum' } } },
+          ],
+        } },
       ]);
-      const mergeUser = (rows) => {
-        for (const r of rows || []) {
-          const k = String(r._id);
-          const prev = volByUser.get(k) || { volume: 0, monthly: 0, trades: 0, lastAt: null };
-          prev.volume  += r.volume  || 0;
-          prev.monthly += r.monthly || 0;
-          prev.trades  += r.trades  || 0;
-          if (r.lastAt && (!prev.lastAt || r.lastAt > prev.lastAt)) prev.lastAt = r.lastAt;
-          volByUser.set(k, prev);
-        }
-      };
-      const mergeMonth = (rows) => {
-        for (const r of rows || []) {
-          const key = `${r._id.y}-${String(r._id.m).padStart(2, '0')}`;
-          volByMonth.set(key, (volByMonth.get(key) || 0) + (r.volume || 0));
-        }
-      };
-      mergeUser(buy[0]?.byUser);  mergeUser(sell[0]?.byUser);
-      mergeMonth(buy[0]?.byMonth); mergeMonth(sell[0]?.byMonth);
-      for (const v of volByUser.values()) { totalVolume += v.volume; monthlyVolume += v.monthly; }
-    } catch (e) {
-      console.error('[partner] volume aggregation failed:', e.message);
-    }
+      const f = rows[0] || {};
+      for (const g of f.byUser || []) {
+        const k = String(g._id);
+        const prev = volByUser.get(k) || { volume: 0, pending: 0, commissioned: 0, lastAt: null };
+        prev.commissioned = g.vol || 0;
+        prev.volume += g.vol || 0;
+        prev.lastAt = g.lastAt || prev.lastAt;
+        volByUser.set(k, prev);
+        commByUser.set(k, g.comm || 0);
+        commissionedVolumeTot += g.vol || 0;
+      }
+      for (const r of f.byMonth || []) volByMonth.set(`${r._id.y}-${String(r._id.m).padStart(2, '0')}`, r.vol || 0);
+      monthlyVolume = f.monthVol?.[0]?.vol || 0;
+    } catch (e) { console.error('[partner] commissioned-volume agg failed:', e.message); }
 
+    // Pending (still-open) one-side volume per referee = entryPrice × open qty.
+    // DEMO / VIRTUAL accounts are excluded — fake-money trades never count.
     try {
-      const commGroups = await Commission.aggregate([
-        { $match: { referrerId: oid(userId), refereeId: { $in: refIds } } },
-        { $addFields: { amtNum: { $toDouble: '$amount' } } },
-        { $group: { _id: '$refereeId', total: { $sum: '$amtNum' } } },
+      const Position = require('../models/Position');
+      const TradingAccount = require('../models/TradingAccount');
+      const demoAccts = await TradingAccount.find({ userId: { $in: refIds }, accountType: { $in: ['DEMO', 'VIRTUAL'] } }).select('_id').lean();
+      const demoIds = demoAccts.map((a) => a._id);
+      const pend = await Position.aggregate([
+        { $match: { userId: { $in: refIds }, status: 'OPEN', ...(demoIds.length ? { accountId: { $nin: demoIds } } : {}) } },
+        { $addFields: { vol: { $multiply: [{ $toDouble: '$entryPrice' }, { $toDouble: '$quantity' }] } } },
+        { $group: { _id: '$userId', vol: { $sum: '$vol' }, lastAt: { $max: '$openedAt' } } },
       ]);
-      for (const g of commGroups) commByUser.set(String(g._id), g.total);
-    } catch (e) { console.error('[partner] referee commission agg failed:', e.message); }
+      for (const g of pend) {
+        const k = String(g._id);
+        const prev = volByUser.get(k) || { volume: 0, pending: 0, commissioned: 0, lastAt: null };
+        prev.pending = g.vol || 0;
+        prev.volume += g.vol || 0;
+        if (g.lastAt && (!prev.lastAt || g.lastAt > prev.lastAt)) prev.lastAt = g.lastAt;
+        volByUser.set(k, prev);
+        pendingVolumeTot += g.vol || 0;
+      }
+    } catch (e) { console.error('[partner] pending-volume agg failed:', e.message); }
+
+    totalVolume = pendingVolumeTot + commissionedVolumeTot;
   }
 
   try {
@@ -672,14 +706,15 @@ const getVolumeDashboard = async (userId) => {
   // Per-referral performance, ranked by trading volume (no count ranking).
   const referralPerformance = referees
     .map((r) => {
-      const v = volByUser.get(String(r._id)) || { volume: 0, trades: 0, lastAt: null };
+      const v = volByUser.get(String(r._id)) || { volume: 0, pending: 0, commissioned: 0, lastAt: null };
       return {
         id: String(r._id),
         name: [r.firstName, r.lastName].filter(Boolean).join(' ') || r.email,
         email: r.email,
-        volume: Math.round(v.volume),
+        volume: Math.round(v.volume),               // one-side = pending + commissioned
+        pendingVolume: Math.round(v.pending || 0),
+        commissionedVolume: Math.round(v.commissioned || 0),
         commission: Number(round2(commByUser.get(String(r._id)) || 0)),
-        trades: v.trades || 0,
         lastActivityAt: v.lastAt || null,
         joinedAt: r.createdAt,
         status: v.volume > 0 ? 'ACTIVE' : 'INACTIVE',
@@ -722,6 +757,10 @@ const getVolumeDashboard = async (userId) => {
     previousMonthVolume: prevMonthVolume,   // determines the current month's tier
     currentMonthVolume,                     // tracking only → next month's tier
     totalReferralVolume: Math.round(totalVolume),
+    // ── One-side volume breakdown (IB commission-on-close model) ──
+    totalOneSideVolume: Math.round(totalVolume),          // pending + commissioned
+    pendingVolume: Math.round(pendingVolumeTot),          // still-open positions
+    commissionedVolume: Math.round(commissionedVolumeTot),// closed → commission earned
     monthlyVolume: currentMonthVolume,      // alias kept for backward-compat
     nextLevel: next ? { name: next.name, percent: next.percent, minVolume: next.minVolume } : null,
     nextLevelVolume: next ? next.minVolume : null,

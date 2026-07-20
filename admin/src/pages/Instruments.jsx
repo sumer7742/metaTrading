@@ -14,6 +14,7 @@ const EMPTY = {
   baseCurrency: '',
   quoteCurrency: '',
   category: 'CRYPTO',
+  logoUrl: '',
   pricePrecision: 2,
   quantityPrecision: 4,
   minOrderSize: '0.001',
@@ -673,6 +674,19 @@ function InstrumentEditor({ data, existing = [], onSave, onClose }) {
   const [submitting, setSubmitting] = useState(false);
   const update = (k) => (e) => setForm({ ...form, [k]: e.target.value });
   const checkbox = (k) => (e) => setForm({ ...form, [k]: e.target.checked });
+  // Logo upload → read the chosen image as a base64 data: URI and store it in
+  // form.logoUrl. It's sent inline in the normal save payload (JSON body limit
+  // is 15mb), so no separate file-upload endpoint is needed.
+  const onLogoFile = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // let the admin re-pick the same file
+    if (!file) return;
+    if (!/^image\//.test(file.type)) { alert('Please choose an image file (PNG, SVG, JPG…).'); return; }
+    if (file.size > 256 * 1024) { alert('Logo is too large. Use a small square image under 256 KB (PNG/SVG).'); return; }
+    const reader = new FileReader();
+    reader.onload = () => setForm((f) => ({ ...f, logoUrl: String(reader.result) }));
+    reader.readAsDataURL(file);
+  };
 
   // Duplicate-symbol guard — a NEW instrument can't reuse an existing symbol
   // (the DB unique index rejects it → "Duplicate value for symbol"). Warn early
@@ -803,6 +817,30 @@ function InstrumentEditor({ data, existing = [], onSave, onClose }) {
               <option>INDEX</option>
               <option>COMMODITY</option>
             </select>
+          </div>
+          {/* Custom logo — paste a URL or upload a small image (stored inline as
+              a data: URI). Overrides the auto-generated icon everywhere. */}
+          <div className="col-span-2">
+            <label className="label">Logo <span className="font-normal text-gray-500">— optional, overrides the auto icon</span></label>
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-lg border border-border-dark bg-white/5 flex items-center justify-center overflow-hidden shrink-0">
+                {form.logoUrl
+                  ? <img src={form.logoUrl} alt="logo preview" className="w-full h-full object-contain" />
+                  : <span className="text-[9px] text-gray-500 text-center leading-tight px-1">No logo</span>}
+              </div>
+              <div className="flex-1 min-w-0">
+                <input className="input text-xs" value={form.logoUrl || ''} onChange={update('logoUrl')} placeholder="Paste an image URL, or upload →" />
+                <div className="flex items-center gap-3 mt-1.5">
+                  <label className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border-dark text-xs text-gray-200 hover:bg-white/5 cursor-pointer">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 16V4M7 9l5-5 5 5" /><path d="M4 20h16" /></svg>
+                    Upload
+                    <input type="file" accept="image/*" className="hidden" onChange={onLogoFile} />
+                  </label>
+                  {form.logoUrl && <button type="button" className="text-xs text-rose-400 hover:underline" onClick={() => setForm((f) => ({ ...f, logoUrl: '' }))}>Remove</button>}
+                  <span className="text-[10px] text-gray-500">Small square PNG/SVG, ≤256 KB</span>
+                </div>
+              </div>
+            </div>
           </div>
           <div>
             <label className="label">Price Precision</label>

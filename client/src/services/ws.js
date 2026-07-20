@@ -1,3 +1,5 @@
+import { getImpersonationToken } from './impersonation';
+
 // WS URL derives from VITE_WS_URL if set, else from the HTTP API URL
 // (swap https→wss, http→ws, append /ws). Means deploy only needs to
 // set one env var — VITE_API_URL — and WebSocket follows automatically.
@@ -64,10 +66,23 @@ class WSClient {
       this.connected = false;
       const delay = Math.min(1000 * 2 ** this.reconnectAttempts, 30000);
       this.reconnectAttempts++;
-      setTimeout(() => this.connect(this.token), delay);
+      // Reconnect with the FRESHEST token, not the one we first connected
+      // with. After an access-token refresh the original token is stale — a
+      // reconnect (server restart, network blip, heartbeat timeout) that
+      // reused it would come back anonymous, and every private channel
+      // (user:notifications, chat, orders…) would be silently rejected until
+      // a full page reload. Mirrors the admin ws client.
+      setTimeout(() => this.connect(this._currentToken()), delay);
     };
 
     ws.onerror = () => {};
+  }
+
+  // The current live access token — impersonation (tab-scoped) wins over a
+  // real login, matching how auth.init picks the token for the first connect.
+  _currentToken() {
+    try { return getImpersonationToken() || localStorage.getItem('accessToken') || null; }
+    catch (_) { return this.token; }
   }
 
   // Defensive send: only attempts when the socket is OPEN. Browsers

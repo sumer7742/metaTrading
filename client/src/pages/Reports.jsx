@@ -28,6 +28,21 @@ export default function Reports() {
   const [stats, setStats] = useState({ totalTrades: 0, totalLot: 0, netPnl: 0, wins: 0, losses: 0 });
   const [loading, setLoading] = useState(true);
 
+  // ── CSV export filters (account + date range) ──────────────────────
+  const [accounts, setAccounts] = useState([]);
+  const [expAccount, setExpAccount] = useState('');   // '' = all accounts
+  const [expFrom, setExpFrom] = useState('');
+  const [expTo, setExpTo] = useState('');
+  useEffect(() => { api.get('/user/accounts').then((r) => setAccounts(r.data.data || [])).catch(() => {}); }, []);
+  const exportParams = () => {
+    const p = new URLSearchParams();
+    if (expAccount) p.set('accountId', expAccount);
+    if (expFrom) p.set('from', new Date(`${expFrom}T00:00:00`).toISOString());
+    if (expTo) p.set('to', new Date(`${expTo}T23:59:59`).toISOString());
+    const s = p.toString();
+    return s ? `?${s}` : '';
+  };
+
   useEffect(() => {
     (async () => {
       try {
@@ -98,17 +113,45 @@ export default function Reports() {
       </div>
 
       {/* CSV exports */}
-      <div className="card p-5">
-        <div className="flex items-center justify-between flex-wrap gap-3">
+      <div className="card p-5 space-y-4">
+        <div>
+          <h3 className="text-white font-semibold">Export your data</h3>
+          <p className="text-xs text-gray-400 mt-1">Download CSV files for tax or record-keeping — filter by account and date range.</p>
+        </div>
+
+        {/* Filters — applied to every export below */}
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="min-w-[180px]">
+            <label className="label">Account</label>
+            <select className="input" value={expAccount} onChange={(e) => setExpAccount(e.target.value)}>
+              <option value="">All accounts</option>
+              {accounts.map((a) => (
+                <option key={a._id} value={a._id}>
+                  {(a.nickname || a.accountNumber)}{a.baseCurrency ? ` · ${a.baseCurrency}` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
           <div>
-            <h3 className="text-white font-semibold">Export your data</h3>
-            <p className="text-xs text-gray-400 mt-1">Download CSV files for tax or record-keeping.</p>
+            <label className="label">From</label>
+            <input type="date" className="input" value={expFrom} max={expTo || undefined} onChange={(e) => setExpFrom(e.target.value)} />
           </div>
-          <div className="flex gap-2 flex-wrap">
-            <button onClick={() => downloadCsv('/reports/export/orders.csv', 'orders.csv')} className="btn-secondary text-sm">Orders CSV</button>
-            <button onClick={() => downloadCsv('/reports/export/positions.csv', 'positions.csv')} className="btn-secondary text-sm">Positions CSV</button>
-            <button onClick={() => downloadCsv('/reports/export/ledger.csv', 'ledger.csv')} className="btn-secondary text-sm">Ledger CSV</button>
+          <div>
+            <label className="label">To</label>
+            <input type="date" className="input" value={expTo} min={expFrom || undefined} onChange={(e) => setExpTo(e.target.value)} />
           </div>
+          {(expAccount || expFrom || expTo) && (
+            <button type="button" onClick={() => { setExpAccount(''); setExpFrom(''); setExpTo(''); }} className="text-xs font-semibold text-text-muted hover:text-text-primary px-2 py-2.5">
+              Clear
+            </button>
+          )}
+        </div>
+
+        {/* Downloads — each respects the filters above */}
+        <div className="flex gap-2 flex-wrap pt-3 border-t border-border-subtle">
+          <button onClick={() => downloadCsv(`/reports/export/orders.csv${exportParams()}`, 'orders.csv')} className="btn-secondary text-sm">Orders CSV</button>
+          <button onClick={() => downloadCsv(`/reports/export/positions.csv${exportParams()}`, 'positions.csv')} className="btn-secondary text-sm">Positions CSV</button>
+          <button onClick={() => downloadCsv(`/reports/export/ledger.csv${exportParams()}`, 'ledger.csv')} className="btn-secondary text-sm">Ledger CSV</button>
         </div>
       </div>
 

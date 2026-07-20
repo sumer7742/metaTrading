@@ -5,6 +5,7 @@ const walletService = require('./walletService');
 const subscriptionWalletService = require('./subscriptionWalletService');
 const bonusWalletService = require('./bonusWalletService');
 const { D, mul, gt } = require('../utils/decimal');
+const { computeInstrumentCommission } = require('../utils/commission');
 const { WALLET_TX_TYPE } = require('../config/constants');
 
 /**
@@ -31,7 +32,7 @@ const DEFAULT_RATES = { 1: '0.20', 2: '0.05', 3: '0.01' };
  * @param {string|number} ctx.feeAmount - total spread + commission paid by the trader
  * @param {string} ctx.currency
  */
-const distributeCommissions = async ({ tradeId, userId, feeAmount, currency }) => {
+const distributeCommissions = async ({ tradeId, userId, feeAmount, currency, positionId = null, volume = '0' }) => {
   if (!feeAmount || !gt(feeAmount, '0')) return [];
 
   // L1 is now handled by the Partner program — the rate depends on the
@@ -47,6 +48,8 @@ const distributeCommissions = async ({ tradeId, userId, feeAmount, currency }) =
       refereeId: userId,
       feeAmount,
       currency,
+      positionId,
+      volume,
     });
     if (l1) created.push(l1);
   } catch (e) {
@@ -79,6 +82,8 @@ const distributeCommissions = async ({ tradeId, userId, feeAmount, currency }) =
         level,
         sourceType: 'SPREAD',
         sourceId: tradeId,
+        positionId,
+        volume,
         currency,
         amount,
         rate,
@@ -229,4 +234,55 @@ const creditManual = async ({ userId, amount, currency, note, adminId }) => {
   return { commission, currency: ccy };
 };
 
-module.exports = { distributeCommissions, runPayoutBatch, getReferrerSummary, creditManual, DEFAULT_RATES };
+/**
+ * Commission on CLOSE only (the IB model). Nothing is paid when a position
+ * opens; when it (partially) closes we pay the referral chain on the CLOSED
+ * portion's ORIGINAL OPENING notional (entryPrice × closedQty). Idempotent per
+ * (close trade, referee) so a duplicate/concurrent settle never double-pays.
+ *
+ * @param {object}          ctx.position    position being (partially) closed (entryPrice, userId)
+ * @param {string|number}   ctx.closeQty    quantity closed by this fill
+ * @param {string|number}   ctx.feeAmount   the ACTUAL trading fee the referral paid on this close
+ * @param {object}          [ctx.instrument] instrument (fallback fee source + currency)
+ * @param {ObjectId}        [ctx.tradeId]   closing trade id (dedupe key)
+ * @param {string}          [ctx.currency]  settle currency
+ */
+const accrueCloseCommission = async ({ position, closeQty, feeAmount, instrument, tradeId, currency } = {}) => {
+  try {
+    if (!position) return;
+    const userId = position.userId;
+    if (!userId || !closeQty || !gt(String(closeQty), '0')) return;
+
+    // Idempotency — one commission set per (closing trade, referee).
+    if (tradeId) {
+      const exists = await Commission.exists({
+        sourceId: tradeId, refereeId: userId, sourceType: { $in: ['TRADE_FEE', 'SPREAD'] },
+      });
+      if (exists) return;
+    }
+
+    // Commission BASE = the actual fee the referral paid on this close (the
+    // referrer earns their tier % of it — "revenue share on referral fees").
+    // Fall back to the instrument commission only if no fee was supplied.
+    let fee = feeAmount;
+    if ((fee == null || fee === '' || !gt(String(fee), '0')) && instrument) {
+      fee = computeInstrumentCommission(instrument, mul(String(position.entryPrice || '0'), String(closeQty)));
+    }
+    if (!fee || !gt(String(fee), '0')) return;   // no fee → no revenue share
+
+    // Reported one-side (opening) volume of the closed portion.
+    const oneSideVolume = mul(String(position.entryPrice || '0'), String(closeQty));
+
+    await distributeCommissions({
+      tradeId, userId,
+      feeAmount: String(fee),
+      currency: currency || (instrument && instrument.quoteCurrency) || 'USD',
+      positionId: position._id,
+      volume: oneSideVolume,
+    });
+  } catch (e) {
+    console.error('[Affiliate] accrueCloseCommission error:', e.message);
+  }
+};
+
+module.exports = { distributeCommissions, accrueCloseCommission, runPayoutBatch, getReferrerSummary, creditManual, DEFAULT_RATES };

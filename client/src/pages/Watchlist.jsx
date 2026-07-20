@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import AssetIcon from '../components/AssetIcon';
+import DraggableList from '../components/DraggableList';
 import Modal from '../components/Modal';
 import { Z } from '../components/modalLayers';
 import { useInstruments } from '../hooks/useInstruments';
@@ -350,7 +351,7 @@ function ImportModal({ open, onClose, instruments, initial, onImport }) {
 const SHORTCUTS = [
   ['N', 'New watchlist'], ['A', 'Add symbols'], ['I', 'Import'],
   ['R', 'Rename current'], ['E', 'Export current'], ['S', 'Share current'],
-  ['D', 'Delete current'], ['/', 'Focus filter'],
+  ['D', 'Delete current'],
   ['1 – 9', 'Jump to list'], ['[  ]', 'Prev / next list'], ['?', 'This help'],
 ];
 function ShortcutsHelp({ open, onClose }) {
@@ -439,18 +440,24 @@ function RowMenu({ pinned, onPin, onMove, onCopy, onRemove }) {
 }
 
 // ─── Symbol row (draggable card) ─────────────────────────────────────
-function SymbolRow({ item, row, onDragStart, onDragOver, onDrop, isDragging, ...actions }) {
+// Drag is driven by DraggableList (live placeholder + FLIP). `dragHandleProps`
+// wires the grip to the pointer/keyboard drag; `isKbActive` lifts the row while
+// it's being moved by keyboard.
+function SymbolRow({ item, row, dragHandleProps = {}, rowDragProps = {}, isKbActive = false, isOverlay = false, ...actions }) {
   const change = Number(row?.change24h);
   const positive = !Number.isFinite(change) ? null : change >= 0;
   const tone = positive == null ? '#9CA3AF' : positive ? '#16A34A' : '#DC2626';
   const spark = sparkPath(change);
   return (
     <div
-      draggable
-      onDragStart={onDragStart} onDragOver={onDragOver} onDrop={onDrop}
-      className={`group flex items-center gap-3 px-3 py-3 bg-white border border-border-dark rounded-xl transition-all ${isDragging ? 'opacity-40' : 'hover:border-primary-500/40 hover:shadow-sm'}`}
+      {...rowDragProps}
+      className={`group flex items-center gap-3 px-3 py-3 bg-white border rounded-xl select-none transition-[border-color,box-shadow] duration-200 ${isOverlay ? '' : 'cursor-grab active:cursor-grabbing'} ${isKbActive ? 'border-primary-500 shadow-lg ring-2 ring-primary-500/30' : 'border-border-dark hover:border-primary-500/40 hover:shadow-sm'}`}
     >
-      <span className="cursor-grab active:cursor-grabbing text-text-muted/60 hover:text-text-muted shrink-0 touch-none" title="Drag to reorder">
+      <span
+        {...dragHandleProps}
+        className="cursor-grab active:cursor-grabbing text-text-muted/60 hover:text-text-muted shrink-0 touch-none select-none rounded outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
+        title="Drag to reorder"
+      >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.5" /><circle cx="15" cy="6" r="1.5" /><circle cx="9" cy="12" r="1.5" /><circle cx="15" cy="12" r="1.5" /><circle cx="9" cy="18" r="1.5" /><circle cx="15" cy="18" r="1.5" /></svg>
       </span>
       <AssetIcon row={row || { symbol: item.symbol }} size={36} round />
@@ -471,7 +478,7 @@ function SymbolRow({ item, row, onDragStart, onDragOver, onDrop, isDragging, ...
           {positive == null ? '—' : `${positive ? '+' : ''}${change.toFixed(2)}%`}
         </div>
       </div>
-      <Link to={`/trade?symbol=${encodeURIComponent(item.symbol)}`} className="hidden sm:inline-flex items-center justify-center px-3 py-1.5 rounded-lg bg-primary-500 hover:bg-primary-600 text-white text-xs font-bold transition-colors shrink-0">Trade</Link>
+      <Link to={`/trade?symbol=${encodeURIComponent(item.symbol)}`} className="hidden sm:inline-flex items-center justify-center px-3 py-1.5 rounded-lg bg-primary-500 hover:bg-primary-600 text-white text-xs font-bold transition-colors shrink-0 cursor-pointer">Trade</Link>
       <RowMenu pinned={item.pinned} {...actions} />
     </div>
   );
@@ -554,7 +561,6 @@ export default function Watchlist() {
   }, [activeSymbols.join(','), instrBySymbol]);
 
   // ── UI state ───────────────────────────────────────────────────────
-  const [search, setSearch] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [renameTarget, setRenameTarget] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -565,8 +571,6 @@ export default function Watchlist() {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [mobileActions, setMobileActions] = useState(null); // list whose action sheet is open (mobile)
   const dragList = useRef(null);
-  const dragItem = useRef(null);
-  const filterRef = useRef(null);
   const [dragInfo, setDragInfo] = useState({ kind: null, id: null });
 
   // ── Shared-link handler: ?share=<code> → open import prefilled, then
@@ -584,15 +588,7 @@ export default function Watchlist() {
   }, []);
 
   // ── Active-list rows (server already sorts pinned-first) ───────────
-  const visibleItems = useMemo(() => {
-    const items = activeList?.items || [];
-    const q = search.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter((it) => {
-      const r = instrBySymbol.get(it.symbol) || extra[it.symbol];
-      return it.symbol.toLowerCase().includes(q) || (r?.name || '').toLowerCase().includes(q);
-    });
-  }, [activeList, search, instrBySymbol, extra]);
+  const visibleItems = useMemo(() => activeList?.items || [], [activeList]);
 
   const rowFor = (sym) => {
     const base = instrBySymbol.get(sym) || extra[sym];
@@ -613,18 +609,7 @@ export default function Watchlist() {
     reorderLists(moveInArray(ids, from, to)).catch(() => {});
   };
 
-  // ── Item drag-reorder within active list ──────────────────────────
-  const onItemDrop = (targetItemId) => {
-    const fromId = dragItem.current;
-    dragItem.current = null;
-    setDragInfo({ kind: null, id: null });
-    if (!fromId || fromId === targetItemId || !activeList) return;
-    const ids = activeList.items.map((it) => it._id);
-    const from = ids.indexOf(fromId);
-    const to = ids.indexOf(targetItemId);
-    if (from < 0 || to < 0) return;
-    reorderSymbols(activeList._id, moveInArray(ids, from, to)).catch(() => {});
-  };
+  // Item drag-reorder is handled live by <DraggableList> (see the render).
 
   // ── Handlers ──────────────────────────────────────────────────────
   const handleCreate = ({ name, emoji, color }) => createList({ name, emoji, color }).then((l) => { toast.success(`Created ${emoji} ${name}`); return l; });
@@ -670,7 +655,6 @@ export default function Watchlist() {
         case 'e': if (activeList) handleExport(activeList); break;
         case 's': if (activeList) handleShare(activeList); break;
         case 'd': if (activeList && watchlists.length > 1) setDeleteTarget(activeList); break;
-        case '/': e.preventDefault(); filterRef.current?.focus(); break;
         case '[': if (idx > 0) setActiveId(watchlists[idx - 1]._id); break;
         case ']': if (idx >= 0 && idx < watchlists.length - 1) setActiveId(watchlists[idx + 1]._id); break;
         default:
@@ -781,18 +765,14 @@ export default function Watchlist() {
 
         {/* Main panel */}
         <main className="col-span-12 lg:col-span-9">
-          {/* Active list header + search + add */}
+          {/* Active list header + add */}
           <div className="flex items-center gap-2 mb-3">
             <div className="flex items-center gap-2 min-w-0">
               <span className="text-2xl">{activeList?.emoji}</span>
               <h2 className="text-lg font-bold text-text-primary truncate">{activeList?.name}</h2>
               <span className="text-xs font-bold text-text-muted">{activeList?.items?.length || 0}</span>
             </div>
-            <div className="relative flex-1 min-w-0 ml-auto max-w-xs">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
-              <input ref={filterRef} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filter… ( / )" className="w-full pl-9 pr-3 py-2 rounded-xl border border-border-dark bg-white text-sm text-text-primary placeholder:text-text-muted focus:border-primary-500 focus:outline-none" />
-            </div>
-            <button onClick={() => setShowAdd(true)} className="inline-flex items-center gap-1.5 border border-primary-500/50 text-primary-600 hover:bg-primary-500/5 text-sm font-bold px-3 py-2 rounded-xl transition-colors shrink-0">
+            <button onClick={() => setShowAdd(true)} className="ml-auto inline-flex items-center gap-1.5 border border-primary-500/50 text-primary-600 hover:bg-primary-500/5 text-sm font-bold px-3 py-2 rounded-xl transition-colors shrink-0">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
               <span className="hidden sm:inline">Add Symbol</span>
             </button>
@@ -806,29 +786,26 @@ export default function Watchlist() {
               <p className="mt-1 text-sm text-text-secondary max-w-sm">Add trading pairs to track prices, set up quick trades, and organize your strategy.</p>
               <button onClick={() => setShowAdd(true)} className="mt-4 inline-flex items-center gap-2 bg-primary-500 hover:bg-primary-600 text-white text-sm font-bold px-4 py-2.5 rounded-xl transition-colors">+ Add Symbols</button>
             </div>
-          ) : visibleItems.length === 0 ? (
-            <div className="bg-white border border-border-dark rounded-2xl p-10 text-center shadow-sm">
-              <p className="text-sm text-text-muted">No symbols match "{search}".</p>
-              <button onClick={() => setSearch('')} className="mt-2 text-xs font-semibold text-primary-600 hover:underline">Clear filter</button>
-            </div>
           ) : (
-            <div className="space-y-2">
-              {visibleItems.map((item) => (
+            <DraggableList
+              items={visibleItems}
+              getId={(it) => it._id}
+              onReorder={(orderedIds) => reorderSymbols(activeList._id, orderedIds).catch(() => {})}
+              renderItem={(item, { dragHandleProps, rowDragProps, isKbActive, isOverlay }) => (
                 <SymbolRow
-                  key={item._id}
                   item={item}
                   row={rowFor(item.symbol)}
-                  isDragging={dragInfo.kind === 'item' && dragInfo.id === item._id}
-                  onDragStart={() => { dragItem.current = item._id; setDragInfo({ kind: 'item', id: item._id }); }}
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={() => onItemDrop(item._id)}
+                  dragHandleProps={dragHandleProps}
+                  rowDragProps={rowDragProps}
+                  isKbActive={isKbActive}
+                  isOverlay={isOverlay}
                   onPin={() => pinSymbol(activeList._id, item._id, !item.pinned).catch(() => {})}
                   onMove={() => setTransfer({ mode: 'move', itemId: item._id })}
                   onCopy={() => setTransfer({ mode: 'copy', itemId: item._id })}
                   onRemove={() => removeSymbol(activeList._id, item._id).catch(() => {})}
                 />
-              ))}
-            </div>
+              )}
+            />
           )}
         </main>
       </div>

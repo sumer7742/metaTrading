@@ -244,7 +244,7 @@ function HeroCard({ d }) {
             </div>
             <div className="mt-2 flex items-center gap-2">
               <span className="text-2xl font-extrabold keep-white" style={{ color: m.accent }}>{d.revenueSharePercent}%</span>
-              <span className="text-sm keep-white" style={{ color: 'rgba(255,255,255,0.7)' }}>revenue share on referral fees</span>
+              <span className="text-sm keep-white" style={{ color: 'rgba(255,255,255,0.7)' }}>profit share on referral fees</span>
             </div>
             {next ? (
               <div className="mt-3 inline-flex items-center gap-2 text-xs font-semibold keep-white px-3 py-1.5 rounded-full"
@@ -255,7 +255,7 @@ function HeroCard({ d }) {
             ) : (
               <div className="mt-3 inline-flex items-center gap-2 text-xs font-bold keep-white px-3 py-1.5 rounded-full"
                    style={{ color: '#fff', background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.14)' }}>
-                👑 Top tier unlocked — maximum revenue share
+                👑 Top tier unlocked — maximum profit share
               </div>
             )}
           </div>
@@ -414,7 +414,7 @@ function LevelCard({ tier, state }) {
           {tier.percent}%
         </span>
         <span className={`text-[11px] font-semibold ${isCurrent ? 'keep-white' : 'text-text-muted'}`} style={isCurrent ? { color: 'rgba(255,255,255,0.8)' } : undefined}>
-          rev share
+          profit share
         </span>
       </div>
     </div>
@@ -426,10 +426,14 @@ function LevelCard({ tier, state }) {
 // ═══════════════════════════════════════════════════════════════════
 function StatsSection({ d, cur }) {
   const cards = [
-    { label: 'Previous Month Volume',    value: usdFull(d.previousMonthVolume), icon: ICONS.volume, tint: 'blue' },
-    { label: 'Current Month (tracking)', value: usdFull(d.currentMonthVolume),   icon: ICONS.calendar, tint: 'violet' },
+    // One-side volume breakdown (IB commission-on-close model): volume is
+    // counted once (opening side). Pending = still-open, Commissioned = closed.
+    { label: 'Total One-Side Volume',    value: usdFull(d.totalOneSideVolume ?? d.totalReferralVolume), icon: ICONS.volume, tint: 'blue' },
+    { label: 'Pending Volume',           value: usdFull(d.pendingVolume ?? 0),   icon: ICONS.clock, tint: 'amber' },
+    { label: 'Commissioned Volume',      value: usdFull(d.commissionedVolume ?? 0), icon: ICONS.coins, tint: 'green' },
+    { label: 'Total Commission Earned',  value: fmtMoney(d.revenueShareEarned ?? d.totalCommissionEarned, cur), icon: ICONS.coins, tint: 'green' },
+    { label: 'Previous Month Volume',    value: usdFull(d.previousMonthVolume),  icon: ICONS.calendar, tint: 'violet' },
     { label: 'Commission Rate',          value: `${d.revenueSharePercent}%`,     icon: ICONS.coins, tint: 'green' },
-    { label: 'Revenue Share Earned',     value: fmtMoney(d.revenueShareEarned ?? d.totalCommissionEarned, cur), icon: ICONS.coins, tint: 'green' },
     { label: 'Total Referrals',          value: String(d.totalReferrals ?? 0),   icon: ICONS.network, tint: 'slate' },
     { label: 'Pending Commission',       value: fmtMoney(d.pendingCommission, cur), icon: ICONS.clock, tint: 'amber' },
   ];
@@ -564,63 +568,157 @@ function EmptyChart() {
 // REFERRAL PERFORMANCE
 // ═══════════════════════════════════════════════════════════════════
 function ReferralPerformance({ rows = [], cur }) {
-  const top = rows.slice(0, 10);
+  const PAGE_SIZE = 8;
+  const [q, setQ] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+  const [page, setPage] = useState(1);
+
   const maxVol = Math.max(...rows.map((r) => r.volume || 0), 1);
+
+  // Filter by search term (name/email) + custom "Last activity" date range.
+  const filtered = useMemo(() => {
+    const term = q.trim().toLowerCase();
+    const fromTs = from ? new Date(`${from}T00:00:00`).getTime() : null;
+    const toTs = to ? new Date(`${to}T23:59:59.999`).getTime() : null;
+    return rows.filter((r) => {
+      if (term && !`${r.name || ''} ${r.email || ''}`.toLowerCase().includes(term)) return false;
+      if (fromTs != null || toTs != null) {
+        if (!r.lastActivityAt) return false;
+        const t = new Date(r.lastActivityAt).getTime();
+        if (fromTs != null && t < fromTs) return false;
+        if (toTs != null && t > toTs) return false;
+      }
+      return true;
+    });
+  }, [rows, q, from, to]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const start = (safePage - 1) * PAGE_SIZE;
+  const pageRows = filtered.slice(start, start + PAGE_SIZE);
+  const hasFilters = !!(q.trim() || from || to);
+
+  const onSearch = (v) => { setQ(v); setPage(1); };
+  const onFrom = (v) => { setFrom(v); setPage(1); };
+  const onTo = (v) => { setTo(v); setPage(1); };
+  const clearFilters = () => { setQ(''); setFrom(''); setTo(''); setPage(1); };
+
+  const inputCls = 'text-xs rounded-lg border border-border-subtle bg-bg-card px-2.5 py-2 text-text-primary outline-none focus:border-primary-400 focus:ring-1 focus:ring-primary-400/40';
+  const pageBtn = 'text-[11px] font-semibold px-2.5 py-1 rounded-lg border border-border-subtle text-text-secondary hover:bg-bg-hover disabled:opacity-40 disabled:cursor-not-allowed';
+
   return (
-    <div className="rounded-2xl border border-border-dark bg-white shadow-card overflow-hidden h-full">
+    <div className="rounded-2xl border border-border-dark bg-white shadow-card overflow-hidden h-full flex flex-col">
       <div className="px-5 py-4 border-b border-border-subtle flex items-center justify-between">
         <div>
           <h3 className="text-sm font-bold text-text-primary">Referral Performance</h3>
           <p className="text-[11px] text-text-muted mt-0.5">Top traders by trading volume</p>
         </div>
-        <span className="text-[11px] font-semibold text-text-muted">{rows.length} referral{rows.length === 1 ? '' : 's'}</span>
+        <span className="text-[11px] font-semibold text-text-muted">
+          {hasFilters ? `${filtered.length} of ${rows.length}` : `${rows.length} referral${rows.length === 1 ? '' : 's'}`}
+        </span>
       </div>
-      {top.length === 0 ? (
+
+      {/* ── Filter bar: search + custom "Last activity" date range ── */}
+      {rows.length > 0 && (
+        <div className="px-5 py-3 border-b border-border-subtle flex flex-col sm:flex-row sm:items-center gap-2">
+          <div className="relative flex-1 min-w-0">
+            <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-muted pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="11" cy="11" r="7" /><path d="m21 21-4.3-4.3" strokeLinecap="round" />
+            </svg>
+            <input
+              value={q}
+              onChange={(e) => onSearch(e.target.value)}
+              placeholder="Search name or email…"
+              className={`w-full pl-9 pr-3 py-2 ${inputCls} placeholder:text-text-muted`}
+            />
+          </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <input type="date" value={from} max={to || undefined} onChange={(e) => onFrom(e.target.value)} title="Last activity from" className={inputCls} />
+            <span className="text-text-muted text-xs">–</span>
+            <input type="date" value={to} min={from || undefined} onChange={(e) => onTo(e.target.value)} title="Last activity to" className={inputCls} />
+            {hasFilters && (
+              <button onClick={clearFilters} className="text-[11px] font-semibold text-primary-600 hover:text-primary-700 px-2 py-1 rounded-lg hover:bg-primary-500/10">
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {rows.length === 0 ? (
         <div className="px-5 py-12 text-center text-sm text-text-muted">
           No referrals yet — share your link to start earning.
         </div>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="text-[10px] text-text-muted uppercase tracking-[0.14em] font-bold bg-bg-card">
-              <tr>
-                <th className="text-left px-5 py-3">Trader</th>
-                <th className="text-left px-3 py-3">Trading volume</th>
-                <th className="text-right px-3 py-3">Commission</th>
-                <th className="text-right px-3 py-3 hidden sm:table-cell">Last activity</th>
-                <th className="text-right px-5 py-3">Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {top.map((r) => (
-                <tr key={r.id} className="border-t border-border-subtle hover:bg-bg-hover transition-colors">
-                  <td className="px-5 py-3">
-                    <div className="flex items-center gap-2.5">
-                      <Avatar name={r.name} />
-                      <div className="min-w-0">
-                        <div className="font-semibold text-text-primary truncate max-w-[160px]">{r.name}</div>
-                        <div className="text-[10px] text-text-muted font-mono truncate max-w-[160px]">{r.email}</div>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-3 py-3">
-                    <div className="font-mono font-bold text-text-primary tabular-nums">{usdFull(r.volume)}</div>
-                    <div className="mt-1 h-1.5 w-28 rounded-full bg-bg-hover overflow-hidden">
-                      <div className="h-full rounded-full" style={{ width: `${(r.volume / maxVol) * 100}%`, background: 'linear-gradient(90deg,#3B82F6,#1D4ED8)' }} />
-                    </div>
-                  </td>
-                  <td className="px-3 py-3 text-right font-mono font-bold text-bull tabular-nums">{fmtMoney(r.commission, cur)}</td>
-                  <td className="px-3 py-3 text-right text-xs text-text-secondary hidden sm:table-cell">{relTime(r.lastActivityAt)}</td>
-                  <td className="px-5 py-3 text-right">
-                    {r.status === 'ACTIVE'
-                      ? <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-bull/15 text-bull">Active</span>
-                      : <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-bg-hover text-text-muted">Idle</span>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      ) : filtered.length === 0 ? (
+        <div className="px-5 py-12 text-center text-sm text-text-muted">
+          No referrals match your search or date range.
         </div>
+      ) : (
+        <>
+          <div className="overflow-x-auto flex-1">
+            <table className="w-full text-sm">
+              <thead className="text-[10px] text-text-muted uppercase tracking-[0.14em] font-bold bg-bg-card">
+                <tr>
+                  <th className="text-left px-5 py-3">Trader</th>
+                  <th className="text-left px-3 py-3">Trading volume</th>
+                  <th className="text-right px-3 py-3">Commission</th>
+                  <th className="text-right px-3 py-3 hidden sm:table-cell">Last activity</th>
+                  <th className="text-right px-5 py-3">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pageRows.map((r) => (
+                  <tr key={r.id} className="border-t border-border-subtle hover:bg-bg-hover transition-colors">
+                    <td className="px-5 py-3">
+                      <div className="flex items-center gap-2.5">
+                        <Avatar name={r.name} />
+                        <div className="min-w-0">
+                          <div className="font-semibold text-text-primary truncate max-w-[160px]">{r.name}</div>
+                          <div className="text-[10px] text-text-muted font-mono truncate max-w-[160px]">{r.email}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="font-mono font-bold text-text-primary tabular-nums">{usdFull(r.volume)}</div>
+                      <div className="mt-1 h-1.5 w-28 rounded-full bg-bg-hover overflow-hidden">
+                        <div className="h-full rounded-full" style={{ width: `${(r.volume / maxVol) * 100}%`, background: 'linear-gradient(90deg,#3B82F6,#1D4ED8)' }} />
+                      </div>
+                      {(r.pendingVolume != null && r.commissionedVolume != null) && (
+                        <div className="mt-1 text-[9.5px] font-mono tabular-nums text-text-muted">
+                          <span className="text-amber-600">{usdCompact(r.pendingVolume)} pending</span>
+                          <span className="mx-1">·</span>
+                          <span className="text-bull">{usdCompact(r.commissionedVolume)} done</span>
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-3 py-3 text-right font-mono font-bold text-bull tabular-nums">{fmtMoney(r.commission, cur)}</td>
+                    <td className="px-3 py-3 text-right text-xs text-text-secondary hidden sm:table-cell">{relTime(r.lastActivityAt)}</td>
+                    <td className="px-5 py-3 text-right">
+                      {r.status === 'ACTIVE'
+                        ? <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-bull/15 text-bull">Active</span>
+                        : <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-bg-hover text-text-muted">Idle</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* ── Pagination ── */}
+          {filtered.length > PAGE_SIZE && (
+            <div className="px-5 py-3 border-t border-border-subtle flex items-center justify-between">
+              <span className="text-[11px] text-text-muted font-medium tabular-nums">
+                Showing {start + 1}–{Math.min(start + PAGE_SIZE, filtered.length)} of {filtered.length}
+              </span>
+              <div className="flex items-center gap-1">
+                <button onClick={() => setPage(safePage - 1)} disabled={safePage <= 1} className={pageBtn}>Prev</button>
+                <span className="text-[11px] text-text-muted font-semibold tabular-nums px-1">{safePage} / {totalPages}</span>
+                <button onClick={() => setPage(safePage + 1)} disabled={safePage >= totalPages} className={pageBtn}>Next</button>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -673,7 +771,7 @@ function CommissionOverview({ d, cur }) {
 
 function RecentCommissions({ rows = [], cur }) {
   if (!rows.length) return null;
-  const SRC = { DEPOSIT_BONUS: 'First-deposit bonus', TRADE_FEE: 'Revenue share', SPREAD: 'Revenue share', ADJUSTMENT: 'Admin credit' };
+  const SRC = { DEPOSIT_BONUS: 'First-deposit bonus', TRADE_FEE: 'Profit share', SPREAD: 'Profit share', ADJUSTMENT: 'Admin credit' };
   return (
     <div className="rounded-2xl border border-border-dark bg-white shadow-card overflow-hidden">
       <div className="px-5 py-4 border-b border-border-subtle">
@@ -721,7 +819,7 @@ function ReferralLinkSection({ code, link }) {
 
   return (
     <section>
-      <SectionTitle title="Invite & Earn" sub="Share your link — earn revenue share on every referral's trading volume." />
+      <SectionTitle title="Invite & Earn" sub="Share your link — earn profit share on every referral's trading volume." />
       <div className="rounded-2xl border border-border-dark bg-white shadow-card overflow-hidden">
         <div className="grid grid-cols-1 md:grid-cols-[1fr,auto]">
           {/* left: code + link + actions */}

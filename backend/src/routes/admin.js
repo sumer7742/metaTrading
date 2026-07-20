@@ -49,6 +49,14 @@ router.delete('/cms/pages/:id', cmsPages.adminDelete);
 router.get('/cms/footer-config', cmsPages.getFooterConfig);
 router.put('/cms/footer-config', cmsPages.setFooterConfig);
 
+// Economic calendar — admin-managed events + show/hide toggle.
+router.get('/cms/economic-config', cmsPages.getEconomicConfig);
+router.put('/cms/economic-config', cmsPages.setEconomicConfig);
+
+// Knowledge base — admin-managed help articles (+ optional video).
+router.get('/cms/knowledge-config', cmsPages.getKnowledgeConfig);
+router.put('/cms/knowledge-config', cmsPages.setKnowledgeConfig);
+
 // ── CMS: News (Daily News Updates). ──
 router.get('/cms/news', cmsNews.adminList);
 router.post('/cms/news', cmsNews.adminCreate);
@@ -95,6 +103,14 @@ router.post('/deposits/:id/reject', c.rejectDeposit);
 
 router.get('/audit-log', c.listAuditLog);
 router.get('/reports/trades', c.tradesReport);
+
+// Support Tickets — user-submitted feedback inbox (list / detail / status +
+// internal note / reply-to-user). ADMIN is scoped to their subtree in the
+// controller; SUPER_ADMIN sees all.
+router.get('/support-tickets', c.listFeedback);
+router.get('/support-tickets/:id', c.getFeedback);
+router.put('/support-tickets/:id', c.updateFeedback);
+router.post('/support-tickets/:id/reply', c.replyFeedback);
 
 // User-to-user transfer log (paired ledger rows enriched with names).
 router.get('/transfers/user', c.listUserTransfers);

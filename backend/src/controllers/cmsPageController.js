@@ -75,6 +75,86 @@ const setFooterConfig = asyncHandler(async (req, res) => {
   sendSuccess(res, next);
 });
 
+// ── Economic calendar (admin-managed events + show/hide toggle) ──────────
+// Stored in systemSettings under 'economic.config' as { enabled, events }. The
+// client MERGES these admin events with its own generated global schedule, so
+// the built-in events keep showing unless the admin turns the section off
+// (enabled=false).
+const _normEconEvents = (arr) => (Array.isArray(arr) ? arr : [])
+  .map((e) => ({
+    id:        String(e.id || `adm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
+    date:      e.date ? new Date(e.date).toISOString() : null,
+    country:   String(e.country || '').slice(0, 4).toUpperCase(),
+    currency:  String(e.currency || '').slice(0, 6).toUpperCase(),
+    impact:    ['high', 'medium', 'low'].includes(String(e.impact)) ? e.impact : 'medium',
+    event:     String(e.event || e.name || '').slice(0, 120),
+    previous:  e.previous === '' || e.previous == null ? null : Number(e.previous),
+    consensus: e.consensus === '' || e.consensus == null ? null : Number(e.consensus),
+    forecast:  e.forecast === '' || e.forecast == null ? null : Number(e.forecast),
+    actual:    e.actual === '' || e.actual == null ? null : Number(e.actual),
+    unit:      String(e.unit || '').slice(0, 8),
+  }))
+  .filter((e) => e.date && e.event);
+
+// Public: enabled flag + admin events (client merges with its generated set).
+const economicCalendar = asyncHandler(async (req, res) => {
+  const cfg = (await systemSettings.getSetting('economic.config')) || {};
+  res.set('Cache-Control', PUBLIC_CACHE);
+  sendSuccess(res, { enabled: cfg.enabled !== false, events: _normEconEvents(cfg.events) });
+});
+
+// Admin: read the economic-calendar config.
+const getEconomicConfig = asyncHandler(async (req, res) => {
+  const cfg = (await systemSettings.getSetting('economic.config')) || {};
+  sendSuccess(res, { enabled: cfg.enabled !== false, events: _normEconEvents(cfg.events) });
+});
+
+// Admin: replace the economic-calendar config ({ enabled, events }).
+const setEconomicConfig = asyncHandler(async (req, res) => {
+  const b = req.body || {};
+  const next = { enabled: b.enabled !== false, events: _normEconEvents(b.events).slice(0, 200) };
+  await systemSettings.setSetting('economic.config', next, req.userId);
+  await audit(req, 'CMS_ECONOMIC_CALENDAR_UPDATE', null, { count: next.events.length, enabled: next.enabled });
+  sendSuccess(res, next);
+});
+
+// ── Knowledge base (admin-managed help articles + optional video) ────────
+// Stored in systemSettings under 'kb.config' as { articles }. The client MERGES
+// these with its built-in default FAQ set, so both show together. Each article
+// may carry a `videoUrl` (YouTube/Vimeo/mp4) rendered in the card.
+const _normKbArticles = (arr) => (Array.isArray(arr) ? arr : [])
+  .map((a) => ({
+    id:       String(a.id || `kb-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
+    tag:      String(a.tag || 'General').slice(0, 40),
+    q:        String(a.q || a.question || '').slice(0, 200),
+    a:        String(a.a || a.answer || '').slice(0, 4000),
+    link:     String(a.link || '').slice(0, 300),
+    videoUrl: String(a.videoUrl || '').slice(0, 500),
+  }))
+  .filter((a) => a.q && a.a);
+
+// Public: admin articles (client merges with its generated/default set).
+const knowledgeBase = asyncHandler(async (req, res) => {
+  const cfg = (await systemSettings.getSetting('kb.config')) || {};
+  res.set('Cache-Control', PUBLIC_CACHE);
+  sendSuccess(res, { articles: _normKbArticles(cfg.articles) });
+});
+
+// Admin: read the knowledge-base config.
+const getKnowledgeConfig = asyncHandler(async (req, res) => {
+  const cfg = (await systemSettings.getSetting('kb.config')) || {};
+  sendSuccess(res, { articles: _normKbArticles(cfg.articles) });
+});
+
+// Admin: replace the knowledge-base config ({ articles }).
+const setKnowledgeConfig = asyncHandler(async (req, res) => {
+  const b = req.body || {};
+  const next = { articles: _normKbArticles(b.articles).slice(0, 100) };
+  await systemSettings.setSetting('kb.config', next, req.userId);
+  await audit(req, 'CMS_KNOWLEDGE_BASE_UPDATE', null, { count: next.articles.length });
+  sendSuccess(res, next);
+});
+
 // Single published page by slug. Honors visibility; tracks views.
 const getPublicBySlug = asyncHandler(async (req, res) => {
   const page = await CmsPage.findOne({ slug: String(req.params.slug).toLowerCase(), status: 'PUBLISHED' }).lean();
@@ -205,4 +285,6 @@ module.exports = {
   footerLinks, getPublicBySlug,
   adminList, adminGet, adminCreate, adminUpdate, adminPublish, adminReorder, adminDelete,
   getFooterConfig, setFooterConfig,
+  economicCalendar, getEconomicConfig, setEconomicConfig,
+  knowledgeBase, getKnowledgeConfig, setKnowledgeConfig,
 };

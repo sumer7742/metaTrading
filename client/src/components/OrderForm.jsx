@@ -443,6 +443,13 @@ export default function OrderForm({
     }
     return v;
   };
+  // Format an amount with up to `dp` decimals but WITHOUT trailing zeros, so a
+  // round value shows "100" instead of "100.00" (real cents stay: 100.5 →
+  // "100.5", 100.25 → "100.25").
+  const _trim = (n, dp) => {
+    const r = Number(Number(n).toFixed(dp));
+    return Number.isFinite(r) ? String(r) : '';
+  };
   const _fromPrice = (mode, priceStr, isTp) => {
     const p = Number(priceStr);
     if (!Number.isFinite(p) || p === 0) return '';
@@ -451,11 +458,11 @@ export default function OrderForm({
     const dirTp = side === 'BUY' ? 1 : -1;
     const dir   = isTp ? dirTp : -dirTp;
     const diff  = (p - refPrice) * dir;
-    if (mode === 'pips')  return (diff / _pipSize).toFixed(1);
-    if (mode === 'money') return qtyNum > 0 ? (diff * qtyNum).toFixed(2) : '';
+    if (mode === 'pips')  return _trim(diff / _pipSize, 1);
+    if (mode === 'money') return qtyNum > 0 ? _trim(diff * qtyNum, 2) : '';
     if (mode === 'percent') {
       if (!qtyNum || !free) return '';
-      return ((diff * qtyNum / free) * 100).toFixed(2);
+      return _trim((diff * qtyNum / free) * 100, 2);
     }
     return String(priceStr);
   };
@@ -693,6 +700,12 @@ export default function OrderForm({
   const spreadCost = hasQuotes && qtyNum > 0 ? spreadAbs * qtyNum : 0;
   const quoteCcy = instrument?.quoteCurrency || 'USD';
   const fmtQuote = (v) => `${Number(v).toFixed(2)} ${quoteCcy}`;
+  // Notional is denominated in the INSTRUMENT's quote currency (e.g. USD for
+  // BTCUSD), not the account currency — format it with that symbol so an INR
+  // account doesn't show a USD figure with a ₹ sign.
+  const quoteSym = quoteCcy === 'INR' ? '₹' : quoteCcy === 'USD' ? '$' : `${quoteCcy} `;
+  const fmtQuoteAmt = (v) =>
+    `${quoteSym}${Number(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const commPctAmt = notional > 0 ? (notional * commPct / 100) : 0;
 
   // Indian cash equity: statutory pass-through estimate (STT/exchange/SEBI/GST).
@@ -1347,7 +1360,7 @@ export default function OrderForm({
 
               {qtyNum > 0 && refPrice > 0 && (
                 <div className="space-y-1">
-                  <InfoRow C={C} label="Notional" value={fmtAcct(notional)} />
+                  <InfoRow C={C} label="Notional" value={fmtQuoteAmt(notional)} />
                   <InfoRow
                     C={C}
                     label="Free after"

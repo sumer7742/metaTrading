@@ -325,7 +325,7 @@ function ProfileTab({ user, onUpdate }) {
               className="input opacity-70 cursor-not-allowed"
               value={countryName(user?.country)}
               disabled
-              title="Set at registration / KYC"
+              title="Chosen at registration"
             />
           </Field>
         </div>

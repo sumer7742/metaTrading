@@ -21,6 +21,8 @@ export default function ManagerChats() {
   const [sending, setSending] = useState(false);
   const [theyTyping, setTheyTyping] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [hasMore, setHasMore] = useState(false);      // older messages may exist
+  const [loadingMore, setLoadingMore] = useState(false);
   const [uploadCfg, setUploadCfg] = useState(null);
   const [pending, setPending] = useState([]);
   // "+ New chat" picker — start a conversation with an assigned user who
@@ -34,6 +36,8 @@ export default function ManagerChats() {
   const typingTimer = useRef(null);
   const lastTypingSent = useRef(0);
   const fileRef = useRef(null);
+  const messagesRef = useRef([]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
   const active = convs.find((c) => c._id === activeId);
 
   const scrollToBottom = () => requestAnimationFrame(() => { const el = scrollRef.current; if (el) el.scrollTop = el.scrollHeight; });
@@ -51,12 +55,40 @@ export default function ManagerChats() {
     setActiveId(id);
     try {
       const { data } = await api.get(`/chat/conversations/${id}/messages`, { params: { limit: 60 } });
-      setMessages(data.data || []);
+      const msgs = data.data || [];
+      setMessages(msgs);
+      setHasMore(msgs.length >= 60);   // a full page back → probably more history
       scrollToBottom();
       api.post(`/chat/conversations/${id}/seen`).catch(() => {});
       setConvs((prev) => prev.map((c) => (c._id === id ? { ...c, unread: 0 } : c)));
     } catch (e) { toast.error(errorMessage(e)); }
   }, []);
+
+  // Load OLDER messages for the active thread — fetch the page before the
+  // oldest message and prepend, preserving scroll so the view doesn't jump.
+  const loadOlder = useCallback(async () => {
+    const cur = messagesRef.current;
+    if (loadingMore || !hasMore || !activeId || !cur.length) return;
+    setLoadingMore(true);
+    const el = scrollRef.current;
+    const prevHeight = el ? el.scrollHeight : 0;
+    const prevTop = el ? el.scrollTop : 0;
+    try {
+      const { data } = await api.get(`/chat/conversations/${activeId}/messages`, { params: { before: cur[0].createdAt, limit: 60 } });
+      const older = data.data || [];
+      if (older.length < 60) setHasMore(false);
+      if (older.length) {
+        setMessages((prev) => {
+          const seen = new Set(prev.map((m) => m._id));
+          const merged = [...older.filter((m) => !seen.has(m._id)), ...prev];
+          merged.sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+          return merged;
+        });
+        requestAnimationFrame(() => { const e2 = scrollRef.current; if (e2) e2.scrollTop = e2.scrollHeight - prevHeight + prevTop; });
+      }
+    } catch (e) { toast.error(errorMessage(e)); }
+    finally { setLoadingMore(false); }
+  }, [activeId, hasMore, loadingMore]);
 
   useEffect(() => { loadConvs(); /* eslint-disable-next-line */ }, []);
   const refreshUploadCfg = useCallback(() => api.get('/chat/upload-config').then((r) => setUploadCfg(r.data.data)).catch(() => {}), []);
@@ -89,9 +121,13 @@ export default function ManagerChats() {
     finally { setStarting(false); }
   };
 
-  // Realtime — the manager's own chat channel covers all their conversations.
+  // Realtime. Managers/admins get events on 'user:chat' (they're a party to
+  // their own users' conversations). A SUPER_ADMIN is never a party, so they'd
+  // miss live updates for the conversations they browse — they also subscribe
+  // to the shared 'admin:chat' fan-out (same payload). They aren't a party, so
+  // no event is delivered twice.
   useEffect(() => {
-    const unsub = wsClient.subscribe('user:chat', (d) => {
+    const onChatEvent = (d) => {
       if (!d) return;
       if (d.event === 'message') {
         // Update the list row (last message + unread).
@@ -110,9 +146,11 @@ export default function ManagerChats() {
       } else if (d.event === 'presence') {
         setConvs((prev) => prev.map((c) => (String(c.userId) === String(d.userId) ? { ...c, online: d.online } : c)));
       }
-    });
-    return () => { unsub && unsub(); clearTimeout(typingTimer.current); };
-  }, [activeId]);
+    };
+    const unsub = wsClient.subscribe('user:chat', onChatEvent);
+    const unsubAdmin = isSuper ? wsClient.subscribe('admin:chat', onChatEvent) : null;
+    return () => { unsub && unsub(); unsubAdmin && unsubAdmin(); clearTimeout(typingTimer.current); };
+  }, [activeId, isSuper]);
 
   const onType = (v) => {
     setText(v);
@@ -229,7 +267,15 @@ export default function ManagerChats() {
                 </span>
               </div>
               <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-2 bg-bg-dark/40">
-                {messages.map((m) => <Bubble key={m._id} m={m} mine={m.senderRole !== 'USER'} />)}
+                {hasMore && (
+                  <div className="flex justify-center pb-1">
+                    <button type="button" onClick={loadOlder} disabled={loadingMore}
+                      className="text-[11px] font-semibold text-primary-500 hover:text-primary-400 disabled:opacity-50 rounded-full border border-border-dark bg-bg-card px-3 py-1 transition-colors">
+                      {loadingMore ? 'Loading…' : 'Load older messages'}
+                    </button>
+                  </div>
+                )}
+                {renderThread(messages)}
                 {theyTyping && <div className="text-[11px] text-text-muted px-2">typing…</div>}
               </div>
               <div className="border-t border-border-dark">
@@ -306,6 +352,40 @@ export default function ManagerChats() {
       )}
     </div>
   );
+}
+
+// A centered day chip ("Today" / "Yesterday" / "12 Jun") shown between
+// messages whenever the calendar day changes.
+function DateDivider({ date }) {
+  const d = new Date(date);
+  const dd = new Date(d); dd.setHours(0, 0, 0, 0);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const yest = new Date(today); yest.setDate(yest.getDate() - 1);
+  let label;
+  if (dd.getTime() === today.getTime()) label = 'Today';
+  else if (dd.getTime() === yest.getTime()) label = 'Yesterday';
+  else label = d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', ...(d.getFullYear() !== today.getFullYear() ? { year: 'numeric' } : {}) });
+  return (
+    <div className="flex items-center justify-center my-1">
+      <span className="text-[10px] font-semibold text-text-muted bg-bg-card border border-border-dark rounded-full px-2.5 py-0.5">{label}</span>
+    </div>
+  );
+}
+
+// Flatten the message list into bubbles interleaved with day dividers.
+// Manager side: "mine" = anything NOT sent by the USER.
+function renderThread(messages) {
+  const out = [];
+  let lastDay = null;
+  for (const m of messages) {
+    const day = new Date(m.createdAt).toDateString();
+    if (day !== lastDay) {
+      out.push(<DateDivider key={`day-${day}`} date={m.createdAt} />);
+      lastDay = day;
+    }
+    out.push(<Bubble key={m._id} m={m} mine={m.senderRole !== 'USER'} />);
+  }
+  return out;
 }
 
 function Bubble({ m, mine }) {

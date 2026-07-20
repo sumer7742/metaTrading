@@ -296,29 +296,9 @@ class MatchingEngine {
           routing: order.routing === ROUTING.INTERNAL_MATCHING ? ROUTING.INTERNAL_MATCHING : ROUTING.INTERNAL,
         });
 
-        // Distribute affiliate commissions on the spread/fee.
-        // For INTERNAL trades, fee is approximated as (instrument.commissionPercent * notional).
-        // Affiliate commission — non-critical; runs after the fill (off the
-        // hot path) so it never adds latency to matching/settlement.
-        setImmediate(async () => {
-          try {
-            const affiliateService = require('../services/affiliateService');
-            const subscriptionService = require('../services/subscriptionService');
-            const notional = mul(f.price, f.qty);
-            let feeAmount = computeInstrumentCommission(instrument, notional);
-            feeAmount = await subscriptionService.applyFeeDiscount(order.userId, feeAmount);
-            if (gt(feeAmount, '0')) {
-              await affiliateService.distributeCommissions({
-                tradeId: newTrade._id,
-                userId: order.userId,
-                feeAmount,
-                currency: instrument.quoteCurrency,
-              });
-            }
-          } catch (e) {
-            console.error('[ME] Affiliate commission error:', e.message);
-          }
-        });
+        // Affiliate / IB commission is generated ONLY on CLOSE now (see
+        // accrueCloseCommission fired from _updatePosition's close branch).
+        // Opening fills pay nothing; both legs earn on their own closes.
 
         // Update positions for both sides. Same tradeId is passed to both
         // sides so each derives its own dedupeKey of "TRADE_SETTLE:<tradeId>".
@@ -653,27 +633,9 @@ class MatchingEngine {
     // real DB position (fire-and-forget; logs divergences, never blocks).
     if (_shadow) this._shadowBBookPost(order, _shadow).catch(() => {});
 
-    // Distribute affiliate commissions (B-book also pays referrers based on
-    // spread captured). Non-critical → runs after the fill (off the hot path).
-    setImmediate(async () => {
-      try {
-        const affiliateService = require('../services/affiliateService');
-        const subscriptionService = require('../services/subscriptionService');
-        const notional = mul(finalPrice, order.quantity);
-        let feeAmount = computeInstrumentCommission(instrument, notional);
-        feeAmount = await subscriptionService.applyFeeDiscount(order.userId, feeAmount);
-        if (gt(feeAmount, '0')) {
-          await affiliateService.distributeCommissions({
-            tradeId,
-            userId: order.userId,
-            feeAmount,
-            currency: instrument.quoteCurrency,
-          });
-        }
-      } catch (e) {
-        console.error('[ME] B-book commission error:', e.message);
-      }
-    });
+    // Affiliate / IB commission is generated ONLY on CLOSE now (see
+    // accrueCloseCommission fired from _updatePosition's close branch).
+    // The opening B-book fill pays nothing.
 
     // Broadcast ticker and trade tape so chart and last-price update
     if (this.broadcaster) {
@@ -939,27 +901,9 @@ class MatchingEngine {
     order.filledAt = new Date();
     await order.save();
 
-    // Distribute affiliate commissions on the spread. Non-critical → runs
-    // after the fill (off the hot path).
-    setImmediate(async () => {
-      try {
-        const affiliateService = require('../services/affiliateService');
-        const subscriptionService = require('../services/subscriptionService');
-        const notional = mul(finalPrice, order.quantity);
-        let feeAmount = computeInstrumentCommission(instrument, notional);
-        feeAmount = await subscriptionService.applyFeeDiscount(order.userId, feeAmount);
-        if (gt(feeAmount, '0')) {
-          await affiliateService.distributeCommissions({
-            tradeId: externalTrade._id,
-            userId: order.userId,
-            feeAmount,
-            currency: instrument.quoteCurrency,
-          });
-        }
-      } catch (e) {
-        console.error('[ME] EXTERNAL commission error:', e.message);
-      }
-    });
+    // Affiliate / IB commission is generated ONLY on CLOSE now (see
+    // accrueCloseCommission fired from _updatePosition's close branch).
+    // The opening external/LP fill pays nothing.
 
     // Broadcast
     if (this.broadcaster) {
@@ -1159,6 +1103,27 @@ class MatchingEngine {
       fee = add(fee, shareFee);
     }
 
+    // Affiliate / IB commission on CLOSE — the referrer earns their tier % of
+    // the ACTUAL fee the referral just paid on this close (revenue share on
+    // referral fees). Reported one-side volume = entryPrice × closeQty. Fired
+    // once per (closing trade, referee) — idempotent inside
+    // accrueCloseCommission — and only AFTER a settle succeeds (see branches).
+    // DEMO / VIRTUAL accounts trade fake money → they earn NO referral
+    // commission and their volume is excluded from the partner reports.
+    const _entryPrice = pos.entryPrice;
+    const _closeFee = fee;
+    const _isDemoAcct = ['DEMO', 'VIRTUAL'].includes(account?.accountType);
+    const fireCloseCommission = () => {
+      if (_isDemoAcct) return;
+      setImmediate(() =>
+        require('../services/affiliateService')
+          .accrueCloseCommission({
+            position: { _id: pos._id, userId, entryPrice: _entryPrice },
+            closeQty, feeAmount: _closeFee, instrument, tradeId, currency,
+          })
+          .catch(() => {}));
+    };
+
     // dedupeKey scopes the settle to (this fill, this user) — both sides of
     // an internal match share a tradeId but are credited to different
     // wallets, so we include userId to avoid the maker's settle colliding
@@ -1196,6 +1161,7 @@ class MatchingEngine {
         positionId: pos._id, tradeId,
         dedupeKey,
       });
+      fireCloseCommission();
       return pos;
     }
 
@@ -1243,6 +1209,7 @@ class MatchingEngine {
         positionId: pos._id, tradeId,
         dedupeKey,
       });
+      fireCloseCommission();
       return updated;
     }
 
@@ -1282,6 +1249,7 @@ class MatchingEngine {
         positionId: pos._id, tradeId,
         dedupeKey,
       });
+      fireCloseCommission();
     }
     return updated || pos;
   }

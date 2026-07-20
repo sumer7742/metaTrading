@@ -316,9 +316,13 @@ export default function AssetIcon({
   baseCurrency,
   quoteCurrency,
   category,
+  logoUrl,
   size = 32,
   round = false,
 }) {
+  // Custom admin-set logo (URL or data: URI) takes precedence over every
+  // generated icon; falls back to the auto icon if the image fails to load.
+  const [logoFailed, setLogoFailed] = useState(false);
   const sym   = (symbol        ?? row?.symbol        ?? '').toUpperCase();
   const cat   = (category      ?? row?.category      ?? '').toUpperCase();
   const quote = (quoteCurrency ?? row?.quoteCurrency ?? '').toUpperCase();
@@ -331,6 +335,23 @@ export default function AssetIcon({
   // Underlying (F&O rows carry it) — used as the colour key so every NIFTY /
   // SBIN contract shares one tile colour regardless of expiry/strike suffix.
   const under = String(row?.underlying || '').toUpperCase();
+
+  // Admin-set custom logo wins over every generated icon below.
+  const customLogo = logoUrl ?? row?.logoUrl ?? null;
+  if (customLogo && !logoFailed) {
+    return (
+      <img
+        src={customLogo}
+        width={size}
+        height={size}
+        alt={sym || 'logo'}
+        loading="lazy"
+        onError={() => setLogoFailed(true)}
+        className="keep-white shrink-0 object-contain bg-white"
+        style={{ width: size, height: size, borderRadius: round ? '50%' : Math.round(size * 0.28) }}
+      />
+    );
+  }
 
   // CRYPTO → real coin logo when available. We accept either:
   //   1. an explicit category=CRYPTO row

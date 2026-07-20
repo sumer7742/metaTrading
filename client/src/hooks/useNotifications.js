@@ -490,12 +490,23 @@ export function useNotifications() {
       });
     };
 
-    (async () => {
+    const fetchServer = async () => {
       try {
         const { data } = await api.get('/user/notifications', { params: { limit: 50 } });
         if (!cancelled) mergeServer(Array.isArray(data?.data) ? data.data : []);
       } catch (_) { /* best-effort */ }
-    })();
+    };
+    fetchServer();
+
+    // Poll fallback + focus reconcile. The live WS push below delivers new
+    // notifications instantly when the socket is healthy, but a missed push
+    // (e.g. a reconnect during a token refresh) would otherwise leave the bell
+    // stale until a manual page reload. Re-pulling every 20 s and on tab focus
+    // guarantees new notifications appear on their own. mergeServer dedupes by
+    // `srv:<id>`, so the poll and the live push never double-count.
+    const pollId = setInterval(fetchServer, 20000);
+    const onFocus = () => fetchServer();
+    window.addEventListener('focus', onFocus);
 
     // Backend pushes via notifyUser(id,'notifications',…) → `user:notifications:<id>`,
     // so we subscribe with the `user:` prefix (the ws client maps the scoped
@@ -509,7 +520,12 @@ export function useNotifications() {
         : [entry, ...prev].slice(0, MAX_NOTIFICATIONS)));
     });
 
-    return () => { cancelled = true; unsub && unsub(); };
+    return () => {
+      cancelled = true;
+      clearInterval(pollId);
+      window.removeEventListener('focus', onFocus);
+      unsub && unsub();
+    };
   }, []);
 
   const unreadCount = useMemo(() => notifications.filter((n) => !n.read).length, [notifications]);

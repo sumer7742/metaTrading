@@ -18,6 +18,7 @@ import { Link } from 'react-router-dom';
  * Wallet view is currently active (e.g. /accounts/new).
  */
 const NAV_ITEMS = [
+  { id: 'details',  label: 'Account Details',      icon: <NIDetails /> },
   { id: 'overview', label: 'Account Overview',     icon: <NIOverview /> },
   { id: 'grow',     label: 'Deposit Funds',        icon: <NIDeposit /> },
   { id: 'withdraw', label: 'Withdraw Funds',       icon: <NIWithdraw /> },
@@ -30,7 +31,6 @@ const NAV_ITEMS = [
   // always navigates via Link (no withdraw, transfer-only out).
   { id: 'bonus', label: 'Bonus Wallet', icon: <NIBonus />, to: '/bonus-wallet' },
   { id: 'history',  label: 'Transaction History',  icon: <NIHistory /> },
-  { id: 'details',  label: 'Account Details',      icon: <NIDetails /> },
 ];
 
 export default function WalletSidebar({ activeId = null, onSelect = null }) {

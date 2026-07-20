@@ -50,6 +50,13 @@ const commissionSchema = new mongoose.Schema(
       default: 'SPREAD',
     },
     sourceId: { type: mongoose.Schema.Types.ObjectId }, // Trade._id typically; null for ADJUSTMENT
+    // Position + one-side (opening) volume behind a close-derived commission.
+    // Commission is now generated ONLY when a position (or portion) closes, on
+    // the closed portion's OPENING notional (entryPrice × closedQty). The
+    // partner reports use `volume` to show Commissioned Volume, and derive
+    // Pending Volume from still-open positions.
+    positionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Position', index: true },
+    volume: { type: String, default: '0' }, // one-side notional = entryPrice × closedQty
     currency: { type: String, default: 'USD' },
     amount: { type: String, required: true }, // commission amount (positive)
     rate: { type: String }, // % rate applied (informational)

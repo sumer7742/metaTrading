@@ -26,8 +26,9 @@ const sendCsv = (res, filename, csv) => {
 };
 
 const exportOrderHistory = asyncHandler(async (req, res) => {
-  const { from, to, symbol, status } = req.query;
+  const { from, to, symbol, status, accountId } = req.query;
   const filter = { userId: req.userId };
+  if (accountId) filter.accountId = accountId;   // scoped by userId above → safe
   if (symbol) filter.symbol = symbol.toUpperCase();
   if (status) filter.status = status;
   if (from || to) {
@@ -56,8 +57,9 @@ const exportOrderHistory = asyncHandler(async (req, res) => {
 });
 
 const exportClosedPositions = asyncHandler(async (req, res) => {
-  const { from, to } = req.query;
+  const { from, to, accountId } = req.query;
   const filter = { userId: req.userId, status: 'CLOSED' };
+  if (accountId) filter.accountId = accountId;   // scoped by userId above → safe
   if (from || to) {
     filter.closedAt = {};
     if (from) filter.closedAt.$gte = new Date(from);
@@ -79,8 +81,14 @@ const exportClosedPositions = asyncHandler(async (req, res) => {
 });
 
 const exportLedger = asyncHandler(async (req, res) => {
+  const { from, to, accountId } = req.query;
   const filter = { userId: req.userId };
-  if (req.query.accountId) filter.accountId = req.query.accountId;
+  if (accountId) filter.accountId = accountId;
+  if (from || to) {
+    filter.createdAt = {};
+    if (from) filter.createdAt.$gte = new Date(from);
+    if (to) filter.createdAt.$lte = new Date(to);
+  }
   const entries = await WalletLedger.find(filter).sort({ createdAt: -1 }).limit(5000).lean();
   const csv = toCsv(entries, [
     { label: 'Date', value: (e) => new Date(e.createdAt).toISOString() },
