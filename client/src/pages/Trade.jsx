@@ -1501,10 +1501,11 @@ export default function Trade() {
       const cy = e.touches?.[0]?.clientY ?? e.clientY;
       if (cx == null || cy == null) return;
       const dx = cx - st.startX, dy = cy - st.startY;
-      const east = st.corner === 'ne' || st.corner === 'se';   // moving the right edge
+      const widthOnly = st.corner === 'w' || st.corner === 'e';   // side edge → width only
+      const east = st.corner === 'ne' || st.corner === 'se' || st.corner === 'e';   // moving the right edge
       const south = st.corner === 'sw' || st.corner === 'se';   // moving the bottom edge
       const newW = Math.max(160, Math.min(560, st.startW + (east ? dx : -dx)));
-      const newH = Math.max(180, Math.min(820, st.startH + (south ? dy : -dy)));
+      const newH = widthOnly ? st.startH : Math.max(180, Math.min(820, st.startH + (south ? dy : -dy)));
       const dW = newW - st.startW, dH = newH - st.startH;
       // East corner: right edge moves out by dW (left fixed). West corner: right
       // edge fixed (left tracks). South corner: top fixed (bottom +dH). North:
@@ -1530,7 +1531,8 @@ export default function Trade() {
     const cy = e.touches?.[0]?.clientY ?? e.clientY;
     floatCornerRef.current = { resizing: true, corner, startX: cx, startY: cy, startW: floatWidth, startH: floatHeight, startPosX: floatPos.x, startPosY: floatPos.y };
     document.body.style.userSelect = 'none';
-    document.body.style.cursor = (corner === 'ne' || corner === 'sw') ? 'nesw-resize' : 'nwse-resize';
+    document.body.style.cursor = (corner === 'w' || corner === 'e') ? 'ew-resize'
+      : (corner === 'ne' || corner === 'sw') ? 'nesw-resize' : 'nwse-resize';
   };
 
   const startFloatDrag = (e) => {
@@ -1950,7 +1952,11 @@ export default function Trade() {
                           >
                             <div className="min-w-0">
                               <div className="text-sm font-semibold text-text-primary truncate">{name}</div>
-                              <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted mt-0.5">{a.accountType}</div>
+                              <span className={`inline-block mt-1 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
+                                (a.accountType === 'DEMO' || a.accountType === 'VIRTUAL') ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
+                              }`}>
+                                {a.accountType || '—'}
+                              </span>
                             </div>
                             <div className="text-right shrink-0">
                               <div className="text-sm font-mono font-bold text-text-primary tabular-nums">{mask(fmtBal)}</div>
@@ -3174,6 +3180,27 @@ export default function Trade() {
                         </svg>
                       </div>
                     ))}
+                    {/* Left / right EDGE grips — drag to resize WIDTH only
+                        (height unchanged). Thin strips down each side, clear of
+                        the corner grips. Double-click resets width. */}
+                    {[
+                      { c: 'w', pos: 'left-0' },
+                      { c: 'e', pos: 'right-0' },
+                    ].map(({ c, pos }) => (
+                      <div
+                        key={c}
+                        onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); startFloatCorner(e, c); }}
+                        onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); startFloatCorner(e, c); }}
+                        onDoubleClick={() => setFloatWidth(300)}
+                        className={`absolute ${pos} top-8 bottom-8 z-20 w-1.5 cursor-ew-resize group flex items-center justify-center`}
+                        title="Drag to resize width · double-click to reset"
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label={`Resize from ${c === 'w' ? 'left' : 'right'} edge`}
+                      >
+                        <span className="w-0.5 h-10 rounded-full bg-transparent group-hover:bg-primary-500/50 transition-colors" />
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
@@ -3316,6 +3343,7 @@ export default function Trade() {
                 <OrdersTable
                   orders={openOrders}
                   onCancel={cancelOrder}
+                  onModify={(o) => openSlTpModal(o, 'order')}
                   fxRate={fxRate}
                   instrumentsBySymbol={instrumentsBySymbol}
                   livePrices={priceMap}
@@ -3629,13 +3657,19 @@ function SidebarPositions({ positions, activeSymbol, onSelect, onClose, onCloseA
   const fmtOpenTime = (t) => { try { return new Date(t).toLocaleString([], { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); } catch { return ''; } };
 
   return (
-    <div className="flex flex-col">
-      {/* ── Summary card — flat + compact ────────────────────────── */}
-      <div className={`mx-2 mt-2 mb-1 rounded-xl border p-2.5 ${
-        totalPnl >= 0 ? 'bg-emerald-50/50 border-emerald-200/70' : 'bg-rose-50/50 border-rose-200/70'
-      }`}>
+    <div className="flex flex-col flex-1 min-h-0">
+      {/* ── Summary card — flat + compact. Uses rgba tints (not light-only
+           Tailwind classes) so the green/red wash reads correctly on BOTH
+           the light theme and the dark glass panel. ─────────────────── */}
+      <div
+        className="mx-2 mt-2 mb-1 rounded-xl border p-2.5 shrink-0"
+        style={{
+          background:  totalPnl >= 0 ? 'rgba(16,185,129,0.10)' : 'rgba(244,63,94,0.10)',
+          borderColor: totalPnl >= 0 ? 'rgba(16,185,129,0.32)' : 'rgba(244,63,94,0.32)',
+        }}
+      >
         <div className="flex items-center justify-between gap-1.5">
-          <span className="text-[9.5px] uppercase tracking-[0.18em] font-extrabold text-text-muted">Net P&amp;L</span>
+          <span className="text-[9.5px] uppercase tracking-[0.18em] font-extrabold text-text-secondary">Net P&amp;L</span>
           <div className="flex items-center gap-1.5">
             <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${totalPnl >= 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
               {totalPnl >= 0 ? 'Profit' : 'Loss'}
@@ -3666,7 +3700,7 @@ function SidebarPositions({ positions, activeSymbol, onSelect, onClose, onCloseA
       </div>
 
       {/* ── Grouped position cards (by symbol + direction) ─────────── */}
-      <div className="px-2 py-1 space-y-1.5">
+      <div className="px-2 py-1 space-y-1.5 flex-1 min-h-0 overflow-y-auto">
         {groups.map((g) => {
           const inst       = instrumentsBySymbol?.[g.symbol];
           const prec       = inst?.pricePrecision ?? 4;
@@ -3901,11 +3935,12 @@ function SidebarPendingOrders({ orders, activeSymbol, onSelect, onCancel, onCanc
   const stopCnt  = orders.length - limitCnt;
 
   return (
-    <div className="flex flex-col">
-      {/* ── Summary card — flat + compact ────────────────────────── */}
-      <div className="mx-2 mt-2 mb-1 rounded-xl border border-border-subtle bg-slate-50/60 p-2.5">
+    <div className="flex flex-col flex-1 min-h-0">
+      {/* ── Summary card — flat + compact. bg-bg-hover adapts to the active
+           theme so it stays legible on the dark glass panel. ─────────── */}
+      <div className="mx-2 mt-2 mb-1 rounded-xl border border-border-subtle bg-bg-hover/60 p-2.5 shrink-0">
         <div className="flex items-center justify-between">
-          <span className="text-[9.5px] uppercase tracking-[0.18em] font-extrabold text-text-muted">Pending</span>
+          <span className="text-[9.5px] uppercase tracking-[0.18em] font-extrabold text-text-secondary">Pending</span>
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onCancelAll && onCancelAll(); }}
@@ -3928,7 +3963,7 @@ function SidebarPendingOrders({ orders, activeSymbol, onSelect, onCancel, onCanc
       </div>
 
       {/* ── Order cards ────────────────────────────────────────────── */}
-      <div className="px-2 py-1 space-y-1.5">
+      <div className="px-2 py-1 space-y-1.5 flex-1 min-h-0 overflow-y-auto">
         {orders.map((o) => {
           const inst       = instrumentsBySymbol?.[o.symbol];
           const isBuy      = o.side === 'BUY';
@@ -4334,9 +4369,30 @@ function Sparkline({ candles, color, height = 48, loading }) {
 function Stat({ lbl, val, accent }) {
   return (
     <div className="text-center">
-      <div className="text-[9px] uppercase tracking-[0.1em] font-bold text-text-muted">{lbl}</div>
+      <div className="text-[9px] uppercase tracking-[0.1em] font-bold text-text-secondary">{lbl}</div>
       <div className={`text-[13px] font-mono font-extrabold leading-tight ${accent}`}>{val}</div>
     </div>
+  );
+}
+
+// T/P or S/L table cell — shows the level when set (click to edit) or a small
+// "+" add button when unset. Either way, clicking opens the row's modify modal.
+function TpSlCell({ value, onEdit, label }) {
+  const handle = (e) => { e.stopPropagation(); onEdit?.(); };
+  if (value) {
+    return (
+      <button type="button" onClick={handle} title={`Edit ${label}`} className="font-mono text-text-primary hover:text-primary-600 transition-colors">
+        {value}
+      </button>
+    );
+  }
+  return (
+    <button
+      type="button" onClick={handle} title={`Add ${label}`} aria-label={`Add ${label}`}
+      className="inline-flex items-center justify-center w-6 h-6 rounded-md text-text-muted hover:text-primary-600 hover:bg-primary-500/10 transition-colors"
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+    </button>
   );
 }
 
@@ -4473,8 +4529,8 @@ function PositionsTable({ positions, onClose, onPartialClose, onModify, fxRate, 
                 <div>{mark.primary}</div>
                 {mark.secondary && <div className="text-[10px] text-gray-500">{mark.secondary}</div>}
               </td>
-              <td className="p-2 text-right font-mono">{tpPx?.primary || '—'}</td>
-              <td className="p-2 text-right font-mono">{slPx?.primary || '—'}</td>
+              <td className="p-2 text-right font-mono"><TpSlCell value={tpPx?.primary} onEdit={() => onModify?.(p)} label="Take Profit" /></td>
+              <td className="p-2 text-right font-mono"><TpSlCell value={slPx?.primary} onEdit={() => onModify?.(p)} label="Stop Loss" /></td>
               <td className="p-2 text-right font-mono text-text-secondary">{comm ? fmtPnlSimple(-Math.abs(comm), quote) : '—'}</td>
               <td className="p-2 text-right font-mono text-text-secondary">{charges ? fmtPnlSimple(-Math.abs(charges), quote) : '—'}</td>
               <td className="p-2 text-left text-xs text-text-secondary">{fmtDate(p.openedAt || p.createdAt)}</td>
@@ -4532,8 +4588,10 @@ function PositionsTable({ positions, onClose, onPartialClose, onModify, fxRate, 
                       <div>{markD.primary}</div>
                       {markD.secondary && <div className="text-[10px] text-gray-500">{markD.secondary}</div>}
                     </td>
-                    <td className="p-2 text-right font-mono text-text-muted">—</td>
-                    <td className="p-2 text-right font-mono text-text-muted">—</td>
+                    {/* T/P & S/L are position-level (this row is one fill of the
+                        netted position) — the "+" opens the SAME position modal. */}
+                    <td className="p-2 text-right font-mono"><TpSlCell value={tpPx?.primary} onEdit={() => onModify?.(p)} label="Take Profit" /></td>
+                    <td className="p-2 text-right font-mono"><TpSlCell value={slPx?.primary} onEdit={() => onModify?.(p)} label="Stop Loss" /></td>
                     <td className="p-2 text-right font-mono text-text-muted">—</td>
                     <td className="p-2 text-right font-mono text-text-muted">—</td>
                     <td className="p-2 text-left text-xs text-text-secondary">{t ? fmtDate(t) : '—'}</td>
@@ -4572,7 +4630,7 @@ const orderTypeLabel = (o) => {
   return `${sideWord} ${o.type || ''}`.trim();
 };
 
-function OrdersTable({ orders, onCancel, fxRate, instrumentsBySymbol, livePrices = {} }) {
+function OrdersTable({ orders, onCancel, onModify, fxRate, instrumentsBySymbol, livePrices = {} }) {
   if (!orders.length) {
     return (
       <div className="py-10 text-center">
@@ -4602,8 +4660,8 @@ function OrdersTable({ orders, onCancel, fxRate, instrumentsBySymbol, livePrices
           <th className="text-right p-2">Commission (est)</th>
           <th className="text-right p-2">Charges (est)</th>
           <th className="text-left p-2">Open time</th>
-          <th className="text-right p-2 sticky right-[96px] z-10 bg-white border-l border-border-subtle">P/L</th>
-          <th className="text-right p-2 sticky right-0 z-10 bg-white w-[96px]"></th>
+          <th className="text-right p-2 sticky right-[150px] z-10 bg-white border-l border-border-subtle">P/L</th>
+          <th className="text-right p-2 sticky right-0 z-10 bg-white w-[150px]"></th>
         </tr>
       </thead>
       <tbody>
@@ -4648,16 +4706,19 @@ function OrdersTable({ orders, onCancel, fxRate, instrumentsBySymbol, livePrices
                 <div>{curPx?.primary || '-'}</div>
                 {curPx?.secondary && <div className="text-[10px] text-gray-500">{curPx.secondary}</div>}
               </td>
-              <td className="p-2 text-right font-mono">{tpPx?.primary || '—'}</td>
-              <td className="p-2 text-right font-mono">{slPx?.primary || '—'}</td>
+              <td className="p-2 text-right font-mono"><TpSlCell value={tpPx?.primary} onEdit={() => onModify?.(o)} label="Take Profit" /></td>
+              <td className="p-2 text-right font-mono"><TpSlCell value={slPx?.primary} onEdit={() => onModify?.(o)} label="Stop Loss" /></td>
               <td className="p-2 text-right font-mono text-text-secondary" title="Estimated — charged when the order fills & the position closes">{comm ? fmtPnlSimple(-Math.abs(comm), quote) : '—'}</td>
               <td className="p-2 text-right font-mono text-text-secondary" title="Estimated — charged when the order fills & the position closes">{charges ? fmtPnlSimple(-Math.abs(charges), quote) : '—'}</td>
               <td className="p-2 text-left text-xs text-text-secondary">{fmtDate(o.createdAt)}</td>
               {/* P&L doesn't apply to a pending order — it has no open
                   exposure yet, so it stays empty until the order fills. */}
-              <td className="p-2 text-right font-mono text-gray-500 sticky right-[96px] z-10 bg-white group-hover:bg-bg-hover border-l border-border-subtle">—</td>
+              <td className="p-2 text-right font-mono text-gray-500 sticky right-[150px] z-10 bg-white group-hover:bg-bg-hover border-l border-border-subtle">—</td>
               <td className="p-2 sticky right-0 z-10 bg-white group-hover:bg-bg-hover">
-                <div className="w-[80px] flex justify-end">
+                <div className="w-[140px] flex justify-end gap-1">
+                  <button onClick={() => onModify?.(o)} className="btn-ghost text-xs" title="Modify order">
+                    Modify
+                  </button>
                   <button onClick={() => onCancel(o._id)} className="btn-ghost text-xs">
                     Cancel
                   </button>

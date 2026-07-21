@@ -548,6 +548,30 @@ export default function Explore() {
     } catch (err) { toast.error(errorMessage(err)); }
   };
 
+  // ── Edit an open position (pencil) — same rich SL/TP modal, kind='position'.
+  const [modifyPosition, setModifyPosition] = useState(null);
+  const savePositionModify = async (position, payload) => {
+    try {
+      const { data } = await api.put(`/trading/positions/${position._id}`, payload);
+      const updated = data?.data;
+      setPositions((list) => list.map((p) => (p._id === position._id ? (updated || { ...p, ...payload }) : p)));
+      toast.success('Position updated');
+      setModifyPosition(null);
+    } catch (err) { toast.error(errorMessage(err)); }
+  };
+  const partialClosePosition = async (position, qty) => {
+    try {
+      const fullQty = Number(position.quantity);
+      if (!qty || qty >= fullQty - 1e-9) {
+        await api.post(`/trading/positions/${position._id}/close`);
+      } else {
+        await api.post(`/trading/positions/${position._id}/partial-close`, { quantity: qty });
+      }
+      toast.success('Position closing');
+      setModifyPosition(null);
+    } catch (err) { toast.error(errorMessage(err)); }
+  };
+
   // ── Recently viewed — localStorage-tracked list of symbols the user has
   // visited via /trade. Resolved against the live catalog so we can render
   // each pill with its current price + change. ─────────────────────────
@@ -1028,8 +1052,8 @@ export default function Explore() {
                   </div>
                 ) : (
                   <>
-                    <div className="divide-y divide-border-subtle">
-                      {livePositions.slice(0, 5).map((p) => {
+                    <div className="divide-y divide-border-subtle max-h-[300px] overflow-y-auto overscroll-contain">
+                      {livePositions.map((p) => {
                         const inst = instruments.find((i) => i.symbol === p.symbol);
                         const prec = Math.min(inst?.pricePrecision || 2, 5);
                         const pnl = Number(p.unrealizedPnl || 0);
@@ -1074,25 +1098,29 @@ export default function Explore() {
                                 </div>
                               </div>
                             </Link>
-                            <button
-                              type="button"
-                              onClick={() => closePosition(p._id)}
-                              title="Close position"
-                              className="opacity-0 group-hover:opacity-100 sm:opacity-100 text-[11px] font-bold px-2.5 py-1.5 rounded-md bg-bear/10 text-bear border border-bear/25 hover:bg-bear/20 hover:scale-[1.03] active:scale-95 transition-all shrink-0"
-                            >
-                              Close
-                            </button>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => setModifyPosition(p)}
+                                title="Modify position (SL/TP)"
+                                aria-label="Modify position"
+                                className="opacity-0 group-hover:opacity-100 sm:opacity-100 p-1.5 rounded-lg text-text-muted hover:text-primary-600 hover:bg-primary-500/10 active:scale-95 transition-all"
+                              >
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => closePosition(p._id)}
+                                title="Close position"
+                                aria-label="Close position"
+                                className="opacity-0 group-hover:opacity-100 sm:opacity-100 p-1.5 rounded-lg text-text-muted hover:text-bear hover:bg-bear/10 active:scale-95 transition-all"
+                              >
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
+                              </button>
+                            </div>
                           </div>
                         );
                       })}
-                      {livePositions.length > 5 && (
-                        <Link
-                          to="/trade"
-                          className="block px-4 py-2.5 text-center text-[12px] font-semibold text-primary-600 hover:bg-bg-hover transition-colors"
-                        >
-                          View all {livePositions.length} positions →
-                        </Link>
-                      )}
                     </div>
                     <div className="px-4 py-3 border-t border-border-subtle bg-bg-hover/30 flex items-center justify-end">
                       <button
@@ -1131,8 +1159,8 @@ export default function Explore() {
                   </div>
                 ) : (
                   <>
-                    <div className="divide-y divide-border-subtle">
-                      {pendingOrders.slice(0, 5).map((o) => {
+                    <div className="divide-y divide-border-subtle max-h-[300px] overflow-y-auto overscroll-contain">
+                      {pendingOrders.map((o) => {
                         const inst = instruments.find((i) => i.symbol === o.symbol);
                         const prec = Math.min(inst?.pricePrecision || 2, 5);
                         const sideBull = o.side === 'BUY';
@@ -1197,14 +1225,6 @@ export default function Explore() {
                           </div>
                         );
                       })}
-                      {pendingOrders.length > 5 && (
-                        <Link
-                          to="/trade"
-                          className="block px-4 py-2.5 text-center text-[12px] font-semibold text-primary-600 hover:bg-bg-hover transition-colors"
-                        >
-                          View all {pendingOrders.length} orders →
-                        </Link>
-                      )}
                     </div>
                     <div className="px-4 py-3 border-t border-border-subtle bg-bg-hover/30 flex items-center justify-end">
                       <button
@@ -1280,6 +1300,23 @@ export default function Explore() {
           onClose={() => setModifyOrder(null)}
           onSubmit={(payload) => saveOrderModify(modifyOrder, payload)}
           onPartialClose={() => cancelOrder(modifyOrder._id)}
+        />
+      )}
+
+      {/* Modify an open position (pencil) — rich SL/TP modal + partial/close-by. */}
+      {modifyPosition && (
+        <PositionSlTpModal
+          position={modifyPosition}
+          kind="position"
+          instrument={(() => {
+            const inst = instruments.find((i) => i.symbol === modifyPosition.symbol);
+            const live = priceMap[modifyPosition.symbol]?.last;
+            return live != null ? { ...(inst || { symbol: modifyPosition.symbol }), lastPrice: live } : inst;
+          })()}
+          free={0}
+          onClose={() => setModifyPosition(null)}
+          onSubmit={(payload) => savePositionModify(modifyPosition, payload)}
+          onPartialClose={(qty) => partialClosePosition(modifyPosition, qty)}
         />
       )}
     </div>

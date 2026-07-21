@@ -1422,7 +1422,7 @@ function AssetAllocationCard({ positions = [], fxRate }) {
   const segs = entries.map(([cat, val]) => { const len = (val / total) * C; const s = { cat, len, off }; off += len; return s; });
 
   return (
-    <div className="bg-white border border-border-dark rounded-2xl overflow-hidden shadow-sm">
+    <div className="bg-white border border-border-dark rounded-2xl shadow-sm">
       <div className="px-5 pt-4 flex items-center justify-between gap-2">
         <div className="flex items-center gap-1.5">
           <h3 className="text-base font-bold text-text-primary">Asset Allocation</h3>
@@ -1633,7 +1633,7 @@ function AccountsTable({ positions = [], fxRate }) {
   );
 
   return (
-    <div className="bg-white border border-border-dark rounded-2xl overflow-hidden shadow-sm">
+    <div className="bg-white border border-border-dark rounded-2xl shadow-sm">
       <div className="px-5 py-3.5 border-b border-border-subtle flex items-center justify-between gap-3 flex-wrap">
         <div>
           <div className="text-[10px] uppercase tracking-[0.18em] font-extrabold text-text-muted">Wallet</div>

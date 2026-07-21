@@ -112,6 +112,13 @@ const subscribe = async ({ userId, planCode, billingCycle = 'MONTHLY', paymentRe
   let expiresAt = null;
   if (billingCycle === 'MONTHLY') expiresAt = new Date(Date.now() + monthlyVal * unitMs);
   else if (billingCycle === 'YEARLY') expiresAt = new Date(Date.now() + yearlyVal * unitMs);
+  // Postpaid plans are billed monthly IN ARREARS by the worker (billPostpaid),
+  // NOT via a fixed-date expiry — otherwise they'd expire and downgrade since
+  // their monthlyPrice is 0. Keep them non-expiring + seed the billing anchor
+  // one month out (rates are per-month regardless of the chosen billingCycle).
+  const isPostpaid = !!plan.features?.postPaid;
+  if (isPostpaid) expiresAt = null;
+  const nextBillingAt = isPostpaid ? new Date(Date.now() + monthlyVal * unitMs) : null;
 
   // Capture the previous plan so leverage audit row can show
   // "BASIC → VIP" in the history.
@@ -125,6 +132,7 @@ const subscribe = async ({ userId, planCode, billingCycle = 'MONTHLY', paymentRe
     billingCycle,
     startedAt: new Date(),
     expiresAt,
+    nextBillingAt,
     cancelledAt: null,
     autoRenew: true,
     ...(paymentRef && { lastPayment: paymentRef }),

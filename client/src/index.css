@@ -105,6 +105,13 @@
 .bg-bull.text-white,
 .bg-bear.text-white,
 .bg-primary-500.text-white,
+.bg-primary-600.text-white,
+/* BUY / SELL position + order badges use emerald/rose fills — keep their
+   label + arrow white on the colored pill (not black) in light mode too. */
+.bg-emerald-500.text-white,
+.bg-emerald-600.text-white,
+.bg-rose-500.text-white,
+.bg-rose-600.text-white,
 .btn-bull,
 .btn-bear,
 .btn-primary { color: #FFFFFF !important; }
@@ -298,6 +305,13 @@
   from { opacity: 0; transform: translateY(12px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+
+/* Slide-in panel from the right — mobile trade drawer (StockDetail). */
+@keyframes slideInRight {
+  from { opacity: 0; transform: translateX(28px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.slide-in-right { animation: slideInRight 0.22s ease-out both; }
 
 /* Expanded child trade-rows — smooth reveal under a parent position row. */
 @keyframes fadeInRow {

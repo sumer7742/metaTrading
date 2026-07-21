@@ -435,7 +435,7 @@ export default function Layout({ children }) {
                                     </span>
                                   </div>
                                   <div className="text-[10px] text-text-muted truncate">
-                                    {(a.baseCurrency || 'USD')} · #{String(a._id).slice(-6)}
+                                    {[a.baseCurrency || 'USD', a.accountNumber, type ? type.replace(/_/g, ' ') : null].filter(Boolean).join(' · ')}
                                   </div>
                                 </div>
                               </div>

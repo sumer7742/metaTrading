@@ -4,6 +4,8 @@ import { api, errorMessage } from '../services/api';
 import { useAuthStore } from '../store/auth';
 import PageHero from '../components/PageHero';
 import LimitsModal from '../components/LimitsModal';
+import ResetPasswordModal from '../components/ResetPasswordModal';
+import EditStaffModal from '../components/EditStaffModal';
 
 /**
  * Managers — SuperAdmin sees/creates all managers (must pick the parent
@@ -20,17 +22,25 @@ export default function Managers() {
   const [loading, setLoading] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [limitsFor, setLimitsFor] = useState(null);
+  const [resetFor, setResetFor] = useState(null);
+  const [editFor, setEditFor] = useState(null);
+  const [preferredId, setPreferredId] = useState(null); // manager all new signups route to (until full)
 
   const load = async () => {
     setLoading(true);
     try {
       const params = { limit: 200 };
       if (isSuper && adminFilter) params.adminId = adminFilter;
-      const reqs = [api.get('/hierarchy/managers', { params }), api.get('/hierarchy/workload')];
+      const reqs = [
+        api.get('/hierarchy/managers', { params }),
+        api.get('/hierarchy/workload'),
+        api.get('/hierarchy/preferred-manager').catch(() => null),
+      ];
       if (isSuper) reqs.push(api.get('/hierarchy/admins', { params: { limit: 100 } }));
-      const [m, w, a] = await Promise.all(reqs);
+      const [m, w, pref, a] = await Promise.all(reqs);
       setManagers(m.data.data.items || []);
       setWorkload(w.data.data || { managers: [] });
+      setPreferredId(pref?.data?.data?.managerId || null);
       if (a) setAdmins(a.data.data.items || []);
     } catch (e) { toast.error(errorMessage(e)); }
     finally { setLoading(false); }
@@ -39,6 +49,20 @@ export default function Managers() {
 
   const wlById = useMemo(() => new Map((workload.managers || []).map((x) => [String(x.id), x])), [workload]);
   const adminName = useMemo(() => new Map(admins.map((a) => [String(a._id), [a.firstName, a.lastName].filter(Boolean).join(' ') || a.email])), [admins]);
+  const preferredMgr = useMemo(() => managers.find((m) => String(m._id) === String(preferredId)), [managers, preferredId]);
+  const preferredName = preferredMgr ? ([preferredMgr.firstName, preferredMgr.lastName].filter(Boolean).join(' ') || preferredMgr.email) : 'the selected manager';
+
+  // Route ALL new signups to one manager until full (or clear → auto-balance).
+  const togglePreferred = async (m) => {
+    const makeDefault = String(preferredId) !== String(m._id);
+    try {
+      const { data } = await api.put('/hierarchy/preferred-manager', { managerId: makeDefault ? m._id : null });
+      setPreferredId(data.data.managerId || null);
+      toast.success(makeDefault
+        ? `New signups will now go to ${[m.firstName, m.lastName].filter(Boolean).join(' ') || m.email} until full`
+        : 'Default intake cleared — back to auto-balancing');
+    } catch (e) { toast.error(errorMessage(e)); }
+  };
 
   const deactivate = async (m) => {
     const strategy = window.prompt(
@@ -75,6 +99,14 @@ export default function Managers() {
         </div>
       )}
 
+      {preferredId && (
+        <div className="card p-3 text-sm text-text-secondary flex items-center gap-2 flex-wrap">
+          <span className="text-amber-500 text-base leading-none">★</span>
+          <span>New signups are routing to <span className="font-semibold text-text-primary">{preferredName}</span> until it's full — then auto-balancing resumes.</span>
+          {isSuper && <button onClick={() => togglePreferred(preferredMgr || { _id: preferredId })} className="ml-auto btn-ghost text-xs text-rose-400">Clear</button>}
+        </div>
+      )}
+
       <div className="card overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -96,7 +128,12 @@ export default function Managers() {
               const wl = wlById.get(String(m._id)) || {};
               return (
                 <tr key={m._id} className="table-row">
-                  <td className="py-2 px-3 text-text-primary font-semibold">{[m.firstName, m.lastName].filter(Boolean).join(' ') || '—'}</td>
+                  <td className="py-2 px-3 text-text-primary font-semibold">
+                    {[m.firstName, m.lastName].filter(Boolean).join(' ') || '—'}
+                    {String(preferredId) === String(m._id) && (
+                      <span className="ml-2 text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-500 align-middle">★ Default intake</span>
+                    )}
+                  </td>
                   <td className="py-2 px-3 text-text-secondary">{m.email}</td>
                   {isSuper && <td className="py-2 px-3 text-text-secondary">{adminName.get(String(m.adminId)) || '—'}</td>}
                   <td className="py-2 px-3 text-center font-mono">{wl.totalUsers || 0} / {m.hierarchyLimits?.maxUsers ?? (wl.userCapacity || 100)}</td>
@@ -108,7 +145,16 @@ export default function Managers() {
                     </span>
                   </td>
                   <td className="py-2 px-3 text-right space-x-1">
+                    {isSuper && (
+                      <button onClick={() => togglePreferred(m)}
+                        className={`btn-ghost text-xs ${String(preferredId) === String(m._id) ? 'text-amber-400' : 'text-text-muted'}`}
+                        title={String(preferredId) === String(m._id) ? 'All new signups route here — click to clear' : 'Route all new signups to this manager until full'}>
+                        {String(preferredId) === String(m._id) ? '★ Default' : 'Set default'}
+                      </button>
+                    )}
                     {isSuper && <button onClick={() => setLimitsFor(m)} className="btn-ghost text-xs text-primary-400">Limits</button>}
+                    <button onClick={() => setEditFor(m)} className="btn-ghost text-xs text-text-secondary">Edit</button>
+                    <button onClick={() => setResetFor(m)} className="btn-ghost text-xs text-amber-400">Reset password</button>
                     <button onClick={() => deactivate(m)} className="btn-ghost text-xs text-rose-400">Deactivate</button>
                   </td>
                 </tr>
@@ -120,6 +166,8 @@ export default function Managers() {
 
       {createOpen && <CreateManagerModal isSuper={isSuper} admins={admins} onClose={() => setCreateOpen(false)} onSaved={() => { setCreateOpen(false); load(); }} />}
       {limitsFor && <LimitsModal userId={limitsFor._id} onClose={() => { setLimitsFor(null); load(); }} />}
+      {resetFor && <ResetPasswordModal staff={resetFor} onClose={() => setResetFor(null)} onDone={load} />}
+      {editFor && <EditStaffModal staff={editFor} onClose={() => setEditFor(null)} onSaved={load} />}
     </div>
   );
 }

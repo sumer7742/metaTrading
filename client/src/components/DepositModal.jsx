@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
@@ -17,14 +17,16 @@ import { api, errorMessage } from '../services/api';
  *   manualEndpoint  POST endpoint for manual (admin-verified) deposits
  *   onClose, onSuccess
  */
-const DEPOSIT_METHODS = [
-  { id: 'UPI',      label: 'UPI',             sub: 'Instant · Free',        min: 100, kind: 'manual',  emoji: '📱' },
-  { id: 'BANK',     label: 'Bank Transfer',   sub: 'NEFT / IMPS · 1-3 hrs', min: 100, kind: 'manual',  emoji: '🏦' },
-  { id: 'CRYPTO',   label: 'Crypto (USDT)',   sub: 'TRC20 · ~5 min',        min: 10,  kind: 'manual',  emoji: '🪙' },
-  { id: 'SKRILL',   label: 'Skrill',          sub: 'Instant',               min: 10,  kind: 'manual',  emoji: '💳' },
-  { id: 'NETELLER', label: 'Neteller',        sub: 'Instant',               min: 10,  kind: 'manual',  emoji: '💳' },
-  { id: 'TRADING',  label: 'Trading account', sub: 'Instant transfer',      min: 1,   kind: 'instant', emoji: '↔️' },
+// Fixed methods the admin can fill in + toggle Shown/Hidden. TRADING (instant
+// internal transfer) is always available and appended last.
+const FIXED_METHODS = [
+  { id: 'UPI',      label: 'UPI',           sub: 'Instant · Free',        min: 100, kind: 'manual', emoji: '📱' },
+  { id: 'BANK',     label: 'Bank Transfer', sub: 'NEFT / IMPS · 1-3 hrs', min: 100, kind: 'manual', emoji: '🏦' },
+  { id: 'CRYPTO',   label: 'Crypto (USDT)', sub: 'TRC20 · ~5 min',        min: 10,  kind: 'manual', emoji: '🪙' },
+  { id: 'SKRILL',   label: 'Skrill',        sub: 'Instant',               min: 10,  kind: 'manual', emoji: '💳' },
+  { id: 'NETELLER', label: 'Neteller',      sub: 'Instant',               min: 10,  kind: 'manual', emoji: '💳' },
 ];
+const TRADING_METHOD = { id: 'TRADING', label: 'Trading account', sub: 'Instant transfer', min: 1, kind: 'instant', emoji: '↔️' };
 
 export default function DepositModal({
   currency = 'USD',
@@ -56,6 +58,27 @@ export default function DepositModal({
       .then((r) => setPayDetails(r.data?.data || null))
       .catch(() => setPayDetails(null));
   }, []);
+
+  // Visible method list = enabled fixed methods + enabled custom methods,
+  // with the instant trading-account transfer always available at the end.
+  const methods = useMemo(() => {
+    const list = FIXED_METHODS.filter((m) => payDetails?.[m.id]?.enabled !== false);
+    for (const c of (payDetails?.custom || [])) {
+      if (c && c.label && c.enabled !== false) {
+        list.push({
+          id: `CUSTOM:${c.id}`,
+          label: c.label,
+          sub: 'Manual',
+          min: Number(c.min) > 0 ? Number(c.min) : 10,
+          kind: 'manual',
+          emoji: c.emoji || '💳',
+          custom: c,
+        });
+      }
+    }
+    list.push(TRADING_METHOD);
+    return list;
+  }, [payDetails]);
 
   const sym = currency === 'USD' ? '$' : `${currency} `;
   const fmt = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -119,7 +142,7 @@ export default function DepositModal({
       await api.post(manualEndpoint, {
         amount: n,
         currency,
-        method: method.id,
+        method: method.custom ? method.custom.label : method.id,
         txReference: txReference.trim(),
         senderName: senderName.trim() || undefined,
         senderUpiId: senderUpiId.trim() || undefined,
@@ -180,7 +203,7 @@ export default function DepositModal({
           {step === 0 && (
             <div className="space-y-2">
               <p className="text-[11px] text-text-muted">Pick how you want to fund this wallet.</p>
-              {DEPOSIT_METHODS.map((m) => {
+              {methods.map((m) => {
                 const active = method?.id === m.id;
                 return (
                   <button key={m.id} type="button" onClick={() => setMethod(m)} className={`w-full flex items-center gap-3 px-3.5 py-3 rounded-xl border-2 transition-all text-left ${active ? 'border-primary-500 bg-primary-500/5' : 'border-border-dark hover:border-primary-500/40'}`}>
@@ -235,9 +258,11 @@ export default function DepositModal({
             <div className="space-y-3">
               {/* WHERE to send the money (admin-configured per method) */}
               {(() => {
-                const d = payDetails?.[method.id];
-                const rows = [];
-                if (method.id === 'UPI') { rows.push(['UPI ID', d?.upiId, true]); rows.push(['Name', d?.payeeName, false]); }
+                const isCustom = !!method.custom;
+                const d = isCustom ? method.custom : payDetails?.[method.id];
+                let rows = [];
+                if (isCustom) { rows = (method.custom.fields || []).map((f) => [f.label, f.value, f.copy !== false]); }
+                else if (method.id === 'UPI') { rows.push(['UPI ID', d?.upiId, true]); rows.push(['Name', d?.payeeName, false]); }
                 else if (method.id === 'BANK') { rows.push(['Account name', d?.accountName, false]); rows.push(['Account no.', d?.accountNumber, true]); rows.push(['IFSC', d?.ifsc, true]); rows.push(['Bank', d?.bankName, false]); }
                 else if (method.id === 'CRYPTO') { rows.push(['Address', d?.address, true]); rows.push(['Network', d?.network, false]); }
                 else { rows.push(['Email', d?.email, true]); }

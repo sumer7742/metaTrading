@@ -11,6 +11,7 @@ export default function Plans() {
   const [mySub, setMySub] = useState(null);
   const [effective, setEffective] = useState(null);
   const [subWallet, setSubWallet] = useState(null);
+  const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [billing, setBilling] = useState('MONTHLY');
   // Confirmation modal state — gates the wallet-debit so the user sees
@@ -22,14 +23,17 @@ export default function Plans() {
 
   const refresh = async () => {
     try {
-      const [p, m] = await Promise.all([
+      const [p, m, h] = await Promise.all([
         api.get('/subscriptions/plans'),
         api.get('/subscriptions/me'),
+        // Billing history is non-fatal — a failure here shouldn't blank the page.
+        api.get('/subscriptions/history', { params: { limit: 100 } }).catch(() => ({ data: { data: [] } })),
       ]);
       setPlans(p.data.data);
       setMySub(m.data.data.subscription);
       setEffective(m.data.data.effectivePlan);
       setSubWallet(m.data.data.subscriptionWallet || null);
+      setHistory(Array.isArray(h.data.data) ? h.data.data : []);
     } catch (e) {
       toast.error(errorMessage(e));
     } finally {
@@ -118,6 +122,17 @@ export default function Plans() {
   const walletCcy = subWallet?.currency || 'USD';
   const walletSym = walletCcy === 'USD' ? '$' : `${walletCcy} `;
   const fmt = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  // Plan billing history — charges, renewals and refunds pulled from the Main
+  // Wallet ledger. Deposits / withdrawals live on the wallet page, so we keep
+  // this focused on plan-related money movement only.
+  const BILLING_REASONS = new Set(['SUBSCRIPTION_CHARGE', 'RENEWAL', 'REFUND']);
+  const REASON_LABEL = {
+    SUBSCRIPTION_CHARGE: 'Subscription',
+    RENEWAL: 'Renewal',
+    REFUND: 'Refund',
+  };
+  const billingRows = (history || []).filter((t) => BILLING_REASONS.has(t.reason));
 
   return (
     <div className="space-y-6 max-w-[1400px]">
@@ -299,6 +314,69 @@ export default function Plans() {
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* ── Billing history — plan charges, renewals & refunds ───────────────── */}
+      <div className="card overflow-hidden">
+        <div className="px-5 py-3 border-b border-border-dark flex items-center justify-between gap-2 flex-wrap">
+          <div>
+            <h2 className="text-text-primary font-bold tracking-tight">Billing history</h2>
+            <p className="text-[11px] text-text-muted mt-0.5">Plan charges, renewals and refunds from your Main Wallet.</p>
+          </div>
+          {billingRows.length > 0 && (
+            <span className="text-[11px] text-text-muted">{billingRows.length} record{billingRows.length === 1 ? '' : 's'}</span>
+          )}
+        </div>
+        {billingRows.length === 0 ? (
+          <div className="px-5 py-10 text-center text-sm text-text-muted">
+            No billing history yet. Your plan charges and renewals will appear here.
+          </div>
+        ) : (
+          <div className="overflow-x-auto max-h-[420px] overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 z-10">
+                <tr className="bg-bg-card text-xs uppercase text-text-muted border-b border-border-dark">
+                  <th className="text-left py-2.5 px-4 font-bold tracking-wide">Date</th>
+                  <th className="text-left py-2.5 px-4 font-bold tracking-wide">Description</th>
+                  <th className="text-right py-2.5 px-4 font-bold tracking-wide">Amount</th>
+                  <th className="text-center py-2.5 px-4 font-bold tracking-wide">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {billingRows.map((t) => {
+                  const isDebit = t.transactionType === 'DEBIT';
+                  const sym = (t.currency || 'USD') === 'USD' ? '$' : `${t.currency} `;
+                  const d = new Date(t.createdAt);
+                  const statusCls = t.status === 'FAILED' ? 'bg-bear/15 text-bear'
+                    : t.status === 'PENDING' ? 'bg-warn/15 text-warn'
+                    : 'bg-bull/15 text-bull';
+                  return (
+                    <tr key={t._id} className="border-b border-border-dark/60 last:border-0 hover:bg-bg-hover/40">
+                      <td className="py-2.5 px-4 whitespace-nowrap align-top">
+                        <div className="text-text-secondary">{d.toLocaleDateString('en-US', { day: '2-digit', month: 'short', year: 'numeric' })}</div>
+                        <div className="text-[11px] text-text-muted">{d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+                      </td>
+                      <td className="py-2.5 px-4 align-top">
+                        <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-bg-hover text-text-secondary">
+                          {REASON_LABEL[t.reason] || t.reason}
+                        </span>
+                        {t.note && <div className="text-text-secondary mt-1">{t.note}</div>}
+                      </td>
+                      <td className={`py-2.5 px-4 text-right font-mono tabular-nums font-semibold whitespace-nowrap align-top ${isDebit ? 'text-bear' : 'text-bull'}`}>
+                        {isDebit ? '−' : '+'}{sym}{fmt(t.amount)}
+                      </td>
+                      <td className="py-2.5 px-4 text-center align-top">
+                        <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${statusCls}`}>
+                          {t.status || 'SUCCESS'}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* ── Confirmation modal — locks in price + shows balance before / after ─ */}

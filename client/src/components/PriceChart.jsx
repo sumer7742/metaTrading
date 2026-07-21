@@ -4,6 +4,7 @@ import { createChart } from 'lightweight-charts';
 import { api } from '../services/api';
 import { wsClient } from '../services/ws';
 import { sma, ema, rsi, macd, bollinger, vwap, stochastic, atr, williamsR, cci, donchian, keltner, wma, hma, dema, tema, smma, vwma, alma, envelopes, linreg, psar, supertrend } from '../utils/indicators';
+import { useCalendarLive, getCalendarEvents } from '../utils/economicCalendar';
 
 // Moving-average families (single source of truth for the overlay configs,
 // the indicator menu, and the on/off defaults). Each (code, period) pair is
@@ -1237,6 +1238,9 @@ export default function PriceChart({
   // Drawing tools — vertical toolbar + chart-click handlers + persistence.
   // The hook attaches itself to the existing chart/series refs and does not
   // touch any other rendering logic, so it can be added / removed safely.
+  // Load the live economic-calendar feed once; `_calNonce` bumps when it lands
+  // so the marker memo below recomputes with real events.
+  const _calNonce = useCalendarLive();
   // ── Overlay markers driven by Settings (Signals / HMR / Calendar) ──
   // Computed from `candles` so they re-derive whenever new bars arrive.
   // Empty array when all overlays are off → no perf cost.
@@ -1340,7 +1344,40 @@ export default function PriceChart({
       } catch (_) { /* calendar util not available */ }
     }
     return out;
-  }, [candles, showSignals, showHmr, showCalendar, instrument, calendarFilters.high, calendarFilters.medium, calendarFilters.low, calendarFilters.lowest]);
+  }, [candles, showSignals, showHmr, showCalendar, instrument, calendarFilters.high, calendarFilters.medium, calendarFilters.low, calendarFilters.lowest, _calNonce]);
+
+  // ── Next economic event (for the on-chart "next event" chip) ──────────
+  // Independent of the loaded candle range so it shows even on low timeframes
+  // where no marker falls in view. A 30s clock (only while the calendar is on)
+  // refreshes the countdown + rolls to the next event once one passes.
+  const [_calClock, setCalClock] = useState(0);
+  useEffect(() => {
+    if (!showCalendar) return undefined;
+    const id = setInterval(() => setCalClock((c) => c + 1), 30000);
+    return () => clearInterval(id);
+  }, [showCalendar]);
+  const nextEvent = useMemo(() => {
+    if (!showCalendar || !instrument) return null;
+    const wanted = new Set();
+    if (calendarFilters.high)   wanted.add('high');
+    if (calendarFilters.medium) wanted.add('medium');
+    if (calendarFilters.low)    wanted.add('low');
+    if (calendarFilters.lowest) wanted.add('lowest');
+    if (!wanted.size) return null;
+    const ccys = new Set([instrument.baseCurrency, instrument.quoteCurrency].filter(Boolean));
+    const now = Date.now();
+    const evs = getCalendarEvents({ lookbackDays: 0, lookaheadDays: 14, max: 200 }) || [];
+    let best = null;
+    for (const ev of evs) {
+      if (!wanted.has(ev.impact)) continue;
+      if (ccys.size && ev.currency && !ccys.has(ev.currency)) continue;
+      const t = ev.date.getTime();
+      if (t <= now) continue;
+      if (!best || t < best.date.getTime()) best = ev;
+    }
+    return best;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showCalendar, instrument, calendarFilters.high, calendarFilters.medium, calendarFilters.low, calendarFilters.lowest, _calNonce, _calClock]);
 
   const drawingControls = useChartDrawings({ chartRef, candleSeriesRef, containerRef, symbol, externalMarkers, candles, pricePrecision });
   // Mirror into a ref so the once-bound container handlers (contextmenu /
@@ -2299,11 +2336,20 @@ export default function PriceChart({
     const ilen = (k, d) => { const v = indicators[k]; return (v && typeof v === 'object' && v.length) ? Number(v.length) : d; };
 
     const overlayConfigs = [
-      // ── All moving-average variants (EMA/SMA/WMA/HMA/DEMA/TEMA/SMMA/VWMA/ALMA)
-      ...MA_DEFS.flatMap((d) => d.periods.map((p) => ({
-        key: `${d.code}${p}`, color: d.color, title: `${d.name} ${p}`,
-        compute: () => d.fn(d.src === 'candles' ? candles : closes, p),
-      }))),
+      // ── All moving-average variants (EMA/SMA/WMA/HMA/DEMA/TEMA/SMMA/VWMA/ALMA).
+      //    Built from the ACTIVE keys (+ any still-mounted series) rather than a
+      //    fixed preset list, so a user-typed period (e.g. ema37) renders and a
+      //    just-deselected custom period is still found here to get cleaned up.
+      ...(() => {
+        const maRe = new RegExp(`^(${MA_DEFS.map((d) => d.code).join('|')})(\\d+)$`);
+        const keys = [...new Set([...Object.keys(indicators), ...Object.keys(overlayRef.current)])].filter((k) => maRe.test(k));
+        return keys.map((k) => {
+          const mm = maRe.exec(k);
+          const d = MA_DEFS.find((x) => x.code === mm[1]);
+          const p = Number(mm[2]);
+          return { key: k, color: d.color, title: `${d.name} ${p}`, compute: () => d.fn(d.src === 'candles' ? candles : closes, p) };
+        });
+      })(),
       // ── Bollinger Bands — 3 lines share the toggle key
       { key: 'bb',  subKey: 'bbU', color: '#0EA5E9', lineWidth: 1, title: 'BB Upper',  compute: () => bollinger(closes, ilen('bb', 20), 2).upper },
       { key: 'bb',  subKey: 'bbM', color: '#0EA5E9', lineWidth: 1, lineStyle: 'dashed', title: 'BB Middle', compute: () => bollinger(closes, ilen('bb', 20), 2).middle },
@@ -2407,7 +2453,9 @@ export default function PriceChart({
     const rsiLen = pget(indicators.rsi, 'length', 14);
     try { series.applyOptions({ color: pget(indicators.rsi, 'color', '#8b5cf6'), lineWidth: pget(indicators.rsi, 'lineWidth', 1.5), title: `RSI ${rsiLen}` }); } catch (_) {}
     const values = rsi(closes, rsiLen);
-    const rsiData = candles.map((c, i) => (values[i] != null ? { time: c.time, value: values[i] } : null)).filter(Boolean);
+    // Whitespace-pad the warmup gap ({ time } only) so this pane's bar indices
+    // line up 1:1 with the main chart — required for logical-range scroll sync.
+    const rsiData = candles.map((c, i) => (values[i] != null ? { time: c.time, value: values[i] } : { time: c.time }));
     series.setData(rsiData);
     overbought.setData(rsiData.map((d) => ({ time: d.time, value: 70 })));
     oversold.setData(rsiData.map((d) => ({ time: d.time, value: 30 })));
@@ -2442,8 +2490,8 @@ export default function PriceChart({
     const stochLen = pget(indicators.stoch, 'length', 14);
     try { kS.applyOptions({ color: pget(indicators.stoch, 'color', '#3B82F6'), lineWidth: pget(indicators.stoch, 'lineWidth', 1.5) }); } catch (_) {}
     const { k, d } = stochastic(candles, stochLen, 3);
-    const kData = candles.map((c, i) => (k[i] != null ? { time: c.time, value: k[i] } : null)).filter(Boolean);
-    const dData = candles.map((c, i) => (d[i] != null ? { time: c.time, value: d[i] } : null)).filter(Boolean);
+    const kData = candles.map((c, i) => (k[i] != null ? { time: c.time, value: k[i] } : { time: c.time }));
+    const dData = candles.map((c, i) => (d[i] != null ? { time: c.time, value: d[i] } : { time: c.time }));
     kS.setData(kData);
     dS.setData(dData);
     overbought.setData(kData.map((p) => ({ time: p.time, value: 80 })));
@@ -2476,7 +2524,7 @@ export default function PriceChart({
     const atrLen = pget(indicators.atr, 'length', 14);
     try { series.applyOptions({ color: pget(indicators.atr, 'color', '#0EA5E9'), lineWidth: pget(indicators.atr, 'lineWidth', 1.5), title: `ATR ${atrLen}` }); } catch (_) {}
     const values = atr(candles, atrLen);
-    series.setData(candles.map((c, i) => (values[i] != null ? { time: c.time, value: values[i] } : null)).filter(Boolean));
+    series.setData(candles.map((c, i) => (values[i] != null ? { time: c.time, value: values[i] } : { time: c.time })));
   }, [indicators.atr, candles, closes]);
 
   // ─── 6d. Williams %R sub-panel — single line + -20/-80 bands ─────────
@@ -2507,7 +2555,7 @@ export default function PriceChart({
     const wrLen = pget(indicators.wr, 'length', 14);
     try { series.applyOptions({ color: pget(indicators.wr, 'color', '#DB2777'), lineWidth: pget(indicators.wr, 'lineWidth', 1.5), title: `W%R ${wrLen}` }); } catch (_) {}
     const values = williamsR(candles, wrLen);
-    const data = candles.map((c, i) => (values[i] != null ? { time: c.time, value: values[i] } : null)).filter(Boolean);
+    const data = candles.map((c, i) => (values[i] != null ? { time: c.time, value: values[i] } : { time: c.time }));
     series.setData(data);
     overbought.setData(data.map((p) => ({ time: p.time, value: -20 })));
     oversold.setData(data.map((p) => ({ time: p.time, value: -80 })));
@@ -2541,7 +2589,7 @@ export default function PriceChart({
     const cciLen = pget(indicators.cci, 'length', 20);
     try { series.applyOptions({ color: pget(indicators.cci, 'color', '#7C3AED'), lineWidth: pget(indicators.cci, 'lineWidth', 1.5), title: `CCI ${cciLen}` }); } catch (_) {}
     const values = cci(candles, cciLen);
-    const data = candles.map((c, i) => (values[i] != null ? { time: c.time, value: values[i] } : null)).filter(Boolean);
+    const data = candles.map((c, i) => (values[i] != null ? { time: c.time, value: values[i] } : { time: c.time }));
     series.setData(data);
     overbought.setData(data.map((p) => ({ time: p.time, value: 100 })));
     oversold.setData(data.map((p) => ({ time: p.time, value: -100 })));
@@ -2991,6 +3039,11 @@ export default function PriceChart({
     const orderSide = pill.position?.side;
     const clampOrderPrice = (p) => {
       if (!isOrderEntry) return p;
+      // The draft PREVIEW pill mirrors the order-form price input, which accepts
+      // ANY level (the form itself decides LIMIT vs STOP / validates on submit).
+      // So leave it unclamped — dragging it must match typing in the field.
+      // Only real resting orders keep the anti-immediate-fill guard below.
+      if (pill.order?.__preview || pill.position?.__preview) return p;
       const inst = instrumentRef.current;
       const last = Number(livePriceRef.current);
       const askRaw = Number(inst?.ask);
@@ -3254,15 +3307,57 @@ export default function PriceChart({
 
     const { histogram, macdLine, signalLine } = subPanelChartsRef.current.macd;
     const m = macd(closes, 12, 26, 9);
+    // Whitespace-pad the warmup gap so bar indices line up 1:1 with the main
+    // chart — required for logical-range scroll sync across panes.
     const histData = candles
-      .map((c, i) => m.histogram[i] != null ? { time: c.time, value: m.histogram[i], color: m.histogram[i] >= 0 ? '#10b981' : '#ef4444' } : null)
-      .filter(Boolean);
-    const macdData = candles.map((c, i) => m.macd[i] != null ? { time: c.time, value: m.macd[i] } : null).filter(Boolean);
-    const sigData = candles.map((c, i) => m.signal[i] != null ? { time: c.time, value: m.signal[i] } : null).filter(Boolean);
+      .map((c, i) => m.histogram[i] != null ? { time: c.time, value: m.histogram[i], color: m.histogram[i] >= 0 ? '#10b981' : '#ef4444' } : { time: c.time });
+    const macdData = candles.map((c, i) => m.macd[i] != null ? { time: c.time, value: m.macd[i] } : { time: c.time });
+    const sigData = candles.map((c, i) => m.signal[i] != null ? { time: c.time, value: m.signal[i] } : { time: c.time });
     histogram.setData(histData);
     macdLine.setData(macdData);
     signalLine.setData(sigData);
   }, [indicators.macd, candles, closes]);
+
+  // ─── Time-axis SYNC across panes ──────────────────────────────────────
+  // The main chart + each indicator sub-panel are SEPARATE lightweight-charts
+  // instances (older builds have no native multi-pane), so their time axes
+  // don't move together on their own. Wire every visible-logical-range change
+  // on any pane out to all the others so scroll / zoom stays aligned. Series
+  // are whitespace-padded above so bar indices match 1:1 across panes.
+  useEffect(() => {
+    const main = chartRef.current;
+    if (!main) return undefined;
+    const charts = [main, ...Object.values(subPanelChartsRef.current).map((s) => s?.chart)].filter(Boolean);
+    if (charts.length < 2) return undefined;
+
+    let syncing = false;
+    const handlers = [];
+    for (const src of charts) {
+      const handler = (range) => {
+        if (syncing || !range) return;
+        syncing = true;
+        for (const dst of charts) {
+          if (dst === src) continue;
+          try { dst.timeScale().setVisibleLogicalRange(range); } catch (_) { /* */ }
+        }
+        syncing = false;
+      };
+      try { src.timeScale().subscribeVisibleLogicalRangeChange(handler); } catch (_) { /* */ }
+      handlers.push([src, handler]);
+    }
+
+    // Align freshly-mounted sub-panes to the main chart's current window.
+    try {
+      const r = main.timeScale().getVisibleLogicalRange();
+      if (r) { for (const dst of charts) { if (dst !== main) { try { dst.timeScale().setVisibleLogicalRange(r); } catch (_) { /* */ } } } }
+    } catch (_) { /* */ }
+
+    return () => {
+      for (const [src, handler] of handlers) {
+        try { src.timeScale().unsubscribeVisibleLogicalRangeChange(handler); } catch (_) { /* */ }
+      }
+    };
+  }, [indicators, chartReady]);
 
   const toggle = (key) => setIndicators((prev) => ({ ...prev, [key]: !prev[key] }));
   const currentType = CHART_TYPES.find((t) => t.id === chartType) || CHART_TYPES[0];
@@ -3585,6 +3680,28 @@ export default function PriceChart({
             className="absolute bottom-8 left-2 h-5 max-w-[130px] object-contain z-10 pointer-events-none opacity-90 select-none"
           />
         )}
+
+        {/* Next economic event chip — shows on ANY timeframe (unlike the candle
+            markers, which only render when an event falls inside the loaded
+            range). Toggled by the "Economic calendar" setting. */}
+        {showCalendar && nextEvent && (() => {
+          const col = nextEvent.impact === 'high' ? '#DC2626' : nextEvent.impact === 'medium' ? '#3B82F6' : '#9CA3AF';
+          const mins = Math.max(0, Math.floor((nextEvent.date.getTime() - Date.now()) / 60000));
+          const cd = mins < 60 ? `${mins}m`
+            : mins < 1440 ? `${Math.floor(mins / 60)}h ${mins % 60}m`
+            : `${Math.floor(mins / 1440)}d ${Math.floor((mins % 1440) / 60)}h`;
+          return (
+            <div className="absolute top-10 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-bg-card/95 border border-border-dark shadow-card backdrop-blur-sm text-[11px] whitespace-nowrap">
+                <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: col }} />
+                <span className="text-text-muted shrink-0">Next:</span>
+                <span className="font-bold shrink-0" style={{ color: col }}>{nextEvent.currency}</span>
+                <span className="text-text-primary font-medium truncate max-w-[150px]">{nextEvent.event}</span>
+                <span className="text-text-muted shrink-0">· in {cd}</span>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Countdown to bar close (Exness-style), toggled in chart settings */}
         {chartPrefs.countdown && <BarCountdown timeframe={timeframe} />}
@@ -4456,9 +4573,11 @@ function PositionPill({
             ) : (
               <span className="px-1.5 py-0.5 tabular-nums font-semibold">{qtyStr}</span>
             )}
+            {/* P&L number — always green for profit / red for loss (not the
+                pill's own colour) so the trader reads their result at a glance. */}
             <span
-              className="px-1.5 py-0.5 tabular-nums font-semibold"
-              style={{ borderLeft: `1px solid ${color}` }}
+              className="px-1.5 py-0.5 tabular-nums font-bold"
+              style={{ borderLeft: `1px solid ${color}`, color: usd >= 0 ? '#16A34A' : '#DC2626' }}
             >
               {usdStr}
             </span>

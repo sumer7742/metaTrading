@@ -877,6 +877,22 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
       .catch(() => setPlanByCode({}));
   }, []);
 
+  // If the admin hid the currently-selected method (or it's a stale custom
+  // id), fall back to the first still-visible method once details load.
+  useEffect(() => {
+    if (!payDetails || method === 'RAZORPAY') return;
+    const FIXED = ['UPI', 'BANK', 'CRYPTO', 'SKRILL', 'NETELLER'];
+    const stillVisible = method.startsWith('CUSTOM:')
+      ? (payDetails.custom || []).some((c) => `CUSTOM:${c.id}` === method && c.enabled !== false)
+      : (FIXED.includes(method) ? payDetails?.[method]?.enabled !== false : true);
+    if (!stillVisible) {
+      const firstFixed = FIXED.find((id) => payDetails?.[id]?.enabled !== false);
+      const firstCustom = (payDetails.custom || []).find((c) => c.label && c.enabled !== false);
+      setMethod(firstFixed || (firstCustom ? `CUSTOM:${firstCustom.id}` : 'RAZORPAY'));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payDetails]);
+
   const selectedAccount = accounts.find((a) => a._id === accountId);
   const isReal = selectedAccount && selectedAccount.accountType !== 'DEMO' && selectedAccount.accountType !== 'VIRTUAL';
   const isDemo = selectedAccount?.accountType === 'DEMO';
@@ -1024,7 +1040,7 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
         accountId,
         currency,
         amount,
-        method,
+        method: selectedCustom ? selectedCustom.label : method,
         txReference,
         senderName,
         senderUpiId,
@@ -1056,14 +1072,26 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
   // INR-denominated deposits. Mins are INR (₹100 minimum for Indian
   // rails, ₹500 for crypto). The backend receives the converted USD
   // value at submit time.
-  const METHODS = [
+  const FIXED_MANUAL = [
     { id: 'UPI',      label: 'UPI',           sub: 'Instant · Free',         min: 100,  kind: 'manual',  icon: <MUPI /> },
     { id: 'BANK',     label: 'Bank Transfer', sub: 'NEFT / IMPS · 1-3 hrs',  min: 100,  kind: 'manual',  icon: <MBank /> },
     { id: 'CRYPTO',   label: 'Crypto (USDT)', sub: 'TRC20 · ~5 min',         min: 500,  kind: 'manual',  icon: <MCrypto /> },
     { id: 'SKRILL',   label: 'Skrill',        sub: 'Instant · Free',         min: 100,  kind: 'manual',  icon: <MSkrill /> },
     { id: 'NETELLER', label: 'Neteller',      sub: 'Instant · Free',         min: 100,  kind: 'manual',  icon: <MNeteller /> },
-    { id: 'RAZORPAY', label: 'Razorpay',      sub: 'UPI / Card · Instant',   min: 100,  kind: 'instant', icon: <MRazor /> },
   ];
+  // Visible = enabled fixed methods + enabled custom methods, with Razorpay
+  // (a live gateway, not admin-configured) always available at the end.
+  const METHODS = [
+    ...FIXED_MANUAL.filter((m) => payDetails?.[m.id]?.enabled !== false),
+    ...((payDetails?.custom || []).filter((c) => c && c.label && c.enabled !== false).map((c) => ({
+      id: `CUSTOM:${c.id}`, label: c.label, sub: 'Manual', min: Number(c.min) > 0 ? Number(c.min) : 100,
+      kind: 'manual', icon: <span className="text-xl leading-none">{c.emoji || '💳'}</span>, custom: c,
+    }))),
+    { id: 'RAZORPAY', label: 'Razorpay', sub: 'UPI / Card · Instant', min: 100, kind: 'instant', icon: <MRazor /> },
+  ];
+  const selectedCustom = String(method).startsWith('CUSTOM:')
+    ? (payDetails?.custom || []).find((c) => `CUSTOM:${c.id}` === method) || null
+    : null;
   const STEPS = [
     { id: 'account', label: 'Account',         sub: 'Choose account' },
     { id: 'method',  label: 'Payment Method',  sub: 'Select method' },
@@ -1312,7 +1340,7 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
                       <span className="text-sm font-bold text-text-primary">Pay to these details</span>
                       <span className="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-bull/15 text-bull">Verified</span>
                     </div>
-                    {payDetails?.[method]?.qr && (
+                    {(selectedCustom ? selectedCustom.qr : payDetails?.[method]?.qr) && (
                       <span className="text-[10px] font-semibold text-text-muted inline-flex items-center gap-1">
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><path d="M14 14h3v3h-3z" /><path d="M14 20h7M20 14v7" /></svg>
                         Scan below
@@ -1322,8 +1350,10 @@ function InlineDepositFlow({ accounts, balances = [], fxRate, onDone, onCancel }
                   {(() => {
                     // Admin-configured payment details for the selected method
                     // (no more hardcoded values).
-                    const dd = payDetails?.[method] || {};
-                    const rows = method === 'UPI'
+                    const dd = selectedCustom || payDetails?.[method] || {};
+                    const rows = selectedCustom
+                      ? (selectedCustom.fields || []).map((f) => ({ l: f.label, v: f.value, c: f.copy !== false }))
+                      : method === 'UPI'
                       ? [{ l: 'UPI ID', v: dd.upiId, c: true }, { l: 'Beneficiary', v: dd.payeeName, c: false }]
                       : method === 'BANK'
                         ? [{ l: 'Beneficiary', v: dd.accountName, c: false }, { l: 'Bank A/C', v: dd.accountNumber, c: true }, { l: 'IFSC', v: dd.ifsc, c: true }, { l: 'Bank', v: dd.bankName, c: false }]
@@ -3407,6 +3437,16 @@ function MethodsView({ onAdd }) {
   );
 }
 
+// Account-type code → clean label (STANDARD → Standard, PRO_IC → Pro IC).
+function fmtAccType(t) {
+  const raw = String(t || '').toUpperCase();
+  if (!raw) return '—';
+  const ic = raw.endsWith('_IC');
+  const base = ic ? raw.slice(0, -3) : raw;
+  const label = base.charAt(0) + base.slice(1).toLowerCase();
+  return ic ? `${label} IC` : label;
+}
+
 function AccountDetailsView({ user, accounts, balances, fxRate, onRefresh, setView }) {
   const fullName = [user?.firstName, user?.lastName].filter(Boolean).join(' ') || 'Trader';
   const kyc = user?.kycStatus || 'NOT_STARTED';
@@ -3422,6 +3462,32 @@ function AccountDetailsView({ user, accounts, balances, fxRate, onRefresh, setVi
   const balanceFor = (accId, currency) => {
     const w = balances?.find((x) => x.accountId === accId && x.currency === currency);
     return w ? Number(w.balance) || 0 : 0;
+  };
+
+  // Inline account rename. `nameOverrides` gives instant feedback while the
+  // parent refetch (onRefresh) syncs the canonical nickname from the server.
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState('');
+  const [savingName, setSavingName] = useState(false);
+  const [nameOverrides, setNameOverrides] = useState({});
+  const startEdit = (a, currentName) => { setEditingId(a._id); setEditName(currentName || ''); };
+  const cancelEdit = () => { setEditingId(null); setEditName(''); };
+  const saveName = async (a) => {
+    const name = editName.replace(/\s+/g, ' ').trim();
+    if (!name) { toast.error('Nickname cannot be empty'); return; }
+    if (name.length > 40) { toast.error('Nickname too long (max 40)'); return; }
+    setSavingName(true);
+    try {
+      await api.patch(`/user/accounts/${a._id}`, { nickname: name });
+      setNameOverrides((m) => ({ ...m, [a._id]: name }));
+      toast.success('Account renamed');
+      cancelEdit();
+      onRefresh && onRefresh();
+    } catch (e) {
+      toast.error(errorMessage(e));
+    } finally {
+      setSavingName(false);
+    }
   };
 
   return (
@@ -3478,6 +3544,8 @@ function AccountDetailsView({ user, accounts, balances, fxRate, onRefresh, setVi
             {accounts.map((a) => {
               const isR = a.accountType !== 'DEMO' && a.accountType !== 'VIRTUAL';
               const tint = isR ? '#1D4ED8' : '#3B82F6';
+              const displayName = nameOverrides[a._id] ?? (a.nickname || a.accountNumber);
+              const isEditing = editingId === a._id;
               const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
               const isSuspended = !!a.planSuspendedAt;
               const native = balanceFor(a._id, a.baseCurrency);
@@ -3494,13 +3562,40 @@ function AccountDetailsView({ user, accounts, balances, fxRate, onRefresh, setVi
                   )}
                   <div className="flex items-start justify-between gap-2">
                     <span className="w-11 h-11 rounded-xl flex items-center justify-center text-sm font-extrabold shrink-0 shadow-sm" style={{ background: `linear-gradient(135deg, ${tint}22 0%, ${tint}11 100%)`, color: tint }}>
-                      {(a.nickname || a.accountNumber || 'A').slice(0, 2).toUpperCase()}
+                      {(displayName || 'A').slice(0, 2).toUpperCase()}
                     </span>
                     <span className={`text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded ${isR ? 'bg-bull/15 text-bull' : 'bg-info/15 text-info'}`}>
                       {isR ? 'Live · Real' : a.accountType}
                     </span>
                   </div>
-                  <div className="mt-3 text-sm font-bold text-text-primary truncate">{a.nickname || a.accountNumber}</div>
+                  <div className="mt-3">
+                    {isEditing ? (
+                      <div className="flex items-center gap-1">
+                        <input
+                          autoFocus
+                          value={editName}
+                          onChange={(e) => setEditName(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') saveName(a); else if (e.key === 'Escape') cancelEdit(); }}
+                          maxLength={40}
+                          placeholder="Account name"
+                          className="flex-1 min-w-0 text-sm font-bold text-text-primary bg-bg-hover border border-primary-400 rounded-lg px-2 py-1 outline-none focus:ring-1 focus:ring-primary-400/40"
+                        />
+                        <button type="button" onClick={() => saveName(a)} disabled={savingName} className="shrink-0 p-1 rounded-lg text-bull hover:bg-bull/10 disabled:opacity-40" title="Save name" aria-label="Save name">
+                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
+                        </button>
+                        <button type="button" onClick={cancelEdit} className="shrink-0 p-1 rounded-lg text-text-muted hover:bg-bg-hover" title="Cancel" aria-label="Cancel">
+                          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18" /><path d="M6 6l12 12" /></svg>
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-sm font-bold text-text-primary truncate">{displayName}</span>
+                        <button type="button" onClick={() => startEdit(a, displayName)} className="shrink-0 p-0.5 rounded text-text-muted hover:text-primary-600 transition-colors" title="Rename account" aria-label="Rename account">
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9" /><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" /></svg>
+                        </button>
+                      </div>
+                    )}
+                  </div>
                   <div className="text-[11px] text-text-muted font-mono truncate">{a.accountNumber}</div>
                   {isSuspended && (
                     <div className="mt-2 text-[11px] text-amber-700 leading-snug">
@@ -3522,9 +3617,15 @@ function AccountDetailsView({ user, accounts, balances, fxRate, onRefresh, setVi
                     </div>
                   </div>
 
-                  <div className="mt-2.5 text-[11px]">
-                    <div className="text-text-muted uppercase tracking-wider font-semibold">Leverage</div>
-                    <div className="text-sm font-mono font-bold text-text-primary">1:{a.leverage}</div>
+                  <div className="mt-2.5 grid grid-cols-2 gap-2 text-[11px]">
+                    <div className="min-w-0">
+                      <div className="text-text-muted uppercase tracking-wider font-semibold">Type</div>
+                      <div className="text-sm font-bold text-text-primary truncate" title={a.accountType}>{fmtAccType(a.accountType)}</div>
+                    </div>
+                    <div>
+                      <div className="text-text-muted uppercase tracking-wider font-semibold">Leverage</div>
+                      <div className="text-sm font-mono font-bold text-text-primary">1:{a.leverage}</div>
+                    </div>
                   </div>
                 </div>
               );

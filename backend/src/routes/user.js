@@ -16,6 +16,7 @@ router.post('/kyc', c.submitKYC);
 router.get('/kyc/status', c.getKycStatus);
 router.get('/accounts', c.listAccounts);
 router.post('/accounts', c.createAccount);
+router.patch('/accounts/:id', c.updateAccount);
 // Account-type catalogue — public to authenticated users. The FE picker
 // reads this so a new tier (added in config/accountTypes.js) shows up
 // without any frontend deploy.

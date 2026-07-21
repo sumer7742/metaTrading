@@ -46,6 +46,18 @@ const setAdminCap = asyncHandler(async (req, res) => {
   sendSuccess(res, { maxAdmins });
 });
 
+// Optional "preferred intake" manager — route every new signup to one manager
+// until it's full. GET readable by admins; PUT is SuperAdmin-only (route-gated).
+const getPreferredManager = asyncHandler(async (req, res) => {
+  sendSuccess(res, { managerId: await svc.getPreferredManagerId() });
+});
+const setPreferredManager = asyncHandler(async (req, res) => {
+  const managerId = await svc.setPreferredManagerId(req.body.managerId || null, req.userId);
+  await audit(req, managerId ? 'HIERARCHY_PREFERRED_MANAGER_SET' : 'HIERARCHY_PREFERRED_MANAGER_CLEARED',
+    { type: 'SETTING', id: 'hierarchy.preferredManagerId' }, { managerId });
+  sendSuccess(res, { managerId });
+});
+
 const createAdmin = asyncHandler(async (req, res) => {
   const user = await svc.createRole(ROLES.ADMIN, req.body, req.user);
   await audit(req, 'ADMIN_CREATED', { type: 'USER', id: user._id }, { email: user.email });
@@ -275,6 +287,7 @@ const setLimits = asyncHandler(async (req, res) => {
 
 module.exports = {
   listAdmins, getAdminCap, setAdminCap, createAdmin, deactivateAdmin,
+  getPreferredManager, setPreferredManager,
   listManagers, createManager, deactivateManager,
   assignAdmin, assignManager, reassign, unassign, bulkAssign,
   unassigned, users, workload, tree,

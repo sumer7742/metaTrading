@@ -28,8 +28,20 @@ const bookChip = (b) => (b === 'A_BOOK'
 
 const EMPTY_FILTERS = {
   user: '', orderId: '', accountNumber: '', accountType: '', accountMode: '', symbol: '', side: '', orderType: '', book: '',
-  pnl: '', from: '', to: '', minVolume: '', maxVolume: '',
+  closeReason: '', pnl: '', from: '', to: '', minVolume: '', maxVolume: '',
 };
+
+// Status = how a closed trade ended (its close reason). Values match the
+// backend whitelist in adminOrdersController.closedOrders.
+const CLOSE_REASON_OPTIONS = [
+  { value: '',                 label: 'All' },
+  { value: 'MANUAL',           label: 'Manual close' },
+  { value: 'TAKE_PROFIT',      label: 'Take Profit' },
+  { value: 'STOP_LOSS',        label: 'Stop Loss' },
+  { value: 'TRAILING_STOP',    label: 'Trailing Stop' },
+  { value: 'MARGIN_STOPOUT',   label: 'Margin Stop-out' },
+  { value: 'NEGATIVE_BALANCE', label: 'Neg-balance' },
+];
 
 // Short ticket from a Mongo _id (last 6 hex, upper) — full id on hover.
 const ticket = (id) => (id ? `#${String(id).slice(-6).toUpperCase()}` : '—');
@@ -371,6 +383,13 @@ function FilterBar({ tab, draft, setDraft, onApply, onReset, onExport, acctTypeO
       )}
       {tab !== 'pending' && (
         <Field label="Book"><select className="input w-28" value={draft.book} onChange={set('book')}><option value="">All</option><option value="A_BOOK">A-Book</option><option value="B_BOOK">B-Book</option></select></Field>
+      )}
+      {tab === 'closed' && (
+        <Field label="Status">
+          <select className="input w-36" value={draft.closeReason} onChange={set('closeReason')}>
+            {CLOSE_REASON_OPTIONS.map((o) => <option key={o.value || 'all'} value={o.value}>{o.label}</option>)}
+          </select>
+        </Field>
       )}
       {tab === 'closed' && (
         <Field label="P/L"><select className="input w-28" value={draft.pnl} onChange={set('pnl')}><option value="">All</option><option value="profit">Profit</option><option value="loss">Loss</option></select></Field>

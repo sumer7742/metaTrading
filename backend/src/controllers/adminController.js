@@ -1339,10 +1339,32 @@ const updateDepositDetails = asyncHandler(async (req, res) => {
   const systemSettings = require('../services/systemSettings.service');
   const body = req.body && typeof req.body === 'object' ? req.body : {};
   // Merge over current so a partial update keeps the rest + the shape stays valid.
+  // Each fixed method carries an optional `enabled` flag (spread through here) —
+  // when false the client hides that method from the "Add funds" picker.
   const current = (await systemSettings.getSetting('deposit.paymentDetails')) || {};
   const merged = { ...current };
   for (const k of ['UPI', 'BANK', 'CRYPTO', 'SKRILL', 'NETELLER']) {
     if (body[k] && typeof body[k] === 'object') merged[k] = { ...(current[k] || {}), ...body[k] };
+  }
+  // Custom (admin-defined) payment methods — a flat list the admin can
+  // add / edit / toggle. Sanitised + capped so the settings doc stays bounded.
+  if (Array.isArray(body.custom)) {
+    merged.custom = body.custom.slice(0, 12).map((m) => ({
+      id: (String(m?.id || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40)) || ('c' + Math.random().toString(36).slice(2, 10)),
+      label: String(m?.label || '').slice(0, 40),
+      emoji: String(m?.emoji || '').slice(0, 8),
+      enabled: m?.enabled !== false,
+      min: Number(m?.min) > 0 ? Number(m.min) : 10,
+      note: String(m?.note || '').slice(0, 500),
+      qr: typeof m?.qr === 'string' ? m.qr.slice(0, 800000) : '', // ~600KB data-URL cap
+      fields: Array.isArray(m?.fields)
+        ? m.fields.slice(0, 12).map((f) => ({
+            label: String(f?.label || '').slice(0, 40),
+            value: String(f?.value || '').slice(0, 200),
+            copy: f?.copy !== false,
+          })).filter((f) => f.label || f.value)
+        : [],
+    })).filter((m) => m.label);
   }
   const saved = await systemSettings.setSetting('deposit.paymentDetails', merged, req.userId);
   sendSuccess(res, saved);
@@ -2084,14 +2106,23 @@ async function _assertUserInScope(actor, userId) {
   throw new AppError('This user is not in your hierarchy', 403, 'OUT_OF_SCOPE');
 }
 
-// Build the TradingAccount $match from query filters (status/type/group/date).
-function _accFilter({ status, type, group, from, to }) {
+// Build the TradingAccount $match from query filters (status/mode/type/group/date).
+// `mode` = Live vs Demo; `type` = a specific tier code. Both may be set and are
+// ANDed. Back-compat: the old combined dropdown sent LIVE/DEMO via `type`.
+function _accFilter({ status, mode, type, group, from, to }) {
   const m = {};
   if (status) m.status = status;
   if (group) m.group = group;
-  if (type === 'LIVE') m.accountType = { $nin: DEMO_TYPES };
-  else if (type === 'DEMO') m.accountType = { $in: DEMO_TYPES };
-  else if (type) m.accountType = type;
+
+  const modeVal = mode || (type === 'LIVE' || type === 'DEMO' ? type : '');
+  const tierVal = type && type !== 'LIVE' && type !== 'DEMO' ? type : '';
+  const conds = [];
+  if (modeVal === 'LIVE') conds.push({ accountType: { $nin: DEMO_TYPES } });
+  else if (modeVal === 'DEMO') conds.push({ accountType: { $in: DEMO_TYPES } });
+  if (tierVal) conds.push({ accountType: tierVal });
+  if (conds.length === 1) Object.assign(m, conds[0]);
+  else if (conds.length > 1) m.$and = conds;
+
   if (from || to) {
     m.createdAt = {};
     if (from) m.createdAt.$gte = new Date(from);

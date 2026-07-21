@@ -395,7 +395,19 @@
       "Bash(awk -F: '$1<=1099')",
       "Bash(node -e \"require\\('./src/services/affiliateService'\\); require\\('./src/services/partnerService'\\); require\\('./src/matching-engine/MatchingEngine'\\); require\\('./src/models/Compliance'\\); console.log\\('ALL SERVICES LOAD OK'\\);\")",
       "Bash(grep -n 'Position = require\\\\|Position.aggregate\\\\|pending-volume\\\\|userId: { $in: refIds }, status: '\\\\''OPEN'\\\\''' backend/src/services/partnerService.js)",
-      "Bash(node -e \"require\\('./src/services/partnerService'\\); require\\('./src/matching-engine/MatchingEngine'\\); console.log\\('LOAD OK'\\);\")"
+      "Bash(node -e \"require\\('./src/services/partnerService'\\); require\\('./src/matching-engine/MatchingEngine'\\); console.log\\('LOAD OK'\\);\")",
+      "Bash(cd \"c:/Users/rijju/OneDrive/Desktop/trading-platform  last and/client\" && cat tailwind.config.js 2>/dev/null | head -60)",
+      "Bash(curl -s -o /dev/null -w \"PATCH /user/accounts/:id \\(no auth\\): HTTP %{http_code}\\\\n\" -X PATCH http://localhost:5000/api/user/accounts/000000000000000000000000 -H \"Content-Type: application/json\" -d '{\"nickname\":\"Test\"}')",
+      "Bash(curl -s \"http://localhost:5000/api/instruments/economic-calendar\")",
+      "Bash(node -e \"let d='';process.stdin.on\\('data',c=>d+=c\\).on\\('end',\\(\\)=>{const j=JSON.parse\\(d\\);console.log\\('events:',j.data.length,'| sample impacts:',[...new Set\\(j.data.slice\\(0,30\\).map\\(e=>e.impact\\)\\)].join\\(','\\)\\);}\\)\")",
+      "Bash(node --check src/services/subscriptionService.js)",
+      "Bash(node --check src/models/Subscription.js)",
+      "Bash(cd \"c:/Users/rijju/OneDrive/Desktop/trading-platform  last and/backend/src\" && echo \"=== subscribe controller \\(subscriptionController\\) ===\" && grep -n \"subscribe\\\\s*=\\\\|chargePlan\\\\|reason:\\\\|debit\\(\\\\|SUBSCRIPTION_CHARGE\\\\|renew\\\\|paymentMethod\\\\|subscription_wallet\" controllers/subscriptionController.js 2>/dev/null | head -25)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:5000/api/health)",
+      "Bash(node --check backend/src/services/hierarchyService.js)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:5000/api/health)",
+      "Bash(node --check backend/src/config/hierarchy.js)",
+      "Bash(node --check backend/src/controllers/authController.js)"
     ],
     "additionalDirectories": [
       "c:\\Users\\rijju\\.claude\\projects\\c--Users-rijju-OneDrive-Desktop-trading-platform--last-and\\memory"

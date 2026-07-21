@@ -25,7 +25,9 @@ const ROLE_REGISTRY = {
   [ROLES.MANAGER]: {
     parentRole: ROLES.ADMIN,
     parentField: 'adminId',     // a manager belongs to one admin
-    cap: 10,                    // max 10 managers per admin (hard limit)
+    cap: 10,                    // DEFAULT managers per admin — overridden by the
+                                // admin's configured hierarchyLimits.maxManagers
+                                // (Limits modal). Applies only when unset.
     capScope: 'parent',
     userCapacity: 100,          // display-only workload target
     manages: [],

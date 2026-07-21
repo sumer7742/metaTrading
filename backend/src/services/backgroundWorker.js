@@ -910,6 +910,25 @@ const checkExpiry = async () => {
       console.error('[Worker] expiry square-off failed:', e.message);
     }
   }
+
+  // ── Deactivate the expired contracts themselves so they drop out of the
+  //    tradeable lists (those filter on isActive, NOT expiryDate — a past-
+  //    expiry future would otherwise linger as tradeable). We DON'T delete:
+  //    the record + price history stays for audit / closed-position lookups.
+  //    Options are also deactivated by the daily Dhan sync; doing it here too
+  //    means it happens the moment expiry passes, not only on the next sync.
+  //    Idempotent — the isActive:true guard skips ones already hidden, and the
+  //    square-off query above is un-gated on isActive so a failed/retried close
+  //    still gets picked up next tick.
+  try {
+    const deact = await Instrument.updateMany(
+      { segment: { $in: ['FUT', 'OPT'] }, expiryDate: { $ne: null, $lte: new Date() }, isActive: true },
+      { $set: { isActive: false } },
+    );
+    if (deact.modifiedCount) console.log(`[Worker] expiry: deactivated ${deact.modifiedCount} expired contract(s)`);
+  } catch (e) {
+    console.error('[Worker] expiry deactivation failed:', e.message);
+  }
 };
 
 /**
@@ -1089,6 +1108,18 @@ const sweepExpiredSubscriptions = async () => {
 
   for (const sub of expired) {
     try {
+      // Postpaid plans are billed monthly by billPostpaid(), NOT this fixed-date
+      // expiry flow (their monthlyPrice is 0, so they'd wrongly downgrade). If
+      // one slipped in with a stale expiry, clear it (seed a billing anchor if
+      // missing) and skip.
+      const ppPlan = await Plan.findOne({ code: sub.planCode }).select('features').lean();
+      if (ppPlan?.features?.postPaid) {
+        await Subscription.updateOne(
+          { _id: sub._id },
+          { $set: { expiresAt: null, ...(sub.nextBillingAt ? {} : { nextBillingAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) }) } },
+        );
+        continue;
+      }
       // ── Auto-renew attempt — Main Wallet, then Trading if enabled.
       //    The Bonus Wallet is NEVER charged. Only runs when the user
       //    enabled auto-renew on their Main Wallet. On success we renew the
@@ -1248,6 +1279,91 @@ const syncDhanDaily = async () => {
 
 let _tickHandle = null;
 let _slowTickHandle = null;
+/**
+ * Postpaid usage billing — bills each active postpaid subscriber once per cycle
+ * (checked hourly). Bill = max(minimumMonthlyFee, perDevicePerMonth × devices +
+ * perAccountPerMonth × accounts), where devices = distinct logged-in devices
+ * (refresh tokens) and accounts = the user's REAL (non-demo) active trading
+ * accounts. Charged from the Main Wallet via subscriptionService.chargePlan.
+ * The anchor is advanced optimistically via an atomic claim so a concurrent
+ * tick can't double-charge; on insufficient funds it retries in ~2 days (grace).
+ */
+const billPostpaid = async () => {
+  const { Plan, Subscription } = require('../models/Subscription');
+  const User = require('../models/User');
+  const TradingAccount = require('../models/TradingAccount');
+  const subscriptionService = require('./subscriptionService');
+  const { Notification } = require('../models/index');
+
+  const now = new Date();
+  const due = await Subscription.find({ status: 'ACTIVE', nextBillingAt: { $ne: null, $lte: now } }).limit(200).lean();
+  if (!due.length) return;
+
+  const UNIT_MS = { MINUTES: 60 * 1000, HOURS: 60 * 60 * 1000, DAYS: 24 * 60 * 60 * 1000 };
+  const cycleMs = (plan) => {
+    const unit = UNIT_MS[plan.billingDays?.unit] || UNIT_MS.DAYS;
+    const monthly = Number(plan.billingDays?.monthly) > 0 ? Number(plan.billingDays.monthly) : 30;
+    return monthly * unit;
+  };
+
+  for (const sub of due) {
+    const plan = await Plan.findById(sub.planId).lean();
+    if (!plan?.features?.postPaid) {
+      // Stray anchor on a non-postpaid plan — clear it so we stop re-checking.
+      await Subscription.updateOne({ _id: sub._id }, { $set: { nextBillingAt: null } });
+      continue;
+    }
+    const rates = plan.postPaidRates || {};
+    const user = await User.findById(sub.userId).select('refreshTokens').lean();
+    const devices = new Set((user?.refreshTokens || []).map((t) => t.deviceInfo || 'Unknown')).size;
+    const accounts = await TradingAccount.countDocuments({
+      userId: sub.userId, isActive: true, accountType: { $nin: ['DEMO', 'VIRTUAL'] },
+    });
+    const usage = Number(rates.perDevicePerMonth || 0) * devices + Number(rates.perAccountPerMonth || 0) * accounts;
+    const bill = Math.max(Number(rates.minimumMonthlyFee || 0), usage);
+    const nextAt = new Date(new Date(sub.nextBillingAt).getTime() + cycleMs(plan));
+
+    // Atomic claim — advance the anchor first so a concurrent tick can't double-bill.
+    const claimed = await Subscription.findOneAndUpdate(
+      { _id: sub._id, nextBillingAt: sub.nextBillingAt },
+      { $set: { nextBillingAt: nextAt } },
+    );
+    if (!claimed) continue;
+
+    if (!(bill > 0)) continue; // nothing to charge this cycle
+
+    const note = `Postpaid usage · ${devices} device(s) + ${accounts} account(s) (min $${rates.minimumMonthlyFee || 0})`;
+    try {
+      const pay = await subscriptionService.chargePlan({ userId: sub.userId, amount: bill.toFixed(2), note });
+      await Subscription.updateOne({ _id: sub._id }, { $set: { lastPayment: { ...pay, amount: bill.toFixed(2), currency: rates.currency || 'USD' } } });
+      try {
+        await Notification.create({
+          userId: sub.userId, type: 'SUBSCRIPTION_RENEWED',
+          title: 'Postpaid bill charged',
+          message: `$${bill.toFixed(2)} charged from your Main Wallet — ${devices} device(s) + ${accounts} account(s) this cycle.`,
+          channels: ['IN_APP', 'EMAIL'],
+        });
+      } catch (_) { /* best-effort */ }
+      notifyUser(String(sub.userId), 'subscription', { event: 'POSTPAID_CHARGED', amount: bill.toFixed(2), devices, accounts });
+      console.log(`[Worker] postpaid: charged $${bill.toFixed(2)} to ${sub.userId} (${devices}d / ${accounts}a)`);
+    } catch (e) {
+      // Insufficient funds → retry in ~2 days + notify. Keeps the plan active
+      // (grace) rather than downgrading immediately.
+      await Subscription.updateOne({ _id: sub._id }, { $set: { nextBillingAt: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000) } });
+      try {
+        await Notification.create({
+          userId: sub.userId, type: 'SUBSCRIPTION_RENEW_FAILED',
+          title: 'Postpaid bill due — top up your Main Wallet',
+          message: `We couldn't charge your $${bill.toFixed(2)} postpaid usage bill: insufficient Main Wallet balance. Top up to avoid service interruption.`,
+          channels: ['IN_APP', 'EMAIL'],
+        });
+      } catch (_) { /* best-effort */ }
+      notifyUser(String(sub.userId), 'subscription', { event: 'POSTPAID_DUE', amount: bill.toFixed(2) });
+      console.warn(`[Worker] postpaid: charge failed for ${sub.userId}: ${e.message}`);
+    }
+  }
+};
+
 const start = (intervalMs = 5000) => {
   if (_tickHandle) return; // already running — idempotent for hot-reload safety
   console.log('[Worker] Background worker started (STOP, LIMIT, SL/TP, trailing, OCO, margin, neg-balance, alerts, auto-switch every 5s)');
@@ -1259,6 +1375,7 @@ const start = (intervalMs = 5000) => {
   const slowTick = async () => {
     try {
       await sweepExpiredSubscriptions();
+      await billPostpaid();
       await recalcPartnerTiersIfNewMonth();
       await syncDhanDaily();
       await applyCorporateActions();

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { api } from '../services/api';
 import { useNotifications, NOTIFICATION_META } from '../hooks/useNotifications';
+import CreateAlertModal from './CreateAlertModal';
 
 const TABS = ['All', 'Trading', 'Markets', 'Account'];
 
@@ -87,6 +89,19 @@ export default function NotificationCenter() {
     clear,
     updatePrefs,
   } = useNotifications();
+
+  // Quick "set a price alert" — opens the shared create-alert modal INLINE (no
+  // page navigation). Instruments are fetched lazily on first open.
+  const [alertOpen, setAlertOpen] = useState(false);
+  const [alertInstruments, setAlertInstruments] = useState([]);
+  const openAlert = async () => {
+    setOpen(false);
+    setAlertOpen(true);
+    if (!alertInstruments.length) {
+      try { const { data } = await api.get('/instruments'); setAlertInstruments(data.data || []); }
+      catch (_) { /* modal still opens — symbol list just starts empty */ }
+    }
+  };
 
   // Click-outside to close.
   useEffect(() => {
@@ -252,16 +267,30 @@ export default function NotificationCenter() {
                 )}
               </div>
 
-              {/* Footer */}
-              {notifications.length > 0 && (
+              {/* Footer — quick "set a price alert" (always) + clear all */}
+              <div className="border-t border-border-subtle flex items-stretch divide-x divide-border-subtle">
                 <button
                   type="button"
-                  onClick={clear}
-                  className="w-full px-4 py-2.5 text-[12px] font-semibold text-text-secondary hover:text-bear hover:bg-bg-hover transition-colors border-t border-border-subtle"
+                  onClick={openAlert}
+                  className="flex-1 px-4 py-2.5 text-[12px] font-semibold text-primary-600 hover:text-primary-700 hover:bg-bg-hover transition-colors flex items-center justify-center gap-1.5"
+                  title="Set a price alert"
                 >
-                  Clear all
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                  </svg>
+                  + Price alert
                 </button>
-              )}
+                {notifications.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={clear}
+                    className="flex-1 px-4 py-2.5 text-[12px] font-semibold text-text-secondary hover:text-bear hover:bg-bg-hover transition-colors"
+                  >
+                    Clear all
+                  </button>
+                )}
+              </div>
             </>
           ) : (
             <>
@@ -287,6 +316,14 @@ export default function NotificationCenter() {
             </>
           )}
         </div>
+      )}
+
+      {alertOpen && (
+        <CreateAlertModal
+          instruments={alertInstruments}
+          onClose={() => setAlertOpen(false)}
+          onCreated={() => setAlertOpen(false)}
+        />
       )}
     </div>
   );

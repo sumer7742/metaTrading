@@ -341,6 +341,36 @@ function DepositDetailsCard() {
   const set = (method, field, val) =>
     setD((prev) => ({ ...prev, [method]: { ...(prev?.[method] || {}), [field]: val } }));
 
+  // Show/hide toggle for the fixed methods (default: shown).
+  const isOn = (method) => d?.[method]?.enabled !== false;
+  const toggleMethod = (method) => set(method, 'enabled', !isOn(method));
+
+  // Custom (admin-defined) methods — stored under d.custom.
+  const customList = () => (Array.isArray(d?.custom) ? d.custom : []);
+  const setCustomList = (list) => setD((prev) => ({ ...prev, custom: list }));
+  const addCustom = () => setCustomList([...customList(), {
+    id: 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    label: '', emoji: '💳', enabled: true, min: 10, note: '', qr: '', fields: [{ label: '', value: '', copy: true }],
+  }]);
+  const patchCustom = (idx, patch) => setCustomList(customList().map((m, i) => (i === idx ? { ...m, ...patch } : m)));
+  const removeCustom = (idx) => setCustomList(customList().filter((_, i) => i !== idx));
+  const addCustomField = (idx) => patchCustom(idx, { fields: [...(customList()[idx]?.fields || []), { label: '', value: '', copy: true }] });
+  const patchCustomField = (idx, fi, patch) => patchCustom(idx, { fields: (customList()[idx]?.fields || []).map((f, j) => (j === fi ? { ...f, ...patch } : f)) });
+  const removeCustomField = (idx, fi) => patchCustom(idx, { fields: (customList()[idx]?.fields || []).filter((_, j) => j !== fi) });
+  const onCustomQr = (idx, file) => {
+    if (!file) return;
+    if (file.size > 500 * 1024) { toast.error('QR image must be under 500 KB'); return; }
+    const reader = new FileReader();
+    reader.onload = () => patchCustom(idx, { qr: reader.result });
+    reader.readAsDataURL(file);
+  };
+  const togglePill = (on, onClick) => (
+    <button type="button" onClick={onClick}
+      className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded transition-colors ${on ? 'bg-emerald-500/20 text-emerald-400' : 'bg-bear/20 text-bear'}`}>
+      {on ? 'Shown' : 'Hidden'}
+    </button>
+  );
+
   const save = async () => {
     setSaving(true);
     try {
@@ -410,7 +440,7 @@ function DepositDetailsCard() {
 
       <div className="space-y-4">
         <fieldset className="border border-border-dark rounded-lg p-3">
-          <legend className="px-1 text-[11px] uppercase tracking-wider font-bold text-text-secondary">📱 UPI</legend>
+          <legend className="px-1 text-[11px] uppercase tracking-wider font-bold text-text-secondary"><span className="inline-flex items-center gap-2">📱 UPI {togglePill(isOn('UPI'), () => toggleMethod('UPI'))}</span></legend>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {field('UPI', 'upiId', 'UPI ID', 'name@bank')}
             {field('UPI', 'payeeName', 'Payee name', 'TradePro')}
@@ -420,7 +450,7 @@ function DepositDetailsCard() {
         </fieldset>
 
         <fieldset className="border border-border-dark rounded-lg p-3">
-          <legend className="px-1 text-[11px] uppercase tracking-wider font-bold text-text-secondary">🏦 Bank transfer</legend>
+          <legend className="px-1 text-[11px] uppercase tracking-wider font-bold text-text-secondary"><span className="inline-flex items-center gap-2">🏦 Bank transfer {togglePill(isOn('BANK'), () => toggleMethod('BANK'))}</span></legend>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {field('BANK', 'accountName', 'Account name', 'TradePro Pvt Ltd')}
             {field('BANK', 'accountNumber', 'Account number', '0000 0000 0000')}
@@ -431,7 +461,7 @@ function DepositDetailsCard() {
         </fieldset>
 
         <fieldset className="border border-border-dark rounded-lg p-3">
-          <legend className="px-1 text-[11px] uppercase tracking-wider font-bold text-text-secondary">🪙 Crypto (USDT)</legend>
+          <legend className="px-1 text-[11px] uppercase tracking-wider font-bold text-text-secondary"><span className="inline-flex items-center gap-2">🪙 Crypto (USDT) {togglePill(isOn('CRYPTO'), () => toggleMethod('CRYPTO'))}</span></legend>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {field('CRYPTO', 'address', 'Wallet address', 'T...')}
             {field('CRYPTO', 'network', 'Network', 'TRC20')}
@@ -442,19 +472,85 @@ function DepositDetailsCard() {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <fieldset className="border border-border-dark rounded-lg p-3">
-            <legend className="px-1 text-[11px] uppercase tracking-wider font-bold text-text-secondary">💳 Skrill</legend>
+            <legend className="px-1 text-[11px] uppercase tracking-wider font-bold text-text-secondary"><span className="inline-flex items-center gap-2">💳 Skrill {togglePill(isOn('SKRILL'), () => toggleMethod('SKRILL'))}</span></legend>
             <div className="space-y-2">
               {field('SKRILL', 'email', 'Skrill email', 'pay@tradepro.com')}
               {field('SKRILL', 'note', 'Note (optional)', '')}
             </div>
           </fieldset>
           <fieldset className="border border-border-dark rounded-lg p-3">
-            <legend className="px-1 text-[11px] uppercase tracking-wider font-bold text-text-secondary">💳 Neteller</legend>
+            <legend className="px-1 text-[11px] uppercase tracking-wider font-bold text-text-secondary"><span className="inline-flex items-center gap-2">💳 Neteller {togglePill(isOn('NETELLER'), () => toggleMethod('NETELLER'))}</span></legend>
             <div className="space-y-2">
               {field('NETELLER', 'email', 'Neteller email', 'pay@tradepro.com')}
               {field('NETELLER', 'note', 'Note (optional)', '')}
             </div>
           </fieldset>
+        </div>
+
+        {/* Custom (admin-defined) payment methods — add your own beyond the fixed set. */}
+        <div className="border-t border-border-dark pt-4">
+          <div className="flex items-start justify-between gap-3 mb-2">
+            <div>
+              <h3 className="text-sm font-bold text-white">Custom payment methods</h3>
+              <p className="text-[11px] text-text-muted">Add your own (PayPal, Wise, etc.). Use Shown/Hidden to control what clients see.</p>
+            </div>
+            <button type="button" onClick={addCustom} className="shrink-0 text-xs font-bold px-2.5 py-1 rounded bg-primary-500/15 text-primary-400 hover:bg-primary-500/25 transition-colors">+ Add method</button>
+          </div>
+
+          {customList().length === 0 ? (
+            <p className="text-[11px] text-text-muted italic">No custom methods yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {customList().map((m, idx) => (
+                <fieldset key={m.id || idx} className="border border-border-dark rounded-lg p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <input value={m.emoji || ''} onChange={(e) => patchCustom(idx, { emoji: e.target.value })} maxLength={2} placeholder="💳"
+                      className="w-10 text-center px-1 py-1.5 rounded bg-bg-dark border border-border-dark text-sm text-white focus:border-primary-500 focus:outline-none" />
+                    <input value={m.label || ''} onChange={(e) => patchCustom(idx, { label: e.target.value })} placeholder="Method name (e.g. PayPal)"
+                      className="flex-1 px-2 py-1.5 rounded bg-bg-dark border border-border-dark text-xs font-semibold text-white focus:border-primary-500 focus:outline-none" />
+                    {togglePill(m.enabled !== false, () => patchCustom(idx, { enabled: m.enabled === false }))}
+                    <button type="button" onClick={() => removeCustom(idx)} className="text-[10px] font-bold text-bear hover:underline shrink-0">Remove</button>
+                  </div>
+
+                  {/* Fields (label + value pairs shown to the client) */}
+                  <div className="space-y-1.5">
+                    {(m.fields || []).map((f, fi) => (
+                      <div key={fi} className="flex items-center gap-1.5">
+                        <input value={f.label || ''} onChange={(e) => patchCustomField(idx, fi, { label: e.target.value })} placeholder="Label (e.g. Email)"
+                          className="w-1/3 px-2 py-1.5 rounded bg-bg-dark border border-border-dark text-xs text-white focus:border-primary-500 focus:outline-none" />
+                        <input value={f.value || ''} onChange={(e) => patchCustomField(idx, fi, { value: e.target.value })} placeholder="Value"
+                          className="flex-1 px-2 py-1.5 rounded bg-bg-dark border border-border-dark text-xs font-mono text-white focus:border-primary-500 focus:outline-none" />
+                        <label className="flex items-center gap-1 text-[9px] text-text-muted shrink-0 cursor-pointer" title="Show a Copy button to the client">
+                          <input type="checkbox" checked={f.copy !== false} onChange={(e) => patchCustomField(idx, fi, { copy: e.target.checked })} />
+                          copy
+                        </label>
+                        <button type="button" onClick={() => removeCustomField(idx, fi)} className="text-bear text-sm px-1 shrink-0" title="Remove field">×</button>
+                      </div>
+                    ))}
+                    <button type="button" onClick={() => addCustomField(idx)} className="text-[11px] font-semibold text-primary-400 hover:underline">+ Add field</button>
+                  </div>
+
+                  {/* Note + QR */}
+                  <input value={m.note || ''} onChange={(e) => patchCustom(idx, { note: e.target.value })} placeholder="Note (optional) — e.g. Add your user-id in remarks"
+                    className="mt-2 w-full px-2 py-1.5 rounded bg-bg-dark border border-border-dark text-xs text-white focus:border-primary-500 focus:outline-none" />
+                  <div className="mt-2 flex items-center gap-3">
+                    {m.qr ? (
+                      <img src={m.qr} alt="QR" className="w-14 h-14 rounded border border-border-dark bg-white object-contain p-0.5" />
+                    ) : (
+                      <div className="w-14 h-14 rounded border border-dashed border-border-dark flex items-center justify-center text-[9px] text-text-muted">No QR</div>
+                    )}
+                    <div className="flex flex-col gap-1.5">
+                      <label className="px-2 py-1 rounded bg-bg-dark border border-border-dark text-[11px] text-text-secondary cursor-pointer hover:border-primary-500 w-fit transition-colors">
+                        <input type="file" accept="image/*" className="hidden" onChange={(e) => onCustomQr(idx, e.target.files?.[0])} />
+                        Upload QR
+                      </label>
+                      {m.qr && <button type="button" onClick={() => patchCustom(idx, { qr: '' })} className="text-[10px] text-bear hover:underline w-fit">Remove</button>}
+                    </div>
+                  </div>
+                </fieldset>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

@@ -58,17 +58,23 @@ export default function IndicatorSettingsModal({ target, cfg = {}, isActive, onA
           {/* Period / Length */}
           {hasLength && (
             <Row label={isMa ? 'Period' : 'Length'} c={c}>
-              {isMa ? (
-                <select value={period} onChange={(e) => setPeriod(e.target.value)}
-                  className="text-sm rounded-lg px-3 py-2 min-w-[120px] focus:outline-none"
-                  style={{ background: c.input, border: `1px solid ${c.border}`, color: c.text }}>
-                  {meta.periods.map((p) => <option key={p} value={p}>{p}</option>)}
-                </select>
-              ) : (
-                <input type="number" min="1" max="500" value={period} onChange={(e) => setPeriod(e.target.value)}
+              <>
+                {/* Free-type any value. For MAs the preset list is offered as a
+                    datalist of suggestions instead of a hard dropdown. */}
+                <input
+                  type="number" min="1" max="1000" step="1"
+                  list={isMa ? `${meta.code}-periods` : undefined}
+                  value={period}
+                  onChange={(e) => setPeriod(e.target.value)}
                   className="text-sm rounded-lg px-3 py-2 w-[120px] focus:outline-none"
-                  style={{ background: c.input, border: `1px solid ${c.border}`, color: c.text }} />
-              )}
+                  style={{ background: c.input, border: `1px solid ${c.border}`, color: c.text }}
+                />
+                {isMa && (
+                  <datalist id={`${meta.code}-periods`}>
+                    {meta.periods.map((p) => <option key={p} value={p} />)}
+                  </datalist>
+                )}
+              </>
             </Row>
           )}
 

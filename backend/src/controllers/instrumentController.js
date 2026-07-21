@@ -519,4 +519,81 @@ const optionChain = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { list, watchlist, getOne, search, volumeUsage, candles, orderbook, fundamentals, news, create, update, remove, bulkRouting, optionChain, syncIndian };
+// ── Economic calendar (Forex Factory / faireconomy — FREE, no API key) ──────
+// Fetched server-side (avoids browser CORS + one shared cache for all clients),
+// normalised to the exact shape the client's economicCalendar util renders, and
+// cached ~1h (events don't change intra-hour). On failure we keep the last good
+// cache (or empty) so the client falls back to its deterministic static schedule.
+let _calCache = { at: 0, data: null };
+const CAL_TTL_MS = 60 * 60 * 1000;
+const FF_URLS = [
+  'https://nfs.faireconomy.media/ff_calendar_lastweek.json',
+  'https://nfs.faireconomy.media/ff_calendar_thisweek.json',
+  'https://nfs.faireconomy.media/ff_calendar_nextweek.json',
+];
+const CCY_TO_COUNTRY = { USD: 'US', EUR: 'EU', GBP: 'GB', JPY: 'JP', CHF: 'CH', CAD: 'CA', AUD: 'AU', NZD: 'NZ', CNY: 'CN', INR: 'IN' };
+const _calImpact = (s) => {
+  const v = String(s || '').toLowerCase();
+  if (v.includes('high')) return 'high';
+  if (v.includes('medium') || v.includes('moderate')) return 'medium';
+  if (v.includes('holiday')) return 'lowest';
+  return 'low';
+};
+const _calNum = (s) => {
+  if (s == null || s === '') return null;
+  const n = parseFloat(String(s).replace(/[^0-9.\-]/g, ''));
+  return Number.isFinite(n) ? n : null;
+};
+async function _fetchFFCalendar() {
+  const out = [];
+  const seen = new Set();
+  for (const url of FF_URLS) {
+    try {
+      const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (TradePro calendar)' } });
+      if (!res.ok) continue;
+      const rows = await res.json();
+      if (!Array.isArray(rows)) continue;
+      for (const r of rows) {
+        const currency = String(r.country || r.currency || '').toUpperCase();
+        const dateStr = r.date || r.datetime;
+        if (!currency || !dateStr) continue;
+        const d = new Date(dateStr);
+        if (Number.isNaN(d.getTime())) continue;
+        const id = `${currency}-${r.title}-${d.toISOString()}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        out.push({
+          id,
+          date: d.toISOString(),
+          country: CCY_TO_COUNTRY[currency] || currency,
+          currency,
+          impact: _calImpact(r.impact),
+          event: String(r.title || 'Event'),
+          period: '',
+          unit: '',
+          previous: _calNum(r.previous),
+          consensus: null,
+          forecast: _calNum(r.forecast),
+          actual: _calNum(r.actual),
+          previousLabel: r.previous || '—',
+          consensusLabel: '—',
+          forecastLabel: r.forecast || '—',
+          actualLabel: r.actual || null,
+          code: currency,
+        });
+      }
+    } catch (_) { /* skip this window, keep others */ }
+  }
+  return out;
+}
+const economicCalendar = asyncHandler(async (req, res) => {
+  const now = Date.now();
+  if (!_calCache.data || now - _calCache.at > CAL_TTL_MS) {
+    const data = await _fetchFFCalendar();
+    if (data.length) _calCache = { at: now, data };            // only cache a good pull
+    else if (!_calCache.data) _calCache = { at: now, data: [] }; // failed + nothing cached → don't hammer
+  }
+  sendSuccess(res, _calCache.data || []);
+});
+
+module.exports = { list, watchlist, getOne, search, volumeUsage, candles, orderbook, fundamentals, news, create, update, remove, bulkRouting, optionChain, syncIndian, economicCalendar };

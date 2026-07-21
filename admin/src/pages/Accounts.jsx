@@ -28,12 +28,25 @@ export default function Accounts() {
 
   // filters
   const [search, setSearch] = useState('');
-  const [fType, setFType] = useState('');
+  const [fMode, setFMode] = useState('');   // '' | LIVE | DEMO
+  const [fType, setFType] = useState('');   // '' | tier code (STANDARD, PRO, ...)
   const [fStatus, setFStatus] = useState('');
   const [fGroup, setFGroup] = useState('');
   const [fFrom, setFFrom] = useState('');
   const [fTo, setFTo] = useState('');
   const [groups, setGroups] = useState([]); // distinct account groups for the filter
+  // Live tier list for the Type filter. Merges the static defaults with the
+  // admin-created AccountPlan catalogue so a newly-created tier shows up here
+  // automatically (defaults are kept in case the catalogue isn't seeded).
+  const [typeOptions, setTypeOptions] = useState(ACCOUNT_TYPES);
+  useEffect(() => {
+    api.get('/account-plans/admin')
+      .then(({ data }) => {
+        const codes = (data.data || []).filter((p) => p.isActive !== false).map((p) => p.code).filter(Boolean);
+        if (codes.length) setTypeOptions([...new Set([...ACCOUNT_TYPES, ...codes])]);
+      })
+      .catch(() => {});
+  }, []);
 
   // expand + lazy children
   const [expanded, setExpanded] = useState({});      // userId -> bool
@@ -46,13 +59,13 @@ export default function Accounts() {
 
   const [detail, setDetail] = useState(null);         // accountId for modal
 
-  const childParams = () => ({ type: fType, status: fStatus, group: fGroup });
+  const childParams = () => ({ mode: fMode, type: fType, status: fStatus, group: fGroup });
 
   const load = async () => {
     setLoading(true);
     try {
       const { data } = await api.get('/admin/accounts/users', {
-        params: { search, type: fType, status: fStatus, group: fGroup, from: fFrom, to: fTo, page, limit: 25 },
+        params: { search, mode: fMode, type: fType, status: fStatus, group: fGroup, from: fFrom, to: fTo, page, limit: 25 },
       });
       setUsers(data.data.items || []);
       setTotal(data.data.total || 0);
@@ -60,7 +73,7 @@ export default function Accounts() {
     } catch (e) { toast.error(errorMessage(e)); }
     finally { setLoading(false); }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [page, fType, fStatus, fGroup, fFrom, fTo]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [page, fMode, fType, fStatus, fGroup, fFrom, fTo]);
 
   // Load the distinct account groups once so the Group filter is a real list.
   useEffect(() => {
@@ -135,12 +148,18 @@ export default function Accounts() {
           <input className="input" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="User name, email, user ID, or account #" />
         </div>
         <div>
-          <label className="label">Type</label>
-          <select className="input w-36" value={fType} onChange={(e) => { setFType(e.target.value); setPage(1); }}>
+          <label className="label">Mode</label>
+          <select className="input w-28" value={fMode} onChange={(e) => { setFMode(e.target.value); setPage(1); }}>
             <option value="">All</option>
             <option value="LIVE">Live</option>
             <option value="DEMO">Demo</option>
-            {ACCOUNT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="label">Type</label>
+          <select className="input w-36" value={fType} onChange={(e) => { setFType(e.target.value); setPage(1); }}>
+            <option value="">All</option>
+            {typeOptions.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
         </div>
         <div>

@@ -772,6 +772,7 @@ const positionHistory = asyncHandler(async (req, res) => {
     accountIds, // optional CSV — used when the FE picks "All" with a TYPE filter
     symbol,
     side,
+    closeReason, // optional — filter by how the trade closed (its terminal status)
     from,
     to,
     page: pageRaw = '1',
@@ -790,6 +791,12 @@ const positionHistory = asyncHandler(async (req, res) => {
   }
   if (symbol) baseFilter.symbol = String(symbol).toUpperCase();
   if (side && (side === 'BUY' || side === 'SELL')) baseFilter.side = side;
+  // Status = how the trade closed (its close reason). Whitelisted so a bad
+  // value can't inject an arbitrary field query.
+  const VALID_CLOSE_REASONS = ['MANUAL', 'TAKE_PROFIT', 'STOP_LOSS', 'TRAILING_STOP', 'MARGIN_STOPOUT', 'NEGATIVE_BALANCE'];
+  if (closeReason && VALID_CLOSE_REASONS.includes(String(closeReason).toUpperCase())) {
+    baseFilter.closeReason = String(closeReason).toUpperCase();
+  }
   if (from || to) {
     baseFilter.closedAt = {};
     if (from) baseFilter.closedAt.$gte = new Date(from);

@@ -204,8 +204,22 @@ const pageOf = (req) => {
 const DEMO_TYPES = ['DEMO', 'VIRTUAL'];
 const HIDDEN_TYPES = new Set(['DEMO', 'VIRTUAL', 'REAL', 'CUSTOM']);
 const accountTypes = asyncHandler(async (req, res) => {
-  const inDb = await TradingAccount.distinct('accountType');
-  const all = [...new Set([...Object.values(ACCOUNT_TYPES), ...inDb.filter(Boolean)])].filter((t) => !HIDDEN_TYPES.has(t));
+  const AccountPlan = require('../models/AccountPlan');
+  // Source the filter list from THREE places so a newly-created tier shows up
+  // immediately (before any account uses it):
+  //   1. the static enum (legacy backward-compat),
+  //   2. the live AccountPlan catalogue (admin-created tiers — the real
+  //      source of truth), and
+  //   3. account types already present on real accounts.
+  const [planCodes, inDb] = await Promise.all([
+    AccountPlan.distinct('code', { isActive: true }),
+    TradingAccount.distinct('accountType'),
+  ]);
+  const all = [...new Set([
+    ...Object.values(ACCOUNT_TYPES),
+    ...planCodes.filter(Boolean),
+    ...inDb.filter(Boolean),
+  ])].filter((t) => !HIDDEN_TYPES.has(t));
   sendSuccess(res, all);
 });
 
@@ -421,6 +435,13 @@ const closedOrders = asyncHandler(async (req, res) => {
   if (req.query.symbol) match.symbol = new RegExp(String(req.query.symbol), 'i');
   if (req.query.side) match.side = String(req.query.side).toUpperCase();
   if (req.query.book) match.book = String(req.query.book).toUpperCase();
+  // Status = how the trade closed (its close reason). Whitelisted so a bad
+  // value can't inject an arbitrary field query.
+  if (req.query.closeReason) {
+    const VALID_CLOSE_REASONS = ['MANUAL', 'TAKE_PROFIT', 'STOP_LOSS', 'TRAILING_STOP', 'MARGIN_STOPOUT', 'NEGATIVE_BALANCE'];
+    const cr = String(req.query.closeReason).toUpperCase();
+    if (VALID_CLOSE_REASONS.includes(cr)) match.closeReason = cr;
+  }
   if (req.query.from || req.query.to) {
     match.closedAt = {};
     if (req.query.from) match.closedAt.$gte = new Date(req.query.from);

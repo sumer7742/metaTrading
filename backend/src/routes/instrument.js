@@ -10,6 +10,7 @@ router.get('/watchlist', c.watchlist);
 router.get('/recommended', rec.publicList);  // before /:symbol — admin-curated strip/selector set
 router.get('/option-chain', c.optionChain); // before /:symbol so it isn't matched as a symbol
 router.get('/search', c.search);            // before /:symbol so "search" isn't a symbol
+router.get('/economic-calendar', c.economicCalendar); // before /:symbol — live Forex Factory feed
 router.get('/:symbol', c.getOne);
 router.get('/:symbol/volume-usage', c.volumeUsage);
 router.get('/:symbol/candles', c.candles);

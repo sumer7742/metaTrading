@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   getCalendarEvents,
   getUpcomingEvents,
+  useCalendarLive,
   formatDateShort,
   formatTimeShort,
   formatDateLong,
@@ -115,12 +116,13 @@ function useTickingCalendar(opts) {
     return () => clearInterval(id);
   }, []);
   const cfg = useEconConfig();
+  const calNonce = useCalendarLive();
   return useMemo(() => {
     const now = new Date();
     const generated = getCalendarEvents({ ...opts, now });
     return _mergeEvents(generated, cfg.events, now, opts?.max || 60);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tick, cfg]);
+  }, [tick, cfg, calNonce]);
 }
 
 /** Compact card variant — drops into the right sidebar where News used to be. */
@@ -131,13 +133,14 @@ export function EconomicCalendarCard({ max = 4 }) {
     return () => clearInterval(id);
   }, []);
   const cfg = useEconConfig();
+  const calNonce = useCalendarLive();
   const events = useMemo(() => {
     const now = new Date();
     const generated = getUpcomingEvents(now, max * 3);
     return _mergeEvents(generated, cfg.events, now, max * 5)
       .filter((e) => e.date.getTime() >= now.getTime())
       .slice(0, max);
-  }, [tick, cfg, max]);
+  }, [tick, cfg, max, calNonce]);
 
   if (!cfg.enabled) return null; // admin turned the calendar off
   return (

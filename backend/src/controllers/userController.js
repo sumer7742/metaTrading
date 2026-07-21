@@ -218,4 +218,24 @@ const listMyFeedback = asyncHandler(async (req, res) => {
   sendSuccess(res, items);
 });
 
-module.exports = { updateProfile, submitKYC, getKycStatus, listAccounts, createAccount, submitFeedback, listMyFeedback };
+// Rename a trading account. Only the display nickname is editable — the
+// account number, type, currency, leverage and balances are immutable. Scoped
+// to the caller's own accounts so one user can't rename another's.
+const updateAccount = asyncHandler(async (req, res) => {
+  const mongoose = require('mongoose');
+  if (!mongoose.Types.ObjectId.isValid(req.params.id)) throw new AppError('Account not found', 404);
+
+  const nickname = String(req.body?.nickname ?? '').replace(/\s+/g, ' ').trim();
+  if (!nickname) throw new AppError('Nickname is required', 400);
+  if (nickname.length > 40) throw new AppError('Nickname must be 40 characters or fewer', 400);
+
+  const account = await TradingAccount.findOneAndUpdate(
+    { _id: req.params.id, userId: req.userId, isActive: true },
+    { $set: { nickname } },
+    { new: true }
+  ).lean();
+  if (!account) throw new AppError('Account not found', 404);
+  sendSuccess(res, account);
+});
+
+module.exports = { updateProfile, submitKYC, getKycStatus, listAccounts, createAccount, updateAccount, submitFeedback, listMyFeedback };

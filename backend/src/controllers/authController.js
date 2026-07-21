@@ -7,7 +7,7 @@ const TradingAccount = require('../models/TradingAccount');
 const { Wallet } = require('../models/Wallet');
 const { signAccessToken, signRefreshToken, verifyRefreshToken } = require('../utils/jwt');
 const { AppError, asyncHandler, sendSuccess } = require('../utils/errors');
-const { ACCOUNT_TYPES, TRADING_MODE } = require('../config/constants');
+const { ACCOUNT_TYPES, TRADING_MODE, ROLES } = require('../config/constants');
 
 const register = asyncHandler(async (req, res) => {
   const { email, password, firstName, lastName, phone, country, referralCode } = req.body;
@@ -283,14 +283,21 @@ const login = asyncHandler(async (req, res) => {
   // once the user is already at their plan's maxDevices; an EXISTING device
   // just refreshes its own session. maxDevices null/absent = unlimited, and a
   // plan-lookup failure never blocks login (fails open).
+  //
+  // This is a trading-PLAN feature, so it applies to CUSTOMER (USER) accounts
+  // only. Staff (admin / manager / super-admin / finance) and other non-USER
+  // roles don't subscribe to plans — they'd otherwise inherit the FREE default
+  // of 3 devices and get locked out. They are exempt (maxDevices stays null).
   const existingTokens = user.refreshTokens || [];
   const deviceKey = (t) => t.deviceInfo || 'Unknown device';
   const existingDevices = new Set(existingTokens.map(deviceKey));
   let maxDevices = null;
-  try {
-    const plan = await require('../services/subscriptionService').getEffectivePlan(user._id);
-    maxDevices = plan?.limits?.maxDevices;
-  } catch (_) { /* fail open — never lock a user out over an infra hiccup */ }
+  if (user.role === ROLES.USER) {
+    try {
+      const plan = await require('../services/subscriptionService').getEffectivePlan(user._id);
+      maxDevices = plan?.limits?.maxDevices;
+    } catch (_) { /* fail open — never lock a user out over an infra hiccup */ }
+  }
   if (Number.isFinite(maxDevices) && maxDevices > 0 && !existingDevices.has(incomingUA) && existingDevices.size >= maxDevices) {
     throw new AppError(
       `Device limit reached — your plan allows ${maxDevices} logged-in device${maxDevices > 1 ? 's' : ''}. Log out from another device (Profile → Devices) and try again.`,

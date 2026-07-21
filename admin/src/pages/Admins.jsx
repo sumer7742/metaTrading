@@ -1,55 +1,47 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import PageHero from '../components/PageHero';
 import LimitsModal from '../components/LimitsModal';
-import { useAuthStore } from '../store/auth';
-import { ROLES } from '../config/roles';
+import ResetPasswordModal from '../components/ResetPasswordModal';
+import EditStaffModal from '../components/EditStaffModal';
+import ManagerUsersDrill from '../components/ManagerUsersDrill';
 
 /**
- * Admins — SuperAdmin-only management of the platform admins. The max-admins
- * cap is configurable by the Super Admin (setting hierarchy.maxAdmins).
- * Backend: GET/POST/DELETE /hierarchy/admins + GET/PUT /hierarchy/admins/cap.
+ * Admins — SuperAdmin-only management of the platform admins. Admins are
+ * unlimited (no platform cap). Backend: GET/POST/DELETE /hierarchy/admins.
  */
 export default function Admins() {
-  const { user } = useAuthStore();
-  const isSuper = user?.role === ROLES.SUPER_ADMIN;
 
   const [admins, setAdmins] = useState([]);
   const [workload, setWorkload] = useState({ admins: [] });
-  const [maxAdmins, setMaxAdmins] = useState(4);
   const [loading, setLoading] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [limitsFor, setLimitsFor] = useState(null);
+  const [resetFor, setResetFor] = useState(null);
+  const [editFor, setEditFor] = useState(null);
+  const [openA, setOpenA] = useState({});                 // adminId -> expanded?
+  const [managersByAdmin, setManagersByAdmin] = useState(new Map()); // adminId -> managers[]
+  const toggleAdmin = (id) => setOpenA((s) => ({ ...s, [id]: !s[id] }));
 
   const load = async () => {
     setLoading(true);
     try {
-      const [a, w, cap] = await Promise.all([
+      const [a, w, tree] = await Promise.all([
         api.get('/hierarchy/admins', { params: { limit: 100 } }),
         api.get('/hierarchy/workload'),
-        api.get('/hierarchy/admins/cap').catch(() => null),
+        // Managers (with per-manager user counts) for the inline drill-down.
+        // Non-fatal — a failure here just leaves the tree empty on expand.
+        api.get('/hierarchy/tree').catch(() => null),
       ]);
       setAdmins(a.data.data.items || []);
       setWorkload(w.data.data || { admins: [] });
-      if (cap?.data?.data?.maxAdmins) setMaxAdmins(Number(cap.data.data.maxAdmins));
+      const treeAdmins = tree?.data?.data?.admins || [];
+      setManagersByAdmin(new Map(treeAdmins.map((ad) => [String(ad.id), ad.managers || []])));
     } catch (e) { toast.error(errorMessage(e)); }
     finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
-
-  const editCap = async () => {
-    const v = window.prompt(`Set the maximum number of platform admins (current: ${maxAdmins}).\nEnter a whole number between 1 and 100:`, String(maxAdmins));
-    if (v == null) return;
-    const n = Number(v);
-    if (!Number.isInteger(n) || n < 1 || n > 100) { toast.error('Enter a whole number between 1 and 100'); return; }
-    if (n < admins.length) { toast.error(`There are already ${admins.length} admins — set a limit ≥ ${admins.length}.`); return; }
-    try {
-      const { data } = await api.put('/hierarchy/admins/cap', { maxAdmins: n });
-      setMaxAdmins(Number(data.data.maxAdmins));
-      toast.success(`Admin limit updated to ${data.data.maxAdmins}`);
-    } catch (e) { toast.error(errorMessage(e)); }
-  };
 
   const wlById = useMemo(() => new Map((workload.admins || []).map((x) => [String(x.id), x])), [workload]);
 
@@ -73,19 +65,11 @@ export default function Admins() {
       <PageHero
         eyebrow="Hierarchy"
         title="Admins"
-        subtitle={`${admins.length} / ${maxAdmins} admins · create and manage top-level admins. Each admin runs their own managers + users.`}
+        subtitle={`${admins.length} admins · create and manage top-level admins. Each admin runs their own managers + users.`}
         actions={
-          <div className="flex items-center gap-2">
-            {isSuper && (
-              <button onClick={editCap} className="btn-ghost text-sm" title="Change the maximum number of admins">
-                ⚙ Edit limit
-              </button>
-            )}
-            <button onClick={() => setCreateOpen(true)} disabled={admins.length >= maxAdmins}
-              className="btn-primary text-sm disabled:opacity-50" title={admins.length >= maxAdmins ? `Max ${maxAdmins} admins reached` : ''}>
-              + Create Admin
-            </button>
-          </div>
+          <button onClick={() => setCreateOpen(true)} className="btn-primary text-sm">
+            + Create Admin
+          </button>
         }
       />
 
@@ -109,9 +93,17 @@ export default function Admins() {
             {admins.map((a) => {
               const wl = wlById.get(String(a._id)) || {};
               const cap = wl.userCapacity || 500;
+              const open = !!openA[a._id];
+              const mgrs = managersByAdmin.get(String(a._id)) || [];
               return (
-                <tr key={a._id} className="table-row">
-                  <td className="py-2 px-3 text-text-primary font-semibold">{[a.firstName, a.lastName].filter(Boolean).join(' ') || '—'}</td>
+                <Fragment key={a._id}>
+                <tr className="table-row">
+                  <td className="py-2 px-3">
+                    <button onClick={() => toggleAdmin(a._id)} className="flex items-center gap-2 text-text-primary font-semibold hover:text-primary-400 transition-colors text-left" title="Show managers & users">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={`text-text-muted shrink-0 transition-transform ${open ? 'rotate-90' : ''}`}><path d="M9 18l6-6-6-6" /></svg>
+                      <span>{[a.firstName, a.lastName].filter(Boolean).join(' ') || '—'}</span>
+                    </button>
+                  </td>
                   <td className="py-2 px-3 text-text-secondary">{a.email}</td>
                   <td className="py-2 px-3 text-center font-mono">{wl.managerCount || 0} / {a.hierarchyLimits?.maxManagers ?? 10}</td>
                   <td className="py-2 px-3 text-center font-mono">{wl.totalUsers || 0} / {a.hierarchyLimits?.maxUsers ?? cap}</td>
@@ -124,9 +116,21 @@ export default function Admins() {
                   </td>
                   <td className="py-2 px-3 text-right space-x-1">
                     <button onClick={() => setLimitsFor(a)} className="btn-ghost text-xs text-primary-400">Limits</button>
+                    <button onClick={() => setEditFor(a)} className="btn-ghost text-xs text-text-secondary">Edit</button>
+                    <button onClick={() => setResetFor(a)} className="btn-ghost text-xs text-amber-400">Reset password</button>
                     <button onClick={() => deactivate(a)} className="btn-ghost text-xs text-rose-400">Deactivate</button>
                   </td>
                 </tr>
+                {open && (
+                  <tr className="bg-bg-hover/20">
+                    <td colSpan={8} className="px-3 pb-3 pt-0">
+                      <div className="ml-5 border-l border-border-dark pl-3">
+                        <ManagerUsersDrill managers={mgrs} />
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               );
             })}
           </tbody>
@@ -135,6 +139,8 @@ export default function Admins() {
 
       {createOpen && <CreateAdminModal onClose={() => setCreateOpen(false)} onSaved={() => { setCreateOpen(false); load(); }} />}
       {limitsFor && <LimitsModal userId={limitsFor._id} onClose={() => { setLimitsFor(null); load(); }} />}
+      {resetFor && <ResetPasswordModal staff={resetFor} onClose={() => setResetFor(null)} onDone={load} />}
+      {editFor && <EditStaffModal staff={editFor} onClose={() => setEditFor(null)} onSaved={load} />}
     </div>
   );
 }

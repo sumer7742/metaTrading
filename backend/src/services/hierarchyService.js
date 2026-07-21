@@ -35,6 +35,24 @@ async function setAdminCap(n, actorId = null) {
   return v;
 }
 
+// Optional "preferred intake" manager — when set, EVERY new signup is routed to
+// this one manager until it (or its admin) is full, after which normal
+// least-loaded auto-scaling resumes. Stored as a system setting; null = off.
+async function getPreferredManagerId() {
+  const v = await systemSettings.getSetting('hierarchy.preferredManagerId');
+  return v ? String(v) : null;
+}
+async function setPreferredManagerId(managerId, actorId = null) {
+  if (!managerId) {
+    await systemSettings.setSetting('hierarchy.preferredManagerId', null, actorId);
+    return null;
+  }
+  const m = await User.findById(managerId).select('_id role').lean();
+  if (!m || m.role !== ROLES.MANAGER) throw new AppError('Target is not a manager', 400, 'BAD_MANAGER');
+  await systemSettings.setSetting('hierarchy.preferredManagerId', String(m._id), actorId);
+  return String(m._id);
+}
+
 const DEMO_TYPES = ['DEMO', 'VIRTUAL'];
 const STAFF_SELECT = '-passwordHash -twoFactorSecret -refreshTokens -twoFactorBackupCodes';
 
@@ -92,6 +110,7 @@ async function createRole(roleKey, payload = {}, actor) {
 
   // Resolve the parent reference (e.g. a manager's adminId).
   let parentId = null;
+  let parent = null;
   if (cfg.parentField) {
     if (actor.role === ROLES.SUPER_ADMIN) {
       parentId = payload.parentId || null;
@@ -100,16 +119,21 @@ async function createRole(roleKey, payload = {}, actor) {
       // A non-super creator can only create children under themselves.
       parentId = actor._id;
     }
-    const parent = await User.findById(parentId).select('_id role').lean();
+    parent = await User.findById(parentId).select('_id role hierarchyLimits').lean();
     if (!parent || parent.role !== cfg.parentRole) {
       throw new AppError(`Parent must be a ${cfg.parentRole}`, 400, 'BAD_PARENT');
     }
   }
 
-  // Cap enforcement — global or scoped to the parent. The ADMIN cap is
-  // super-admin configurable (setting hierarchy.maxAdmins); others use the
-  // hard cap from ROLE_REGISTRY.
-  const effectiveCap = roleKey === ROLES.ADMIN ? await getAdminCap() : cfg.cap;
+  // Cap enforcement. ADMIN creation is UNLIMITED (the platform admin cap was
+  // removed). The MANAGER cap is the parent admin's configured Max Managers
+  // (hierarchyLimits.maxManagers), falling back to the ROLE_REGISTRY default
+  // when the admin has no explicit limit. Other roles use their registry cap.
+  const effectiveCap = roleKey === ROLES.ADMIN
+    ? Infinity
+    : roleKey === ROLES.MANAGER
+      ? adminManagerCapOf(parent)
+      : cfg.cap;
   const capFilter = { role: roleKey };
   if (cfg.capScope === 'parent' && cfg.parentField) capFilter[cfg.parentField] = parentId;
   const count = await User.countDocuments(capFilter);
@@ -443,11 +467,36 @@ function managerUserCount(managerId) {
   return User.countDocuments({ role: ROLES.USER, managerId: oid(managerId) });
 }
 
-/** Least-loaded ACTIVE manager that still has room (< maxUsersPerManager). */
+// ── Effective, per-account caps ──────────────────────────────────────
+// Honor the SuperAdmin-configured hierarchyLimits (set via the Limits modal)
+// when present, else fall back to the global ROLE_REGISTRY / AUTO ceilings.
+// This is what makes auto-scaling fire at the SAME limits the admin UI shows,
+// so setting e.g. a manager's Max Users = 2 triggers a new manager on user #3.
+const _num = (v) => (v == null || !Number.isFinite(Number(v)) ? null : Number(v));
+// Users a manager may hold before it's "full".
+const managerUserCapOf = (mgr) => { const c = _num(mgr?.hierarchyLimits?.maxUsers); return c == null ? managerCap() : c; };
+// Managers an admin may hold — the admin's configured Max Managers when set,
+// else the ROLE_REGISTRY default (10). A configured limit now wins outright
+// (it is no longer clamped to the default), so "/600" in the UI is honored.
+const adminManagerCapOf = (adm) => { const c = _num(adm?.hierarchyLimits?.maxManagers); return c == null ? adminMgrCap() : c; };
+// Users in an admin's whole tree (null = unlimited, bounded only by globals).
+const adminUserCapOf = (adm) => _num(adm?.hierarchyLimits?.maxUsers);
+
+// Does an admin's user tree still have room (below its configured Max Users)?
+async function _adminHasUserRoom(adminId) {
+  if (!adminId) return true;
+  const adm = await User.findById(adminId).select('hierarchyLimits').lean();
+  const cap = adminUserCapOf(adm);
+  if (cap == null) return true;
+  const c = await User.countDocuments({ role: ROLES.USER, adminId });
+  return c < cap;
+}
+
+/** Least-loaded ACTIVE manager that still has room (honoring configured caps). */
 async function pickManagerWithCapacity({ adminId } = {}) {
   const f = { role: ROLES.MANAGER, isActive: true };
   if (adminId) f.adminId = oid(adminId);
-  const managers = await User.find(f).select('_id adminId').lean();
+  const managers = await User.find(f).select('_id adminId hierarchyLimits').lean();
   if (!managers.length) return null;
   const ids = managers.map((m) => m._id);
   const counts = await User.aggregate([
@@ -455,30 +504,59 @@ async function pickManagerWithCapacity({ adminId } = {}) {
     { $group: { _id: '$managerId', n: { $sum: 1 } } },
   ]);
   const countBy = new Map(counts.map((c) => [String(c._id), c.n]));
-  const cap = managerCap();
+
+  // Skip managers whose ADMIN is already at its configured Max Users — assigning
+  // there would push the admin's tree over budget (→ we want a new admin instead).
+  const adminIds = [...new Set(managers.map((m) => String(m.adminId)).filter(Boolean))];
+  const admins = adminIds.length
+    ? await User.find({ _id: { $in: adminIds.map(oid) } }).select('_id hierarchyLimits').lean() : [];
+  const adminCapBy = new Map(admins.map((a) => [String(a._id), adminUserCapOf(a)]));
+  const adminUsers = adminIds.length ? await User.aggregate([
+    { $match: { role: ROLES.USER, adminId: { $in: adminIds.map(oid) } } },
+    { $group: { _id: '$adminId', n: { $sum: 1 } } },
+  ]) : [];
+  const adminUsersBy = new Map(adminUsers.map((c) => [String(c._id), c.n]));
+  const adminFull = (aId) => {
+    const cap = adminCapBy.get(String(aId));
+    return cap != null && (adminUsersBy.get(String(aId)) || 0) >= cap;
+  };
+
   let best = null; let bestN = Infinity;
   for (const m of managers) {
+    if (m.adminId && adminFull(m.adminId)) continue;
     const n = countBy.get(String(m._id)) || 0;
-    if (n < cap && n < bestN) { best = m; bestN = n; }
+    if (n < managerUserCapOf(m) && n < bestN) { best = m; bestN = n; }
   }
   return best ? { manager: best, count: bestN } : null;
 }
 
-/** An ACTIVE admin that can still take another manager (< managers-per-admin cap). */
+/**
+ * An ACTIVE admin that can still take another manager: a free manager slot
+ * (< configured Max Managers) AND its user tree not already full (< Max Users).
+ * Used to place an auto-created manager; if none qualifies a new admin is made.
+ */
 async function pickAdminWithManagerSlot() {
-  const admins = await User.find({ role: ROLES.ADMIN, isActive: true }).select('_id').lean();
+  const admins = await User.find({ role: ROLES.ADMIN, isActive: true }).select('_id hierarchyLimits').lean();
   if (!admins.length) return null;
   const ids = admins.map((a) => a._id);
-  const counts = await User.aggregate([
+  const mCounts = await User.aggregate([
     { $match: { role: ROLES.MANAGER, adminId: { $in: ids } } },
     { $group: { _id: '$adminId', n: { $sum: 1 } } },
   ]);
-  const countBy = new Map(counts.map((c) => [String(c._id), c.n]));
-  const cap = adminMgrCap();
+  const mBy = new Map(mCounts.map((c) => [String(c._id), c.n]));
+  const uCounts = await User.aggregate([
+    { $match: { role: ROLES.USER, adminId: { $in: ids } } },
+    { $group: { _id: '$adminId', n: { $sum: 1 } } },
+  ]);
+  const uBy = new Map(uCounts.map((c) => [String(c._id), c.n]));
+
   let best = null; let bestN = Infinity;
   for (const a of admins) {
-    const n = countBy.get(String(a._id)) || 0;
-    if (n < cap && n < bestN) { best = a; bestN = n; }
+    const mgrN = mBy.get(String(a._id)) || 0;
+    if (mgrN >= adminManagerCapOf(a)) continue;                    // no free manager slot
+    const userCap = adminUserCapOf(a);
+    if (userCap != null && (uBy.get(String(a._id)) || 0) >= userCap) continue; // user tree full
+    if (mgrN < bestN) { best = a; bestN = mgrN; }
   }
   return best || null;
 }
@@ -522,17 +600,31 @@ async function autoAssignNewUser(user, ctx = {}) {
     if (!user || user.role !== ROLES.USER) return null;
     if (user.managerId || user.adminId) return user; // already placed
 
-    // 1 — existing manager with room.
+    // 0 — preferred intake manager (if configured + has room): route EVERY new
+    //     user here until it (or its admin) is full, then fall through to the
+    //     normal least-loaded flow below.
+    const preferredId = await getPreferredManagerId();
+    if (preferredId) {
+      const pref = await User.findById(preferredId).select('_id role adminId isActive hierarchyLimits').lean();
+      if (pref && pref.role === ROLES.MANAGER && pref.isActive !== false) {
+        const used = await managerUserCount(pref._id);
+        if (used < managerUserCapOf(pref) && await _adminHasUserRoom(pref.adminId)) {
+          return assignUserToManager(user._id, pref._id, { ...ctx, reason: 'auto-assignment (preferred manager)' });
+        }
+      }
+    }
+
+    // 1 — existing manager with room (least-loaded across the platform).
     const pick = await pickManagerWithCapacity();
     if (pick) return assignUserToManager(user._id, pick.manager._id, { ...ctx, reason: 'auto-assignment' });
 
     // 2 — an admin that can take a new manager.
     let admin = await pickAdminWithManagerSlot();
 
-    // 3 — no admin has a free manager slot → create a new admin (within cap).
+    // 3 — no admin has a free manager slot → create a new admin. The platform
+    //     admin limit was removed, so this is unbounded (one per signup as needed).
     if (!admin) {
-      const adminCount = await User.countDocuments({ role: ROLES.ADMIN });
-      if (adminCount < adminCap()) admin = await createAutoAdmin(ctx);
+      admin = await createAutoAdmin(ctx);
     }
 
     if (admin) {
@@ -595,13 +687,14 @@ async function bulkTransfer(userIds = [], { adminId, managerId } = {}, ctx = {})
 async function transferManager(managerId, targetAdminId, ctx = {}) {
   const manager = await User.findById(managerId);
   if (!manager || manager.role !== ROLES.MANAGER) throw new AppError('Manager not found', 404);
-  const target = await User.findById(targetAdminId).select('_id role').lean();
+  const target = await User.findById(targetAdminId).select('_id role hierarchyLimits').lean();
   if (!target || target.role !== ROLES.ADMIN) throw new AppError('Target is not an admin', 400, 'BAD_ADMIN');
   if (String(manager.adminId) === String(target._id)) return { managerId, movedUsers: 0, note: 'already under target admin' };
 
+  const targetCap = adminManagerCapOf(target);
   const targetMgrCount = await User.countDocuments({ role: ROLES.MANAGER, adminId: target._id });
-  if (targetMgrCount >= adminMgrCap()) {
-    throw new AppError(`Target admin already has the maximum ${adminMgrCap()} managers.`, 409, 'ADMIN_MANAGER_CAP');
+  if (targetMgrCount >= targetCap) {
+    throw new AppError(`Target admin already has the maximum ${targetCap} managers.`, 409, 'ADMIN_MANAGER_CAP');
   }
 
   const fromAdminId = manager.adminId || null;
@@ -630,6 +723,7 @@ async function getStaffOrThrow(id) {
 
 async function renameStaff(id, { firstName, lastName } = {}, ctx = {}) {
   const u = await getStaffOrThrow(id);
+  assertCanManageStaff(ctx.actor, u);
   if (firstName !== undefined) u.firstName = String(firstName);
   if (lastName !== undefined) u.lastName = String(lastName);
   await u.save();
@@ -639,6 +733,7 @@ async function renameStaff(id, { firstName, lastName } = {}, ctx = {}) {
 
 async function changeStaffEmail(id, email, ctx = {}) {
   const u = await getStaffOrThrow(id);
+  assertCanManageStaff(ctx.actor, u);
   const e = String(email || '').toLowerCase().trim();
   if (!e) throw new AppError('email required', 400);
   const taken = await User.findOne({ email: e, _id: { $ne: u._id } }).select('_id').lean();
@@ -650,8 +745,28 @@ async function changeStaffEmail(id, email, ctx = {}) {
   return u;
 }
 
+/**
+ * Who may edit / reset whose staff account (name, email, password):
+ *   - SUPER_ADMIN → any staff account (admin or manager).
+ *   - ADMIN       → ONLY managers inside their own tree (adminId === self).
+ *   - anyone else → forbidden.
+ * The routes already limit callers to SUPER_ADMIN + ADMIN; this is the
+ * defence-in-depth tree check so an admin can't touch another admin, the
+ * SuperAdmin, or a manager belonging to a different admin.
+ */
+function assertCanManageStaff(actor, target) {
+  if (!actor) throw new AppError('Unauthorized', 401, 'UNAUTHORIZED');
+  if (actor.role === ROLES.SUPER_ADMIN) return;
+  if (actor.role === ROLES.ADMIN) {
+    if (target.role === ROLES.MANAGER && String(target.adminId) === String(actor._id)) return;
+    throw new AppError('You can only manage your own managers.', 403, 'FORBIDDEN');
+  }
+  throw new AppError('You are not allowed to manage this account.', 403, 'FORBIDDEN');
+}
+
 async function resetStaffPassword(id, newPassword, ctx = {}) {
   const u = await getStaffOrThrow(id);
+  assertCanManageStaff(ctx.actor, u);
   const pwd = newPassword || uuidv4().slice(0, 12);
   u.passwordHash = await bcrypt.hash(pwd, 12);
   u.refreshTokens = []; // revoke all sessions
@@ -709,6 +824,7 @@ function listAutoCreated(opts = {}) {
 module.exports = {
   createRole,
   getAdminCap, setAdminCap,
+  getPreferredManagerId, setPreferredManagerId,
   assignUserToAdmin, assignUserToManager, reassign, unassign, bulkAssign,
   deactivateManager, deactivateAdmin,
   listAdmins, listManagers, listUnassigned, listUsersForAdmin, listUsersForManager,

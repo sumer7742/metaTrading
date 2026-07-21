@@ -18,6 +18,11 @@ router.put('/admins/cap',    allowPermission('hierarchy.superadmin'),   c.setAdm
 router.post('/admins',       allowPermission('hierarchy.admin.manage'), c.createAdmin);
 router.delete('/admins/:id', allowPermission('hierarchy.admin.manage'), c.deactivateAdmin);
 
+// Optional "preferred intake" manager — all new signups route here until full.
+// Readable by admins; only the SuperAdmin may set/clear it.
+router.get('/preferred-manager', allowPermission('hierarchy.manager.manage'), c.getPreferredManager);
+router.put('/preferred-manager', allowPermission('hierarchy.superadmin'),     c.setPreferredManager);
+
 // ── Manager management — SuperAdmin + Admin (admins scoped to own) ───
 router.get('/managers',        allowPermission('hierarchy.manager.manage'), c.listManagers);
 router.post('/managers',       allowPermission('hierarchy.manager.manage'), c.createManager);
@@ -37,9 +42,12 @@ router.post('/transfer-manager', allowPermission('hierarchy.superadmin'), c.tran
 
 // ── SuperAdmin: auto-created staff account control ──────────────────
 router.get('/auto-created',                allowPermission('hierarchy.superadmin'), c.listAutoCreated);
-router.patch('/staff/:id',                 allowPermission('hierarchy.superadmin'), c.renameStaff);
-router.patch('/staff/:id/email',           allowPermission('hierarchy.superadmin'), c.changeStaffEmail);
-router.post('/staff/:id/reset-password',   allowPermission('hierarchy.superadmin'), c.resetStaffPassword);
+// Name / email / password edits are shared with Admins: SuperAdmin can edit
+// ANY admin/manager, an Admin can edit ONLY their own managers. The fine-grained
+// tree check is enforced in hierarchyService (assertCanManageStaff).
+router.patch('/staff/:id',                 allowPermission('hierarchy.manager.manage'), c.renameStaff);
+router.patch('/staff/:id/email',           allowPermission('hierarchy.manager.manage'), c.changeStaffEmail);
+router.post('/staff/:id/reset-password',   allowPermission('hierarchy.manager.manage'), c.resetStaffPassword);
 router.post('/staff/:id/login',            allowPermission('hierarchy.superadmin'), c.setLoginEnabled);
 router.post('/staff/:id/claim',            allowPermission('hierarchy.superadmin'), c.claimStaff);
 

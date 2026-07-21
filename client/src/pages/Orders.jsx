@@ -14,6 +14,19 @@ import { useAuthStore } from '../store/auth';
  * Data shape from /trading/positions/history:
  *   { items: Position[], summary: {...}, pagination: {...} }
  */
+
+// Status = how a closed trade ended (its close reason). Values match the
+// backend whitelist; labels mirror the "Remarks" column.
+const STATUS_OPTIONS = [
+  { value: '',                 label: 'All statuses' },
+  { value: 'MANUAL',           label: 'Manual close' },
+  { value: 'TAKE_PROFIT',      label: 'Take Profit' },
+  { value: 'STOP_LOSS',        label: 'Stop Loss' },
+  { value: 'TRAILING_STOP',    label: 'Trailing Stop' },
+  { value: 'MARGIN_STOPOUT',   label: 'Margin Stop-out' },
+  { value: 'NEGATIVE_BALANCE', label: 'Neg-balance Protection' },
+];
+
 export default function Orders() {
   const user = useAuthStore((s) => s.user);
   const [accounts, setAccounts] = useState([]);
@@ -33,6 +46,8 @@ export default function Orders() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [symbolFilter, setSymbolFilter] = useState('');
   const [sideFilter, setSideFilter] = useState('');
+  // Status filter — closed-trade terminal status (close reason).
+  const [statusFilter, setStatusFilter] = useState('');
   // Date range via the global DateFilter (defaults to all-time / no preset
   // so existing behaviour is preserved until the admin picks a range).
   const [range, setRange] = useState({ period: null, fromDate: '', toDate: '' });
@@ -79,6 +94,7 @@ export default function Orders() {
         const params = {
           symbol: symbolFilter || undefined,
           side: sideFilter || undefined,
+          closeReason: statusFilter || undefined,
           from: fromDate || undefined,
           to: toDate || undefined,
           page,
@@ -101,7 +117,7 @@ export default function Orders() {
         setLoading(false);
       }
     })();
-  }, [selectedAccountId, typeFilter, filteredAccounts, accounts.length, symbolFilter, sideFilter, fromDate, toDate, page]);
+  }, [selectedAccountId, typeFilter, filteredAccounts, accounts.length, symbolFilter, sideFilter, statusFilter, fromDate, toDate, page]);
 
   const account = useMemo(
     () => accounts.find((a) => a._id === selectedAccountId),
@@ -137,6 +153,7 @@ export default function Orders() {
       row(['Date range',    fromDate || toDate ? `${fromDate || '—'} → ${toDate || '—'}` : 'All time']),
       row(['Symbol filter', symbolFilter || 'Any']),
       row(['Side filter',   sideFilter || 'Any']),
+      row(['Status filter', STATUS_OPTIONS.find((o) => o.value === statusFilter)?.label || 'Any']),
       row(['Rows in file',  items.length]),
       row([]),
     ];
@@ -182,6 +199,7 @@ export default function Orders() {
   const clearFilters = () => {
     setSymbolFilter('');
     setSideFilter('');
+    setStatusFilter('');
     setRange({ period: null, fromDate: '', toDate: '' });
     setPage(1);
   };
@@ -258,7 +276,7 @@ export default function Orders() {
 
       {/* Filters panel */}
       {filtersOpen && (
-        <div className="card p-4 grid grid-cols-1 md:grid-cols-5 gap-3">
+        <div className="card p-4 grid grid-cols-1 md:grid-cols-6 gap-3">
           <div>
             <label className="label">Symbol</label>
             <input
@@ -279,6 +297,18 @@ export default function Orders() {
               <option value="">All</option>
               <option value="BUY">BUY</option>
               <option value="SELL">SELL</option>
+            </select>
+          </div>
+          <div>
+            <label className="label">Status</label>
+            <select
+              value={statusFilter}
+              onChange={(e) => { setStatusFilter(e.target.value); setPage(1); }}
+              className="input text-xs"
+            >
+              {STATUS_OPTIONS.map((o) => (
+                <option key={o.value || 'all'} value={o.value}>{o.label}</option>
+              ))}
             </select>
           </div>
           <div className="md:col-span-2">

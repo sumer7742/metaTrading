@@ -223,6 +223,20 @@ export default function OrderForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [instrument?._id, instrument?.lastPrice, account?._id, account?.leverage, leverageState?.effectiveLeverage]);
 
+  // On instrument SWITCH, bump the quantity up to the new symbol's minimum
+  // order size if it's now below it. Without this, a value that was fine for
+  // the previous symbol (e.g. 0.01) sticks around and gets rejected here for a
+  // symbol with a bigger minimum ("Quantity 0.01 below minimum order size 100
+  // for EURUSD"). Keyed on _id only so live price ticks never touch it.
+  useEffect(() => {
+    const min = Number(instrument?.minOrderSize) || 0.01;
+    setQuantity((curr) => {
+      const n = Number(curr);
+      return (!Number.isFinite(n) || n < min) ? String(min) : curr;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [instrument?._id]);
+
   // Hard guarantee — if leverage somehow exceeds the cap (e.g. an old
   // selection from before the cap arrived), snap it down. Only fires
   // when it's actually out-of-range so it can't loop.
@@ -393,10 +407,10 @@ export default function OrderForm({
       const sideWord = effectiveSide === 'BUY' ? 'Buy' : 'Sell';
       orderToast(`✓ ${sideWord} ${quantity} ${instrument.symbol} — Order ${data.data.status}`);
       onPlaced?.(data.data);
-      // Reset form for the next entry — keep instrument/leverage/side
-      // (sticky UX), reset quantity to the minimum-order default so the
-      // user can fire again instantly, clear SL/TP so they don't bleed.
-      setQuantity(String(Number(instrument?.minOrderSize) || 0.01));
+      // Reset form for the next entry — keep instrument/leverage/side AND the
+      // volume the user chose (sticky, so repeated orders reuse the same lot
+      // size instead of snapping back to the minimum). Just clear SL/TP so they
+      // don't bleed into the next order.
       setStopLoss('');
       setTakeProfit('');
     } catch (err) {

@@ -8,7 +8,73 @@
  * external API is required. The output shape mirrors what a Finnhub /
  * TradingEconomics integration would return so swapping in a paid feed
  * later is a one-function change.
+ *
+ * LIVE FEED: the backend proxies Forex Factory (faireconomy, free) at
+ * /instruments/economic-calendar. Once loaded, getCalendarEvents() returns that
+ * live set (real dates + impact + forecast/previous/actual); until then it
+ * returns the deterministic static schedule below. Call useCalendarLive() (or
+ * loadCalendarEvents()) once from a consumer to populate + re-render.
  */
+import { useEffect, useState } from 'react';
+import { api } from '../services/api';
+
+let _liveEvents = null;   // normalised array (Date objects) once fetched, else null
+let _liveAt = 0;
+let _inflight = null;
+const _subs = new Set();
+const LIVE_TTL_MS = 30 * 60 * 1000;
+
+export async function loadCalendarEvents({ force = false } = {}) {
+  if (!force && _liveEvents && Date.now() - _liveAt < LIVE_TTL_MS) return _liveEvents;
+  if (_inflight) return _inflight;
+  _inflight = (async () => {
+    try {
+      const { data } = await api.get('/instruments/economic-calendar');
+      const rows = Array.isArray(data?.data) ? data.data : [];
+      if (rows.length) {
+        _liveEvents = rows.map((e) => ({ ...e, date: new Date(e.date) }));
+        _liveAt = Date.now();
+        _subs.forEach((fn) => { try { fn(); } catch (_) { /* */ } });
+      }
+    } catch (_) { /* keep the static fallback */ }
+    finally { _inflight = null; }
+    return _liveEvents;
+  })();
+  return _inflight;
+}
+
+// React hook — loads the live feed on mount and re-renders the caller when it
+// lands. Returns a nonce to drop into a useMemo dep so memoised consumers
+// (chart markers) recompute with the live data.
+export function useCalendarLive() {
+  const [nonce, setNonce] = useState(0);
+  useEffect(() => {
+    let on = true;
+    loadCalendarEvents();
+    const fn = () => { if (on) setNonce((n) => n + 1); };
+    _subs.add(fn);
+    return () => { on = false; _subs.delete(fn); };
+  }, []);
+  return nonce;
+}
+
+// Filter to a [now-lookback, now+lookahead] window + sort (today/future first,
+// then past newest-first) + cap. Shared by the live + static paths.
+function windowize(events, { now, lookbackDays, lookaheadDays, max }) {
+  const start = new Date(now.getTime() - lookbackDays * 86400000);
+  const end = new Date(now.getTime() + lookaheadDays * 86400000);
+  const startOfToday = new Date(now); startOfToday.setUTCHours(0, 0, 0, 0);
+  const startMs = startOfToday.getTime();
+  return events
+    .filter((e) => e.date >= start && e.date <= end)
+    .sort((a, b) => {
+      const aPast = a.date.getTime() < startMs;
+      const bPast = b.date.getTime() < startMs;
+      if (aPast !== bPast) return aPast ? 1 : -1;
+      return aPast ? b.date - a.date : a.date - b.date;
+    })
+    .slice(0, max);
+}
 
 const FLAGS = {
   US: '🇺🇸', EU: '🇪🇺', GB: '🇬🇧', JP: '🇯🇵', CA: '🇨🇦',
@@ -202,6 +268,11 @@ function formatNum(value, unit) {
  * get an `actual` field. Future events get `actual = null`.
  */
 export function getCalendarEvents({ now = new Date(), lookbackDays = 7, lookaheadDays = 21, max = 60 } = {}) {
+  // Live Forex Factory feed takes over once loaded; else fall through to the
+  // deterministic static schedule below so the UI is never empty.
+  if (_liveEvents && _liveEvents.length) {
+    return windowize(_liveEvents, { now, lookbackDays, lookaheadDays, max });
+  }
   const events = [];
   const start = new Date(now.getTime() - lookbackDays * 86400000);
   const end   = new Date(now.getTime() + lookaheadDays * 86400000);

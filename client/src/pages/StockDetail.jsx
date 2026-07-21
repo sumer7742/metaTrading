@@ -51,7 +51,7 @@ function trimLeadingFlat(candles) {
   const start = Math.max(0, i - 1);
   return start > 0 ? candles.slice(start) : candles;
 }
-const TABS = ['Overview', 'Technicals', 'News', 'Events', 'F&O'];
+const TABS = ['Overview', 'Technicals', 'News', 'F&O'];
 
 export default function StockDetail() {
   const { symbol: rawSymbol } = useParams();
@@ -70,6 +70,9 @@ export default function StockDetail() {
   const [accounts, setAccounts] = useState([]);
   const [balances, setBalances] = useState([]);
   const [fund, setFund] = useState(null);
+  // Mobile-only: the order panel lives in a slide-in drawer (below lg) so it
+  // sits beside the chart on demand instead of stacking far below it.
+  const [tradeOpen, setTradeOpen] = useState(false);
 
   // ── Load instrument + accounts + balances + fundamentals ──
   useEffect(() => {
@@ -119,6 +122,16 @@ export default function StockDetail() {
     return () => un && un();
   }, [symbol]);
 
+  // Close the mobile trade drawer on Escape + lock body scroll while it's open.
+  useEffect(() => {
+    if (!tradeOpen) return;
+    const onKey = (e) => { if (e.key === 'Escape') setTradeOpen(false); };
+    window.addEventListener('keydown', onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = prevOverflow; };
+  }, [tradeOpen]);
+
   // ── Derived figures ──
   const prec = Math.min(inst?.pricePrecision || 2, 5);
   const closes = candles.map((c) => Number(c.close));
@@ -134,6 +147,20 @@ export default function StockDetail() {
 
   const name = inst?.name || symbol;
   const account = accounts.find((a) => a.accountType !== 'DEMO' && a.accountType !== 'VIRTUAL') || accounts[0];
+
+  // Shared order panel — rendered in the sticky desktop column AND inside the
+  // mobile slide-in drawer, so both stay in sync with the same OrderForm.
+  const orderPanel = inst && account ? (
+    <OrderForm
+      instrument={inst}
+      account={account}
+      onPlaced={() => { api.get('/wallet/balances').then((r) => setBalances(r.data.data || [])).catch(() => {}); }}
+    />
+  ) : (
+    <div className="p-6 text-center text-sm text-text-muted">
+      {accounts.length === 0 ? 'No trading account found.' : 'Loading order form…'}
+    </div>
+  );
 
   return (
     <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-6">
@@ -243,30 +270,58 @@ export default function StockDetail() {
             <TechnicalsTab candles={candles} lastPrice={lastPrice} cur={cur} prec={prec} fund={fund} dayLow={dayLow} dayHigh={dayHigh} />
           ) : tab === 'News' ? (
             <NewsTab symbol={symbol} name={name} />
-          ) : tab === 'Events' ? (
-            <EventsTab fund={fund} cur={cur} inst={inst} />
           ) : (
             <FnoTab inst={inst} symbol={symbol} name={name} lastPrice={lastPrice} cur={cur} prec={prec} navigate={navigate} />
           )}
         </div>
 
-        {/* ══════════ RIGHT — order form (sticky) — the platform's real OrderForm ══════════ */}
-        <div className="lg:sticky lg:top-24 lg:max-h-[min(560px,calc(100vh-7rem))] lg:overflow-y-auto no-scrollbar">
-          {inst && account ? (
-            <div className="border border-border-dark rounded-2xl overflow-hidden">
-              <OrderForm
-                instrument={inst}
-                account={account}
-                onPlaced={() => { api.get('/wallet/balances').then((r) => setBalances(r.data.data || [])).catch(() => {}); }}
-              />
-            </div>
-          ) : (
-            <div className="border border-border-dark rounded-2xl p-6 text-center text-sm text-text-muted">
-              {accounts.length === 0 ? 'No trading account found.' : 'Loading order form…'}
-            </div>
-          )}
+        {/* ══════════ RIGHT — order form (sticky, desktop only) — the platform's real OrderForm ══════════ */}
+        <div className="hidden lg:block lg:sticky lg:top-24 lg:max-h-[min(560px,calc(100vh-7rem))] lg:overflow-y-auto no-scrollbar">
+          <div className="border border-border-dark rounded-2xl overflow-hidden">
+            {orderPanel}
+          </div>
         </div>
       </div>
+
+      {/* ══════════ MOBILE — floating "Trade" button (below lg) ══════════ */}
+      <button
+        type="button"
+        onClick={() => setTradeOpen(true)}
+        className="lg:hidden fixed bottom-5 right-4 z-40 inline-flex items-center gap-2 pl-4 pr-5 py-3 rounded-full bg-primary-600 text-white font-bold text-sm shadow-elevated active:scale-95 transition-transform"
+        aria-label="Open trade panel"
+      >
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3v18h18" /><path d="M7 14l4-4 3 3 5-6" /></svg>
+        Trade
+      </button>
+
+      {/* ══════════ MOBILE — slide-in order drawer (below lg) ══════════ */}
+      {tradeOpen && (
+        <div className="lg:hidden fixed inset-0 z-50">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setTradeOpen(false)} />
+          <div className="slide-in-right absolute top-0 right-0 h-full w-[min(360px,88vw)] bg-bg-card border-l border-border-dark shadow-elevated flex flex-col">
+            <div className="flex items-center justify-between gap-2 px-4 py-3 border-b border-border-dark shrink-0">
+              <div className="flex items-center gap-2 min-w-0">
+                <AssetIcon row={inst || { symbol, category: 'STOCK' }} size={26} round />
+                <div className="min-w-0">
+                  <div className="text-sm font-bold text-text-primary leading-tight truncate">{symbol}</div>
+                  <div className="text-[11px] text-text-muted font-mono tabular-nums">{cur}{fmtNum(lastPrice, prec)}</div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTradeOpen(false)}
+                className="w-8 h-8 rounded-full border border-border-dark flex items-center justify-center text-text-secondary hover:bg-bg-hover transition-colors shrink-0"
+                aria-label="Close trade panel"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6L6 18M6 6l12 12" /></svg>
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto no-scrollbar">
+              {orderPanel}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -672,31 +727,6 @@ function NewsTab({ symbol, name }) {
   );
 }
 
-/* ─────────────────────────── Events tab ─────────────────────────── */
-function EventsTab({ fund }) {
-  const fmtD = (iso) => (iso ? new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' }) : null);
-  const ev = (props) => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{props}</svg>;
-  const events = [
-    { label: 'Next Earnings', date: fund?.earningsDate, tint: '#1D4ED8', icon: ev(<><path d="M3 3v18h18" /><path d="M7 14l4-4 4 4 5-7" /></>) },
-    { label: 'Ex-Dividend Date', date: fund?.exDividendDate, tint: '#8B5CF6', icon: ev(<><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></>) },
-    { label: 'Dividend Payout', date: fund?.dividendDate, tint: '#16A34A', icon: ev(<><rect x="2" y="6" width="20" height="12" rx="2" /><circle cx="12" cy="12" r="2.5" /></>) },
-  ].filter((e) => e.date);
-  if (!events.length) return <div className="py-16 text-center text-sm text-text-muted">No upcoming events available.</div>;
-  return (
-    <div className="space-y-3">
-      {events.map((e) => (
-        <div key={e.label} className="border border-border-dark rounded-2xl p-4 flex items-center gap-4">
-          <span className="w-11 h-11 rounded-xl flex items-center justify-center shrink-0" style={{ background: `${e.tint}15`, color: e.tint }}>{e.icon}</span>
-          <div>
-            <div className="text-sm font-bold text-text-primary">{e.label}</div>
-            <div className="text-xs text-text-muted mt-0.5">{fmtD(e.date)}</div>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 /* ─────────────────────────── F&O tab ─────────────────────────── */
 function FnoTab({ symbol, name, lastPrice, cur, prec, navigate }) {
   const [chain, setChain] = useState(null);
@@ -960,7 +990,10 @@ function StockChart({ candles, mode, up, cur, prec }) {
     return <div className="h-[320px] flex items-center justify-center text-sm text-text-muted border border-border-subtle rounded-xl">Loading chart…</div>;
   }
 
-  const W = 800, H = 320, PADX = 8;
+  // PADR = extra right-side gap (≈6% of width) so the price line / candles stop
+  // BEFORE the right edge — leaves room for overlays (e.g. a moving-average
+  // label) and reads cleaner, TradingView-style. PADX stays the small left pad.
+  const W = 800, H = 320, PADX = 8, PADR = 48;
   const PADT = mode === 'candle' ? 10 : 8;
   const PADB = showVol ? 54 : 18;
   const closes = candles.map((c) => Number(c.close));
@@ -970,17 +1003,17 @@ function StockChart({ candles, mode, up, cur, prec }) {
   const yMax = mode === 'candle' ? Math.max(...highs) : Math.max(...closes);
   const span = (yMax - yMin) || 1;
   const plotB = H - PADB;
-  const x = (i) => PADX + (i / (n - 1)) * (W - PADX * 2);
+  const x = (i) => PADX + (i / (n - 1)) * (W - PADX - PADR);
   const y = (v) => PADT + (1 - (v - yMin) / span) * (plotB - PADT);
   const stroke = up ? '#16A34A' : '#EA580C';
-  const bw = Math.max(1.5, ((W - PADX * 2) / n) * 0.6);
+  const bw = Math.max(1.5, ((W - PADX - PADR) / n) * 0.6);
   const vMax = Math.max(1, ...candles.map((c) => Number(c.volume || 0)));
   const volH = 40;
 
   const idxFromX = (clientX) => {
     const rect = wrapRef.current.getBoundingClientRect();
     const rx = ((clientX - rect.left) / rect.width) * W;
-    const i = Math.round(((rx - PADX) / (W - PADX * 2)) * (n - 1));
+    const i = Math.round(((rx - PADX) / (W - PADX - PADR)) * (n - 1));
     return Math.max(0, Math.min(n - 1, i));
   };
   const onDown = (e) => { const i = idxFromX(e.clientX); setSel({ a: i, b: i }); setDragging(true); setHover(null); };
@@ -1025,7 +1058,7 @@ function StockChart({ candles, mode, up, cur, prec }) {
               <stop offset="100%" stopColor={stroke} stopOpacity="0" />
             </linearGradient>
           </defs>
-          <line x1={PADX} x2={W - PADX} y1={y(closes[0])} y2={y(closes[0])} stroke="#E2E8F0" strokeDasharray="3 5" />
+          <line x1={PADX} x2={W - PADR} y1={y(closes[0])} y2={y(closes[0])} stroke="#E2E8F0" strokeDasharray="3 5" />
           {mode === 'line' ? (
             /* Just the line by default — the gradient area only appears
                inside a drag-selected range (rendered below). */

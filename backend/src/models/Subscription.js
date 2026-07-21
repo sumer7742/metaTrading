@@ -84,7 +84,10 @@ const subscriptionSchema = new mongoose.Schema(
     },
     billingCycle: { type: String, enum: ['MONTHLY', 'YEARLY', 'LIFETIME'], default: 'MONTHLY' },
     startedAt: { type: Date, default: Date.now },
-    expiresAt: { type: Date, default: null }, // null = never expires (FREE / LIFETIME)
+    expiresAt: { type: Date, default: null }, // null = never expires (FREE / LIFETIME / POSTPAID)
+    // Postpaid usage-billing anchor — the next monthly charge date (null for
+    // prepaid plans). billPostpaid() bills once per cycle when this is due.
+    nextBillingAt: { type: Date, default: null, index: true },
     cancelledAt: Date,
     cancelReason: String,
     autoRenew: { type: Boolean, default: true },
