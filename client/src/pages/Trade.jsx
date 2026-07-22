@@ -4396,6 +4396,25 @@ function TpSlCell({ value, onEdit, label }) {
   );
 }
 
+// Small "COPY" chip shown on positions/orders that originated from copy-trading,
+// with the master's name (inline + truncated, full name in the tooltip).
+// `master` is the row.copyMaster the backend attaches; non-copy rows render null.
+function CopyBadge({ master }) {
+  if (!master) return null;
+  return (
+    <span
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-primary-500/10 text-primary-600 text-[9px] font-bold max-w-[130px] shrink-0"
+      title={`Copied from ${master}`}
+    >
+      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="9" y="9" width="13" height="13" rx="2" />
+        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+      </svg>
+      <span className="truncate">{master}</span>
+    </span>
+  );
+}
+
 function PositionsTable({ positions, onClose, onPartialClose, onModify, fxRate, instrumentsBySymbol }) {
   // Click a position row → expand to its individual trades (fills). Positions
   // are netted on the backend, so the fills come from order history (newest
@@ -4515,6 +4534,7 @@ function PositionsTable({ positions, onClose, onPartialClose, onModify, fxRate, 
                 <div className="flex items-center gap-2">
                   <AssetIcon row={inst || { symbol: p.symbol }} size={22} round />
                   <span>{p.symbol}</span>
+                  <CopyBadge master={p.copyMaster} />
                 </div>
               </td>
               <td className={`p-2 font-semibold ${p.side === 'BUY' ? 'text-bull' : 'text-bear'}`}>
@@ -4691,6 +4711,7 @@ function OrdersTable({ orders, onCancel, onModify, fxRate, instrumentsBySymbol, 
                 <div className="flex items-center gap-2">
                   <AssetIcon row={inst || { symbol: o.symbol }} size={22} round />
                   <span>{o.symbol}</span>
+                  <CopyBadge master={o.copyMaster} />
                 </div>
               </td>
               <td className={`p-2 font-semibold ${o.side === 'BUY' ? 'text-bull' : 'text-bear'}`}>
@@ -4793,6 +4814,7 @@ function ClosedTable({ trades, fxRate, instrumentsBySymbol }) {
                 <div className="flex items-center gap-2">
                   <AssetIcon row={inst || { symbol: t.symbol }} size={22} round />
                   <span>{t.symbol}</span>
+                  <CopyBadge master={t.copyMaster} />
                 </div>
               </td>
               <td className={`p-2 font-semibold ${t.side === 'BUY' ? 'text-bull' : 'text-bear'}`}>{t.side === 'BUY' ? 'Buy' : 'Sell'}</td>

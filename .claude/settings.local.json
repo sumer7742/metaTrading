@@ -437,7 +437,9 @@
       "Bash(node _diagInst.js)",
       "Bash(node _trace.js)",
       "Bash(node _trace2.js)",
-      "Bash(node _verify.js)"
+      "Bash(node _verify.js)",
+      "Bash(grep -viE \"copyright|//\")",
+      "Bash(node _verifyBadge.js)"
     ],
     "additionalDirectories": [
       "c:\\Users\\rijju\\.claude\\projects\\c--Users-rijju-OneDrive-Desktop-trading-platform--last-and\\memory"

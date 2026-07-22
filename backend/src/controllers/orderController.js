@@ -704,6 +704,7 @@ const listOpen = asyncHandler(async (req, res) => {
     o.feeCategory = cat;
     o.commissionEstimated = true;
   }
+  await attachCopyMaster(orders, 'followerOrderId');
   sendSuccess(res, orders);
 });
 
@@ -718,6 +719,7 @@ const listHistory = asyncHandler(async (req, res) => {
   // Non-suspended accounts keep full history.
   const filter = await applySuspendedHistoryClip(req.userId, baseFilter, 'createdAt');
   const orders = await Order.find(filter).sort({ createdAt: -1 }).limit(200).lean();
+  await attachCopyMaster(orders, 'followerOrderId');
   sendSuccess(res, orders);
 });
 
@@ -767,6 +769,30 @@ async function attachFeeCategory(rows) {
   return rows;
 }
 
+// Tag rows that originated from copy-trading with the master's display name so
+// the Trade page can show a "COPY" badge. `followerField` is the CopyTrade key
+// that points at the row's _id — 'followerPositionId' for positions,
+// 'followerOrderId' for orders. Display metadata only; no stored values change.
+async function attachCopyMaster(rows, followerField) {
+  if (!rows || !rows.length) return rows;
+  const CopyTrade = require('../models/CopyTrade');
+  const CopyBox   = require('../models/CopyBox');
+  const ids = rows.map((r) => r._id).filter(Boolean);
+  const links = await CopyTrade.find({ [followerField]: { $in: ids } })
+    .select(`${followerField} masterAccountId`).lean();
+  if (!links.length) return rows;
+  const masterByRow = new Map(links.map((l) => [String(l[followerField]), String(l.masterAccountId)]));
+  const acctIds = [...new Set(links.map((l) => String(l.masterAccountId)).filter(Boolean))];
+  const boxes = acctIds.length
+    ? await CopyBox.find({ accountId: { $in: acctIds } }).select('accountId displayName').lean() : [];
+  const nameByAcct = new Map(boxes.map((b) => [String(b.accountId), b.displayName]));
+  for (const r of rows) {
+    const macc = masterByRow.get(String(r._id));
+    if (macc) { r.isCopy = true; r.copyMaster = nameByAcct.get(macc) || 'Copy trade'; }
+  }
+  return rows;
+}
+
 const positionHistory = asyncHandler(async (req, res) => {
   const {
     accountId,
@@ -812,6 +838,7 @@ const positionHistory = asyncHandler(async (req, res) => {
     Position.countDocuments(filter),
   ]);
   await attachFeeCategory(items);
+  await attachCopyMaster(items, 'followerPositionId');
 
   // Aggregate summary across the filtered set (not just this page).
   // We keep numbers as JS Number here — cumulative trade counts and lot sums
@@ -867,6 +894,7 @@ const listPositions = asyncHandler(async (req, res) => {
         : mul(sub(p.entryPrice, p.markPrice), p.quantity);
   }
   await attachFeeCategory(positions);
+  await attachCopyMaster(positions, 'followerPositionId');
   sendSuccess(res, positions);
 });
 
