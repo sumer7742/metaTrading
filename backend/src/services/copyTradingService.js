@@ -113,7 +113,9 @@ async function getOrCreateProfile(userId, opts = {}) {
 
 // All of a user's active accounts + whether each already has a copy box.
 async function listEligibleAccounts(userId) {
-  const accounts = await TradingAccount.find({ userId, isActive: { $ne: false } })
+  // DEMO / VIRTUAL accounts can't be a copy source — followers mirror REAL
+  // trades, so practice accounts are never eligible to become a master box.
+  const accounts = await TradingAccount.find({ userId, isActive: { $ne: false }, accountType: { $nin: ['DEMO', 'VIRTUAL'] } })
     .select('accountNumber accountType customTypeName nickname baseCurrency isTradingEnabled status planSuspendedAt')
     .sort({ createdAt: 1 }).lean();
   const boxes = await CopyBox.find({ userId }).select('accountId isPublic').lean();
@@ -148,6 +150,10 @@ async function createBox({ userId, accountId, displayName, bio, riskBadge, isPub
   const account = await TradingAccount.findOne({ _id: accountId, userId }).lean();
   if (!account) throw new Error('Trading account not found');
   if (account.isActive === false) throw new Error('This account is inactive and cannot be a copy box.');
+  // DEMO / VIRTUAL accounts can't be a copy source — followers mirror REAL trades.
+  if (['DEMO', 'VIRTUAL'].includes(account.accountType)) {
+    throw new Error('Demo / practice accounts cannot become a copy source.');
+  }
 
   // Ensure the owner has a TraderProfile (drives performance fee + earnings).
   const owner = await getOrCreateProfile(userId);
@@ -308,11 +314,8 @@ async function onMasterOrderFilled({ order, position }) {
 
   if (!followers.length) return;
 
-  // Master equity = the SOURCE account's wallet balance (proportional base).
-  const { Wallet } = require('../models/Wallet');
-  const masterWallet = await Wallet.findOne({ userId: order.userId, accountId: order.accountId }).lean();
-  const masterEquity = Math.max(1, Number(masterWallet?.balance || 0));
-
+  // Lot-based sizing (v2): the follower's lot is derived from the MASTER's lot
+  // and their own lot settings — no master-equity / investment ratio needed.
   const instrument = await Instrument.findById(order.instrumentId).lean();
   const lotStep = Number(instrument?.lotStep) || MIN_QTY_FALLBACK;
   // Reference price for sizing + margin. No live price → we cannot safely size
@@ -331,15 +334,26 @@ async function onMasterOrderFilled({ order, position }) {
     let lockedAmt = 0;
     let mirrorOrder = null;
     try {
-      const risk = RISK_MULTIPLIER[rel.riskLevel] || 1;
-      const investment = Math.max(0, Number(rel.investment));
-      const ratio = investment / masterEquity;
-      const rawQty = Number(order.quantity) * ratio * risk;
-      let qty = Math.floor(rawQty / lotStep) * lotStep;
+      // ── Lot-based sizing ────────────────────────────────────────────────
+      //   baseLot = CUSTOM ? fixed customLot : masterLot × {LOW:.5,MEDIUM:1,HIGH:1.5}
+      //   finalLot = clamp(baseLot × lotMultiplier × riskMultiplier, step, maxLot)
+      const preset = RISK_MULTIPLIER[rel.lotMode] || 1;
+      const baseLot = rel.lotMode === 'CUSTOM'
+        ? Math.max(0, Number(rel.customLot) || 0)
+        : Number(order.quantity) * preset;
+      let lot = baseLot * (Number(rel.lotMultiplier) || 1) * (Number(rel.riskMultiplier) || 1);
+      if (rel.maxLot != null && Number(rel.maxLot) > 0) lot = Math.min(lot, Number(rel.maxLot));
+      let qty = Math.floor(lot / lotStep) * lotStep;
       if (qty < lotStep) qty = lotStep;
       if (!Number.isFinite(qty) || qty <= 0) continue;
 
-      // Funding account currency.
+      // Respect "Maximum open trades" — skip new copies once the cap is hit.
+      if (rel.maxOpenTrades != null && Number(rel.maxOpenTrades) > 0) {
+        const openCount = await CopyTrade.countDocuments({ relationId: rel._id, status: 'OPEN' });
+        if (openCount >= Number(rel.maxOpenTrades)) continue;
+      }
+
+      // Destination account currency — used for margin locking below.
       const fAcc = await TradingAccount.findById(rel.followerAccountId).select('baseCurrency').lean();
       currency = fAcc?.baseCurrency || 'USD';
 
@@ -367,25 +381,17 @@ async function onMasterOrderFilled({ order, position }) {
         type: 'MARKET',
         quantity: String(qty),
         leverage: order.leverage,
-        stopLoss:   order.stopLoss   || undefined,
-        takeProfit: order.takeProfit || undefined,
+        stopLoss:   rel.copySL ? (order.stopLoss   || undefined) : undefined,
+        takeProfit: rel.copyTP ? (order.takeProfit || undefined) : undefined,
         status: ORDER_STATUS.PENDING,
       });
 
-      // ── Fund the trade margin FROM the copy's held allocation ──
-      // The investment was already locked as the copy budget on start, so we
-      // move the trade margin OUT of that hold and onto the mirror order (net
-      // locked unchanged → no double-reservation). If the budget can't cover
-      // it, REJECT this mirror (don't open a position the allocation can't fund).
+      // ── Fund the trade margin from the DESTINATION account (v2) ──
+      // No separate copy wallet: the mirror locks margin from the follower's
+      // chosen trading account's own free balance, exactly like a normal trade.
+      // If the account can't cover it, REJECT this mirror (advisory only — we
+      // never touch the master or the other mirrors).
       if (marginAmount > 0) {
-        // Take it out of the hold first…
-        try {
-          await walletService.releaseMargin({
-            userId: rel.followerId, accountId: rel.followerAccountId, currency,
-            amount: String(marginAmount), orderId: rel._id, note: 'Copy: fund trade from allocation',
-          });
-        } catch (_) {}
-        // …then lock it on the mirror order (this is the funds guard).
         try {
           await walletService.lockMargin({
             userId: rel.followerId,
@@ -399,13 +405,7 @@ async function onMasterOrderFilled({ order, position }) {
           mirrorOrder.lockedMargin = String(marginAmount);
           await mirrorOrder.save();
         } catch (lockErr) {
-          // Couldn't fund the trade → restore the hold + reject the mirror.
-          try {
-            await walletService.lockMargin({
-              userId: rel.followerId, accountId: rel.followerAccountId, currency,
-              amount: String(marginAmount), orderId: rel._id, note: 'Copy: restore allocation',
-            });
-          } catch (_) {}
+          // Destination account lacks free margin → reject this mirror only.
           mirrorOrder.status = ORDER_STATUS.REJECTED;
           mirrorOrder.rejectionReason = lockErr.message;
           await mirrorOrder.save();
@@ -461,20 +461,13 @@ async function onMasterOrderFilled({ order, position }) {
       } catch (_) {}
     } catch (err) {
       console.error('[copyTrading] mirror open failed:', err.message);
-      // Routing/other failure AFTER we moved margin onto the mirror order →
-      // unlock it and return it to the copy's allocation hold (so the budget
-      // isn't lost on a mirror that never opened).
+      // Routing/other failure AFTER we locked margin on the mirror order →
+      // release it back to the destination account's free balance.
       if (lockedAmt > 0 && mirrorOrder) {
         try {
           await walletService.releaseMargin({
             userId: rel.followerId, accountId: rel.followerAccountId, currency,
             amount: String(lockedAmt), orderId: mirrorOrder._id, note: 'Copy mirror failed',
-          });
-        } catch (_) {}
-        try {
-          await walletService.lockMargin({
-            userId: rel.followerId, accountId: rel.followerAccountId, currency,
-            amount: String(lockedAmt), orderId: rel._id, note: 'Copy: restore allocation after failure',
           });
         } catch (_) {}
       }
@@ -557,9 +550,8 @@ async function onMasterPositionClosed({ position, realizedPnl }) {
         await copyEarnings.applyPerformanceFee(mirror);
         continue;
       }
-      // The engine will release this position's margin from `locked` on settle;
-      // we'll return it to the copy's allocation hold afterwards.
-      const releasedMargin = String(followerPos.margin || '0');
+      // v2: the engine releases this position's margin back to the account's
+      // free balance on settle — there's no allocation to return it to.
       const oppositeSide = followerPos.side === 'BUY' ? 'SELL' : 'BUY';
       const sourcePositionSide = followerPos.positionSide || (followerPos.side === 'BUY' ? 'LONG' : 'SHORT');
       const closeOrd = await Order.create({
@@ -578,20 +570,6 @@ async function onMasterPositionClosed({ position, realizedPnl }) {
       });
       const orderRouter = require('./orderRouter.service');
       await orderRouter.routeOrder({ order: closeOrd, userId: followerPos.userId });
-
-      // Return the trade margin to the copy's allocation hold (best-effort; on a
-      // loss the wallet may not cover the full re-lock, which correctly leaves
-      // the allocation reduced by the shortfall).
-      if (Number(releasedMargin) > 0) {
-        try {
-          const acc = await TradingAccount.findById(followerPos.accountId).select('baseCurrency').lean();
-          await walletService.lockMargin({
-            userId: followerPos.userId, accountId: followerPos.accountId,
-            currency: acc?.baseCurrency || 'USD', amount: releasedMargin,
-            orderId: mirror.relationId, note: 'Copy: return margin to allocation',
-          });
-        } catch (_) {}
-      }
 
       mirror.status = 'CLOSED';
       mirror.closeReason = 'master_closed';
@@ -622,13 +600,15 @@ async function onMasterSlTpChanged({ position }) {
     if (!m.followerPositionId) continue;
     try {
       const rel = await CopyRelation.findById(m.relationId).lean();
-      if (!rel || rel.status !== 'ACTIVE' || !rel.syncSlTp) continue;
+      if (!rel || rel.status !== 'ACTIVE') continue;
+      // Honor the per-toggle Copy SL / Copy TP settings.
+      const $set = {};
+      if (rel.copySL) $set.stopLoss   = position.stopLoss   ? String(position.stopLoss)   : null;
+      if (rel.copyTP) $set.takeProfit = position.takeProfit ? String(position.takeProfit) : null;
+      if (!Object.keys($set).length) continue;
       await Position.updateOne(
         { _id: m.followerPositionId, status: POSITION_STATUS.OPEN },
-        { $set: {
-            stopLoss:   position.stopLoss   ? String(position.stopLoss)   : null,
-            takeProfit: position.takeProfit ? String(position.takeProfit) : null,
-          } }
+        { $set }
       );
     } catch (_) {}
   }
@@ -688,92 +668,207 @@ async function feed({ limit = 50 } = {}) {
 
 // ── Follower actions ─────────────────────────────────────────────────
 
-async function startCopying({ followerId, masterAccountId, investment, riskLevel = 'MEDIUM', syncSlTp = true, followerAccountId }) {
+// Validate + clamp the follower's lot / risk settings. Shared by start + edit.
+function sanitizeLotSettings(s = {}) {
+  const out = {};
+  const mode = String(s.lotMode || 'MEDIUM').toUpperCase();
+  out.lotMode = ['LOW', 'MEDIUM', 'HIGH', 'CUSTOM'].includes(mode) ? mode : 'MEDIUM';
+  if (out.lotMode === 'CUSTOM') {
+    const cl = Number(s.customLot);
+    if (!Number.isFinite(cl) || cl <= 0) throw new Error('Enter a custom lot size greater than 0');
+    out.customLot = Math.min(1000, cl);
+  } else {
+    out.customLot = null;
+  }
+  const posOr = (v, def, max) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.min(max, n) : def; };
+  out.lotMultiplier  = posOr(s.lotMultiplier, 1, 100);
+  out.riskMultiplier = posOr(s.riskMultiplier, 1, 100);
+  out.maxLot = (s.maxLot == null || s.maxLot === '') ? null : (Math.max(0, Number(s.maxLot) || 0) || null);
+  out.maxOpenTrades = (s.maxOpenTrades == null || s.maxOpenTrades === '') ? null : (Math.max(0, Math.floor(Number(s.maxOpenTrades) || 0)) || null);
+  out.copySL = s.copySL !== undefined ? !!s.copySL : true;
+  out.copyTP = s.copyTP !== undefined ? !!s.copyTP : true;
+  out.copyPending = !!s.copyPending;
+  return out;
+}
+
+// Resolve/validate the destination trading account (must be the follower's own
+// live account). Returns its _id.
+async function _resolveDestAccount(followerId, followerAccountId) {
+  if (followerAccountId) {
+    const dest = await TradingAccount.findOne({ _id: followerAccountId, userId: followerId })
+      .select('accountType isActive').lean();
+    if (!dest) throw new Error('Destination account not found');
+    if (['DEMO', 'VIRTUAL'].includes(dest.accountType)) throw new Error('Choose a live (real) account to copy into.');
+    if (dest.isActive === false) throw new Error('That account is inactive.');
+    return dest._id;
+  }
+  const acc = await TradingAccount.findOne({
+    userId: followerId, isActive: true, accountType: { $nin: ['DEMO', 'VIRTUAL'] },
+  }).sort({ createdAt: 1 });
+  if (!acc) throw new Error('You need a live trading account to copy.');
+  return acc._id;
+}
+
+/**
+ * Start (or resume) copying a master box into one of the follower's OWN trading
+ * accounts. No investment wallet — sizing is lot-based, funding comes from the
+ * destination account. One session per (follower, masterAccount): a STOPPED
+ * session is RESUMED in place (no duplicate); an ACTIVE/PAUSED one is blocked.
+ */
+async function startCopying({ followerId, masterAccountId, followerAccountId, ...settings }) {
   if (!masterAccountId) throw new Error('masterAccountId is required');
   const box = await CopyBox.findOne({ accountId: masterAccountId });
   if (!box) throw new Error('Copy box not found');
   if (String(box.userId) === String(followerId)) throw new Error('You cannot copy your own box');
   if (!box.isPublic) throw new Error('This copy box is private');
 
-  // Source account must be live to accept NEW followers.
   const sourceAcc = await TradingAccount.findById(masterAccountId)
     .select('isActive isTradingEnabled status planSuspendedAt').lean();
   if (!accountAcceptsFollowers(sourceAcc)) {
     throw new Error('This copy box is not accepting new followers — the source account is disabled, suspended or archived.');
   }
 
-  // Resolve follower account if not given.
-  let accId = followerAccountId;
-  if (!accId) {
-    const acc = await TradingAccount.findOne({
-      userId: followerId, isActive: true, accountType: { $nin: ['DEMO', 'VIRTUAL'] },
-    }).sort({ createdAt: 1 });
-    if (!acc) throw new Error('You need a live trading account to copy.');
-    accId = acc._id;
-  }
-  const amount = String(Math.max(0, Number(investment) || 0));
+  const accId = await _resolveDestAccount(followerId, followerAccountId);
+  const lot = sanitizeLotSettings(settings);
 
-  // MULTIPLE independent copies of the same master are allowed — every "Copy"
-  // creates a NEW relation (its own investment / risk / funding account). No
-  // upsert, no dedupe: re-copying never replaces an existing copy. Copies into
-  // the SAME account add to that account's exposure (positions net in hedge
-  // mode); copies into different accounts run fully independently.
-  const rel = await CopyRelation.create({
-    followerId,
-    masterId: box.userId,
-    masterAccountId,
-    masterBoxId: box._id,
-    followerAccountId: accId,
-    investment: amount,
-    heldAmount: '0',
-    riskLevel,
-    syncSlTp: !!syncSlTp,
-    status: 'ACTIVE',
-    startedAt: new Date(),
-  });
-
-  // Reserve the investment on the funding account NOW — this is the visible
-  // "amount cut" on copy + the funds check. If the follower can't cover it,
-  // roll the copy back so nothing is half-created.
-  if (Number(amount) > 0) {
-    try {
-      rel.heldAmount = await _holdAllocation(rel, amount);
-      await rel.save();
-    } catch (e) {
-      await CopyRelation.deleteOne({ _id: rel._id });
-      throw e; // surfaces "Insufficient free balance …" to the user
-    }
+  const existing = await CopyRelation.findOne({ followerId, masterAccountId });
+  if (existing && existing.status !== 'STOPPED') {
+    throw new Error('You are already copying this trader. Edit or resume it from "My copies".');
   }
+
+  const doc = {
+    followerId, masterId: box.userId, masterAccountId, masterBoxId: box._id,
+    followerAccountId: accId, ...lot,
+    status: 'ACTIVE', startedAt: new Date(), pausedAt: null, stoppedAt: null,
+  };
+
+  // Resume the STOPPED session in place (keeps history/analytics) — no duplicate.
+  const rel = existing ? Object.assign(existing, doc) : new CopyRelation(doc);
+  await rel.save();
 
   await recountFollowers(masterAccountId);
   return rel;
 }
 
-async function setStatus({ followerId, relationId, status }) {
+/**
+ * Close every OPEN copied position for a relation (used by Stop / Change-account
+ * when the follower chooses "close automatically"). Best-effort per position.
+ */
+async function closeCopyPositions(rel) {
+  const open = await CopyTrade.find({ relationId: rel._id, status: 'OPEN' }).lean();
+  if (!open.length) return { closed: 0 };
+  const orderRouter = require('./orderRouter.service');
+  let closed = 0;
+  for (const ct of open) {
+    if (!ct.followerPositionId) continue;
+    try {
+      const claimed = await Position.findOneAndUpdate(
+        { _id: ct.followerPositionId, status: POSITION_STATUS.OPEN, settled: { $ne: true } },
+        { $set: { status: POSITION_STATUS.CLOSING, closeReason: 'MANUAL' } }, { new: true }
+      );
+      if (!claimed) continue;
+      const closeOrder = await Order.create({
+        userId: rel.followerId, accountId: rel.followerAccountId, instrumentId: claimed.instrumentId,
+        symbol: claimed.symbol, side: claimed.side === 'BUY' ? 'SELL' : 'BUY',
+        positionSide: claimed.positionSide || (claimed.side === 'BUY' ? 'LONG' : 'SHORT'),
+        type: 'MARKET', quantity: claimed.quantity, leverage: claimed.leverage,
+        status: ORDER_STATUS.PENDING, closeOnly: true, reduceOnly: true,
+      });
+      await orderRouter.routeOrder({ order: closeOrder, userId: rel.followerId });
+      closed++;
+    } catch (e) {
+      console.error('[copyTrading] close copied position failed:', e.message);
+      await Position.updateOne(
+        { _id: ct.followerPositionId, status: POSITION_STATUS.CLOSING, settled: { $ne: true } },
+        { $set: { status: POSITION_STATUS.OPEN } }
+      ).catch(() => {});
+    }
+  }
+  return { closed };
+}
+
+/**
+ * Pause / resume / stop. PAUSE stops new copies but keeps open positions.
+ * STOP (status STOPPED) optionally closes open positions; the row is preserved
+ * so it can be resumed later with the same config + history.
+ */
+async function setStatus({ followerId, relationId, status, closePositions = false }) {
   if (!['ACTIVE', 'PAUSED', 'STOPPED'].includes(status)) throw new Error('Invalid status');
   const rel = await CopyRelation.findOne({ _id: relationId, followerId });
   if (!rel) throw new Error('Copy relation not found');
-  const prev = rel.status;
 
-  // Resume from STOPPED → re-reserve the allocation first (funds check; throws
-  // if the follower can no longer cover it).
-  if (status === 'ACTIVE' && prev === 'STOPPED' && Number(rel.investment) > 0 && !(Number(rel.heldAmount) > 0)) {
-    rel.heldAmount = await _holdAllocation(rel, rel.investment);
+  if (status === 'STOPPED' && closePositions) {
+    await closeCopyPositions(rel).catch((e) => console.error('[copyTrading] stop-close failed:', e.message));
   }
-  // STOPPED → give the held allocation back to free balance.
-  if (status === 'STOPPED') {
-    await _releaseAllocation(rel);
-    rel.heldAmount = '0';
-  }
-  // PAUSED keeps the allocation held (still committed, just not mirroring).
 
   rel.status = status;
   if (status === 'PAUSED')  rel.pausedAt  = new Date();
   if (status === 'STOPPED') rel.stoppedAt = new Date();
-  if (status === 'ACTIVE')  { rel.pausedAt = null; rel.stoppedAt = null; }
+  if (status === 'ACTIVE')  { rel.pausedAt = null; rel.stoppedAt = null; if (!rel.startedAt) rel.startedAt = new Date(); }
   await rel.save();
   await recountFollowers(rel.masterAccountId);
   return rel;
+}
+
+/**
+ * Change the DESTINATION account. If closePositions is true, the open copied
+ * positions on the OLD account are closed first; otherwise they stay open and
+ * only FUTURE copies route to the new account.
+ */
+async function changeAccount({ followerId, relationId, newAccountId, closePositions = false }) {
+  const rel = await CopyRelation.findOne({ _id: relationId, followerId });
+  if (!rel) throw new Error('Copy relation not found');
+  const destId = await _resolveDestAccount(followerId, newAccountId);
+  if (String(rel.followerAccountId) === String(destId)) return rel; // no-op
+  if (closePositions) await closeCopyPositions(rel).catch((e) => console.error('[copyTrading] change-account close failed:', e.message));
+  rel.followerAccountId = destId;
+  await rel.save();
+  return rel;
+}
+
+/** Edit an existing copy relation (settings + optional account change). */
+async function editCopy({ followerId, relationId, followerAccountId, closePositions, ...settings }) {
+  const rel = await CopyRelation.findOne({ _id: relationId, followerId });
+  if (!rel) throw new Error('Copy relation not found');
+  if (followerAccountId && String(followerAccountId) !== String(rel.followerAccountId)) {
+    await changeAccount({ followerId, relationId, newAccountId: followerAccountId, closePositions: !!closePositions });
+    rel.followerAccountId = followerAccountId;
+  }
+  const merged = sanitizeLotSettings({ ...rel.toObject(), ...settings });
+  Object.assign(rel, merged);
+  await rel.save();
+  return rel;
+}
+
+/**
+ * Balance preview for the copy dialog: current balance of the chosen account,
+ * a recommended balance, and a low-balance warning flag. ADVISORY ONLY — copying
+ * is never blocked on this.
+ */
+async function getCopyPreview({ followerId, followerAccountId, masterAccountId }) {
+  const acc = await TradingAccount.findOne({ _id: followerAccountId, userId: followerId })
+    .select('baseCurrency accountType').lean();
+  if (!acc) throw new Error('Account not found');
+  const currency = acc.baseCurrency || 'USD';
+  const { Wallet } = require('../models/Wallet');
+  const w = await Wallet.findOne({ userId: followerId, accountId: followerAccountId, currency }).lean();
+  const currentBalance = Number(w?.balance || 0);
+  const recommendedBalance = await _recommendedBalance(currency);
+  return {
+    currency,
+    currentBalance: Number(currentBalance.toFixed(2)),
+    recommendedBalance: Number(recommendedBalance.toFixed(2)),
+    lowBalance: currentBalance < recommendedBalance,
+  };
+}
+
+// Advisory "recommended balance" floor so future mirrors have margin headroom.
+async function _recommendedBalance(currency) {
+  const floorUsd = 700;
+  if (currency === 'INR') {
+    try { return Number(await require('./currencyService').fromBase('INR', floorUsd)); } catch { return floorUsd * 90; }
+  }
+  return floorUsd;
 }
 
 async function listMyCopies(userId) {
@@ -794,11 +889,51 @@ async function listMyCopies(userId) {
     relationId: { $in: relations.map((r) => r._id) },
     status: 'OPEN',
   }).lean();
-  const tradesByRel = new Map();
-  for (const t of openTrades) {
-    const k = String(t.relationId);
-    if (!tradesByRel.has(k)) tradesByRel.set(k, []);
-    tradesByRel.get(k).push(t);
+
+  // Live "Running PnL" + an accurate open-count. A mirror's CopyTrade can linger
+  // in status OPEN after its follower position has already closed OUTSIDE the
+  // master-close path — a manual close from the trade screen, or the Stop /
+  // Change-account "close automatically" flow (closeCopyPositions). Those paths
+  // don't touch the CopyTrade, so we drive BOTH the running P&L and the "open"
+  // count off the REAL position status, and lazily self-heal stale mirrors.
+  //
+  // Running PnL = mark-to-market floating P&L (mark = instrument.lastPrice)
+  // summed per relation — same formula the risk engine / dashboard use, and
+  // recomputed fresh (the stored Position.unrealizedPnl is only cron-flushed and
+  // CopyRelation.runningPnl is never written).
+  const runningByRel = new Map();
+  const liveOpenByRel = new Map();
+  const posIds = openTrades.map((t) => t.followerPositionId).filter(Boolean);
+  if (posIds.length) {
+    const positions = await Position.find({ _id: { $in: posIds } })
+      .select('side quantity entryPrice instrumentId status').lean();
+    const posById = new Map(positions.map((p) => [String(p._id), p]));
+    const openInstIds = [...new Set(positions
+      .filter((p) => p.status === POSITION_STATUS.OPEN)
+      .map((p) => String(p.instrumentId)))];
+    const insts = openInstIds.length
+      ? await Instrument.find({ _id: { $in: openInstIds } }).select('lastPrice').lean() : [];
+    const priceById = new Map(insts.map((i) => [String(i._id), Number(i.lastPrice) || 0]));
+
+    const stale = [];
+    for (const t of openTrades) {
+      const p = posById.get(String(t.followerPositionId));
+      const k = String(t.relationId);
+      if (p && p.status === POSITION_STATUS.OPEN) {
+        const entry = Number(p.entryPrice) || 0;
+        const mark = priceById.get(String(p.instrumentId)) || entry;
+        const qty = Number(p.quantity) || 0;
+        const pnl = p.side === 'BUY' ? (mark - entry) * qty : (entry - mark) * qty;
+        runningByRel.set(k, (runningByRel.get(k) || 0) + pnl);
+        if (!liveOpenByRel.has(k)) liveOpenByRel.set(k, []);
+        liveOpenByRel.get(k).push(t);
+      } else {
+        // Follower position already closed (or gone) → this CopyTrade is stale.
+        stale.push(t);
+      }
+    }
+    // Heal stale mirrors in the background — never block the read.
+    if (stale.length) setImmediate(() => _reconcileClosedMirrors(stale).catch(() => {}));
   }
 
   return relations.map((r) => {
@@ -806,6 +941,7 @@ async function listMyCopies(userId) {
     const fAcc = fAccById.get(String(r.followerAccountId));
     return {
       ...r,
+      runningPnl: Number((runningByRel.get(String(r._id)) || 0).toFixed(2)),
       followerAccountNumber: fAcc?.accountNumber || null,
       followerAccountType: fAcc?.accountType || null,
       master: box ? {
@@ -816,9 +952,43 @@ async function listMyCopies(userId) {
         roiPct: box.roiPct,
         userId: box.userId,
       } : null,
-      openMirrors: tradesByRel.get(String(r._id)) || [],
+      openMirrors: liveOpenByRel.get(String(r._id)) || [],
     };
   });
+}
+
+/**
+ * Self-heal mirrors whose follower position closed OUTSIDE the master-close path
+ * (manual close from the trade screen, or Stop / Change-account "close
+ * automatically"). Those paths close the position but leave the CopyTrade OPEN,
+ * which skews the "open" count, analytics and performance-fee settlement. We mark
+ * the CopyTrade CLOSED (with the realized PnL) and run the (idempotent)
+ * performance fee so earnings + analytics stay correct. Best-effort per mirror.
+ */
+async function _reconcileClosedMirrors(mirrors) {
+  const copyEarnings = require('./copyEarningsService');
+  for (const m of mirrors) {
+    try {
+      const doc = await CopyTrade.findOne({ _id: m._id, status: 'OPEN' });
+      if (!doc) continue; // already healed (concurrent read / master-close hook)
+      let reason = 'follower_closed';
+      if (doc.followerPositionId) {
+        const pos = await Position.findById(doc.followerPositionId)
+          .select('status realizedPnl closeReason').lean();
+        if (pos) {
+          if (pos.status !== POSITION_STATUS.CLOSED) continue; // still settling — next pass
+          if (pos.realizedPnl != null) doc.realizedPnl = String(pos.realizedPnl);
+          if (pos.closeReason === 'COPY_MASTER_CLOSED') reason = 'master_closed';
+          else if (pos.closeReason) reason = String(pos.closeReason).toLowerCase();
+        }
+      }
+      doc.status = 'CLOSED';
+      doc.closeReason = reason;
+      doc.closedAt = new Date();
+      await doc.save();
+      await copyEarnings.applyPerformanceFee(doc).catch(() => {});
+    } catch (_) { /* best-effort self-heal */ }
+  }
 }
 
 module.exports = {
@@ -842,5 +1012,9 @@ module.exports = {
   // follower actions
   startCopying,
   setStatus,
+  editCopy,
+  changeAccount,
+  closeCopyPositions,
+  getCopyPreview,
   listMyCopies,
 };

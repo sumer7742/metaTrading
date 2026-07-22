@@ -20,6 +20,7 @@ import { useAuthStore } from '../store/auth';
 const STATUS_OPTIONS = [
   { value: '',                 label: 'All statuses' },
   { value: 'MANUAL',           label: 'Manual close' },
+  { value: 'ADMIN',            label: 'Closed by admin' },
   { value: 'TAKE_PROFIT',      label: 'Take Profit' },
   { value: 'STOP_LOSS',        label: 'Stop Loss' },
   { value: 'TRAILING_STOP',    label: 'Trailing Stop' },
@@ -171,7 +172,7 @@ export default function Orders() {
       p.closePrice || '',
       p.commission || '0',
       p.swap || '0',
-      'SELF',
+      p.closeReason === 'ADMIN' ? 'ADMIN' : 'SELF',
       remarkText(p.closeReason),
       formatDateTime(p.openedAt || p.createdAt),
       formatDateTime(p.closedAt),
@@ -370,7 +371,7 @@ export default function Orders() {
                     <td className="px-4 py-3 text-right font-mono text-gray-400">
                       {fmtNum(p.swap || '0', 2)}
                     </td>
-                    <td className="px-4 py-3 text-center"><ExecutedByPill /></td>
+                    <td className="px-4 py-3 text-center"><ExecutedByPill reason={p.closeReason} /></td>
                     <td className="px-4 py-3 text-gray-400 max-w-[200px] truncate" title={remarkText(p.closeReason)}>
                       {remarkText(p.closeReason)}
                     </td>
@@ -481,6 +482,7 @@ function remarkText(reason) {
     case 'MARGIN_STOPOUT':    return 'CLOSED — Margin stop-out';
     case 'NEGATIVE_BALANCE':  return 'NEG-BALANCE PROTECTION';
     case 'MANUAL':            return 'closed by user';
+    case 'ADMIN':             return 'closed by admin';
     default:                  return 'N/A';
   }
 }
@@ -500,12 +502,13 @@ function SidePill({ side }) {
   );
 }
 
-function ExecutedByPill() {
-  // No copy-trading yet → every fill is the user themselves. The pill is kept
-  // so the column matches the broker spec; swap to MASTER once copy is wired.
+function ExecutedByPill({ reason }) {
+  // ADMIN close-reason = an admin/super force-closed this position → show ADMIN.
+  // Otherwise the user themselves (no copy-trading yet → swap to MASTER later).
+  const admin = reason === 'ADMIN';
   return (
-    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-info/20 text-info border border-info/40">
-      SELF
+    <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${admin ? 'bg-warn/20 text-warn border-warn/40' : 'bg-info/20 text-info border-info/40'}`}>
+      {admin ? 'ADMIN' : 'SELF'}
     </span>
   );
 }

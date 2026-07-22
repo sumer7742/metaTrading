@@ -116,8 +116,12 @@ export default function Layout({ children }) {
   // real time. Currency is taken from the first REAL account; if you
   // have REAL accounts in mixed currencies this still shows the sum
   // (assumes the accountant view is roughly base-currency normalised).
-  const [realBalance, setRealBalance] = useState(null);
-  const [realCurrency, setRealCurrency] = useState('USD');
+  // Per-account real balances kept as {currency, free} parts so each is
+  // FX-converted to USD at render time before summing. Raw-summing mixed
+  // INR + USD accounts (and labelling the total with the first account's
+  // currency) was the balance-mismatch bug — a USD account's $89.61 showed
+  // up as "₹89.61" and then "$0.93".
+  const [realParts, setRealParts] = useState(null); // null = loading, [] = no real accounts
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
@@ -132,23 +136,21 @@ export default function Layout({ children }) {
           return t !== 'DEMO' && t !== 'VIRTUAL';
         });
         if (!accounts.length) {
-          if (!cancelled) { setRealBalance(0); setRealCurrency('USD'); }
+          if (!cancelled) setRealParts([]);
           return;
         }
         const results = await Promise.allSettled(
           accounts.map((a) => api.get('/wallet/balances', { params: { accountId: a._id } }))
         );
         if (cancelled) return;
-        let total = 0;
-        let ccy = accounts[0].baseCurrency || 'USD';
+        const parts = [];
         results.forEach((r, i) => {
           if (r.status !== 'fulfilled') return;
           const a = accounts[i];
           const w = (r.value.data?.data || []).find((b) => b.currency === a.baseCurrency);
-          if (w?.free != null) total += Number(w.free) || 0;
+          parts.push({ currency: String(a.baseCurrency || 'USD').toUpperCase(), free: Number(w?.free) || 0 });
         });
-        setRealBalance(total);
-        setRealCurrency(ccy);
+        setRealParts(parts);
       } catch (_) { /* keep prior */ }
     };
     load();
@@ -202,8 +204,10 @@ export default function Layout({ children }) {
   // pattern the rest of the app uses (Wallet, Dashboard hero, etc.).
   const fxRate = useFxRate();
   const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
-  const usdEquivalent = realBalance != null
-    ? (realCurrency === 'USD' ? Number(realBalance) : Number(realBalance) / rate)
+  // FX-convert EACH account's balance to USD (INR ÷ live rate), then sum —
+  // so mixed-currency real accounts total correctly instead of raw-summing.
+  const usdEquivalent = realParts != null
+    ? realParts.reduce((sum, p) => sum + (p.currency === 'USD' ? p.free : p.free / rate), 0)
     : null;
   const inrEquivalent = usdEquivalent != null ? usdEquivalent * rate : null;
   const balanceLabel = inrEquivalent != null

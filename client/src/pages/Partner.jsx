@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import { wsClient } from '../services/ws';
 import { fmtMoney, fmtDate } from '../utils/format';
+import { inCustomRange } from '../utils/dateRange';
 
 /**
  * Partner / Referral Dashboard — VOLUME-DRIVEN.
@@ -579,15 +580,11 @@ function ReferralPerformance({ rows = [], cur }) {
   // Filter by search term (name/email) + custom "Last activity" date range.
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
-    const fromTs = from ? new Date(`${from}T00:00:00`).getTime() : null;
-    const toTs = to ? new Date(`${to}T23:59:59.999`).getTime() : null;
     return rows.filter((r) => {
       if (term && !`${r.name || ''} ${r.email || ''}`.toLowerCase().includes(term)) return false;
-      if (fromTs != null || toTs != null) {
-        if (!r.lastActivityAt) return false;
-        const t = new Date(r.lastActivityAt).getTime();
-        if (fromTs != null && t < fromTs) return false;
-        if (toTs != null && t > toTs) return false;
+      // Inclusive "Last activity" range — From==To returns the whole day.
+      if (from || to) {
+        if (!r.lastActivityAt || !inCustomRange(r.lastActivityAt, from, to)) return false;
       }
       return true;
     });

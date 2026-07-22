@@ -24,6 +24,8 @@ export default function Managers() {
   const [limitsFor, setLimitsFor] = useState(null);
   const [resetFor, setResetFor] = useState(null);
   const [editFor, setEditFor] = useState(null);
+  const [selected, setSelected] = useState(() => new Set()); // manager ids picked for bulk move
+  const [moveOpen, setMoveOpen] = useState(false);           // bulk "move to another admin" modal
   const [preferredId, setPreferredId] = useState(null); // manager all new signups route to (until full)
 
   const load = async () => {
@@ -51,6 +53,14 @@ export default function Managers() {
   const adminName = useMemo(() => new Map(admins.map((a) => [String(a._id), [a.firstName, a.lastName].filter(Boolean).join(' ') || a.email])), [admins]);
   const preferredMgr = useMemo(() => managers.find((m) => String(m._id) === String(preferredId)), [managers, preferredId]);
   const preferredName = preferredMgr ? ([preferredMgr.firstName, preferredMgr.lastName].filter(Boolean).join(' ') || preferredMgr.email) : 'the selected manager';
+
+  // Multi-select for bulk "move to another admin".
+  const toggleOne = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const allSelected = managers.length > 0 && managers.every((m) => selected.has(m._id));
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(managers.map((m) => m._id)));
+  const selectedManagers = managers
+    .filter((m) => selected.has(m._id))
+    .map((m) => ({ ...m, userCount: (wlById.get(String(m._id))?.totalUsers) || 0 }));
 
   // Route ALL new signups to one manager until full (or clear → auto-balance).
   const togglePreferred = async (m) => {
@@ -107,10 +117,27 @@ export default function Managers() {
         </div>
       )}
 
+      {isSuper && selectedManagers.length > 0 && (
+        <div className="card p-3 flex items-center justify-between gap-3 flex-wrap">
+          <span className="text-sm text-text-secondary">
+            <span className="font-semibold text-text-primary">{selectedManagers.length}</span> manager{selectedManagers.length === 1 ? '' : 's'} selected
+          </span>
+          <div className="flex items-center gap-2">
+            <button onClick={() => setSelected(new Set())} className="btn-ghost text-xs">Clear</button>
+            <button onClick={() => setMoveOpen(true)} className="btn-primary text-xs">Move to another admin →</button>
+          </div>
+        </div>
+      )}
+
       <div className="card overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-xs uppercase tracking-wider text-text-muted border-b border-border-subtle bg-bg-hover/40">
+              {isSuper && (
+                <th className="text-center py-2.5 px-3 w-10">
+                  <input type="checkbox" checked={allSelected} onChange={toggleAll} title="Select all" className="accent-primary-500 cursor-pointer" />
+                </th>
+              )}
               <th className="text-left py-2.5 px-3">Manager</th>
               <th className="text-left py-2.5 px-3">Email</th>
               {isSuper && <th className="text-left py-2.5 px-3">Admin</th>}
@@ -122,12 +149,17 @@ export default function Managers() {
             </tr>
           </thead>
           <tbody>
-            {loading && managers.length === 0 && <tr><td colSpan={8} className="py-10 text-center text-text-muted">Loading…</td></tr>}
-            {!loading && managers.length === 0 && <tr><td colSpan={8} className="py-10 text-center text-text-muted">No managers yet</td></tr>}
+            {loading && managers.length === 0 && <tr><td colSpan={9} className="py-10 text-center text-text-muted">Loading…</td></tr>}
+            {!loading && managers.length === 0 && <tr><td colSpan={9} className="py-10 text-center text-text-muted">No managers yet</td></tr>}
             {managers.map((m) => {
               const wl = wlById.get(String(m._id)) || {};
               return (
-                <tr key={m._id} className="table-row">
+                <tr key={m._id} className={`table-row ${isSuper && selected.has(m._id) ? 'bg-primary-500/5' : ''}`}>
+                  {isSuper && (
+                    <td className="py-2 px-3 text-center">
+                      <input type="checkbox" checked={selected.has(m._id)} onChange={() => toggleOne(m._id)} className="accent-primary-500 cursor-pointer" />
+                    </td>
+                  )}
                   <td className="py-2 px-3 text-text-primary font-semibold">
                     {[m.firstName, m.lastName].filter(Boolean).join(' ') || '—'}
                     {String(preferredId) === String(m._id) && (
@@ -168,6 +200,79 @@ export default function Managers() {
       {limitsFor && <LimitsModal userId={limitsFor._id} onClose={() => { setLimitsFor(null); load(); }} />}
       {resetFor && <ResetPasswordModal staff={resetFor} onClose={() => setResetFor(null)} onDone={load} />}
       {editFor && <EditStaffModal staff={editFor} onClose={() => setEditFor(null)} onSaved={load} />}
+      {moveOpen && selectedManagers.length > 0 && (
+        <MoveManagersModal
+          managers={selectedManagers}
+          admins={admins}
+          onClose={() => setMoveOpen(false)}
+          onSaved={() => { setMoveOpen(false); setSelected(new Set()); load(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// Transfer one or more managers (and every user under them) to a different
+// admin. Backend: POST /hierarchy/transfer-manager (SuperAdmin only), called
+// once per selected manager — validates the target admin's manager cap and
+// re-parents the manager + all their users.
+function MoveManagersModal({ managers, admins, onClose, onSaved }) {
+  const [adminId, setAdminId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const totalUsers = managers.reduce((s, m) => s + (m.userCount || 0), 0);
+  // Target list = all admins (a manager already under the target is a safe no-op).
+  const options = admins || [];
+
+  const submit = async () => {
+    if (!adminId) return toast.error('Pick the target admin');
+    setBusy(true);
+    try {
+      const results = await Promise.allSettled(
+        managers.map((m) => api.post('/hierarchy/transfer-manager', { managerId: m._id, adminId }))
+      );
+      const ok = results.filter((r) => r.status === 'fulfilled').length;
+      const failed = results.length - ok;
+      if (failed) toast.error(`Moved ${ok}/${results.length} manager(s). ${failed} failed (e.g. target admin at capacity).`);
+      else toast.success(`Moved ${ok} manager${ok === 1 ? '' : 's'} (+ their users) to the selected admin`);
+      onSaved();
+    } catch (e) { toast.error(errorMessage(e)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-bg-card rounded-2xl border border-border-dark max-w-md w-full shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-3 border-b border-border-dark flex items-center justify-between">
+          <h3 className="text-base font-bold text-text-primary">Move {managers.length} manager{managers.length === 1 ? '' : 's'} to another admin</h3>
+          <button onClick={onClose} className="text-text-muted hover:text-text-primary text-xl leading-none">×</button>
+        </div>
+        <div className="p-5 space-y-3 text-sm">
+          <p className="text-text-secondary">
+            Moving <span className="font-semibold text-text-primary">{managers.length}</span> manager{managers.length === 1 ? '' : 's'}
+            {totalUsers > 0 && <> along with all <span className="font-semibold text-text-primary">{totalUsers}</span> of their user{totalUsers === 1 ? '' : 's'}</>} to the chosen admin.
+          </p>
+          <div className="max-h-28 overflow-y-auto rounded-lg border border-border-dark bg-bg-hover/40 p-2 text-xs text-text-secondary space-y-0.5">
+            {managers.map((m) => (
+              <div key={m._id} className="flex items-center justify-between gap-2">
+                <span className="truncate">{[m.firstName, m.lastName].filter(Boolean).join(' ') || m.email}</span>
+                <span className="font-mono text-text-muted shrink-0">{m.userCount || 0} user{(m.userCount || 0) === 1 ? '' : 's'}</span>
+              </div>
+            ))}
+          </div>
+          <label className="block">
+            <div className="label mb-1">Target admin *</div>
+            <select className="input" value={adminId} onChange={(e) => setAdminId(e.target.value)} autoFocus>
+              <option value="">Select admin…</option>
+              {options.map((a) => <option key={a._id} value={a._id}>{[a.firstName, a.lastName].filter(Boolean).join(' ') || a.email}</option>)}
+            </select>
+          </label>
+          {options.length === 0 && <p className="text-[12px] text-warn">No admins available to move to.</p>}
+        </div>
+        <div className="px-5 py-3 border-t border-border-dark flex justify-end gap-2">
+          <button onClick={onClose} className="btn-ghost text-sm">Cancel</button>
+          <button onClick={submit} disabled={busy || !adminId} className="btn-primary text-sm disabled:opacity-50">{busy ? 'Moving…' : `Move ${managers.length} manager${managers.length === 1 ? '' : 's'}`}</button>
+        </div>
+      </div>
     </div>
   );
 }

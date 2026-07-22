@@ -94,9 +94,9 @@ export default function Assignments() {
       {/* Workload counters */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {isSuper && (
-          <WorkloadCard title="Admin workload" rows={workload.admins} cap={500} />
+          <WorkloadCard title="Admin workload" rows={workload.admins} showManagers />
         )}
-        <WorkloadCard title="Manager workload" rows={workload.managers} cap={100} />
+        <WorkloadCard title="Manager workload" rows={workload.managers} />
       </div>
 
       {/* Admin pool summary (requirement #7) */}
@@ -202,22 +202,22 @@ function StatPill({ label, value, accent }) {
   );
 }
 
-function WorkloadCard({ title, rows, cap }) {
+// No user cap for admins/managers — show the actual totals (managers + users
+// for an admin, users for a manager) instead of a fake "X / 500" limit bar.
+function WorkloadCard({ title, rows, showManagers }) {
+  const plural = (n, w) => `${(n || 0).toLocaleString()} ${w}${(n || 0) === 1 ? '' : 's'}`;
   return (
     <div className="card p-4">
       <div className="label mb-2">{title}</div>
       {(!rows || rows.length === 0) ? <div className="text-xs text-text-muted">No data yet</div> : (
         <div className="space-y-1.5 max-h-40 overflow-y-auto">
-          {rows.map((r) => {
-            const pct = Math.min(100, Math.round((r.totalUsers / (r.userCapacity || cap)) * 100));
-            return (
-              <div key={r.id} className="flex items-center gap-2 text-xs">
-                <span className="text-text-primary truncate flex-1">{r.name}</span>
-                <span className="font-mono text-text-secondary">{r.totalUsers} / {r.userCapacity || cap}</span>
-                <div className="w-20 h-1.5 rounded-full bg-bg-hover overflow-hidden"><div className="h-full bg-primary-500" style={{ width: `${pct}%` }} /></div>
-              </div>
-            );
-          })}
+          {rows.map((r) => (
+            <div key={r.id} className="flex items-center gap-3 text-xs">
+              <span className="text-text-primary truncate flex-1">{r.name}</span>
+              {showManagers && <span className="font-mono text-text-muted whitespace-nowrap">{plural(r.managerCount, 'manager')}</span>}
+              <span className="font-mono text-text-secondary whitespace-nowrap">{plural(r.totalUsers, 'user')}</span>
+            </div>
+          ))}
         </div>
       )}
     </div>

@@ -9,6 +9,7 @@
  * via the 'bonus' sentinel). Funds leave only via internal transfer OUT.
  */
 const { sendSuccess, asyncHandler, AppError } = require('../utils/errors');
+const { applyDateRange } = require('../utils/dateRange');
 const bonusWalletService = require('../services/bonusWalletService');
 const walletService = require('../services/walletService');
 const TradingAccount = require('../models/TradingAccount');
@@ -335,11 +336,8 @@ const adminLogs = asyncHandler(async (req, res) => {
   const q = {};
   if (userId) q.userId = userId;
   if (reason) q.reason = reason;
-  if (from || to) {
-    q.createdAt = {};
-    if (from) q.createdAt.$gte = new Date(from);
-    if (to) q.createdAt.$lte = new Date(to);
-  }
+  // Inclusive of the whole `to` day (fixes From==To returning nothing).
+  applyDateRange(q, 'createdAt', from, to);
   const p = Math.max(1, parseInt(page, 10) || 1);
   const l = Math.min(1000, Math.max(1, parseInt(limit, 10) || 50));
   const [items, total] = await Promise.all([

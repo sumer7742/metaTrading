@@ -4831,6 +4831,7 @@ function closeReasonLabel(reason) {
     MARGIN_STOPOUT: { t: 'Stop Out', c: 'text-bear' },
     NEGATIVE_BALANCE: { t: 'Neg. Balance', c: 'text-bear' },
     MANUAL: { t: 'Manual', c: 'text-text-secondary' },
+    ADMIN: { t: 'By Admin', c: 'text-warn' },
   };
   const r = map[reason];
   return r ? <span className={r.c}>{r.t}</span> : <span className="text-text-muted">Manual</span>;

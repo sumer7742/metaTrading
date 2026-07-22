@@ -82,7 +82,9 @@ const positionSchema = new mongoose.Schema(
     // user-initiated closes this stays null and renders as "N/A".
     closeReason: {
       type: String,
-      enum: ['TAKE_PROFIT', 'STOP_LOSS', 'TRAILING_STOP', 'MARGIN_STOPOUT', 'NEGATIVE_BALANCE', 'MANUAL', 'EXPIRY', 'INTRADAY_SQUAREOFF'],
+      // ADMIN = force-closed by an admin/super (distinct from MANUAL = the user
+      // closing their own position), so the audit trail shows who closed it.
+      enum: ['TAKE_PROFIT', 'STOP_LOSS', 'TRAILING_STOP', 'MARGIN_STOPOUT', 'NEGATIVE_BALANCE', 'MANUAL', 'ADMIN', 'EXPIRY', 'INTRADAY_SQUAREOFF'],
       default: null,
     },
 

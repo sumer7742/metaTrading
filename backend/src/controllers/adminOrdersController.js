@@ -23,6 +23,7 @@ const { AuditLog } = require('../models');
 const orderRouter = require('../services/orderRouter.service');
 const walletService = require('../services/walletService');
 const { sendSuccess, asyncHandler, AppError } = require('../utils/errors');
+const { applyDateRange } = require('../utils/dateRange');
 const { ORDER_TYPE, ORDER_STATUS, POSITION_STATUS, ROLES, ACCOUNT_TYPES } = require('../config/constants');
 const { gt, mul, div, sub } = require('../utils/decimal');
 
@@ -317,11 +318,8 @@ const openOrders = asyncHandler(async (req, res) => {
   if (req.query.symbol) match.symbol = new RegExp(String(req.query.symbol), 'i');
   if (req.query.side) match.side = String(req.query.side).toUpperCase();
   if (req.query.book) match.book = String(req.query.book).toUpperCase();
-  if (req.query.from || req.query.to) {
-    match.openedAt = {};
-    if (req.query.from) match.openedAt.$gte = new Date(req.query.from);
-    if (req.query.to) match.openedAt.$lte = new Date(new Date(req.query.to).setHours(23, 59, 59, 999));
-  }
+  // Inclusive of the whole `to` day (shared helper, tz-consistent bounds).
+  applyDateRange(match, 'openedAt', req.query.from, req.query.to);
   applyExprs(match, [idExpr, volumeExpr(req)]);
 
   const total = await Position.countDocuments(match);
@@ -364,11 +362,8 @@ const pendingOrders = asyncHandler(async (req, res) => {
   if (req.query.symbol) match.symbol = new RegExp(String(req.query.symbol), 'i');
   if (req.query.side) match.side = String(req.query.side).toUpperCase();
   if (req.query.orderType) match.type = String(req.query.orderType).toUpperCase();
-  if (req.query.from || req.query.to) {
-    match.createdAt = {};
-    if (req.query.from) match.createdAt.$gte = new Date(req.query.from);
-    if (req.query.to) match.createdAt.$lte = new Date(new Date(req.query.to).setHours(23, 59, 59, 999));
-  }
+  // Inclusive of the whole `to` day (shared helper, tz-consistent bounds).
+  applyDateRange(match, 'createdAt', req.query.from, req.query.to);
   applyExprs(match, [idExpr, volumeExpr(req)]);
 
   const total = await Order.countDocuments(match);
@@ -438,15 +433,12 @@ const closedOrders = asyncHandler(async (req, res) => {
   // Status = how the trade closed (its close reason). Whitelisted so a bad
   // value can't inject an arbitrary field query.
   if (req.query.closeReason) {
-    const VALID_CLOSE_REASONS = ['MANUAL', 'TAKE_PROFIT', 'STOP_LOSS', 'TRAILING_STOP', 'MARGIN_STOPOUT', 'NEGATIVE_BALANCE'];
+    const VALID_CLOSE_REASONS = ['MANUAL', 'ADMIN', 'TAKE_PROFIT', 'STOP_LOSS', 'TRAILING_STOP', 'MARGIN_STOPOUT', 'NEGATIVE_BALANCE'];
     const cr = String(req.query.closeReason).toUpperCase();
     if (VALID_CLOSE_REASONS.includes(cr)) match.closeReason = cr;
   }
-  if (req.query.from || req.query.to) {
-    match.closedAt = {};
-    if (req.query.from) match.closedAt.$gte = new Date(req.query.from);
-    if (req.query.to) match.closedAt.$lte = new Date(new Date(req.query.to).setHours(23, 59, 59, 999));
-  }
+  // Inclusive of the whole `to` day (shared helper, tz-consistent bounds).
+  applyDateRange(match, 'closedAt', req.query.from, req.query.to);
   // Profit / loss filter on realized PnL (a real DB field for closed positions),
   // combined with the volume + order-id filters into a single $expr.
   let pnlExpr = null;
@@ -658,7 +650,7 @@ const forceClose = asyncHandler(async (req, res) => {
   requireManage(req);
   const claimed = await Position.findOneAndUpdate(
     { _id: req.params.id, status: POSITION_STATUS.OPEN, settled: { $ne: true } },
-    { $set: { status: POSITION_STATUS.CLOSING, closeReason: 'MANUAL' } },
+    { $set: { status: POSITION_STATUS.CLOSING, closeReason: 'ADMIN' } },
     { new: true }
   );
   if (!claimed) {
@@ -852,7 +844,7 @@ const bulk = asyncHandler(async (req, res) => {
 async function forceCloseOne(req, id) {
   const claimed = await Position.findOneAndUpdate(
     { _id: id, status: POSITION_STATUS.OPEN, settled: { $ne: true } },
-    { $set: { status: POSITION_STATUS.CLOSING, closeReason: 'MANUAL' } }, { new: true }
+    { $set: { status: POSITION_STATUS.CLOSING, closeReason: 'ADMIN' } }, { new: true }
   );
   if (!claimed) throw new AppError('Not open', 400);
   const order = await Order.create({
@@ -873,6 +865,13 @@ async function forceCloseOne(req, id) {
     await Position.updateOne({ _id: claimed._id, status: POSITION_STATUS.CLOSING, settled: { $ne: true } }, { $set: { status: POSITION_STATUS.OPEN } });
     throw new AppError('Did not fill', 400);
   }
+  // Copy-trading fan-out — mirror the close to followers + write the CLOSE feed
+  // event, same as the single force-close path (was missing on bulk). Deferred.
+  setImmediate(async () => {
+    try {
+      await require('../services/copyTradingService').onMasterPositionClosed({ position: closed || claimed, realizedPnl: closed?.realizedPnl });
+    } catch (err) { console.error('[copyTrading] fan-out (admin bulk close) failed:', err.message); }
+  });
   await audit(req, 'ADMIN_FORCE_CLOSE', claimed._id, { symbol: claimed.symbol, bulk: true });
 }
 

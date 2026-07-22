@@ -19,6 +19,7 @@ const TraderProfile = require('../models/TraderProfile');
 const CopyBox = require('../models/CopyBox');
 const User = require('../models/User');
 const Instrument = require('../models/Instrument');
+const { dateRangeFilter } = require('../utils/dateRange');
 const { POSITION_STATUS } = require('../config/constants');
 
 const oid = (id) => mongoose.Types.ObjectId.createFromHexString(String(id));
@@ -332,10 +333,8 @@ function periodRange(period, from, to) {
   if (period === 'week') return { $gte: new Date(now.getTime() - 7 * 86_400_000) };
   if (period === 'month') return { $gte: new Date(now.getFullYear(), now.getMonth(), 1) };
   if (period === 'custom' && (from || to)) {
-    const r = {};
-    if (from) r.$gte = new Date(from);
-    if (to) r.$lte = new Date(to);
-    return r;
+    // Inclusive of the whole `to` day (fixes From==To returning nothing).
+    return dateRangeFilter(from, to);
   }
   return null;
 }
@@ -378,4 +377,127 @@ async function getTraderHistory(userId, { period = 'all', page = 1, limit = 20, 
   };
 }
 
-module.exports = { getTraderAnalytics, getTraderOpenPositions, getTraderHistory };
+/**
+ * Full analytics for ONE of the follower's copy relations — every metric the
+ * analytics page needs, computed from the closed copied trades (joined to the
+ * follower's positions for authoritative PnL/fees/timing) + the performance-fee
+ * ledger. Optional `from`/`to` date filter (on closedAt).
+ */
+async function getCopyAnalytics(followerId, relationId, { from, to } = {}) {
+  const rel = await CopyRelation.findOne({ _id: relationId, followerId }).lean();
+  if (!rel) throw new Error('Copy relation not found');
+
+  const CopyTradeEarnings = require('../models/CopyTradeEarnings');
+  const TradingAccount = require('../models/TradingAccount');
+
+  const [acc, box, allTrades, earnings] = await Promise.all([
+    TradingAccount.findById(rel.followerAccountId).select('baseCurrency accountNumber nickname').lean(),
+    CopyBox.findOne({ accountId: rel.masterAccountId }).lean(),
+    CopyTrade.find({ relationId: rel._id }).lean(),
+    CopyTradeEarnings.find({ relationId: rel._id }).lean(),
+  ]);
+  const currency = acc?.baseCurrency || 'USD';
+  const perfFeePaid = round2(earnings.reduce((s, e) => s + num(e.feeAmount), 0));
+
+  const openTrades = allTrades.filter((t) => t.status === 'OPEN').length;
+  const closed = allTrades.filter((t) => t.status === 'CLOSED');
+  const posIds = closed.map((t) => t.followerPositionId).filter(Boolean);
+  const positions = posIds.length ? await Position.find({ _id: { $in: posIds } }).lean() : [];
+  const posById = new Map(positions.map((p) => [String(p._id), p]));
+
+  const range = dateRangeFilter(from, to);
+  const inRange = (d) => {
+    if (!range) return true;
+    if (!d) return false;
+    const t = new Date(d).getTime();
+    if (range.$gte && t < range.$gte.getTime()) return false;
+    if (range.$lt && t >= range.$lt.getTime()) return false;
+    return true;
+  };
+
+  const rows = closed.map((ct) => {
+    const p = posById.get(String(ct.followerPositionId)) || {};
+    return {
+      id: String(ct._id), symbol: ct.symbol, side: ct.side,
+      qty: num(ct.followerQty) || num(p.closedQuantity) || num(p.quantity),
+      entryPrice: num(p.entryPrice), closePrice: num(p.closePrice), leverage: num(p.leverage) || 1,
+      pnl: num(p.realizedPnl != null ? p.realizedPnl : ct.realizedPnl),
+      commission: num(p.commission), swap: num(p.swap),
+      openedAt: p.openedAt || ct.createdAt, closedAt: p.closedAt || ct.closedAt,
+    };
+  }).filter((r) => inRange(r.closedAt)).sort((a, b) => new Date(a.closedAt) - new Date(b.closedAt));
+
+  const wins = rows.filter((r) => r.pnl > 0);
+  const losses = rows.filter((r) => r.pnl < 0);
+  const grossProfit = round2(wins.reduce((s, r) => s + r.pnl, 0));
+  const grossLoss = round2(Math.abs(losses.reduce((s, r) => s + r.pnl, 0)));
+  const grossRealized = round2(rows.reduce((s, r) => s + r.pnl, 0));
+  const commission = round2(rows.reduce((s, r) => s + r.commission, 0));
+  const swap = round2(rows.reduce((s, r) => s + r.swap, 0));
+  const netProfit = round2(grossRealized - commission - swap - perfFeePaid);
+  const totalLots = round2(rows.reduce((s, r) => s + r.qty, 0));
+  const invested = rows.reduce((s, r) => s + (r.qty * r.entryPrice) / Math.max(1, r.leverage), 0);
+  const roi = invested > 0 ? round2((netProfit / invested) * 100) : 0;
+
+  const n = rows.length;
+  const winRate = n ? round2((wins.length / n) * 100) : 0;
+  const avgWin = wins.length ? round2(grossProfit / wins.length) : 0;
+  const avgLoss = losses.length ? round2(-grossLoss / losses.length) : 0;
+  const profitFactor = grossLoss > 0 ? round2(grossProfit / grossLoss) : null; // null = ∞
+  const riskReward = avgLoss !== 0 ? round2(Math.abs(avgWin / avgLoss)) : 0;
+  const avgHoldMs = n ? rows.reduce((s, r) => s + Math.max(0, new Date(r.closedAt) - new Date(r.openedAt)), 0) / n : 0;
+
+  // Equity / profit curve (cumulative net PnL) + drawdown.
+  let cum = 0, peak = 0, maxDD = 0;
+  const curve = rows.map((r) => {
+    cum += r.pnl - r.commission - r.swap;
+    peak = Math.max(peak, cum);
+    maxDD = Math.max(maxDD, peak - cum);
+    return { t: r.closedAt, pnl: round2(r.pnl), equity: round2(cum) };
+  });
+
+  const bucket = (keyFn) => {
+    const m = new Map();
+    for (const r of rows) { const k = keyFn(new Date(r.closedAt)); m.set(k, (m.get(k) || 0) + r.pnl); }
+    return [...m.entries()].map(([period, pnl]) => ({ period, pnl: round2(pnl) })).sort((a, b) => a.period.localeCompare(b.period));
+  };
+  const isoWeek = (d) => { const dt = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())); const day = dt.getUTCDay() || 7; dt.setUTCDate(dt.getUTCDate() + 4 - day); const y0 = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1)); const wk = Math.ceil((((dt - y0) / 86400000) + 1) / 7); return `${dt.getUTCFullYear()}-W${String(wk).padStart(2, '0')}`; };
+  const daily = bucket((d) => d.toISOString().slice(0, 10));
+  const weekly = bucket(isoWeek);
+  const monthly = bucket((d) => d.toISOString().slice(0, 7));
+
+  let sharpe = null;
+  if (daily.length >= 2) {
+    const mean = daily.reduce((s, d) => s + d.pnl, 0) / daily.length;
+    const sd = Math.sqrt(daily.reduce((s, d) => s + (d.pnl - mean) ** 2, 0) / daily.length);
+    sharpe = sd > 0 ? round2((mean / sd) * Math.sqrt(daily.length)) : null;
+  }
+
+  return {
+    currency,
+    account: acc ? { number: acc.accountNumber, nickname: acc.nickname } : null,
+    status: rel.status,
+    netProfit, grossProfit, grossLoss, performanceFeePaid: perfFeePaid, commission, swap, roi,
+    totalTrades: allTrades.length, closedTrades: n, openTrades,
+    wins: wins.length, losses: losses.length,
+    winRate, lossRate: round2(100 - winRate), successRate: winRate,
+    avgWin, avgLoss,
+    largestWin: wins.length ? round2(Math.max(...wins.map((r) => r.pnl))) : 0,
+    largestLoss: losses.length ? round2(Math.min(...losses.map((r) => r.pnl))) : 0,
+    profitFactor, riskReward,
+    recoveryFactor: maxDD > 0 ? round2(netProfit / maxDD) : 0,
+    avgHoldingMinutes: round2(avgHoldMs / 60000),
+    avgVolume: n ? round2(totalLots / n) : 0, totalLots,
+    currentEquity: round2(cum), maxEquity: round2(peak), maxDrawdown: round2(maxDD), sharpe,
+    curve, daily, weekly, monthly,
+    master: box ? {
+      displayName: box.displayName,
+      roiPct: round2(num(box.roiPct)),
+      winRate: box.totalTrades ? round2((box.wins / box.totalTrades) * 100) : 0,
+      totalTrades: box.totalTrades || 0,
+    } : null,
+    trades: rows.slice().reverse(),
+  };
+}
+
+module.exports = { getTraderAnalytics, getTraderOpenPositions, getTraderHistory, getCopyAnalytics };

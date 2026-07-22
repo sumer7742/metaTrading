@@ -10,6 +10,7 @@ const Trade = require('../models/Trade');
 const { sendSuccess, asyncHandler, AppError } = require('../utils/errors');
 const { ORDER_TYPE, ORDER_SIDE, ORDER_STATUS, POSITION_STATUS } = require('../config/constants');
 const { gt, lt, mul, div, sub, eq, add } = require('../utils/decimal');
+const { applyDateRange } = require('../utils/dateRange');
 
 /**
  * Apply the 3-month history clip to a Mongo filter for any of the user's
@@ -793,15 +794,12 @@ const positionHistory = asyncHandler(async (req, res) => {
   if (side && (side === 'BUY' || side === 'SELL')) baseFilter.side = side;
   // Status = how the trade closed (its close reason). Whitelisted so a bad
   // value can't inject an arbitrary field query.
-  const VALID_CLOSE_REASONS = ['MANUAL', 'TAKE_PROFIT', 'STOP_LOSS', 'TRAILING_STOP', 'MARGIN_STOPOUT', 'NEGATIVE_BALANCE'];
+  const VALID_CLOSE_REASONS = ['MANUAL', 'ADMIN', 'TAKE_PROFIT', 'STOP_LOSS', 'TRAILING_STOP', 'MARGIN_STOPOUT', 'NEGATIVE_BALANCE'];
   if (closeReason && VALID_CLOSE_REASONS.includes(String(closeReason).toUpperCase())) {
     baseFilter.closeReason = String(closeReason).toUpperCase();
   }
-  if (from || to) {
-    baseFilter.closedAt = {};
-    if (from) baseFilter.closedAt.$gte = new Date(from);
-    if (to) baseFilter.closedAt.$lte = new Date(to);
-  }
+  // Inclusive of the whole `to` day (fixes From==To returning nothing).
+  applyDateRange(baseFilter, 'closedAt', from, to);
   // Plan-suspended accounts: clip history to last 3 months.
   const filter = await applySuspendedHistoryClip(req.userId, baseFilter, 'closedAt');
 
@@ -1442,6 +1440,22 @@ const closeAllPositions = asyncHandler(async (req, res) => {
     try {
       await orderRouter.routeOrder({ order: closingOrder, userId: req.userId });
       closed++;
+      // Copy-trading fan-out — same as the single-close path (this was missing,
+      // so bulk "Close All" never closed followers' mirrors nor wrote the CLOSE
+      // event to the live feed). Deferred + best-effort so it never blocks/fails
+      // the close.
+      const closedId = pos._id;
+      setImmediate(async () => {
+        try {
+          const settled = await Position.findById(closedId).lean();
+          await require('../services/copyTradingService').onMasterPositionClosed({
+            position: settled || pos,
+            realizedPnl: settled?.realizedPnl,
+          });
+        } catch (err) {
+          console.error('[copyTrading] fan-out (close-all) failed:', err.message);
+        }
+      });
     } catch (err) {
       await Position.updateOne(
         { _id: pos._id, status: POSITION_STATUS.CLOSING, settled: { $ne: true } },

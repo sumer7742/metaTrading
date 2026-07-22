@@ -482,23 +482,33 @@ export default function Explore() {
   // ── Position / order action handlers ──────────────────────────────
   // Matches the same endpoints used on the Trade page so behaviour is
   // identical (single-source backend, single permission check).
+  // Optimistic: drop the row from the UI immediately, then hit the API. On
+  // failure restore it (the `positions` WS refetch also reconciles).
   const closePosition = async (id) => {
+    const prev = positions;
+    setPositions((list) => list.filter((p) => p._id !== id));
+    if (modifyPosition?._id === id) setModifyPosition(null);
     try {
       await api.post(`/trading/positions/${id}/close`);
-      toast.success('Position closing');
-    } catch (err) { toast.error(errorMessage(err)); }
+      toast.success('Position closed');
+    } catch (err) {
+      setPositions(prev);
+      toast.error(errorMessage(err));
+    }
   };
   const closeAllPositions = async () => {
     if (!livePositions.length) return;
     if (!(await confirm(`Close all ${livePositions.length} open position(s)?`))) return;
     setBulkBusy(true);
+    const prev = positions;
+    const accountId = selectedAccountId || livePositions[0]?.accountId;
+    setPositions([]); // optimistic — clear the list instantly
     try {
-      const accountId = selectedAccountId || livePositions[0]?.accountId;
       const { data } = await api.post('/trading/positions/close-all', accountId ? { accountId } : {});
       const r = data?.data || {};
-      if (r.failed?.length) toast.error(`Closed ${r.closed}/${r.total}. ${r.failed.length} failed.`);
-      else toast.success(`Closed ${r.closed ?? livePositions.length} position(s)`);
-    } catch (err) { toast.error(errorMessage(err)); }
+      if (r.failed?.length) { setPositions(prev); toast.error(`Closed ${r.closed}/${r.total}. ${r.failed.length} failed.`); }
+      else toast.success(`Closed ${r.closed ?? prev.length} position(s)`);
+    } catch (err) { setPositions(prev); toast.error(errorMessage(err)); }
     finally { setBulkBusy(false); }
   };
   // Optimistic: drop the row from the UI immediately, then hit the API. On
@@ -560,16 +570,24 @@ export default function Explore() {
     } catch (err) { toast.error(errorMessage(err)); }
   };
   const partialClosePosition = async (position, qty) => {
+    const fullQty = Number(position.quantity);
+    const isFull = !qty || qty >= fullQty - 1e-9;
+    const prev = positions;
+    // Full close → drop the row instantly. Partial → let the WS refetch update
+    // the remaining quantity (harder to compute optimistically).
+    if (isFull) setPositions((list) => list.filter((p) => p._id !== position._id));
+    setModifyPosition(null);
     try {
-      const fullQty = Number(position.quantity);
-      if (!qty || qty >= fullQty - 1e-9) {
+      if (isFull) {
         await api.post(`/trading/positions/${position._id}/close`);
       } else {
         await api.post(`/trading/positions/${position._id}/partial-close`, { quantity: qty });
       }
-      toast.success('Position closing');
-      setModifyPosition(null);
-    } catch (err) { toast.error(errorMessage(err)); }
+      toast.success(isFull ? 'Position closed' : 'Position partially closed');
+    } catch (err) {
+      if (isFull) setPositions(prev);
+      toast.error(errorMessage(err));
+    }
   };
 
   // ── Recently viewed — localStorage-tracked list of symbols the user has

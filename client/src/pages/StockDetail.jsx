@@ -6,6 +6,7 @@ import { wsClient } from '../services/ws';
 import { fmtNum } from '../utils/format';
 import AssetIcon from '../components/AssetIcon';
 import OrderForm from '../components/OrderForm';
+import { useSelectedAccount } from '../store/selectedAccount';
 import { useWatchlistModal } from '../components/watchlistModalContext';
 import { useInstruments } from '../hooks/useInstruments';
 import { useFxRate } from '../hooks/useFxRate';
@@ -73,6 +74,9 @@ export default function StockDetail() {
   // Mobile-only: the order panel lives in a slide-in drawer (below lg) so it
   // sits beside the chart on demand instead of stacking far below it.
   const [tradeOpen, setTradeOpen] = useState(false);
+  // The account chosen in the header/Trade switcher — the order form must trade
+  // on THAT account (matching the dropdown), not a hardcoded first-real account.
+  const selectedAccountId = useSelectedAccount((s) => s.accountId);
 
   // ── Load instrument + accounts + balances + fundamentals ──
   useEffect(() => {
@@ -146,7 +150,11 @@ export default function StockDetail() {
   const cur = (inst?.quoteCurrency === 'INR' || isEquity) ? '₹' : (inst?.quoteCurrency === 'USD' ? '$' : '');
 
   const name = inst?.name || symbol;
-  const account = accounts.find((a) => a.accountType !== 'DEMO' && a.accountType !== 'VIRTUAL') || accounts[0];
+  // Prefer the account selected in the header dropdown; fall back to the first
+  // real account, then any account.
+  const account = accounts.find((a) => a._id === selectedAccountId)
+    || accounts.find((a) => a.accountType !== 'DEMO' && a.accountType !== 'VIRTUAL')
+    || accounts[0];
 
   // Shared order panel — rendered in the sticky desktop column AND inside the
   // mobile slide-in drawer, so both stay in sync with the same OrderForm.
@@ -875,8 +883,12 @@ function OrderPanel({ symbol, name, inst, lastPrice, pct, up, cur, prec, isEquit
   const [placing, setPlacing] = useState(false);
   const fxRate = useFxRate();
   const rate = Number(fxRate) > 0 ? Number(fxRate) : 83;
+  const selectedAccountId = useSelectedAccount((s) => s.accountId);
 
-  const account = accounts.find((a) => a.accountType !== 'DEMO' && a.accountType !== 'VIRTUAL') || accounts[0];
+  // Prefer the account selected in the header dropdown; fall back to first real.
+  const account = accounts.find((a) => a._id === selectedAccountId)
+    || accounts.find((a) => a.accountType !== 'DEMO' && a.accountType !== 'VIRTUAL')
+    || accounts[0];
   const q = Number(qty) || 0;
   const px = mode === 'LIMIT' ? (Number(limitPrice) || lastPrice) : lastPrice;
   const approx = q * px;

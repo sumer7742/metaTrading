@@ -92,7 +92,6 @@ export default function Admins() {
             {!loading && admins.length === 0 && <tr><td colSpan={8} className="py-10 text-center text-text-muted">No admins yet</td></tr>}
             {admins.map((a) => {
               const wl = wlById.get(String(a._id)) || {};
-              const cap = wl.userCapacity || 500;
               const open = !!openA[a._id];
               const mgrs = managersByAdmin.get(String(a._id)) || [];
               return (
@@ -106,7 +105,8 @@ export default function Admins() {
                   </td>
                   <td className="py-2 px-3 text-text-secondary">{a.email}</td>
                   <td className="py-2 px-3 text-center font-mono">{wl.managerCount || 0} / {a.hierarchyLimits?.maxManagers ?? 10}</td>
-                  <td className="py-2 px-3 text-center font-mono">{wl.totalUsers || 0} / {a.hierarchyLimits?.maxUsers ?? cap}</td>
+                  {/* No fake user cap — show the actual total (only show a limit if one is explicitly configured). */}
+                  <td className="py-2 px-3 text-center font-mono">{(wl.totalUsers || 0).toLocaleString()}{a.hierarchyLimits?.maxUsers != null ? ` / ${a.hierarchyLimits.maxUsers}` : ''}</td>
                   <td className="py-2 px-3 text-center font-mono text-bull">{wl.verifiedUsers || 0}</td>
                   <td className="py-2 px-3 text-center font-mono text-warn">{wl.pendingKycUsers || 0}</td>
                   <td className="py-2 px-3 text-center">

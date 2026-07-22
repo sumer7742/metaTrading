@@ -6,6 +6,7 @@ import PageHero from '../components/PageHero';
 import WalletSidebar from '../components/WalletSidebar';
 import WithdrawModal from '../components/WithdrawModal';
 import { wsClient } from '../services/ws';
+import { inCustomRange } from '../utils/dateRange';
 
 /**
  * Bonus Wallet — standalone wallet that receives ALL referral & partner
@@ -130,9 +131,8 @@ export default function BonusWallet() {
     if (typeSel && t.reason !== typeSel) return false;
     if (statusSel && (t.status || 'SUCCESS') !== statusSel) return false;
     if (dirSel && t.transactionType !== dirSel) return false;
-    const ts = new Date(t.createdAt).getTime();
-    if (fromDate && ts < new Date(`${fromDate}T00:00:00`).getTime()) return false;
-    if (toDate && ts > new Date(`${toDate}T23:59:59`).getTime()) return false;
+    // Inclusive date range — From==To returns the whole selected day (shared helper).
+    if ((fromDate || toDate) && !inCustomRange(t.createdAt, fromDate, toDate)) return false;
     const query = q.trim().toLowerCase();
     if (query) {
       const hay = `${REASON_LABEL[t.reason] || t.reason || ''} ${t.note || ''} ${t._id || ''}`.toLowerCase();

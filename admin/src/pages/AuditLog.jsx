@@ -21,8 +21,8 @@ export default function AuditLog() {
   const [q, setQ] = useState('');
   const [debouncedQ, setDebouncedQ] = useState('');
   const [range, setRange] = useState('all');
-  const [from, setFrom] = useState('');   // custom start (YYYY-MM-DD)
-  const [to, setTo] = useState('');       // custom end
+  const [from, setFrom] = useState('');   // custom start (datetime-local: YYYY-MM-DDTHH:mm)
+  const [to, setTo] = useState('');       // custom end (datetime-local)
   const [page, setPage] = useState(1);
 
   // Debounce the search box so we don't fire on every keystroke.
@@ -35,9 +35,12 @@ export default function AuditLog() {
   const dateWindow = useMemo(() => {
     if (range === 'all') return {};
     if (range === 'custom') {
+      // Custom now includes TIME (datetime-local → YYYY-MM-DDTHH:mm, local).
       const w = {};
-      if (from) w.from = new Date(`${from}T00:00:00`).toISOString();
-      if (to) w.to = new Date(`${to}T23:59:59`).toISOString();
+      if (from) w.from = new Date(from).toISOString();
+      // No seconds in datetime-local → include the whole selected minute so the
+      // upper bound is inclusive (e.g. 11:00 covers 11:00:00 → 11:00:59.999).
+      if (to) w.to = new Date(to.length <= 16 ? `${to}:59.999` : to).toISOString();
       return w;
     }
     const days = Number(range);
@@ -101,9 +104,9 @@ export default function AuditLog() {
         </div>
         {range === 'custom' && (
           <div className="flex items-center gap-1.5 text-xs text-gray-400">
-            <input type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} className={inputCls} />
+            <input type="datetime-local" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} className={inputCls} title="From date & time" />
             <span>→</span>
-            <input type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} className={inputCls} />
+            <input type="datetime-local" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} className={inputCls} title="To date & time" />
           </div>
         )}
         <span className="flex-1" />

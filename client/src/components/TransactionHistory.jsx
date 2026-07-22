@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { fmtNum, currencySymbol } from '../utils/format';
+import { matchesDateRange } from '../utils/dateRange';
 
 /**
  * Unified Transaction History — a single rich table that merges wallet
@@ -489,30 +490,9 @@ function AccountSelect({ accounts, value, onChange }) {
   );
 }
 
-// ─── Date-range predicate ─────────────────────────────────────────────
-function inDateRange(d, range, custom) {
-  if (range === 'all') return true;
-  const t = new Date(d).getTime();
-  if (!isFinite(t)) return false;
-  const now = new Date();
-  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  const DAY = 864e5;
-  switch (range) {
-    case 'today': return t >= startOfToday;
-    case 'yesterday': return t >= startOfToday - DAY && t < startOfToday;
-    case '7d': return t >= now.getTime() - 7 * DAY;
-    case '30d': return t >= now.getTime() - 30 * DAY;
-    case '90d': return t >= now.getTime() - 90 * DAY;
-    case '3m': { const s = new Date(now); s.setMonth(s.getMonth() - 3); return t >= s.getTime(); }
-    case '6m': { const s = new Date(now); s.setMonth(s.getMonth() - 6); return t >= s.getTime(); }
-    case '1y': { const s = new Date(now); s.setFullYear(s.getFullYear() - 1); return t >= s.getTime(); }
-    case 'custom':
-      if (custom?.from && t < new Date(custom.from).getTime()) return false;
-      if (custom?.to && t > new Date(custom.to).getTime() + DAY) return false;
-      return true;
-    default: return true;
-  }
-}
+// Date-range filtering now uses the shared, inclusive helper
+// (client/src/utils/dateRange.js → matchesDateRange). Custom From==To correctly
+// returns the whole selected day.
 
 // ─── Details modal ────────────────────────────────────────────────────
 function DetailsModal({ row, onClose }) {
@@ -614,7 +594,7 @@ export default function TransactionHistory({ deposits = [], withdrawals = [], le
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return allRows.filter((r) => {
-      if (!inDateRange(r.date, dateRange, customRange)) return false;
+      if (!matchesDateRange(r.date, dateRange, customRange)) return false;
       // Account
       if (accountId !== 'all' && r.accountId !== accountId) return false;
       // Type category

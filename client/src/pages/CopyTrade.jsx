@@ -4,6 +4,9 @@ import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
 import PageHero from '../components/PageHero';
 import CopySetupModal from '../components/CopySetupModal';
+import EditCopyModal from '../components/EditCopyModal';
+import StopCopyModal from '../components/StopCopyModal';
+import CopyAnalyticsModal from '../components/CopyAnalyticsModal';
 import { useConfirm } from '../components/ConfirmProvider';
 
 /**
@@ -31,6 +34,9 @@ export default function CopyTrade() {
   const [copyTarget, setCopyTarget] = useState(null);
   const [becomeMaster, setBecomeMaster] = useState(false);
   const [editingBox, setEditingBox] = useState(null);
+  const [editRel, setEditRel] = useState(null);   // edit an existing copy
+  const [stopRel, setStopRel] = useState(null);    // stop-copy dialog
+  const [analyticsRel, setAnalyticsRel] = useState(null); // analytics modal
   const confirm = useConfirm();
   const navigate = useNavigate();
   const [q, setQ] = useState('');
@@ -48,6 +54,7 @@ export default function CopyTrade() {
       followers: (a, b) => Number(b.followers || 0) - Number(a.followers || 0),
       winRate:   (a, b) => Number(b.winRate || 0) - Number(a.winRate || 0),
       trades:    (a, b) => Number(b.totalTrades || 0) - Number(a.totalTrades || 0),
+      newest:    (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0),
     };
     return [...list].sort(sorters[sortBy] || sorters.roi);
   }, [leaders, q, riskFilter, sortBy]);
@@ -91,6 +98,16 @@ export default function CopyTrade() {
     }
   };
 
+  // Lightweight refresh of ONLY the my-copies list (open count + live Running
+  // PnL). Cheap enough to poll frequently without re-fetching leaderboard/feed/
+  // boxes each tick. Silent on error — it's a background poll.
+  const refreshMine = async () => {
+    try {
+      const mc = await api.get('/copy-trading/my-copies');
+      setMine(mc.data.data || []);
+    } catch (_) { /* background poll — ignore transient errors */ }
+  };
+
   useEffect(() => {
     refresh();
     const onFocus = () => refresh();
@@ -102,9 +119,18 @@ export default function CopyTrade() {
     };
   }, []);
 
-  const setStatus = async (relationId, route) => {
+  // Fast poll so "Running PnL" tracks the live floating P&L of open copied
+  // trades. Only while the copies are on screen (mine/discover tabs) and the
+  // browser tab is visible — keeps it live without needless load.
+  useEffect(() => {
+    if (tab !== 'mine' && tab !== 'discover') return undefined;
+    const id = setInterval(() => { if (!document.hidden) refreshMine(); }, 6000);
+    return () => clearInterval(id);
+  }, [tab]);
+
+  const setStatus = async (relationId, route, closePositions = false) => {
     try {
-      await api.post(`/copy-trading/${route}`, { relationId });
+      await api.post(`/copy-trading/${route}`, { relationId, closePositions });
       toast.success({ pause: 'Paused', resume: 'Resumed', stop: 'Stopped copying' }[route] || 'Updated');
       refresh();
     } catch (e) { toast.error(errorMessage(e)); }
@@ -135,12 +161,6 @@ export default function CopyTrade() {
     try { await api.post(`/copy-trading/boxes/${box._id}/restore`); toast.success('Copy box restored'); refresh(); }
     catch (e) { toast.error(errorMessage(e)); }
   };
-  const purgeBox = async (box) => {
-    const name = box.displayName || box.accountNumber;
-    if (!(await confirm(`Permanently delete "${name}"? Its history is wiped and this cannot be undone.`))) return;
-    try { await api.delete(`/copy-trading/boxes/${box._id}/purge`); toast.success('Copy box permanently deleted'); refresh(); }
-    catch (e) { toast.error(errorMessage(e)); }
-  };
 
   return (
     <div className="space-y-6 max-w-[1600px]">
@@ -157,9 +177,10 @@ export default function CopyTrade() {
       />
 
       {/* My copy boxes — one per source trading account. */}
-      <MyBoxesSection boxes={myBoxes} onCreate={() => setBecomeMaster(true)} onToggle={toggleBoxPublic} onEdit={setEditingBox} onDelete={deleteBox} />
+      <MyBoxesSection boxes={myBoxes} onCreate={() => setBecomeMaster(true)} onToggle={toggleBoxPublic} onEdit={setEditingBox} onDelete={deleteBox}
+        onView={(b) => navigate(`/copy-trading/trader/${b.userId}?account=${b.accountId}`)} />
 
-      <ArchivedBoxesSection boxes={archivedBoxes} onRestore={restoreBox} onPurge={purgeBox} />
+      <ArchivedBoxesSection boxes={archivedBoxes} onRestore={restoreBox} />
 
       {/* Tab strip — mobile drives section, desktop shows all 3 in grid */}
       <div className="card p-1 inline-flex md:hidden">
@@ -210,6 +231,7 @@ export default function CopyTrade() {
                   <select value={sortBy} onChange={(e) => setSortBy(e.target.value)}
                     className="px-3 py-2 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-secondary focus:outline-none focus:border-primary-500">
                     <option value="roi">Sort: ROI</option>
+                    <option value="newest">Sort: Newest</option>
                     <option value="followers">Sort: Followers</option>
                     <option value="winRate">Sort: Win rate</option>
                     <option value="trades">Sort: Trades</option>
@@ -266,7 +288,7 @@ export default function CopyTrade() {
                     {filteredMine.length === 0 ? (
                       <div className="card p-6 text-center text-[12px] text-text-muted">No copies match “{mineQ}”.</div>
                     ) : filteredMine.map((rel) => (
-                      <MyCopyRow key={rel._id} rel={rel} onAction={setStatus} />
+                      <MyCopyRow key={rel._id} rel={rel} onAction={setStatus} onEdit={() => setEditRel(rel)} onStop={() => setStopRel(rel)} onAnalytics={() => setAnalyticsRel(rel)} />
                     ))}
                   </div>
                 </>
@@ -303,12 +325,32 @@ export default function CopyTrade() {
           onSaved={() => { setEditingBox(null); refresh(); }}
         />
       )}
+
+      {editRel && (
+        <EditCopyModal
+          rel={editRel}
+          onClose={() => setEditRel(null)}
+          onSaved={() => { setEditRel(null); refresh(); }}
+        />
+      )}
+
+      {stopRel && (
+        <StopCopyModal
+          rel={stopRel}
+          onClose={() => setStopRel(null)}
+          onConfirm={async (closePositions) => { await setStatus(stopRel._id, 'stop', closePositions); setStopRel(null); }}
+        />
+      )}
+
+      {analyticsRel && (
+        <CopyAnalyticsModal rel={analyticsRel} onClose={() => setAnalyticsRel(null)} />
+      )}
     </div>
   );
 }
 
 /* ── Copy boxes (one per source trading account) ────────────────────── */
-function MyBoxesSection({ boxes, onCreate, onToggle, onEdit, onDelete }) {
+function MyBoxesSection({ boxes, onCreate, onToggle, onEdit, onDelete, onView }) {
   if (!boxes.length) {
     return (
       <div className="card p-4 flex items-center gap-4 flex-wrap border-2 border-dashed border-border-dark">
@@ -350,6 +392,13 @@ function MyBoxesSection({ boxes, onCreate, onToggle, onEdit, onDelete }) {
               <Stat label="Win" value={`${Number(b.winRate || 0).toFixed(0)}%`} />
               <Stat label="Followers" value={Number(b.followers || 0)} />
             </div>
+            {/* Total realized P&L across this box's copied trade history. */}
+            <div className="mt-2 flex items-center justify-between rounded-lg bg-bg-hover/50 px-2.5 py-1.5">
+              <span className="text-[11px] text-text-muted">Total P&L</span>
+              <span className={`text-sm font-bold font-mono tabular-nums ${Number(b.cumulativePnl || 0) >= 0 ? 'text-bull' : 'text-bear'}`}>
+                {Number(b.cumulativePnl || 0) >= 0 ? '+' : ''}{Number(b.cumulativePnl || 0).toFixed(2)} USD
+              </span>
+            </div>
             <div className="mt-2 text-[11px] text-text-muted">
               Performance fee: <span className="font-bold text-text-secondary">{Number(b.effectivePerformanceFee || 0)}%</span>
               {b.performanceFeePercent == null && <span className="text-text-muted"> (default)</span>}
@@ -359,7 +408,9 @@ function MyBoxesSection({ boxes, onCreate, onToggle, onEdit, onDelete }) {
                 Source account disabled — not accepting new followers.
               </div>
             )}
-            <div className="mt-3 flex justify-end gap-1">
+            <div className="mt-3 flex flex-wrap items-center justify-end gap-1">
+              {/* Preview the public profile followers see (only exists when Live). */}
+              {b.isPublic && <button onClick={() => onView(b)} className="btn-ghost text-xs text-primary-600 font-semibold mr-auto">View profile</button>}
               <button onClick={() => onEdit(b)} className="btn-ghost text-xs">Edit</button>
               <button onClick={() => onToggle(b)} className="btn-ghost text-xs">
                 {b.isPublic ? 'Make private' : 'Go public'}
@@ -375,34 +426,47 @@ function MyBoxesSection({ boxes, onCreate, onToggle, onEdit, onDelete }) {
   );
 }
 
-/* ── Archived (deleted) copy boxes — read-only history + restore/purge ── */
-function ArchivedBoxesSection({ boxes, onRestore, onPurge }) {
+/* ── Archived (deleted) copy boxes — collapsible read-only history + restore ──
+   The list is hidden by default (toggle to show), and boxes can only be
+   RESTORED — there's no permanent delete, so nothing is ever lost. */
+function ArchivedBoxesSection({ boxes, onRestore }) {
+  const [show, setShow] = useState(false);
   if (!boxes.length) return null;
   return (
     <div>
-      <h2 className="text-base font-extrabold text-text-primary tracking-tight mb-3 px-1">Archived boxes</h2>
-      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {boxes.map((b) => (
-          <div key={b._id} className="card p-4 border-2 border-dashed border-border-dark">
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <div className="font-extrabold text-text-primary truncate">{b.displayName || b.accountNumber}</div>
-                <div className="text-[11px] text-text-secondary mt-0.5"><span className="font-semibold">{b.accountType}</span> · {b.accountNumber}</div>
+      <button
+        onClick={() => setShow((s) => !s)}
+        className="flex items-center gap-2 mb-3 px-1 text-base font-extrabold text-text-primary tracking-tight hover:text-primary-500 transition-colors"
+        aria-expanded={show}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className={`text-text-muted transition-transform ${show ? 'rotate-90' : ''}`}><path d="M9 18l6-6-6-6" /></svg>
+        Archived boxes
+        <span className="text-xs font-semibold text-text-muted">({boxes.length})</span>
+        <span className="text-[11px] font-medium text-text-muted">· {show ? 'Hide' : 'Show'}</span>
+      </button>
+      {show && (
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {boxes.map((b) => (
+            <div key={b._id} className="card p-4 border-2 border-dashed border-border-dark">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="font-extrabold text-text-primary truncate">{b.displayName || b.accountNumber}</div>
+                  <div className="text-[11px] text-text-secondary mt-0.5"><span className="font-semibold">{b.accountType}</span> · {b.accountNumber}</div>
+                </div>
+                <span className="shrink-0 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-text-muted/15 text-text-muted">Archived</span>
               </div>
-              <span className="shrink-0 text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-text-muted/15 text-text-muted">Archived</span>
+              <div className="grid grid-cols-3 gap-2 text-center mt-3">
+                <Stat label="ROI" value={`${Number(b.roiPct || 0) >= 0 ? '+' : ''}${Number(b.roiPct || 0).toFixed(1)}%`} tone={Number(b.roiPct || 0) >= 0 ? 'bull' : 'bear'} />
+                <Stat label="Win" value={`${Number(b.winRate || 0).toFixed(0)}%`} />
+                <Stat label="Trades" value={Number(b.totalTrades || 0)} />
+              </div>
+              <div className="mt-3 flex justify-end gap-1">
+                <button onClick={() => onRestore(b)} className="btn-ghost text-xs">Restore</button>
+              </div>
             </div>
-            <div className="grid grid-cols-3 gap-2 text-center mt-3">
-              <Stat label="ROI" value={`${Number(b.roiPct || 0) >= 0 ? '+' : ''}${Number(b.roiPct || 0).toFixed(1)}%`} tone={Number(b.roiPct || 0) >= 0 ? 'bull' : 'bear'} />
-              <Stat label="Win" value={`${Number(b.winRate || 0).toFixed(0)}%`} />
-              <Stat label="Trades" value={Number(b.totalTrades || 0)} />
-            </div>
-            <div className="mt-3 flex justify-end gap-1">
-              <button onClick={() => onRestore(b)} className="btn-ghost text-xs">Restore</button>
-              <button onClick={() => onPurge(b)} className="text-xs px-2 py-1 rounded-lg text-bear hover:bg-bear/10 font-semibold">Delete permanently</button>
-            </div>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -516,9 +580,12 @@ function BecomeMasterModal({ onClose, onCreated, initialFee = '' }) {
     (async () => {
       try {
         const r = await api.get('/copy-trading/eligible-accounts');
-        const list = r.data.data || [];
+        // DEMO / VIRTUAL accounts can't be a copy source (followers mirror real trades).
+        const list = (r.data.data || []).filter((a) => a.accountType !== 'DEMO' && a.accountType !== 'VIRTUAL');
         setAccounts(list);
-        const first = list.find((a) => !a.hasBox) || list[0];
+        // Default to the first account WITHOUT a box (box-exists ones are
+        // disabled). If every account already has a box, leave it unselected.
+        const first = list.find((a) => !a.hasBox);
         if (first) setAccountId(first.accountId);
       } catch (e) { toast.error(errorMessage(e)); }
       finally { setLoading(false); }
@@ -563,8 +630,16 @@ function BecomeMasterModal({ onClose, onCreated, initialFee = '' }) {
                 onChange={(e) => setAccountId(e.target.value)}
                 className="w-full px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/15"
               >
+                <option value="" disabled>Select an account…</option>
                 {accounts.map((a) => (
-                  <option key={a.accountId} value={a.accountId}>
+                  // A box already exists for this account → show it, but it can't
+                  // be picked again (disabled + red strikethrough).
+                  <option
+                    key={a.accountId}
+                    value={a.accountId}
+                    disabled={a.hasBox}
+                    style={a.hasBox ? { color: '#dc2626', textDecoration: 'line-through' } : undefined}
+                  >
                     {a.accountNumber} ({a.accountType}) · {a.baseCurrency}
                     {a.hasBox ? ' · box exists' : ''}
                     {!a.acceptsFollowers ? ' · inactive' : ''}
@@ -945,8 +1020,7 @@ function FeedRow({ event }) {
   );
 }
 
-function MyCopyRow({ rel, onAction }) {
-  const confirm = useConfirm();
+function MyCopyRow({ rel, onAction, onEdit, onStop, onAnalytics }) {
   const m = rel.master || {};
   const running = Number(rel.runningPnl || 0);
   const tone = rel.status === 'ACTIVE' ? 'bg-bull/15 text-bull'
@@ -964,8 +1038,7 @@ function MyCopyRow({ rel, onAction }) {
             <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${tone}`}>{rel.status}</span>
           </div>
           <div className="text-[11px] text-text-muted mt-0.5 flex items-center gap-2 flex-wrap">
-            <span>${Number(rel.investment).toFixed(2)} · {rel.riskLevel}</span>
-            {Number(rel.heldAmount) > 0 && <span className="text-primary-600">· ${Number(rel.heldAmount).toFixed(2)} reserved</span>}
+            <span className="font-semibold text-text-secondary">{rel.lotMode === 'CUSTOM' ? `${rel.customLot} lots` : `${(rel.lotMode || 'MEDIUM').toLowerCase()} lot`}</span>
             <span>· {rel.tradesCopied || 0} copies</span>
             <span>· {(rel.openMirrors || []).length} open</span>
             {rel.followerAccountNumber && <span>· → {rel.followerAccountNumber}</span>}
@@ -979,21 +1052,20 @@ function MyCopyRow({ rel, onAction }) {
         </div>
       </div>
       <div className="mt-3 flex flex-wrap gap-1.5">
+        <button onClick={() => onAnalytics(rel)} className="btn-ghost text-xs text-primary-600 font-semibold">Analytics</button>
         {rel.status === 'ACTIVE' && (
           <button onClick={() => onAction(rel._id, 'pause')} className="btn-ghost text-xs">Pause</button>
         )}
-        {rel.status !== 'ACTIVE' && rel.status !== 'STOPPED' && (
-          <button onClick={() => onAction(rel._id, 'resume')} className="btn-ghost text-xs">Resume</button>
+        {/* Resume works for BOTH paused and stopped sessions — the session
+            (account, lot size, settings, history) is restored, never duplicated. */}
+        {rel.status !== 'ACTIVE' && (
+          <button onClick={() => onAction(rel._id, 'resume')} className="btn-ghost text-xs text-primary-600 font-semibold">Resume</button>
         )}
         {rel.status !== 'STOPPED' && (
-          <button
-            onClick={async () => {
-              if (await confirm('Stop copying this trader? Open mirrored trades stay open until they close on their own.')) {
-                onAction(rel._id, 'stop');
-              }
-            }}
-            className="text-xs font-bold px-2.5 py-1 rounded text-bear hover:bg-bear/10 transition-colors"
-          >
+          <button onClick={() => onEdit(rel)} className="btn-ghost text-xs">Edit</button>
+        )}
+        {rel.status !== 'STOPPED' && (
+          <button onClick={() => onStop(rel)} className="text-xs font-bold px-2.5 py-1 rounded text-bear hover:bg-bear/10 transition-colors">
             Stop
           </button>
         )}

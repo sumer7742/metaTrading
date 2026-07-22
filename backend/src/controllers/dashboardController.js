@@ -8,6 +8,7 @@ const { Notification } = require('../models/index');
 const { sendSuccess, asyncHandler } = require('../utils/errors');
 const { ACCOUNT_TYPES } = require('../config/constants');
 const { add } = require('../utils/decimal');
+const { applyDateRange } = require('../utils/dateRange');
 
 // Resolve which account _ids a dashboard filter applies to. Supports the
 // special sentinels used by the Portfolio account dropdown:
@@ -308,9 +309,8 @@ const getLifetimeStats = asyncHandler(async (req, res) => {
   const closedFilter = { accountId: { $in: accountIds }, status: 'CLOSED' };
   // Custom range (fromDate/toDate) wins over the preset `days` window.
   if (req.query.fromDate || req.query.toDate) {
-    closedFilter.closedAt = {};
-    if (req.query.fromDate) closedFilter.closedAt.$gte = new Date(req.query.fromDate);
-    if (req.query.toDate) closedFilter.closedAt.$lte = new Date(new Date(req.query.toDate).setHours(23, 59, 59, 999));
+    // Inclusive of the whole `toDate` day (shared helper, tz-consistent bounds).
+    applyDateRange(closedFilter, 'closedAt', req.query.fromDate, req.query.toDate);
   } else if (days > 0) {
     const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
     closedFilter.closedAt = { $gte: cutoff };

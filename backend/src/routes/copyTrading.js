@@ -14,11 +14,15 @@ router.get('/trader/:userId/positions', authenticate, c.traderPositions);
 router.get('/trader/:userId/history',   authenticate, c.traderHistory);
 
 // Follower dashboard + actions
-router.get('/my-copies',  authenticate, c.myCopies);
-router.post('/copy',      authenticate, c.startCopy);
-router.post('/pause',     authenticate, c.pauseCopy);
-router.post('/resume',    authenticate, c.resumeCopy);
-router.post('/stop',      authenticate, c.stopCopy);
+router.get('/my-copies',    authenticate, c.myCopies);
+router.get('/copy-preview', authenticate, c.copyPreview);  // balance preview for the copy dialog
+router.post('/copy',        authenticate, c.startCopy);
+router.put('/copy/:id',     authenticate, c.editCopy);      // edit an existing copy relation
+router.get('/copy/:id/analytics',       authenticate, c.copyRelAnalytics);
+router.post('/copy/:id/change-account', authenticate, c.changeAccount);
+router.post('/pause',       authenticate, c.pauseCopy);
+router.post('/resume',      authenticate, c.resumeCopy);
+router.post('/stop',        authenticate, c.stopCopy);
 
 // Copy boxes — master = a specific trading account. `boxes/me` & `eligible-
 // accounts` are literal paths declared before any `:id` route.

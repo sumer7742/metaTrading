@@ -53,23 +53,64 @@ const myCopies = asyncHandler(async (req, res) => {
   sendSuccess(res, items);
 });
 
+// Start (or resume) a copy into one of the follower's OWN trading accounts.
+// v2: no investment field — lot-based sizing + settings.
 const startCopy = asyncHandler(async (req, res) => {
-  const { masterAccountId, investment, riskLevel, syncSlTp, followerAccountId } = req.body;
+  const {
+    masterAccountId, followerAccountId,
+    lotMode, customLot, lotMultiplier, riskMultiplier, maxLot, maxOpenTrades,
+    copySL, copyTP, copyPending,
+  } = req.body;
   if (!masterAccountId) throw new AppError('masterAccountId required', 400);
-  if (!investment || Number(investment) <= 0) throw new AppError('Investment must be > 0', 400);
   try {
     const rel = await copyTradingService.startCopying({
       followerId: req.userId,
-      masterAccountId,
-      investment,
-      riskLevel,
-      syncSlTp,
-      followerAccountId,
+      masterAccountId, followerAccountId,
+      lotMode, customLot, lotMultiplier, riskMultiplier, maxLot, maxOpenTrades,
+      copySL, copyTP, copyPending,
     });
     sendSuccess(res, rel, 201);
   } catch (e) {
     throw new AppError(e.message, 400);
   }
+});
+
+// Balance preview for the copy dialog (advisory — never blocks copying).
+const copyPreview = asyncHandler(async (req, res) => {
+  const { followerAccountId, masterAccountId } = req.query;
+  if (!followerAccountId) throw new AppError('followerAccountId required', 400);
+  try {
+    sendSuccess(res, await copyTradingService.getCopyPreview({ followerId: req.userId, followerAccountId, masterAccountId }));
+  } catch (e) { throw new AppError(e.message, 400); }
+});
+
+// Edit an existing copy relation (lot/risk settings + optional account change).
+const editCopy = asyncHandler(async (req, res) => {
+  try {
+    const rel = await copyTradingService.editCopy({ followerId: req.userId, relationId: req.params.id, ...req.body });
+    sendSuccess(res, rel);
+  } catch (e) { throw new AppError(e.message, 400); }
+});
+
+// Change destination account, with the close/keep-open option.
+const changeAccount = asyncHandler(async (req, res) => {
+  const { newAccountId, closePositions } = req.body;
+  if (!newAccountId) throw new AppError('newAccountId required', 400);
+  try {
+    const rel = await copyTradingService.changeAccount({
+      followerId: req.userId, relationId: req.params.id, newAccountId, closePositions: !!closePositions,
+    });
+    sendSuccess(res, rel);
+  } catch (e) { throw new AppError(e.message, 400); }
+});
+
+// Full analytics for one of the follower's copy relations (date-filterable).
+const copyRelAnalytics = asyncHandler(async (req, res) => {
+  try {
+    const data = await require('../services/copyAnalyticsService')
+      .getCopyAnalytics(req.userId, req.params.id, { from: req.query.from, to: req.query.to });
+    sendSuccess(res, data);
+  } catch (e) { throw new AppError(e.message, 400); }
 });
 
 // ── Copy boxes (master = a specific trading account) ─────────────────
@@ -124,13 +165,14 @@ const archivedBoxes = asyncHandler(async (req, res) => {
 });
 
 const setStatus = (status) => asyncHandler(async (req, res) => {
-  const { relationId } = req.body;
+  const { relationId, closePositions } = req.body;
   if (!relationId) throw new AppError('relationId required', 400);
   try {
     const rel = await copyTradingService.setStatus({
       followerId: req.userId,
       relationId,
       status,
+      closePositions: !!closePositions, // Stop dialog: "close automatically"
     });
     sendSuccess(res, rel);
   } catch (e) { throw new AppError(e.message, 400); }
@@ -223,6 +265,10 @@ module.exports = {
   purgeBox,
   archivedBoxes,
   startCopy,
+  copyPreview,
+  editCopy,
+  changeAccount,
+  copyRelAnalytics,
   pauseCopy:  setStatus('PAUSED'),
   resumeCopy: setStatus('ACTIVE'),
   stopCopy:   setStatus('STOPPED'),

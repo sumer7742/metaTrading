@@ -9,6 +9,7 @@ const { Deposit, Withdrawal, AuditLog } = require('../models/index');
 const Feedback = require('../models/Feedback');
 const walletService = require('../services/walletService');
 const { sendSuccess, asyncHandler, AppError } = require('../utils/errors');
+const { applyDateRange, applyDateTimeRange, localDayStart, endOfDay } = require('../utils/dateRange');
 const { KYC_STATUS, WALLET_TX_TYPE, BOOK_TYPE, LP_PROVIDER, EXECUTION_MODE, ROUTING_RESULT, ROUTING } = require('../config/constants');
 const { add, sub, mul } = require('../utils/decimal');
 
@@ -1015,12 +1016,9 @@ const listAuditLog = asyncHandler(async (req, res) => {
   const page = Math.max(1, Number(req.query.page) || 1);
   const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
   const filter = {};
-  // Date range (ISO strings from the client's presets / custom picker).
-  if (from || to) {
-    filter.createdAt = {};
-    if (from) filter.createdAt.$gte = new Date(from);
-    if (to)   filter.createdAt.$lte = new Date(to);
-  }
+  // Date+time range — the client sends full ISO instants (presets + custom
+  // date/time picker), honored precisely with an inclusive upper bound.
+  applyDateTimeRange(filter, 'createdAt', from, to);
   // Free-text search across action / target / role / IP, plus the ObjectId
   // string forms of actor & target so a "last-6" id fragment still matches.
   if (q && String(q).trim()) {
@@ -1081,11 +1079,8 @@ const listFeedback = asyncHandler(async (req, res) => {
   const filter = {};
   if (status && FEEDBACK_STATUSES.includes(status)) filter.status = status;
   if (category && FEEDBACK_CATEGORIES.includes(category)) filter.category = category;
-  if (from || to) {
-    filter.createdAt = {};
-    if (from) filter.createdAt.$gte = new Date(from);
-    if (to) filter.createdAt.$lte = new Date(to);
-  }
+  // Inclusive of the whole `to` day (fixes From==To returning nothing).
+  applyDateRange(filter, 'createdAt', from, to);
   if (q && String(q).trim()) {
     const rx = new RegExp(String(q).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
     filter.$or = [{ subject: rx }, { message: rx }, { adminReply: rx }];
@@ -1176,11 +1171,8 @@ const tradesReport = asyncHandler(async (req, res) => {
   const { from, to, symbol, limit = 500 } = req.query;
   const filter = {};
   if (symbol) filter.symbol = symbol.toUpperCase();
-  if (from || to) {
-    filter.executedAt = {};
-    if (from) filter.executedAt.$gte = new Date(from);
-    if (to) filter.executedAt.$lte = new Date(to);
-  }
+  // Inclusive of the whole `to` day (fixes From==To returning nothing).
+  applyDateRange(filter, 'executedAt', from, to);
   // Hierarchy scope — an ADMIN only sees trades involving their subtree's
   // users (a trade counts if either leg is one of their users). Super Admin: all.
   const scope = await adminScopeUserIds(req);
@@ -1607,9 +1599,8 @@ const listUserTransfers = asyncHandler(async (req, res) => {
   // Date range (fromDate/toDate, inclusive end-of-day) takes precedence over
   // the legacy `before` cursor.
   if (fromDate || toDate) {
-    filter.createdAt = {};
-    if (fromDate) filter.createdAt.$gte = new Date(fromDate);
-    if (toDate) filter.createdAt.$lte = new Date(new Date(toDate).setHours(23, 59, 59, 999));
+    // Inclusive of the whole `toDate` day (shared helper, tz-consistent bounds).
+    applyDateRange(filter, 'createdAt', fromDate, toDate);
   } else if (before) {
     filter.createdAt = { $lt: new Date(before) };
   }
@@ -1870,8 +1861,9 @@ const getExecutionStats = asyncHandler(async (req, res) => {
   let since;
   let until = now;
   if (req.query.fromDate || req.query.toDate) {
-    since = req.query.fromDate ? new Date(req.query.fromDate) : new Date(now.getTime() - 7 * 86400000);
-    until = req.query.toDate ? new Date(new Date(req.query.toDate).setHours(23, 59, 59, 999)) : now;
+    // Day-aligned, inclusive end-of-day (shared helper, tz-consistent bounds).
+    since = req.query.fromDate ? localDayStart(req.query.fromDate) : new Date(now.getTime() - 7 * 86400000);
+    until = req.query.toDate ? endOfDay(req.query.toDate) : now;
   } else {
     const d = { '24h': 1, '7d': 7, '30d': 30 }[req.query.period] || 7;
     since = new Date(now.getTime() - d * 86400000);
@@ -2123,11 +2115,8 @@ function _accFilter({ status, mode, type, group, from, to }) {
   if (conds.length === 1) Object.assign(m, conds[0]);
   else if (conds.length > 1) m.$and = conds;
 
-  if (from || to) {
-    m.createdAt = {};
-    if (from) m.createdAt.$gte = new Date(from);
-    if (to) m.createdAt.$lte = new Date(to);
-  }
+  // Inclusive of the whole `to` day (fixes From==To returning nothing).
+  applyDateRange(m, 'createdAt', from, to);
   return m;
 }
 
@@ -2273,11 +2262,8 @@ async function _computeExposure(userIds, query = {}) {
   const match = { status: 'OPEN', book: { $ne: 'A_BOOK' } };
   if (userIds) match.userId = { $in: userIds };
   if (query.symbol) match.symbol = String(query.symbol).toUpperCase();
-  if (query.from || query.to) {
-    match.openedAt = {};
-    if (query.from) match.openedAt.$gte = new Date(query.from);
-    if (query.to)   match.openedAt.$lte = new Date(new Date(query.to).setHours(23, 59, 59, 999));
-  }
+  // Inclusive of the whole `to` day (shared helper, tz-consistent bounds).
+  applyDateRange(match, 'openedAt', query.from, query.to);
 
   const pipeline = [{ $match: match }];
   // By default exclude demo/virtual accounts — market exposure is the broker's
@@ -2493,8 +2479,9 @@ function _portfolioRange({ period, from, to, fromDate, toDate }) {
   const f = fromDate || from;
   const t = toDate || to;
   if (f || t) {
-    const start = f ? new Date(f) : new Date(now.getTime() - 7 * 86400000);
-    const end = t ? new Date(new Date(t).setHours(23, 59, 59, 999)) : now; // inclusive end-of-day
+    // Day-aligned, inclusive end-of-day (shared helper, tz-consistent bounds).
+    const start = f ? localDayStart(f) : new Date(now.getTime() - 7 * 86400000);
+    const end = t ? endOfDay(t) : now;
     return { start, end, period: period || 'custom' };
   }
   let start;
@@ -2653,8 +2640,9 @@ function _resolveDashRange({ period, fromDate, toDate }) {
   const Y = now.getFullYear(), Mo = now.getMonth(), Da = now.getDate();
   let start, end = now, key = period || '7d';
   if (fromDate || toDate) {
-    start = fromDate ? new Date(fromDate) : new Date(now.getTime() - 7 * 86400000);
-    end = toDate ? new Date(new Date(toDate).setHours(23, 59, 59, 999)) : now;
+    // Day-aligned, inclusive end-of-day (shared helper, tz-consistent bounds).
+    start = fromDate ? localDayStart(fromDate) : new Date(now.getTime() - 7 * 86400000);
+    end = toDate ? endOfDay(toDate) : now;
     key = (period && period !== 'custom') ? period : 'custom';
   } else {
     switch (period) {

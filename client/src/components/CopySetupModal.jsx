@@ -1,47 +1,45 @@
 import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api, errorMessage } from '../services/api';
+import CopySettingsFields, { defaultSettings, settingsPayload } from './CopySettingsFields';
 
 /**
- * CopySetupModal — small premium dialog the user sees after clicking
- * "Copy" on a master row in the leaderboard. Captures:
- *   • Investment amount (USD)
- *   • Risk level (LOW / MEDIUM / HIGH)
- *   • SL/TP sync toggle
- * Submit POSTs /copy-trading/copy and resolves with the new relation
- * so the parent page can refresh its "My copies" tab.
+ * CopySetupModal (v2 — account-based) — the dialog after clicking "Copy".
+ * Picks a destination trading account (no investment / copy wallet), shows a
+ * balance warning (advisory), and captures lot size + copy settings.
  */
+
+const sym = (c) => (c === 'USD' ? '$' : c === 'INR' ? '₹' : `${c} `);
+
 export default function CopySetupModal({ trader, onClose, onStarted }) {
-  const [investment, setInvestment] = useState('100');
-  const [riskLevel, setRiskLevel] = useState('MEDIUM');
-  const [syncSlTp, setSyncSlTp] = useState(true);
   const [accounts, setAccounts] = useState([]);
+  const [balances, setBalances] = useState([]);
   const [accountId, setAccountId] = useState('');
+  const [settings, setSettings] = useState(defaultSettings);
+  const set = (k, v) => setSettings((s) => ({ ...s, [k]: v }));
+  const [preview, setPreview] = useState(null);
   const [saving, setSaving] = useState(false);
-  // Performance fee this master charges on profitable copied trades. Comes
-  // through on the leaderboard/profile object; fetched as a fallback so the
-  // follower always sees it before confirming.
   const [feePct, setFeePct] = useState(
     trader?.performanceFeePercent != null ? Number(trader.performanceFeePercent) : null
   );
 
-  // Load the user's real trading accounts so they can pick which one
-  // the mirrored trades land in.
   useEffect(() => {
     (async () => {
       try {
-        const r = await api.get('/user/accounts');
-        const reals = (r.data.data || []).filter(
+        const [ar, br] = await Promise.all([
+          api.get('/user/accounts'),
+          api.get('/wallet/balances').catch(() => ({ data: { data: [] } })),
+        ]);
+        const reals = (ar.data.data || []).filter(
           (a) => a.accountType !== 'DEMO' && a.accountType !== 'VIRTUAL' && a.isActive !== false
         );
         setAccounts(reals);
+        setBalances(br.data.data || []);
         if (reals.length) setAccountId(reals[0]._id);
       } catch { /* non-fatal */ }
     })();
   }, []);
 
-  // Fallback: resolve the master's effective performance fee if it wasn't
-  // already on the trader object (e.g. opened from a stale card).
   useEffect(() => {
     if (feePct != null) return;
     (async () => {
@@ -49,24 +47,39 @@ export default function CopySetupModal({ trader, onClose, onStarted }) {
         const r = await api.get(`/copy-trading/trader/${trader.userId}`);
         const p = r.data?.data?.earnings?.performanceFeePercent;
         if (p != null) setFeePct(Number(p));
-      } catch { /* leave hidden if we can't determine it */ }
+      } catch { /* leave hidden */ }
     })();
   }, []);
 
+  useEffect(() => {
+    if (!accountId) { setPreview(null); return; }
+    let dead = false;
+    (async () => {
+      try {
+        const r = await api.get('/copy-trading/copy-preview', {
+          params: { followerAccountId: accountId, masterAccountId: trader.accountId },
+        });
+        if (!dead) setPreview(r.data.data);
+      } catch { if (!dead) setPreview(null); }
+    })();
+    return () => { dead = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId]);
+
+  const balanceOf = (a) => {
+    const w = balances.find((b) => String(b.accountId) === String(a._id) && b.currency === a.baseCurrency);
+    return w ? Number(w.free ?? w.balance ?? 0) : null;
+  };
+
   const submit = async () => {
-    const amt = Number(investment);
-    if (!Number.isFinite(amt) || amt <= 0) {
-      toast.error('Enter an investment amount > $0');
-      return;
-    }
+    if (!accountId) return toast.error('Select a trading account');
+    if (settings.lotMode === 'CUSTOM' && !(Number(settings.customLot) > 0)) return toast.error('Enter a custom lot size greater than 0');
     setSaving(true);
     try {
       const r = await api.post('/copy-trading/copy', {
         masterAccountId: trader.accountId,
-        investment: amt,
-        riskLevel,
-        syncSlTp,
-        followerAccountId: accountId || undefined,
+        followerAccountId: accountId,
+        ...settingsPayload(settings),
       });
       toast.success(`Now copying ${trader.displayName}`);
       onStarted?.(r.data.data);
@@ -77,27 +90,15 @@ export default function CopySetupModal({ trader, onClose, onStarted }) {
     }
   };
 
-  const RISK = [
-    { id: 'LOW',    label: 'Low',    note: '0.5× master size',  tone: 'bg-emerald-50 text-emerald-700 border-emerald-300' },
-    { id: 'MEDIUM', label: 'Medium', note: '1× master size',    tone: 'bg-amber-50 text-amber-700 border-amber-300' },
-    { id: 'HIGH',   label: 'High',   note: '1.5× master size',  tone: 'bg-rose-50 text-rose-700 border-rose-300' },
-  ];
-
   return (
     <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
-      <div className="card max-w-md w-full overflow-hidden" onClick={(e) => e.stopPropagation()}>
-        {/* Header */}
-        <div className="px-5 py-4 border-b border-border-subtle flex items-center gap-3">
+      <div className="card max-w-md w-full max-h-[92vh] overflow-y-auto no-scrollbar" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b border-border-subtle flex items-center gap-3 sticky top-0 bg-bg-card z-10">
           <span className="w-10 h-10 rounded-full bg-primary-500/15 text-primary-600 flex items-center justify-center text-base font-extrabold">
             {(trader.displayName || 'T').slice(0, 2).toUpperCase()}
           </span>
           <div className="min-w-0 flex-1">
             <h3 className="font-extrabold text-text-primary truncate">Copy {trader.displayName}</h3>
-            {(trader.accountType || trader.ownerName) && (
-              <p className="text-[11px] text-text-secondary truncate">
-                {trader.accountType || ''}{trader.accountType && trader.ownerName ? ' · ' : ''}{trader.ownerName || ''}
-              </p>
-            )}
             <p className="text-[11px] text-text-muted truncate">
               ROI {Number(trader.roiPct || 0).toFixed(1)}% · {Number(trader.winRate || 0).toFixed(0)}% win · {trader.followers || 0} followers
             </p>
@@ -105,131 +106,73 @@ export default function CopySetupModal({ trader, onClose, onStarted }) {
           <button onClick={onClose} className="text-text-muted hover:text-text-primary text-xl leading-none">×</button>
         </div>
 
-        {/* Body */}
         <div className="p-5 space-y-4">
+          {/* Trading account (destination) */}
           <div>
-            <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1.5">Investment amount</label>
-            <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted">$</span>
-              <input
-                type="number"
-                step="1"
-                min="1"
-                value={investment}
-                onChange={(e) => setInvestment(e.target.value)}
-                className="w-full pl-7 pr-3 py-2.5 rounded-xl border border-border-dark bg-white text-base font-mono font-bold focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/15"
-              />
-            </div>
-            <div className="flex gap-1.5 mt-2">
-              {[50, 100, 500, 1000].map((q) => (
-                <button
-                  key={q}
-                  type="button"
-                  onClick={() => setInvestment(String(q))}
-                  className="text-[11px] font-bold px-2.5 py-1 rounded-md border border-border-dark text-text-secondary hover:border-primary-500 hover:text-primary-600 transition-colors"
-                >
-                  ${q}
-                </button>
-              ))}
-            </div>
-            <p className="text-[11px] text-text-muted mt-2 leading-snug">
-              Mirrored trades are sized as <span className="font-semibold text-text-secondary">amount × master share</span>. Higher amount = bigger copy lots.
-            </p>
-          </div>
-
-          <div>
-            <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1.5">Risk level</label>
-            <div className="grid grid-cols-3 gap-2">
-              {RISK.map((r) => (
-                <button
-                  key={r.id}
-                  type="button"
-                  onClick={() => setRiskLevel(r.id)}
-                  className={`rounded-xl border-2 p-2.5 text-left transition-all ${
-                    riskLevel === r.id
-                      ? `${r.tone} border-current shadow-sm`
-                      : 'border-border-dark bg-white text-text-secondary hover:border-primary-500'
-                  }`}
-                >
-                  <div className="text-sm font-extrabold">{r.label}</div>
-                  <div className="text-[10px] mt-0.5 opacity-80">{r.note}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {accounts.length > 1 && (
-            <div>
-              <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1.5">Funding account</label>
-              <select
-                value={accountId}
-                onChange={(e) => setAccountId(e.target.value)}
-                className="w-full px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm focus:outline-none focus:border-primary-500"
-              >
-                {accounts.map((a) => (
-                  <option key={a._id} value={a._id}>{a.nickname || a.accountNumber} · {a.baseCurrency}</option>
-                ))}
+            <label className="block text-[11px] uppercase tracking-wider font-bold text-text-muted mb-1.5">Trading account</label>
+            <p className="text-[11px] text-text-muted mb-2 leading-snug">Copied trades open in this account — its balance, margin, swaps and P&L.</p>
+            {accounts.length === 0 ? (
+              <div className="text-text-muted text-sm py-2">No live trading account found.</div>
+            ) : (
+              <select value={accountId} onChange={(e) => setAccountId(e.target.value)}
+                className="w-full px-3 py-2.5 rounded-xl border border-border-dark bg-white text-sm font-semibold text-text-primary focus:outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/15">
+                {accounts.map((a) => {
+                  const bal = balanceOf(a);
+                  return (
+                    <option key={a._id} value={a._id}>
+                      {a.nickname || a.accountNumber} · {a.baseCurrency}{bal != null ? ` · ${sym(a.baseCurrency)}${bal.toFixed(2)}` : ''}
+                    </option>
+                  );
+                })}
               </select>
+            )}
+          </div>
+
+          {/* Balance validation (advisory) */}
+          {preview && (
+            <div className={`rounded-xl border p-3 ${preview.lowBalance ? 'border-amber-300 bg-amber-50/70' : 'border-border-dark bg-bg-hover/40'}`}>
+              <div className="grid grid-cols-2 gap-3 text-center">
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted">Current balance</div>
+                  <div className="text-lg font-extrabold text-text-primary font-mono tabular-nums">{sym(preview.currency)}{Number(preview.currentBalance).toFixed(2)}</div>
+                </div>
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider font-bold text-text-muted">Recommended</div>
+                  <div className="text-lg font-extrabold text-text-secondary font-mono tabular-nums">{sym(preview.currency)}{Number(preview.recommendedBalance).toFixed(2)}</div>
+                </div>
+              </div>
+              {preview.lowBalance && (
+                <p className="text-[11px] text-amber-700 mt-2 flex items-start gap-1.5">
+                  <span aria-hidden>⚠</span>
+                  <span><span className="font-semibold">Low balance.</span> Future copied trades may fail from insufficient margin — you can still copy.</span>
+                </p>
+              )}
             </div>
           )}
 
-          <label className="flex items-center gap-2 cursor-pointer text-sm">
-            <input
-              type="checkbox"
-              checked={syncSlTp}
-              onChange={(e) => setSyncSlTp(e.target.checked)}
-              className="accent-primary-500"
-            />
-            <span className="text-text-primary">Sync SL/TP changes from the master</span>
-          </label>
+          {/* Lot size + copy settings (shared component) */}
+          <CopySettingsFields settings={settings} set={set} />
 
-          {/* Profit settlement + fee disclosure — shown BEFORE confirming. */}
+          {/* Performance fee disclosure */}
           {feePct != null && (
             <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3">
               <div className="flex items-center justify-between">
-                <span className="text-[11px] uppercase tracking-wider font-bold text-amber-700">
-                  {feePct > 0 ? 'Performance Fee' : 'Profit Settlement'}
-                </span>
+                <span className="text-[11px] uppercase tracking-wider font-bold text-amber-700">{feePct > 0 ? 'Performance Fee' : 'Profit Settlement'}</span>
                 {feePct > 0 && <span className="text-sm font-extrabold text-amber-700">{feePct}%</span>}
               </div>
-              {feePct > 0 ? (
-                <p className="text-[11px] text-amber-800/80 mt-1 leading-snug">
-                  {trader.displayName} earns <span className="font-semibold">{feePct}%</span> of your
-                  {' '}<span className="font-semibold">profit</span> on each winning trade.
-                  {' '}<span className="font-semibold">No fee</span> on losing or breakeven trades.
-                </p>
-              ) : (
-                <p className="text-[11px] text-amber-800/80 mt-1 leading-snug">No performance fee on this trader.</p>
-              )}
-              {feePct > 0 && (
-                <div className="mt-2 grid grid-cols-3 gap-2 text-center">
-                  <div className="rounded-lg bg-white/70 py-1.5">
-                    <div className="text-[9px] uppercase text-text-muted font-bold">On $100 profit</div>
-                    <div className="text-xs font-extrabold text-text-primary">$100</div>
-                  </div>
-                  <div className="rounded-lg bg-white/70 py-1.5">
-                    <div className="text-[9px] uppercase text-text-muted font-bold">Master earns</div>
-                    <div className="text-xs font-extrabold text-amber-700">${Number(feePct).toFixed(2)}</div>
-                  </div>
-                  <div className="rounded-lg bg-white/70 py-1.5">
-                    <div className="text-[9px] uppercase text-text-muted font-bold">To Main Wallet</div>
-                    <div className="text-xs font-extrabold text-bull">${(100 - Number(feePct)).toFixed(2)}</div>
-                  </div>
-                </div>
-              )}
-              <div className="mt-2 flex items-start gap-1.5 text-[11px] text-text-secondary">
-                <span aria-hidden>💰</span>
-                <span>Your copy-trading <span className="font-semibold text-text-primary">profits are paid to your Main Wallet</span> — your trading account keeps its capital.</span>
-              </div>
+              <p className="text-[11px] text-amber-800/80 mt-1 leading-snug">
+                {feePct > 0
+                  ? <>{trader.displayName} earns <span className="font-semibold">{feePct}%</span> of your <span className="font-semibold">profit</span> on winning copied trades. <span className="font-semibold">No fee</span> on losses. Profits pay to your Main Wallet.</>
+                  : 'No performance fee on this trader.'}
+              </p>
             </div>
           )}
         </div>
 
-        {/* Footer */}
-        <div className="px-5 py-3 border-t border-border-subtle flex justify-end gap-2">
+        <div className="px-5 py-3 border-t border-border-subtle flex justify-end gap-2 sticky bottom-0 bg-bg-card">
           <button onClick={onClose} disabled={saving} className="btn-ghost text-sm">Cancel</button>
-          <button onClick={submit} disabled={saving} className="btn-primary text-sm disabled:opacity-50">
-            {saving ? 'Starting…' : 'Start copying'}
+          <button onClick={submit} disabled={saving || !accountId} className="btn-primary text-sm disabled:opacity-50">
+            {saving ? 'Starting…' : 'Start copy'}
           </button>
         </div>
       </div>

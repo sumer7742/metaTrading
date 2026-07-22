@@ -3,6 +3,7 @@ const Trade = require('../models/Trade');
 const Position = require('../models/Position');
 const { WalletLedger } = require('../models/Wallet');
 const { asyncHandler } = require('../utils/errors');
+const { applyDateRange } = require('../utils/dateRange');
 
 /**
  * Tiny CSV serializer. Escapes quotes and wraps fields containing commas/quotes/newlines.
@@ -31,11 +32,8 @@ const exportOrderHistory = asyncHandler(async (req, res) => {
   if (accountId) filter.accountId = accountId;   // scoped by userId above → safe
   if (symbol) filter.symbol = symbol.toUpperCase();
   if (status) filter.status = status;
-  if (from || to) {
-    filter.createdAt = {};
-    if (from) filter.createdAt.$gte = new Date(from);
-    if (to) filter.createdAt.$lte = new Date(to);
-  }
+  // Inclusive of the whole `to` day (fixes From==To returning nothing).
+  applyDateRange(filter, 'createdAt', from, to);
   const orders = await Order.find(filter).sort({ createdAt: -1 }).limit(5000).lean();
 
   const csv = toCsv(orders, [
@@ -60,11 +58,8 @@ const exportClosedPositions = asyncHandler(async (req, res) => {
   const { from, to, accountId } = req.query;
   const filter = { userId: req.userId, status: 'CLOSED' };
   if (accountId) filter.accountId = accountId;   // scoped by userId above → safe
-  if (from || to) {
-    filter.closedAt = {};
-    if (from) filter.closedAt.$gte = new Date(from);
-    if (to) filter.closedAt.$lte = new Date(to);
-  }
+  // Inclusive of the whole `to` day (fixes From==To returning nothing).
+  applyDateRange(filter, 'closedAt', from, to);
   const positions = await Position.find(filter).sort({ closedAt: -1 }).limit(5000).lean();
   const csv = toCsv(positions, [
     { label: 'Opened', value: (p) => new Date(p.openedAt).toISOString() },
@@ -84,11 +79,8 @@ const exportLedger = asyncHandler(async (req, res) => {
   const { from, to, accountId } = req.query;
   const filter = { userId: req.userId };
   if (accountId) filter.accountId = accountId;
-  if (from || to) {
-    filter.createdAt = {};
-    if (from) filter.createdAt.$gte = new Date(from);
-    if (to) filter.createdAt.$lte = new Date(to);
-  }
+  // Inclusive of the whole `to` day (fixes From==To returning nothing).
+  applyDateRange(filter, 'createdAt', from, to);
   const entries = await WalletLedger.find(filter).sort({ createdAt: -1 }).limit(5000).lean();
   const csv = toCsv(entries, [
     { label: 'Date', value: (e) => new Date(e.createdAt).toISOString() },
