@@ -64,6 +64,13 @@ class WSBroadcaster {
       if (this._flushTimer.unref) this._flushTimer.unref();
     }
 
+    this.wss.on('error', (err) => {
+      console.error('[WS] WebSocket server error', err);
+      if (err && err.code === 'EADDRINUSE') {
+        console.error(`WebSocket listen failed: port ${process.env.PORT || 5000} is already in use.`);
+      }
+    });
+
     this.wss.on('connection', (ws, req) => {
       ws.subscriptions = new Set();
       ws.userId = null;

@@ -439,7 +439,25 @@
       "Bash(node _trace2.js)",
       "Bash(node _verify.js)",
       "Bash(grep -viE \"copyright|//\")",
-      "Bash(node _verifyBadge.js)"
+      "Bash(node _verifyBadge.js)",
+      "Bash(grep -E '^\\(ioredis|zod|uuid|ws\\)$')",
+      "Bash(grep -E '^\\(ioredis|zod|uuid|ws|axios\\)$')",
+      "Bash(node -e \"console.log\\(process.version\\)\")",
+      "Bash(node \"C:/Users/rijju/AppData/Local/Temp/claude/c--Users-rijju-MetaTrading/7f2d9929-6ec1-4e52-bfe7-e228d3b2d128/scratchpad/smoke.js\")",
+      "Bash(node \"C:/Users/rijju/AppData/Local/Temp/claude/c--Users-rijju-MetaTrading/7f2d9929-6ec1-4e52-bfe7-e228d3b2d128/scratchpad/routes.js\")",
+      "Bash(node tests/broker.test.js)",
+      "Bash(node --check src/services/broker/brokerOrder.service.js)",
+      "Bash(read f *)",
+      "Bash(grep -rnoE \"subscribe\\\\\\('[^']+'|subscribe\\\\\\(\\\\`[^\\\\`]+\\\\`\" client/src)",
+      "Bash(node --check src/brokers/BrokerManager.js)",
+      "Bash(node -e \"process.env.BROKER_ENCRYPTION_KEY='a'.repeat\\(64\\);process.env.BROKER_SYNC_ENABLED='false'; const m=require\\('./src/brokers'\\); m.init\\({startSync:false}\\); console.log\\('broker module OK, publishOrder is', typeof m.manager.publishOrder\\); m.shutdown\\(\\);\")",
+      "Read(//c/Users/rijju/client/src/utils/**)",
+      "Bash(grep -vE \"^\\\\s*//|brokerApi\\\\.|api\\\\.\\(get|post|put|delete\\)\")",
+      "Bash(node --check src/brokers/dhan/SymbolResolver.js)",
+      "Bash(IMPORT_SYMBOLS=INDUSINDBK node scripts/import-dhan-instruments.js)",
+      "Bash(node -e \"fetch\\('https://api.ipify.org?format=json',{signal:AbortSignal.timeout\\(8000\\)}\\).then\\(r=>r.json\\(\\)\\).then\\(d=>console.log\\('Server public outbound IP:', d.ip\\)\\).catch\\(e=>console.log\\('could not fetch:', e.message\\)\\)\")",
+      "Bash(node --check src/brokers/dhan/DhanHttpClient.js)",
+      "Bash(node --check src/brokers/index.js)"
     ],
     "additionalDirectories": [
       "c:\\Users\\rijju\\.claude\\projects\\c--Users-rijju-OneDrive-Desktop-trading-platform--last-and\\memory"

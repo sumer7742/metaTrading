@@ -8,6 +8,7 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "test": "node tests/optionChain.test.js",
+    "test:broker": "node tests/broker.test.js",
     "seed": "node src/utils/seed.js",
     "seed:prod": "node src/utils/seedProd.js",
     "seed:candles": "node src/utils/seedCandles.js",

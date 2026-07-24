@@ -46,6 +46,9 @@ const OptionChain = lazy(() => import('./pages/OptionChain'));
 const FnoHome = lazy(() => import('./pages/FnoHome'));
 const Watchlist = lazy(() => import('./pages/Watchlist'));
 const OrderModalPreview = lazy(() => import('./pages/OrderModalPreview'));
+// Broker-agnostic Indian stock terminal (Dhan + future brokers). Code-split
+// like every other authenticated page.
+const Broker = lazy(() => import('./pages/Broker'));
 
 // Public marketing landing (shown at "/" to logged-out visitors).
 const Landing = lazy(() => import('./pages/Landing'));
@@ -118,6 +121,7 @@ export default function App() {
         <Route path="/favorites" element={<Navigate to="/watchlist" replace />} />
         <Route path="/preview/order-modal" element={<Page><OrderModalPreview /></Page>} />
         <Route path="/trade" element={<Page><Trade /></Page>} />
+        <Route path="/broker" element={<Page><Broker /></Page>} />
         <Route path="/stock/:symbol" element={<Page><StockDetail /></Page>} />
         <Route path="/orders" element={<Page><Orders /></Page>} />
         <Route path="/reports" element={<Page><Reports /></Page>} />

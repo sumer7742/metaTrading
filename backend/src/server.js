@@ -58,6 +58,13 @@ const chatRoutes = require('./routes/chat');
 const adminOrdersRoutes = require('./routes/adminOrders');
 const cmsRoutes = require('./routes/cms');
 const globalAlertRoutes = require('./routes/globalAlerts');
+// ── Indian stock market: broker-agnostic trading terminal (additive) ──
+// Users trade through their OWN broker accounts (Dhan today; the adapter
+// registry supports unlimited brokers). Entirely separate from the forex /
+// crypto matching engine, which is unchanged.
+const brokerRoutes = require('./routes/broker');
+const brokerOrderRoutes = require('./routes/brokerOrders');
+const brokerModule = require('./brokers');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -232,6 +239,13 @@ app.use('/api/order-management', adminOrdersRoutes);
 app.use('/api/cms', cmsRoutes);
 // Global Alert Popups — user pending/ack (any authed user) + admin management.
 app.use('/api/alerts', globalAlertRoutes);
+
+// ── Broker-agnostic Indian stock trading (Dhan + future brokers) ──────
+// /api/orders is the single order endpoint the frontend calls for ANY
+// broker; BrokerRouter picks the adapter. Distinct from /api/trading/orders
+// (forex/crypto matching engine), which keeps its own behaviour.
+app.use('/api/broker', brokerRoutes);
+app.use('/api/orders', brokerOrderRoutes);
 
 // ─── Serve frontend SPAs out of backend/public ─────────────────────
 // Production flow: `vite build` in client/ + admin/ produces dist/
@@ -446,6 +460,23 @@ const start = async () => {
   priceSimulator.start().catch((e) => console.error('[PriceSim] failed:', e.message));
   feedOrchestrator.start();
 
+  // Broker module (Indian stock market). Registers broker adapters, starts the
+  // adapter pool + order-stream supervisor, and wires broker order updates to
+  // the SAME websocket broadcaster the rest of the platform uses (channel
+  // `user:broker:order`). init() never throws — a broker-module failure must
+  // not stop the forex/crypto platform from serving.
+  brokerModule.init({ broadcaster: wsBroadcaster });
+
+  server.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE') {
+      logger.error('Port already in use', { port: PORT, err });
+      console.error(`Port ${PORT} is already in use. Set PORT in environment or stop the process using it.`);
+      process.exit(1);
+    }
+    logger.error('Server startup error', { err });
+    process.exit(1);
+  });
+
   server.listen(PORT, () => {
     logger.info('Server listening', { port: PORT, ws: `ws://localhost:${PORT}/ws` });
   });
@@ -465,6 +496,9 @@ const start = async () => {
       if (err) { logger.error('HTTP close error', { err }); exitCode = 1; }
     });
     try { backgroundWorker.stop && backgroundWorker.stop(); } catch (e) { logger.warn('Worker stop failed', { err: e }); }
+    // Drain the broker queues + close broker sockets BEFORE the DB closes, so
+    // in-flight orders finish writing their lifecycle rows.
+    try { await brokerModule.shutdown(); } catch (e) { logger.warn('Broker module shutdown failed', { err: e }); }
     // Flush the WAL + write-behind buffers BEFORE closing the DB so no
     // acknowledged-but-unflushed write is lost (no-op unless cutover is on).
     try { await matchingEngine.drainWriteBehind(); } catch (e) { logger.warn('Write-behind drain failed', { err: e }); }
