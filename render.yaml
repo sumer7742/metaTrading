@@ -19,8 +19,11 @@
 #      set the backend CORS_ORIGINS / CLIENT_URL / ADMIN_URL to the SPA URLs.
 #
 # region: singapore — closest Render region to India (lowest Dhan/NSE latency).
-# plan: starter — avoids free-tier spin-down (keeps the Dhan order-update
-#        websocket alive; a spun-down free service drops it and cold-starts).
+# plan: free — no charge. NOTE: free web services SPIN DOWN after ~15 min of
+#        inactivity (cold start ~30-60s on the next request, and the Dhan
+#        order-update websocket drops until then). Fine for testing / getting
+#        past the static-IP hurdle. For real trading upgrade to `starter` ($7/mo)
+#        so the service stays warm and the order stream stays connected.
 # =============================================================================
 
 services:
@@ -30,7 +33,7 @@ services:
     runtime: docker
     branch: main
     region: singapore
-    plan: starter
+    plan: free
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
     healthCheckPath: /api/health
