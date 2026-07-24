@@ -28,7 +28,6 @@ services:
   - type: web
     name: metatrading-backend
     runtime: docker
-    repo: https://github.com/sumer7742/metaTrading
     branch: main
     region: singapore
     plan: starter
@@ -82,7 +81,6 @@ services:
   - type: web
     name: metatrading-client
     runtime: static
-    repo: https://github.com/sumer7742/metaTrading
     branch: main
     rootDir: client
     buildCommand: npm install && npm run build
@@ -106,7 +104,6 @@ services:
   - type: web
     name: metatrading-admin
     runtime: static
-    repo: https://github.com/sumer7742/metaTrading
     branch: main
     rootDir: admin
     buildCommand: npm install && npm run build
