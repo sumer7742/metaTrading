@@ -457,7 +457,12 @@
       "Bash(IMPORT_SYMBOLS=INDUSINDBK node scripts/import-dhan-instruments.js)",
       "Bash(node -e \"fetch\\('https://api.ipify.org?format=json',{signal:AbortSignal.timeout\\(8000\\)}\\).then\\(r=>r.json\\(\\)\\).then\\(d=>console.log\\('Server public outbound IP:', d.ip\\)\\).catch\\(e=>console.log\\('could not fetch:', e.message\\)\\)\")",
       "Bash(node --check src/brokers/dhan/DhanHttpClient.js)",
-      "Bash(node --check src/brokers/index.js)"
+      "Bash(node --check src/brokers/index.js)",
+      "Bash(node -e \"const p=require\\('./client/package.json'\\); console.log\\('build:', p.scripts.build, '| engines:', JSON.stringify\\(p.engines||'none'\\)\\)\")",
+      "Bash(node -e \"const p=require\\('./admin/package.json'\\); console.log\\('build:', p.scripts.build, '| name:', p.name\\)\")",
+      "Bash(node -e \"const p=require\\('./backend/package.json'\\); console.log\\('engines:', JSON.stringify\\(p.engines||'none'\\), '| start:', p.scripts.start\\)\")",
+      "Bash(git check-ignore *)",
+      "Bash(grep -E \"\\\\.env$\")"
     ],
     "additionalDirectories": [
       "c:\\Users\\rijju\\.claude\\projects\\c--Users-rijju-OneDrive-Desktop-trading-platform--last-and\\memory"
