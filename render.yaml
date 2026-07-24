@@ -1,0 +1,126 @@
+# =============================================================================
+# Render Blueprint — MetaTrading
+# =============================================================================
+# Deploys the platform on Render so the BACKEND runs from a fixed egress IP,
+# which is what Dhan's order API (static-IP gate) requires.
+#
+# Topology:
+#   metatrading-backend  → Node API + WebSocket (Docker, backend/Dockerfile)
+#   metatrading-client   → user SPA (static site)
+#   metatrading-admin    → admin SPA (static site)
+#   MongoDB              → EXTERNAL (MongoDB Atlas) — Render has no managed Mongo,
+#                          so set MONGODB_URI to your Atlas connection string.
+#
+# After the first deploy:
+#   1. Backend → Settings → note the "Outbound IP Addresses". Register those in
+#      Dhan (Profile → DhanHQ Trading APIs → Static IP Setting). These are FIXED,
+#      so the "Invalid IP" (DH-905) problem goes away for good.
+#   2. Set the client/admin VITE_API_URL / VITE_WS_URL to the backend URL, and
+#      set the backend CORS_ORIGINS / CLIENT_URL / ADMIN_URL to the SPA URLs.
+#
+# region: singapore — closest Render region to India (lowest Dhan/NSE latency).
+# plan: starter — avoids free-tier spin-down (keeps the Dhan order-update
+#        websocket alive; a spun-down free service drops it and cold-starts).
+# =============================================================================
+
+services:
+  # ── Backend API + WebSocket ────────────────────────────────────────────────
+  - type: web
+    name: metatrading-backend
+    runtime: docker
+    repo: https://github.com/sumer7742/metaTrading
+    branch: main
+    region: singapore
+    plan: starter
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    healthCheckPath: /api/health
+    autoDeploy: true
+    # Single instance on purpose: the broker adapter pool, order-update sockets
+    # and read cache are in-process. Scaling out needs shared Redis state first.
+    numInstances: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Render terminates TLS in front of us → enable HSTS/CSP + secure headers.
+      - key: HTTPS_ENABLED
+        value: "true"
+      # Pin outbound broker calls to IPv4 so Dhan sees the registered IPv4 (not a
+      # rotating IPv6). See backend/src/brokers/index.js.
+      - key: BROKER_FORCE_IPV4
+        value: "true"
+      - key: BROKER_MODULE_ENABLED
+        value: "true"
+      - key: LOG_LEVEL
+        value: info
+
+      # ── Secrets you MUST provide (Render prompts for these) ──
+      # MongoDB Atlas connection string (mongodb+srv://…). Whitelist Render's
+      # outbound IPs in Atlas Network Access, or allow 0.0.0.0/0 for testing.
+      - key: MONGODB_URI
+        sync: false
+      # Broker credential encryption key — generate with:  openssl rand -hex 32
+      # WITHOUT this, broker connections are refused in production.
+      - key: BROKER_ENCRYPTION_KEY
+        sync: false
+      # Comma-separated allowed origins = your client + admin URLs, e.g.
+      #   https://metatrading-client.onrender.com,https://metatrading-admin.onrender.com
+      - key: CORS_ORIGINS
+        sync: false
+      - key: CLIENT_URL
+        sync: false
+      - key: ADMIN_URL
+        sync: false
+
+      # ── Auto-generated once, then persisted by Render ──
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+
+  # ── User SPA (static site) ─────────────────────────────────────────────────
+  - type: web
+    name: metatrading-client
+    runtime: static
+    repo: https://github.com/sumer7742/metaTrading
+    branch: main
+    rootDir: client
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    autoDeploy: true
+    envVars:
+      # Set to the backend URL after its first deploy, e.g.
+      #   https://metatrading-backend.onrender.com/api
+      - key: VITE_API_URL
+        sync: false
+      #   wss://metatrading-backend.onrender.com/ws
+      - key: VITE_WS_URL
+        sync: false
+    routes:
+      # SPA fallback — every non-asset path serves index.html for client routing.
+      - type: rewrite
+        source: /*
+        destination: /index.html
+
+  # ── Admin SPA (static site) ────────────────────────────────────────────────
+  - type: web
+    name: metatrading-admin
+    runtime: static
+    repo: https://github.com/sumer7742/metaTrading
+    branch: main
+    rootDir: admin
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    autoDeploy: true
+    envVars:
+      # Standalone site → served at its own root, so keep the Vite base at "/".
+      - key: VITE_BASE
+        value: /
+      - key: VITE_API_URL
+        sync: false
+      - key: VITE_WS_URL
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
